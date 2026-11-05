@@ -17,6 +17,7 @@ Requirements: Go 1.27+, Docker with Compose.
 ```bash
 make db-up        # Postgres 18 on localhost:5444
 make test         # go vet + go test
+make lint         # gofmt, vet, staticcheck (all checks), govulncheck
 make run          # clipmux serve on :8080 (prints a setup token)
 ```
 
@@ -27,9 +28,9 @@ Media tools (needed from P1-T06): FFmpeg from the pinned recipe in
 
 ```
 cmd/clipmux/       the single binary: serve | worker | push | listen | admin
-internal/          config, server, auth, db, queue, api, workerapi, worker,
-                   media, storage, executor, delivery, tokens, outbox, sweeper
-web/               dashboard (embedded; placeholder until P1-T10)
+internal/          one package per job; a package is created by the task that
+                   first needs it (see AGENTS.md)
+internal/web/      embedded dashboard build (placeholder until P1-T10)
 toolchain/         pinned FFmpeg + Shaka Packager recipe (versions.env is the source of truth)
 deploy/            compose files
 docs/              architecture, decisions, plans, known gaps

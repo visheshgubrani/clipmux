@@ -1,4 +1,4 @@
-.PHONY: db-up db-down test test-db run build fmt sqlc sqlc-check
+.PHONY: db-up db-down test test-db run build fmt lint sqlc sqlc-check
 
 COMPOSE := docker compose -f deploy/compose.dev.yml
 
@@ -23,6 +23,13 @@ build:
 
 fmt:
 	gofmt -w .
+
+# staticcheck with every check on, and govulncheck (go.dev/security).
+lint:
+	test -z "$$(gofmt -l .)"
+	go vet ./...
+	go run honnef.co/go/tools/cmd/staticcheck@v0.8.2 -checks all ./...
+	go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
 
 # sqlc runs from its container, so nobody needs the cgo build. Generated code
 # is committed; CI checks it is current.

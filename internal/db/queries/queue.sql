@@ -49,6 +49,9 @@ SELECT * FROM attempts WHERE id = $1;
 -- name: GetAttemptByTokenHash :one
 SELECT * FROM attempts WHERE token_hash = $1;
 
+-- name: GetJob :one
+SELECT * FROM jobs WHERE id = $1;
+
 -- name: LockJob :one
 SELECT * FROM jobs WHERE id = $1 FOR UPDATE;
 

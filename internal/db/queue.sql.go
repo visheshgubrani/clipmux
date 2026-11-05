@@ -3,7 +3,7 @@
 //   sqlc v1.30.0
 // source: queue.sql
 
-package sqlc
+package db
 
 import (
 	"context"
@@ -260,6 +260,37 @@ func (q *Queries) GetAttemptByTokenHash(ctx context.Context, tokenHash []byte) (
 		&i.ErrorCode,
 		&i.StartedAt,
 		&i.LastHeartbeatAt,
+		&i.FinishedAt,
+	)
+	return i, err
+}
+
+const getJob = `-- name: GetJob :one
+SELECT id, project_id, asset_id, kind, status, phase, progress, profile_id, profile_version, pinned_agent_id, lost_count, failed_count, error_code, routed_to, route_reason, available_at, created_at, started_at, finished_at FROM jobs WHERE id = $1
+`
+
+func (q *Queries) GetJob(ctx context.Context, id string) (Job, error) {
+	row := q.db.QueryRow(ctx, getJob, id)
+	var i Job
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.AssetID,
+		&i.Kind,
+		&i.Status,
+		&i.Phase,
+		&i.Progress,
+		&i.ProfileID,
+		&i.ProfileVersion,
+		&i.PinnedAgentID,
+		&i.LostCount,
+		&i.FailedCount,
+		&i.ErrorCode,
+		&i.RoutedTo,
+		&i.RouteReason,
+		&i.AvailableAt,
+		&i.CreatedAt,
+		&i.StartedAt,
 		&i.FinishedAt,
 	)
 	return i, err

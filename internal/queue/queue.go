@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,7 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/visheshgubrani/clipmux/internal/db/sqlc"
+	"github.com/visheshgubrani/clipmux/internal/db"
 	"github.com/visheshgubrani/clipmux/internal/ids"
 )
 
@@ -101,9 +100,9 @@ type Job struct {
 // Claim is a successful claim. Token is shown to the worker once; only its
 // hash is stored.
 type Claim struct {
-	Job     sqlc.Job
-	Attempt sqlc.Attempt
-	Output  sqlc.Output
+	Job     db.Job
+	Attempt db.Attempt
+	Output  db.Output
 	Token   string
 }
 
@@ -130,8 +129,8 @@ type Failure struct {
 
 // Enqueue adds a job. Run it in the transaction that changes the asset; the
 // one-active-job-per-asset index rejects a second mutating job.
-func Enqueue(ctx context.Context, db sqlc.DBTX, j Job) (sqlc.Job, error) {
-	return sqlc.New(db).CreateJob(ctx, sqlc.CreateJobParams{
+func Enqueue(ctx context.Context, conn db.DBTX, j Job) (db.Job, error) {
+	return db.New(conn).CreateJob(ctx, db.CreateJobParams{
 		ID:            ids.New(ids.Job),
 		ProjectID:     j.ProjectID,
 		AssetID:       j.AssetID,
@@ -143,18 +142,16 @@ func Enqueue(ctx context.Context, db sqlc.DBTX, j Job) (sqlc.Job, error) {
 // Claim takes the next claimable job, if any, and creates its attempt, lease
 // and fresh output. It returns nil when there is no work.
 func (q *Queue) Claim(ctx context.Context, w Worker) (*Claim, error) {
-	token, hash, err := newToken()
-	if err != nil {
-		return nil, err
-	}
+	token := rand.Text() // 130 bits; only its hash is stored
+	hash := hashToken(token)
 	info := w.Info
 	if len(info) == 0 {
 		info = json.RawMessage(`{}`)
 	}
 	var claim *Claim
-	err = pgx.BeginFunc(ctx, q.pool, func(tx pgx.Tx) error {
-		qs := sqlc.New(tx)
-		job, err := qs.LockNextClaimableJob(ctx, sqlc.LockNextClaimableJobParams{
+	err := pgx.BeginFunc(ctx, q.pool, func(tx pgx.Tx) error {
+		qs := db.New(tx)
+		job, err := qs.LockNextClaimableJob(ctx, db.LockNextClaimableJobParams{
 			ProjectID: q.ProjectID, AgentID: text(w.AgentID), LocalOnly: w.LocalOnly,
 		})
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -167,13 +164,13 @@ func (q *Queue) Claim(ctx context.Context, w Worker) (*Claim, error) {
 		if err != nil {
 			return err
 		}
-		output, err := qs.CreateOutput(ctx, sqlc.CreateOutputParams{
+		output, err := qs.CreateOutput(ctx, db.CreateOutputParams{
 			ID: ids.New(ids.Output), ProjectID: job.ProjectID, AssetID: job.AssetID, KeyVersion: q.KeyVersion,
 		})
 		if err != nil {
 			return err
 		}
-		attempt, err := qs.CreateAttempt(ctx, sqlc.CreateAttemptParams{
+		attempt, err := qs.CreateAttempt(ctx, db.CreateAttemptParams{
 			ID: ids.New(ids.Attempt), ProjectID: job.ProjectID, JobID: job.ID, AssetID: job.AssetID,
 			AttemptNumber: n, OutputID: output.ID, Executor: w.Executor, AgentID: text(w.AgentID),
 			TokenHash: hash, WorkerInfo: info, LeaseSeconds: q.Lease.Seconds(),
@@ -181,7 +178,7 @@ func (q *Queue) Claim(ctx context.Context, w Worker) (*Claim, error) {
 		if err != nil {
 			return err
 		}
-		if err := qs.StartJob(ctx, sqlc.StartJobParams{ID: job.ID, RoutedTo: text(w.Executor), RouteReason: text("claimed")}); err != nil {
+		if err := qs.StartJob(ctx, db.StartJobParams{ID: job.ID, RoutedTo: text(w.Executor), RouteReason: text("claimed")}); err != nil {
 			return err
 		}
 		if job, err = qs.LockJob(ctx, job.ID); err != nil {
@@ -220,25 +217,25 @@ func (q *Queue) ClaimWait(ctx context.Context, w Worker, wait, poll time.Duratio
 }
 
 // Authenticate returns the attempt a token belongs to.
-func (q *Queue) Authenticate(ctx context.Context, token string) (sqlc.Attempt, error) {
-	a, err := sqlc.New(q.pool).GetAttemptByTokenHash(ctx, hashToken(token))
+func (q *Queue) Authenticate(ctx context.Context, token string) (db.Attempt, error) {
+	a, err := db.New(q.pool).GetAttemptByTokenHash(ctx, hashToken(token))
 	if errors.Is(err, pgx.ErrNoRows) {
-		return sqlc.Attempt{}, ErrUnknownToken
+		return db.Attempt{}, ErrUnknownToken
 	}
 	return a, err
 }
 
 // locked is an attempt and its job, both locked, with the liveness verdict.
 type locked struct {
-	job     sqlc.Job
-	attempt sqlc.Attempt
+	job     db.Job
+	attempt db.Attempt
 	verdict Verdict
 }
 
 // lockLive locks the attempt's job then the attempt, and applies the single
 // liveness rule: an attempt is live while it is the latest attempt of a job
 // that isn't cancelled (and hasn't ended).
-func lockLive(ctx context.Context, qs *sqlc.Queries, attemptID, jobID string) (locked, error) {
+func lockLive(ctx context.Context, qs *db.Queries, attemptID, jobID string) (locked, error) {
 	job, err := qs.LockJob(ctx, jobID)
 	if err != nil {
 		return locked{}, err
@@ -266,14 +263,14 @@ func lockLive(ctx context.Context, qs *sqlc.Queries, attemptID, jobID string) (l
 	return l, nil
 }
 
-func (q *Queue) withLiveAttempt(ctx context.Context, token string, fn func(qs *sqlc.Queries, l locked) (Verdict, error)) (Verdict, error) {
+func (q *Queue) withLiveAttempt(ctx context.Context, token string, fn func(qs *db.Queries, l locked) (Verdict, error)) (Verdict, error) {
 	a, err := q.Authenticate(ctx, token)
 	if err != nil {
 		return Verdict{}, err
 	}
 	var v Verdict
 	err = pgx.BeginFunc(ctx, q.pool, func(tx pgx.Tx) error {
-		qs := sqlc.New(tx)
+		qs := db.New(tx)
 		l, err := lockLive(ctx, qs, a.ID, a.JobID)
 		if err != nil {
 			return err
@@ -292,17 +289,17 @@ func (q *Queue) withLiveAttempt(ctx context.Context, token string, fn func(qs *s
 // worker whose lease was marked lost, but whose attempt is still the latest,
 // returns to running.
 func (q *Queue) Heartbeat(ctx context.Context, token string, p Progress) (Verdict, error) {
-	return q.withLiveAttempt(ctx, token, func(qs *sqlc.Queries, l locked) (Verdict, error) {
+	return q.withLiveAttempt(ctx, token, func(qs *db.Queries, l locked) (Verdict, error) {
 		progress := pgtype.Float4{}
 		if p.Progress != nil {
 			progress = pgtype.Float4{Float32: *p.Progress, Valid: true}
 		}
-		if err := qs.RenewLease(ctx, sqlc.RenewLeaseParams{
+		if err := qs.RenewLease(ctx, db.RenewLeaseParams{
 			ID: l.attempt.ID, LeaseSeconds: q.Lease.Seconds(), Phase: text(p.Phase), Progress: progress,
 		}); err != nil {
 			return Verdict{}, err
 		}
-		return Verdict{}, qs.SetJobRunningProgress(ctx, sqlc.SetJobRunningProgressParams{
+		return Verdict{}, qs.SetJobRunningProgress(ctx, db.SetJobRunningProgressParams{
 			ID: l.job.ID, Phase: text(p.Phase), Progress: progress,
 		})
 	})
@@ -321,8 +318,8 @@ func (q *Queue) Fail(ctx context.Context, token string, f Failure) (Verdict, err
 	if f.Permanent {
 		kind = "permanent"
 	}
-	return q.withLiveAttempt(ctx, token, func(qs *sqlc.Queries, l locked) (Verdict, error) {
-		if err := qs.SetAttemptStatus(ctx, sqlc.SetAttemptStatusParams{
+	return q.withLiveAttempt(ctx, token, func(qs *db.Queries, l locked) (Verdict, error) {
+		if err := qs.SetAttemptStatus(ctx, db.SetAttemptStatusParams{
 			ID: l.attempt.ID, Status: "failed", FailureKind: text(kind), ErrorCode: text(code),
 		}); err != nil {
 			return Verdict{}, err
@@ -337,7 +334,7 @@ func (q *Queue) Fail(ctx context.Context, token string, f Failure) (Verdict, err
 		case failures >= q.FailedBudget:
 			err = q.endJob(ctx, qs, l.job, CodeProcessingFailed)
 		default:
-			err = qs.RequeueJob(ctx, sqlc.RequeueJobParams{ID: l.job.ID, DelaySeconds: q.Backoff(failures).Seconds()})
+			err = qs.RequeueJob(ctx, db.RequeueJobParams{ID: l.job.ID, DelaySeconds: q.Backoff(failures).Seconds()})
 		}
 		return Verdict{Stop: true, Reason: ReasonFinished}, err
 	})
@@ -347,7 +344,7 @@ func (q *Queue) Fail(ctx context.Context, token string, f Failure) (Verdict, err
 // returns their jobs to the queue, or fails them once the lost budget is
 // spent. It returns how many attempts it marked lost.
 func (q *Queue) SweepLostLeases(ctx context.Context, limit int) (int, error) {
-	expired, err := sqlc.New(q.pool).ListExpiredLeases(ctx, int32(limit))
+	expired, err := db.New(q.pool).ListExpiredLeases(ctx, int32(limit))
 	if err != nil {
 		return 0, err
 	}
@@ -355,7 +352,7 @@ func (q *Queue) SweepLostLeases(ctx context.Context, limit int) (int, error) {
 	for _, id := range expired {
 		swept := false
 		err := pgx.BeginFunc(ctx, q.pool, func(tx pgx.Tx) error {
-			qs := sqlc.New(tx)
+			qs := db.New(tx)
 			a, err := qs.GetAttempt(ctx, id)
 			if err != nil {
 				return err
@@ -371,7 +368,7 @@ func (q *Queue) SweepLostLeases(ctx context.Context, limit int) (int, error) {
 			if row.Attempt.Status != "running" || !row.LeaseExpired {
 				return nil // heartbeated or finished since we listed it
 			}
-			if err := qs.SetAttemptStatus(ctx, sqlc.SetAttemptStatusParams{ID: id, Status: "lost"}); err != nil {
+			if err := qs.SetAttemptStatus(ctx, db.SetAttemptStatusParams{ID: id, Status: "lost"}); err != nil {
 				return err
 			}
 			swept = true
@@ -389,7 +386,7 @@ func (q *Queue) SweepLostLeases(ctx context.Context, limit int) (int, error) {
 			if lost >= q.LostBudget {
 				return q.endJob(ctx, qs, job, CodeWorkerLost)
 			}
-			return qs.RequeueJob(ctx, sqlc.RequeueJobParams{ID: job.ID})
+			return qs.RequeueJob(ctx, db.RequeueJobParams{ID: job.ID})
 		})
 		if err != nil {
 			return n, fmt.Errorf("sweep attempt %s: %w", id, err)
@@ -404,8 +401,8 @@ func (q *Queue) SweepLostLeases(ctx context.Context, limit int) (int, error) {
 // endJob fails a job for good. A ready asset (a failed re-encode) keeps
 // playing its current output; anything else becomes errored. Either way the
 // app hears about it through the webhook outbox, in this transaction.
-func (q *Queue) endJob(ctx context.Context, qs *sqlc.Queries, job sqlc.Job, code string) error {
-	if err := qs.FailJob(ctx, sqlc.FailJobParams{ID: job.ID, ErrorCode: text(code)}); err != nil {
+func (q *Queue) endJob(ctx context.Context, qs *db.Queries, job db.Job, code string) error {
+	if err := qs.FailJob(ctx, db.FailJobParams{ID: job.ID, ErrorCode: text(code)}); err != nil {
 		return err
 	}
 	asset, err := qs.LockAsset(ctx, job.AssetID)
@@ -419,14 +416,14 @@ func (q *Queue) endJob(ctx context.Context, qs *sqlc.Queries, job sqlc.Job, code
 	case "ready":
 		event = "video.asset.reencode_failed"
 	default:
-		if version, err = qs.MarkAssetErrored(ctx, sqlc.MarkAssetErroredParams{ID: asset.ID, ErrorCode: text(code)}); err != nil {
+		if version, err = qs.MarkAssetErrored(ctx, db.MarkAssetErroredParams{ID: asset.ID, ErrorCode: text(code)}); err != nil {
 			return err
 		}
 	}
 	return insertEvent(ctx, qs, asset, event, version, map[string]any{"job_id": job.ID, "error_code": code})
 }
 
-func insertEvent(ctx context.Context, qs *sqlc.Queries, asset sqlc.Asset, eventType string, version int64, extra map[string]any) error {
+func insertEvent(ctx context.Context, qs *db.Queries, asset db.Asset, eventType string, version int64, extra map[string]any) error {
 	id := ids.New(ids.Event)
 	data := map[string]any{"asset_id": asset.ID, "version": version}
 	if asset.Passthrough.Valid {
@@ -441,18 +438,9 @@ func insertEvent(ctx context.Context, qs *sqlc.Queries, asset sqlc.Asset, eventT
 	if err != nil {
 		return err
 	}
-	return qs.InsertOutbox(ctx, sqlc.InsertOutboxParams{
+	return qs.InsertOutbox(ctx, db.InsertOutboxParams{
 		ID: id, ProjectID: asset.ProjectID, Kind: "webhook", AppID: text(asset.AppID), AssetID: text(asset.ID), Payload: payload,
 	})
-}
-
-func newToken() (token string, hash []byte, err error) {
-	b := make([]byte, 32)
-	if _, err := rand.Read(b); err != nil {
-		return "", nil, err
-	}
-	token = base64.RawURLEncoding.EncodeToString(b)
-	return token, hashToken(token), nil
 }
 
 func hashToken(token string) []byte {

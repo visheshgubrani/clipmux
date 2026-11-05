@@ -14,7 +14,7 @@ Why: the worker ships to other people's machines (PC agent, `push`, `--once` on 
 Consequence: delivery checks exist twice (Go handler, TS Worker), held together by shared JSON test vectors.
 
 ## D003 Library defaults — accepted (2026-11-05)
-Decision: stdlib `net/http` routing (Go 1.22+ patterns), `pgx/v5`, `sqlc` for queries, `goose` for migrations, `log/slog`, golangci-lint in CI once there is code worth linting. The dashboard is a Vite + React SPA embedded with `go:embed`.
+Decision: stdlib `net/http` routing (Go 1.22+ patterns), `pgx/v5`, `sqlc` for queries, `goose` for migrations, `log/slog`. Linting is `staticcheck -checks all` plus `govulncheck` (amended in D009, replacing the planned golangci-lint). The dashboard is a Vite + React SPA embedded with `go:embed` from `internal/web`.
 
 ## D004 Walking-skeleton milestone in Phase 1 — accepted (2026-11-05)
 Decision: Phase 1 first reaches M1 — API upload → built-in worker → AES-128 package → commit → signed playback in hls.js — before sweepers, webhooks, first boot and the dashboard. Those are completed before the Phase 1 exit test, not dropped.
@@ -35,6 +35,18 @@ Decisions within the architecture's rules, made in P1-T03:
 - Claims are refused with 409 unless the worker supports contract version 1 (`unsupported_contract`) and reports Shaka Packager ≥ 3.9.1 (`packager_too_old`).
 - A lost attempt whose worker heartbeats back while it is still the latest attempt returns to `running`; its lost lease still counts against the budget.
 - Worker responses are `{"action": "continue" | "stop", "reason": …}` so a worker needs one code path; errors are `{"error": {"code", "message"}}`.
+
+## D009 Lean structure, checked against go.dev guidance — accepted (2026-11-05)
+Context: before T04 the repo was reviewed against go.dev/doc/modules/layout, the Code Review Comments wiki, "Package names" and Effective Go, to avoid the sprawl of the earlier repos.
+Decision and changes:
+- Removed seven placeholder packages (`api`, `worker`, `media`, `tokens`, `outbox`, `executor`, `delivery`) and the `auth` package: no package or interface before the code that needs it.
+- sqlc now generates into `internal/db` (`db.Job`, `db.New(tx)`), not a package named after the tool.
+- Secrets use `crypto/rand.Text` (Go 1.24+) instead of three hand-written generators.
+- `serve` waits for its background goroutines before the pool closes, and requests inherit the server context so long-polls end at shutdown.
+- The embedded dashboard moved to `internal/web`, so nothing in the module is importable from outside.
+- CI gains a lint job: gofmt, vet, `staticcheck -checks all`, `govulncheck`.
+- The `go` directive stays at 1.27 (a supported release line); CI installs its latest patch.
+Consequence: AGENTS.md "Keeping it lean" lists the rules; T04 onward creates packages as tasks land.
 
 ## D007 Shaka Packager 3.9.3 — accepted (2026-11-05)
 Decision: pin v3.9.3 (`toolchain/versions.env`), the version clipmux-lms runs with AES-128 in production, which needs the init-segment workaround for Shaka issue 1616. Move to a release that fixes 1616 when one exists, re-running the Phase 1 player tests.

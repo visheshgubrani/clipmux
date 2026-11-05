@@ -13,8 +13,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/visheshgubrani/clipmux/internal/db"
 	"github.com/visheshgubrani/clipmux/internal/db/dbtest"
-	"github.com/visheshgubrani/clipmux/internal/db/sqlc"
 	"github.com/visheshgubrani/clipmux/internal/queue"
 )
 
@@ -50,7 +50,7 @@ func (f *fixture) asset(id string, ready bool) string {
 	return id
 }
 
-func (f *fixture) enqueue(assetID, kind string) sqlc.Job {
+func (f *fixture) enqueue(assetID, kind string) db.Job {
 	f.t.Helper()
 	j, err := queue.Enqueue(context.Background(), f.pool, queue.Job{ProjectID: "prj_default", AssetID: assetID, Kind: kind})
 	if err != nil {
@@ -68,9 +68,9 @@ func (f *fixture) claim(w queue.Worker) *queue.Claim {
 	return c
 }
 
-func (f *fixture) job(id string) sqlc.Job {
+func (f *fixture) job(id string) db.Job {
 	f.t.Helper()
-	j, err := sqlc.New(f.pool).LockJob(context.Background(), id) // outside a tx this is a plain read
+	j, err := db.New(f.pool).GetJob(context.Background(), id)
 	if err != nil {
 		f.t.Fatal(err)
 	}

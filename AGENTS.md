@@ -9,12 +9,14 @@ anything decided since, and wins over the architecture doc where they differ.
 
 - Go module `github.com/visheshgubrani/clipmux`, one binary in `cmd/clipmux`
   (`serve`, `worker`, `push`, `listen`, `admin`).
-- `internal/<package>`: each package's `doc.go` says what it owns and which
-  Phase 1 task lands it. Adapter boundaries are `internal/storage`,
-  `internal/executor` and `internal/delivery` — core logic never branches on a
-  vendor; if it needs to, the interface is leaking.
-- `web/`: dashboard SPA embedded with `go:embed`. It is an API client with no
-  private path into the server (same for the CLI).
+- Layout follows go.dev/doc/modules/layout for a server: commands in `cmd/`,
+  everything else in `internal/`. Nothing is importable from outside.
+- Current packages: `config`, `db` (migrations, sqlc-generated queries and
+  models, `dbtest`), `ids`, `queue`, `workerapi`, `server`, `sweeper`,
+  `storage`, `web` (embedded dashboard build).
+- Adapter boundaries (storage, executor, delivery) keep core logic from
+  branching on a vendor; if it needs to, the interface is leaking.
+- The dashboard and CLI are API clients with no private path into the server.
 - `toolchain/versions.env` is the only place a media tool version, URL or digest
   is written. Shaka Packager must be >= 3.9.1.
 - TypeScript lives only in the dashboard, the player/uploader packages and the
@@ -28,9 +30,30 @@ make db-up / make db-down     # dev Postgres on :5444 (deploy/compose.dev.yml)
 make test                     # go vet ./... && go test ./...
 make test-db                  # same, with TEST_DATABASE_URL pointing at dev Postgres
 make run                      # clipmux serve (migrates the dev database on boot)
-make sqlc / make sqlc-check   # regenerate / verify internal/db/sqlc (runs sqlc in Docker)
+make lint                     # gofmt, vet, staticcheck -checks all, govulncheck
+make sqlc / make sqlc-check   # regenerate / verify the generated code in internal/db (runs sqlc in Docker)
 gofmt -l .                    # must print nothing
 ```
+
+## Keeping it lean (go.dev guidance we follow)
+
+- **No package before its code.** A package is created by the task that first
+  needs it, and named for what it contains — never `util`, `common`, `types`,
+  `api` grab-bags. No placeholder packages or speculative interfaces.
+- **Interfaces belong to the consumer** and appear only when there is a second
+  implementation or a real seam (e.g. `server.Pinger`, `workerapi.WorkerAuth`).
+  Return concrete types. The storage adapters are the deliberate exception:
+  one interface, several backends.
+- **Generated code lives in the package that owns it** (`internal/db`), not in a
+  package named after the generator.
+- **Every goroutine has an owner that waits for it**; `serve` returns only
+  after its loops stop, and requests inherit the server context.
+- **Context first, errors last, errors wrapped with `%w` and the operation**,
+  no ignored errors except where the API documents it cannot fail.
+- **Use the standard library first** (`crypto/rand.Text` for secrets,
+  `net/http` routing, `log/slog`); add a dependency only for a real gap.
+- **Duplicate once before abstracting**: extract a helper on the second real use.
+- `make lint` must pass: gofmt, vet, staticcheck with all checks, govulncheck.
 
 ## How we work
 

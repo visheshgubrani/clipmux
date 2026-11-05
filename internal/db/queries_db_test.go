@@ -8,8 +8,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/visheshgubrani/clipmux/internal/db"
 	"github.com/visheshgubrani/clipmux/internal/db/dbtest"
-	"github.com/visheshgubrani/clipmux/internal/db/sqlc"
 	"github.com/visheshgubrani/clipmux/internal/ids"
 )
 
@@ -17,7 +17,7 @@ func text(s string) pgtype.Text { return pgtype.Text{String: s, Valid: true} }
 
 func TestAssetsAreScopedToTheirAppAndFoundByPassthrough(t *testing.T) {
 	ctx := context.Background()
-	q := sqlc.New(dbtest.New(t))
+	q := db.New(dbtest.New(t))
 
 	dashboard, err := q.GetBuiltinApp(ctx, "prj_default")
 	if err != nil || dashboard.ID != "app_dashboard" {
@@ -27,14 +27,14 @@ func TestAssetsAreScopedToTheirAppAndFoundByPassthrough(t *testing.T) {
 	if err != nil || storage.Kind != "fs" {
 		t.Fatalf("default storage = %+v, %v", storage, err)
 	}
-	lms, err := q.CreateApp(ctx, sqlc.CreateAppParams{ID: ids.New(ids.App), ProjectID: "prj_default", Name: "LMS"})
+	lms, err := q.CreateApp(ctx, db.CreateAppParams{ID: ids.New(ids.App), ProjectID: "prj_default", Name: "LMS"})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	create := func(appID, passthrough string) sqlc.Asset {
+	create := func(appID, passthrough string) db.Asset {
 		t.Helper()
-		a, err := q.CreateAsset(ctx, sqlc.CreateAssetParams{
+		a, err := q.CreateAsset(ctx, db.CreateAssetParams{
 			ID: ids.New(ids.Asset), ProjectID: "prj_default", AppID: appID, StorageID: storage.ID, Passthrough: text(passthrough),
 		})
 		if err != nil {
@@ -50,7 +50,7 @@ func TestAssetsAreScopedToTheirAppAndFoundByPassthrough(t *testing.T) {
 		t.Fatalf("new asset = status %q version %d, want waiting_upload 1", first.Status, first.Version)
 	}
 
-	got, err := q.ListAssetsByPassthrough(ctx, sqlc.ListAssetsByPassthroughParams{AppID: lms.ID, Passthrough: text("lesson-42"), Limit: 10})
+	got, err := q.ListAssetsByPassthrough(ctx, db.ListAssetsByPassthroughParams{AppID: lms.ID, Passthrough: text("lesson-42"), Limit: 10})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,10 +59,10 @@ func TestAssetsAreScopedToTheirAppAndFoundByPassthrough(t *testing.T) {
 	}
 
 	// Another app cannot read the LMS's asset.
-	if _, err := q.GetAsset(ctx, sqlc.GetAssetParams{ID: first.ID, AppID: dashboard.ID}); !errors.Is(err, pgx.ErrNoRows) {
+	if _, err := q.GetAsset(ctx, db.GetAssetParams{ID: first.ID, AppID: dashboard.ID}); !errors.Is(err, pgx.ErrNoRows) {
 		t.Fatalf("cross-app read: err = %v, want no rows", err)
 	}
-	if a, err := q.GetAsset(ctx, sqlc.GetAssetParams{ID: first.ID, AppID: lms.ID}); err != nil || a.ID != first.ID {
+	if a, err := q.GetAsset(ctx, db.GetAssetParams{ID: first.ID, AppID: lms.ID}); err != nil || a.ID != first.ID {
 		t.Fatalf("own read: %v", err)
 	}
 }
