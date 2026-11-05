@@ -154,15 +154,17 @@ func objectPath(key string) string { return "objects/" + key }
 
 // --- objects ---
 
-// Put writes an object atomically, replacing any existing one.
+// Put writes an object atomically, replacing any existing one. It is the
+// server's own write, so it takes a source of any size the upload API
+// accepts; presigned PUTs keep the smaller object cap.
 func (f *Filesystem) Put(_ context.Context, key string, body io.Reader) error {
-	return f.write(key, body, true)
+	return f.write(key, body, true, f.partSize*MaxParts)
 }
 
 // write stages body in tmp/ and moves it into place: by rename when
 // replacing, by hard link when it must create (link fails if the name
 // exists, atomically).
-func (f *Filesystem) write(key string, body io.Reader, replace bool) error {
+func (f *Filesystem) write(key string, body io.Reader, replace bool, limit int64) error {
 	if !ValidKey(key) {
 		return ErrInvalidKey
 	}
@@ -171,11 +173,11 @@ func (f *Filesystem) write(key string, body io.Reader, replace bool) error {
 	if err != nil {
 		return fmt.Errorf("put %s: %w", key, err)
 	}
-	n, err := io.Copy(file, io.LimitReader(body, f.maxObjectSize+1))
+	n, err := io.Copy(file, io.LimitReader(body, limit+1))
 	if cerr := file.Close(); err == nil {
 		err = cerr
 	}
-	if err == nil && n > f.maxObjectSize {
+	if err == nil && n > limit {
 		err = ErrTooLarge
 	}
 	if err == nil {
@@ -284,6 +286,17 @@ func (f *Filesystem) list(_ context.Context, prefix, cursor string, limit int) (
 		return objs, objs[limit-1].Key, nil
 	}
 	return objs, "", nil
+}
+
+// Delete deletes one object; a missing object is not an error.
+func (f *Filesystem) Delete(_ context.Context, key string) error {
+	if !ValidKey(key) {
+		return ErrInvalidKey
+	}
+	if err := f.root.Remove(objectPath(key)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("delete %s: %w", key, err)
+	}
+	return nil
 }
 
 // DeletePrefix deletes every object under prefix, which must end in "/".
@@ -635,7 +648,7 @@ func (f *Filesystem) servePut(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Presigned PUTs create once and never overwrite.
-	if err := f.write(key, r.Body, false); err != nil {
+	if err := f.write(key, r.Body, false, f.maxObjectSize); err != nil {
 		writeStorageError(w, err)
 		return
 	}

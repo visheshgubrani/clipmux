@@ -32,6 +32,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/httpjson"
 	"github.com/visheshgubrani/clipmux/internal/media"
 	"github.com/visheshgubrani/clipmux/internal/storage"
+	"github.com/visheshgubrani/clipmux/internal/stores"
 	"github.com/visheshgubrani/clipmux/internal/tokens"
 )
 
@@ -49,15 +50,15 @@ var contentTypes = map[string]string{
 // Handler serves playback.
 type Handler struct {
 	pool   *pgxpool.Pool
-	store  storage.Storage
+	stores *stores.Set
 	keys   contentkey.Ring
 	Now    func() time.Time
 	Logger *slog.Logger
 }
 
 // New returns the built-in delivery handler.
-func New(pool *pgxpool.Pool, store storage.Storage, keys contentkey.Ring) *Handler {
-	return &Handler{pool: pool, store: store, keys: keys, Now: time.Now, Logger: slog.Default()}
+func New(pool *pgxpool.Pool, set *stores.Set, keys contentkey.Ring) *Handler {
+	return &Handler{pool: pool, stores: set, keys: keys, Now: time.Now, Logger: slog.Default()}
 }
 
 // Register adds the playback routes to mux.
@@ -139,12 +140,17 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, token string, si
 
 	p := r.PathValue("path")
 	current := route.CurrentOutputID.String
+	store, err := h.stores.Get(ctx, route.StorageID)
+	if err != nil {
+		h.fail(w, "storage", err)
+		return
+	}
 	switch {
 	case p == "master.m3u8" && audience == tokens.AudiencePlayback:
-		h.master(w, r, route.AssetID, current)
+		h.master(w, r, store, route.AssetID, current)
 	case p == "poster.jpg":
 		// Unpinned: it follows the current output, so it can't be immutable.
-		h.object(w, r, route.AssetID, current, "poster.jpg", route.Policy, "max-age=300")
+		h.object(w, r, store, route.AssetID, current, "poster.jpg", route.Policy, "max-age=300")
 	case audience != tokens.AudiencePlayback && !strings.HasSuffix(p, "/poster.jpg"):
 		denied(w) // a thumbnail token fetches posters only
 	default:
@@ -170,7 +176,7 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, token string, si
 			denied(w)
 			return
 		}
-		h.object(w, r, route.AssetID, outputID, rest, route.Policy, "max-age=31536000, immutable")
+		h.object(w, r, store, route.AssetID, outputID, rest, route.Policy, "max-age=31536000, immutable")
 	}
 }
 
@@ -210,8 +216,8 @@ func (h *Handler) authorize(ctx context.Context, q *db.Queries, route db.GetRout
 // master serves the current output's master with {output_id}/ in front of
 // every URI, so relative URLs resolve to .../{playback_id}/{output_id}/...
 // with the token still in the path.
-func (h *Handler) master(w http.ResponseWriter, r *http.Request, assetID, outputID string) {
-	rc, err := h.store.Get(r.Context(), "media/"+assetID+"/"+outputID+"/master.m3u8")
+func (h *Handler) master(w http.ResponseWriter, r *http.Request, store storage.Storage, assetID, outputID string) {
+	rc, err := store.Get(r.Context(), "media/"+assetID+"/"+outputID+"/master.m3u8")
 	if err != nil {
 		h.fail(w, "master", err)
 		return
@@ -259,13 +265,13 @@ func (h *Handler) key(w http.ResponseWriter, assetID string, out db.Output, vers
 
 // object streams one stored file of an output, if the grammar and the
 // extension allowlist permit it.
-func (h *Handler) object(w http.ResponseWriter, r *http.Request, assetID, outputID, rel, policy, cache string) {
+func (h *Handler) object(w http.ResponseWriter, r *http.Request, store storage.Storage, assetID, outputID, rel, policy, cache string) {
 	ctype, ok := contentTypes[path.Ext(rel)]
 	if !ok || rel == "manifest.json" || !media.ValidOutputPath(rel) {
 		notFound(w)
 		return
 	}
-	rc, err := h.store.Get(r.Context(), "media/"+assetID+"/"+outputID+"/"+rel)
+	rc, err := store.Get(r.Context(), "media/"+assetID+"/"+outputID+"/"+rel)
 	if errors.Is(err, storage.ErrNotFound) {
 		notFound(w)
 		return

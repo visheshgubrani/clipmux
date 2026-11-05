@@ -1,0 +1,36 @@
+{
+  "identities": [
+    {
+      "name": "clipmux-dev",
+      "credentials": [
+        {
+          "accessKey": "clipmuxdev",
+          "secretKey": "clipmuxdevsecret0123456789"
+        }
+      ],
+      "actions": [
+        "Admin",
+        "Read",
+        "Write",
+        "List",
+        "Tagging"
+      ]
+    },
+    {
+      "name": "cloudflare-test",
+      "credentials": [
+        {
+          "accessKey": "cftesttokenid",
+          "secretKey": "7e6a2ed91d478fd81a55c142bf6a64d23d361390b9e60faef7fca40be254eb45"
+        }
+      ],
+      "actions": [
+        "Admin",
+        "Read",
+        "Write",
+        "List",
+        "Tagging"
+      ]
+    }
+  ]
+}

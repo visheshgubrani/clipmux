@@ -18,6 +18,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/outputs"
 	"github.com/visheshgubrani/clipmux/internal/queue"
 	"github.com/visheshgubrani/clipmux/internal/storage"
+	"github.com/visheshgubrani/clipmux/internal/stores"
 	"github.com/visheshgubrani/clipmux/internal/workerapi"
 )
 
@@ -57,7 +58,7 @@ func newEnv(t *testing.T) *env {
 		t.Fatal(err)
 	}
 	q := queue.New(pool)
-	api := workerapi.New(q, workerapi.BuiltinKey(workerKey), store, contentkey.NewRing(keys), outputs.New(pool, q, store))
+	api := workerapi.New(q, workerapi.BuiltinKey(workerKey), stores.Fixed(store), contentkey.NewRing(keys), outputs.New(pool, q, stores.Fixed(store)))
 	mux.Handle("POST /worker/v1/", api.Handler())
 	for _, m := range []string{"GET", "PUT"} {
 		mux.Handle(m+" /_storage/", store.Handler())

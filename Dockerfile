@@ -31,7 +31,9 @@ RUN corepack enable
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json ./
 COPY packages/ packages/
 COPY dashboard/ dashboard/
+# Every workspace member the lockfile names, so a frozen install matches it.
 COPY e2e/web/package.json e2e/web/
+COPY worker/package.json worker/
 RUN --mount=type=cache,target=/root/.local/share/pnpm/store \
     pnpm install --frozen-lockfile --filter "@clipmux/dashboard..." \
     && mkdir -p internal/web/dist && pnpm --filter "@clipmux/dashboard..." run build

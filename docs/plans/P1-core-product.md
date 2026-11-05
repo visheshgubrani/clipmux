@@ -9,6 +9,8 @@ sandboxed encode and encrypt; signed delivery; webhooks.
 and ExoPlayer (with a separate audio rendition), and killing a worker mid-job
 recovers the job.
 
+Next: [Phase 2 — Cloudflare delivery](P2-cloudflare-delivery.md).
+
 ## Milestone M1 — walking skeleton (D004)
 
 Minimal T01–T08 reach a scripted end-to-end test:
@@ -49,4 +51,4 @@ the sources listed; do not copy code paths that assume the old data model.
 | T09b | **done** — `POST /v1/assets/{id}/reencode` (409 `job_active`, `supersede`), `POST /v1/assets/{id}/playback-ids`, `DELETE /v1/assets/{id}/playback-ids/{pid}` (200 once unpublished, else 202 `revoking`); Idempotency-Key shared with uploads. | — |
 | T10 | **done** — First boot + packaging: setup token → owner account (registration then closes), public URL + media hostname step (no API key until set), content key secret generation, secrets encrypted with an external key, sample clip through the pipeline; minimal dashboard (upload, library, playback, apps/keys); Dockerfile + compose (app + Postgres + Caddy). Full worker sandbox (rlimits, seccomp socket denial, no_new_privs, Landlock, SCHED_IDLE) proven in the image. The setup-test runner lands here (it is the sample-clip run). | vod `docs-site` structure for later docs; vod `setup/` wizard pattern (reference) |
 | T11 | **done** — `@clipmux/uploader` (32 MiB parts, resume via list-parts, ETag) and `@clipmux/player` on Video.js (D014): a token-refresh plugin that, on a 401, calls `getToken()` and swaps `/v/{old}/` for `/v/{new}/` in later requests, resuming at the same position. Check Video.js 10's status first and pick v8 or v10. | clipmux-lms `sdk/src/uploader.ts`; vod `player/src/tokenRefresh*.ts`, clipmux-lms `player/src/renewal.ts` |
-| T12 | **built; Safari, ExoPlayer and image jobs not yet run in CI** — Exit test, automated in CI: Video.js (the shipped player), hls.js, Safari (macOS runner), ExoPlayer (Android emulator) with encrypted segments and separate audio; kill-a-worker recovery on the real binary; setup test (valid `v` plays + fetches key, `t` cannot, no token refused, stored segment is not plain MP4). | — |
+| T12 | **done — Phase 1 exited 2026-11-05** (CI 42072842722, Exit test 42072842708, Exit test (Safari) 42072842730, all green at `14586f5`; merged in visheshgubrani/clipmux#2) — Exit test, automated in CI: Video.js (the shipped player), hls.js, Safari (macOS runner), ExoPlayer (Android emulator) with encrypted segments and separate audio; kill-a-worker recovery on the real binary; setup test (valid `v` plays + fetches key, `t` cannot, no token refused, stored segment is not plain MP4). | — |

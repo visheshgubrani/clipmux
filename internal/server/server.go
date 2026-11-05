@@ -18,6 +18,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/accounts"
 	"github.com/visheshgubrani/clipmux/internal/apikeys"
 	"github.com/visheshgubrani/clipmux/internal/assets"
+	"github.com/visheshgubrani/clipmux/internal/cloudflare"
 	"github.com/visheshgubrani/clipmux/internal/config"
 	"github.com/visheshgubrani/clipmux/internal/contentkey"
 	"github.com/visheshgubrani/clipmux/internal/db"
@@ -26,11 +27,13 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/manage"
 	"github.com/visheshgubrani/clipmux/internal/outputs"
 	"github.com/visheshgubrani/clipmux/internal/queue"
+	"github.com/visheshgubrani/clipmux/internal/routes"
 	"github.com/visheshgubrani/clipmux/internal/secrets"
 	"github.com/visheshgubrani/clipmux/internal/settings"
 	"github.com/visheshgubrani/clipmux/internal/setuptest"
 	"github.com/visheshgubrani/clipmux/internal/signingkeys"
 	"github.com/visheshgubrani/clipmux/internal/storage"
+	"github.com/visheshgubrani/clipmux/internal/stores"
 	"github.com/visheshgubrani/clipmux/internal/sweeper"
 	"github.com/visheshgubrani/clipmux/internal/uploads"
 	"github.com/visheshgubrani/clipmux/internal/web"
@@ -48,6 +51,10 @@ const UploadSweepInterval = 5 * time.Minute
 // RouteSyncInterval is how often pending route publications are retried;
 // commits publish inline, so this only matters after a crash or an error.
 const RouteSyncInterval = 15 * time.Second
+
+// ReconcileInterval is how often the Worker's route records are compared
+// with Postgres and repaired (docs/architecture.md, "Route records").
+const ReconcileInterval = 15 * time.Minute
 
 // WebhookInterval is how often new events fan out and due deliveries are
 // sent; an event reaches its endpoints within about this long.
@@ -201,6 +208,8 @@ type boot struct {
 // and storage.
 func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog.Logger, b boot) error {
 	pool, store, keys, box := b.pool, b.store, b.keys, b.box
+	// Each asset's store: the filesystem, or an R2/S3 config (P2-T01).
+	set := stores.New(pool, box, store)
 	acct := accounts.New(pool, db.DefaultProjectID, b.urls.PublicURL)
 	acct.TrustedProxies = cfg.TrustedProxies
 	acct.Logger = logger
@@ -215,29 +224,35 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 
 	q := queue.New(pool)
 	q.KeyVersion = keys.Current().Version
-	committer := outputs.New(pool, q, store)
+	committer := outputs.New(pool, q, set)
 	committer.Logger = logger
 	// The built-in worker's key lives only in memory and is handed to the
 	// child worker; it is never logged or stored.
 	workerKey := rand.Text()
-	worker := workerapi.New(q, workerapi.BuiltinKey(workerKey), store, keys, committer)
+	worker := workerapi.New(q, workerapi.BuiltinKey(workerKey), set, keys, committer)
 	worker.Logger = logger
-	upl := uploads.New(pool, store)
+	upl := uploads.New(pool, set)
 	upl.Logger = logger
-	playback := delivery.New(pool, store, keys)
+	playback := delivery.New(pool, set, keys)
 	playback.Logger = logger
 	if cfg.MaxUploadBytes > 0 {
 		upl.MaxSize = cfg.MaxUploadBytes
 	}
 	hooks := webhooks.New(pool, box)
 	hooks.Logger = logger
-	life := lifecycle.New(pool, store, committer)
+	life := lifecycle.New(pool, set, committer)
 	life.Logger = logger
 	mgmt := manage.New(pool, box, acct, b.urls)
 	mgmt.Logger = logger
-	tests := setuptest.New(pool, store, box, b.urls, upl, life, cfg.SelfDial)
+	tests := setuptest.New(pool, set, box, b.urls, upl, life, cfg.SelfDial)
 	tests.Logger = logger
 	mgmt.Tests = tests
+	mgmt.Life = life
+	mgmt.Cloudflare = &cloudflare.Connector{
+		Pool: pool, Stores: set, Keys: keys, URLs: b.urls, ProjectID: db.DefaultProjectID,
+		API: cfg.CloudflareAPI, R2Endpoint: cloudflare.EndpointTemplate(cfg.R2Endpoint),
+		SetupTest: func(ctx context.Context) error { _, err := tests.Queue(ctx, "urls_saved"); return err },
+	}
 	assetsAPI := assets.New(pool)
 	// The dashboard calls the integration API with the owner's session,
 	// acting as one app; integration keys never reach the management API.
@@ -251,30 +266,25 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 	defer wg.Wait()
 	ctx, stop := context.WithCancel(ctx)
 	defer stop()
-	wg.Go(func() {
-		sweeper.Every(ctx, LeaseSweepInterval, "lost_leases", func(ctx context.Context) (int, error) {
-			return q.SweepLostLeases(ctx, 100)
-		}, logger)
+	// One replica runs the background loops (an advisory lock); the others
+	// serve requests. Every loop is safe to run twice, so a handover costs
+	// duplicate work at most.
+	leader := sweeper.NewLeader(pool, logger)
+	wg.Go(func() { leader.Run(ctx) })
+	leader.Await(ctx, 2*time.Second)
+	loop := func(interval time.Duration, name string, task sweeper.Task) {
+		wg.Go(func() { sweeper.Every(ctx, interval, name, leader.Only(task), logger) })
+	}
+	loop(LeaseSweepInterval, "lost_leases", func(ctx context.Context) (int, error) { return q.SweepLostLeases(ctx, 100) })
+	loop(UploadSweepInterval, "uploads", func(ctx context.Context) (int, error) { return upl.Sweep(ctx, 500) })
+	loop(RouteSyncInterval, "routes", func(ctx context.Context) (int, error) { return committer.SyncRoutes(ctx, 1000) })
+	loop(ReconcileInterval, "route_reconciler", func(ctx context.Context) (int, error) {
+		return routes.ReconcileProject(ctx, db.New(pool), set, db.DefaultProjectID)
 	})
-	wg.Go(func() {
-		sweeper.Every(ctx, UploadSweepInterval, "uploads", func(ctx context.Context) (int, error) {
-			return upl.Sweep(ctx, 500)
-		}, logger)
-	})
-	wg.Go(func() {
-		sweeper.Every(ctx, RouteSyncInterval, "routes", func(ctx context.Context) (int, error) {
-			return committer.SyncRoutes(ctx, 1000)
-		}, logger)
-	})
-	wg.Go(func() {
-		sweeper.Every(ctx, WebhookInterval, "webhooks", hooks.Run, logger)
-	})
-	wg.Go(func() {
-		sweeper.Every(ctx, ControlJobInterval, "control_jobs", life.Run, logger)
-	})
-	wg.Go(func() {
-		sweeper.Every(ctx, SetupTestInterval, "setup_tests", tests.Run, logger)
-	})
+	loop(WebhookInterval, "webhooks", hooks.Run)
+	loop(ControlJobInterval, "control_jobs", life.Run)
+	loop(ControlJobInterval, "imports", life.RunImports)
+	loop(SetupTestInterval, "setup_tests", tests.Run)
 	// Saving the URLs re-runs the setup test: a wrong hostname should fail
 	// here, not in an app.
 	mgmt.URLsSaved = func(settings.URLs) {

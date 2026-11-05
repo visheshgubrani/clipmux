@@ -33,8 +33,10 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/httpjson"
 	"github.com/visheshgubrani/clipmux/internal/outbox"
 	"github.com/visheshgubrani/clipmux/internal/outputs"
+	"github.com/visheshgubrani/clipmux/internal/publicnet"
 	"github.com/visheshgubrani/clipmux/internal/queue"
 	"github.com/visheshgubrani/clipmux/internal/storage"
+	"github.com/visheshgubrani/clipmux/internal/stores"
 )
 
 var (
@@ -47,7 +49,7 @@ var (
 // Service changes assets and runs the control-plane jobs that delete them.
 type Service struct {
 	pool   *pgxpool.Pool
-	store  storage.Storage
+	stores *stores.Set
 	routes *outputs.Committer
 
 	// Auth accepts API keys, and the dashboard session once serve sets it.
@@ -65,18 +67,28 @@ type Service struct {
 	// LateWrites is how long after a job ends its PUT URLs may still write
 	// (15 min, plus a margin).
 	LateWrites time.Duration
+
+	// Fetch is the client imports use: public addresses only (publicnet).
+	Fetch *http.Client
+	// MaxImportSize caps an imported source, like a declared upload size.
+	MaxImportSize int64
+	// ImportTimeout bounds one fetch; ImportLease outlasts it.
+	ImportTimeout, ImportLease time.Duration
 }
 
 // New returns the lifecycle service. routes publishes route changes.
-func New(pool *pgxpool.Pool, store storage.Storage, routes *outputs.Committer) *Service {
+func New(pool *pgxpool.Pool, set *stores.Set, routes *outputs.Committer) *Service {
 	return &Service{
-		pool: pool, store: store, routes: routes, Auth: apikeys.NewAuthenticator(pool), Logger: slog.New(slog.DiscardHandler),
+		pool: pool, stores: set, routes: routes, Auth: apikeys.NewAuthenticator(pool), Logger: slog.New(slog.DiscardHandler),
 		Inline: 10 * time.Second, Lease: 2 * time.Minute, RouteRetry: 15 * time.Second, LateWrites: 16 * time.Minute,
+		Fetch: publicnet.Client(publicnet.Options{}), MaxImportSize: storage.PartSize * storage.MaxParts,
+		ImportTimeout: 6 * time.Hour, ImportLease: 6*time.Hour + 10*time.Minute,
 	}
 }
 
 // Register adds the asset lifecycle routes.
 func (s *Service) Register(mux *http.ServeMux) {
+	mux.HandleFunc("POST /v1/assets", s.handleImport)
 	mux.HandleFunc("DELETE /v1/assets/{id}", s.handleDelete)
 	mux.HandleFunc("POST /v1/assets/{id}/reencode", s.handleReencode)
 	mux.HandleFunc("POST /v1/assets/{id}/playback-ids", s.handleAddPlaybackID)
@@ -248,8 +260,12 @@ func (s *Service) runNext(ctx context.Context, only pgtype.Text) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("claim control job: %w", err)
 	}
-	if err := s.runDelete(ctx, job); err != nil {
-		return true, fmt.Errorf("delete job %s: %w", job.ID, err)
+	run := s.runDelete
+	if job.Kind == "move" {
+		run = s.runMove
+	}
+	if err := run(ctx, job); err != nil {
+		return true, fmt.Errorf("%s job %s: %w", job.Kind, job.ID, err)
 	}
 	return true, nil
 }
@@ -274,14 +290,18 @@ func (s *Service) runDelete(ctx context.Context, job db.Job) error {
 	if err != nil {
 		return err
 	}
+	store, err := s.stores.ForAsset(ctx, job.AssetID)
+	if err != nil {
+		return err
+	}
 	for _, up := range ups {
 		// Multipart staging lives outside the asset's prefixes.
-		if err := s.store.AbortMultipart(ctx, sourceKey(job.AssetID), up.MultipartID); err != nil && !errors.Is(err, storage.ErrNotFound) {
+		if err := store.AbortMultipart(ctx, sourceKey(job.AssetID), up.MultipartID); err != nil && !errors.Is(err, storage.ErrNotFound) {
 			return err
 		}
 	}
 	for _, prefix := range []string{"uploads/" + job.AssetID + "/", "media/" + job.AssetID + "/"} {
-		if err := s.store.DeletePrefix(ctx, prefix); err != nil {
+		if err := store.DeletePrefix(ctx, prefix); err != nil {
 			return err
 		}
 	}

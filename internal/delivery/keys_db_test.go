@@ -10,6 +10,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/contentkey"
 	"github.com/visheshgubrani/clipmux/internal/db/dbtest"
 	"github.com/visheshgubrani/clipmux/internal/storage"
+	"github.com/visheshgubrani/clipmux/internal/stores"
 )
 
 // A rotated content key secret applies to new outputs; a viewer mid-session
@@ -35,7 +36,7 @@ func TestDeliveryServesEveryVersionAnOutputUses(t *testing.T) {
 	v1, _ := contentkey.FromHex(1, "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f")
 	v2, _ := contentkey.FromHex(2, "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f")
 	mux := http.NewServeMux()
-	New(pool, store, contentkey.NewRing(v1, v2)).Register(mux)
+	New(pool, stores.Fixed(store), contentkey.NewRing(v1, v2)).Register(mux)
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 

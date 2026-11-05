@@ -25,6 +25,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/outputs"
 	"github.com/visheshgubrani/clipmux/internal/queue"
 	"github.com/visheshgubrani/clipmux/internal/storage"
+	"github.com/visheshgubrani/clipmux/internal/stores"
 	"github.com/visheshgubrani/clipmux/internal/uploads"
 )
 
@@ -56,8 +57,8 @@ func newRig(t *testing.T) *rig {
 	}
 	t.Cleanup(func() { store.Close() })
 	q := queue.New(pool)
-	committer := outputs.New(pool, q, store)
-	svc := lifecycle.New(pool, store, committer)
+	committer := outputs.New(pool, q, stores.Fixed(store))
+	svc := lifecycle.New(pool, stores.Fixed(store), committer)
 	keys, err := contentkey.FromHex(1, strings.Repeat("00", 32))
 	if err != nil {
 		t.Fatal(err)
@@ -65,7 +66,7 @@ func newRig(t *testing.T) *rig {
 	mux := http.NewServeMux()
 	assets.New(pool).Register(mux)
 	svc.Register(mux)
-	delivery.New(pool, store, contentkey.NewRing(keys)).Register(mux)
+	delivery.New(pool, stores.Fixed(store), contentkey.NewRing(keys)).Register(mux)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	key, _, err := apikeys.Create(ctx, pool, "prj_default", "app_dashboard", "backend",
@@ -73,7 +74,7 @@ func newRig(t *testing.T) *rig {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &rig{t: t, pool: pool, store: store, q: q, svc: svc, routes: committer, upl: uploads.New(pool, store), url: srv.URL, key: key}
+	return &rig{t: t, pool: pool, store: store, q: q, svc: svc, routes: committer, upl: uploads.New(pool, stores.Fixed(store)), url: srv.URL, key: key}
 }
 
 func (r *rig) exec(sql string, args ...any) {

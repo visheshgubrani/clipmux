@@ -17,13 +17,13 @@ UPDATE playback_ids SET status = 'revoking' WHERE asset_id = $1 AND status = 'ac
 RETURNING id;
 
 -- name: ClaimControlJob :one
--- serve runs delete jobs itself; workers never claim them. A claim leases the
+-- serve runs delete and move jobs itself; workers never claim them. A claim leases the
 -- job by pushing available_at out, so a crashed pass is picked up again.
 UPDATE jobs SET status = 'running', started_at = coalesce(started_at, now()),
     available_at = now() + make_interval(secs => sqlc.arg(lease_seconds)::double precision)
 WHERE id = (
     SELECT c.id FROM jobs c
-    WHERE c.kind = 'delete' AND c.status IN ('queued', 'running') AND c.available_at <= now()
+    WHERE c.kind IN ('delete', 'move') AND c.status IN ('queued', 'running') AND c.available_at <= now()
       AND (sqlc.narg(job_id)::text IS NULL OR c.id = sqlc.narg(job_id))
     ORDER BY c.available_at, c.id
     LIMIT 1
@@ -65,3 +65,41 @@ UPDATE playback_ids SET status = 'revoking' WHERE id = $1 AND status = 'active';
 
 -- name: CountLivePlaybackIDs :one
 SELECT count(*) FROM playback_ids WHERE asset_id = $1 AND status <> 'revoked';
+
+-- name: QueueMoveJob :one
+-- One mutating job per asset: the partial unique index refuses a second.
+INSERT INTO jobs (id, project_id, asset_id, kind, source_storage_id, target_storage_id)
+VALUES ($1, $2, $3, 'move', $4, $5)
+RETURNING *;
+
+-- name: ListAssetsToMove :many
+-- Live assets not on the target store and with no active job.
+SELECT a.id, a.storage_id FROM assets a
+WHERE a.project_id = $1 AND a.status IN ('ready', 'errored') AND a.storage_id <> sqlc.arg(target)::text
+  AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.asset_id = a.id AND j.status IN ('queued', 'running'))
+ORDER BY a.created_at, a.id;
+
+-- name: SetJobPhase :exec
+UPDATE jobs SET phase = sqlc.arg(phase), available_at = now() + make_interval(secs => sqlc.arg(delay_seconds)::double precision)
+WHERE id = sqlc.arg(id);
+
+-- name: MoveAssetStorage :execrows
+UPDATE assets SET storage_id = sqlc.arg(target)::text, version = version + 1, updated_at = now()
+WHERE id = sqlc.arg(id) AND storage_id = sqlc.arg(source)::text;
+
+-- name: ListServableOutputIDs :many
+SELECT id FROM outputs WHERE asset_id = $1 AND status IN ('committed', 'retired') ORDER BY id;
+
+-- name: MoveProgress :one
+SELECT
+    count(*) FILTER (WHERE j.status IN ('queued', 'running'))::bigint AS active,
+    count(*) FILTER (WHERE j.status = 'succeeded')::bigint AS moved,
+    count(*) FILTER (WHERE j.status = 'failed')::bigint AS failed
+FROM jobs j WHERE j.project_id = $1 AND j.kind = 'move';
+
+-- name: CountAssetsOffStore :one
+SELECT count(*) FROM assets
+WHERE project_id = $1 AND status IN ('ready', 'errored', 'processing') AND storage_id <> sqlc.arg(target)::text;
+
+-- name: CountPendingRouteSyncsForAsset :one
+SELECT count(*) FROM outbox WHERE kind = 'route_sync' AND done_at IS NULL AND asset_id = $1;

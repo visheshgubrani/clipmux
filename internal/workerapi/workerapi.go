@@ -21,6 +21,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/outputs"
 	"github.com/visheshgubrani/clipmux/internal/queue"
 	"github.com/visheshgubrani/clipmux/internal/storage"
+	"github.com/visheshgubrani/clipmux/internal/stores"
 )
 
 // ContractVersion is the job payload / output contract this server speaks.
@@ -110,15 +111,15 @@ const (
 type API struct {
 	Queue  *queue.Queue
 	Auth   WorkerAuth
-	Store  storage.Storage
+	Stores *stores.Set
 	Keys   contentkey.Ring
 	Commit *outputs.Committer
 	Logger *slog.Logger
 }
 
 // New returns the worker API.
-func New(q *queue.Queue, auth WorkerAuth, store storage.Storage, keys contentkey.Ring, commit *outputs.Committer) *API {
-	return &API{Queue: q, Auth: auth, Store: store, Keys: keys, Commit: commit, Logger: slog.Default()}
+func New(q *queue.Queue, auth WorkerAuth, set *stores.Set, keys contentkey.Ring, commit *outputs.Committer) *API {
+	return &API{Queue: q, Auth: auth, Stores: set, Keys: keys, Commit: commit, Logger: slog.Default()}
 }
 
 // Handler returns the /worker/v1 routes.
@@ -136,11 +137,15 @@ func sourceKey(assetID string) string { return "uploads/" + assetID + "/source" 
 
 // source signs a fresh download URL for an asset's source.
 func (a *API) source(ctx context.Context, assetID string) (Source, error) {
-	obj, err := a.Store.Head(ctx, sourceKey(assetID))
+	store, err := a.Stores.ForAsset(ctx, assetID)
 	if err != nil {
 		return Source{}, err
 	}
-	url, err := a.Store.PresignGet(ctx, sourceKey(assetID), sourceURLTTL)
+	obj, err := store.Head(ctx, sourceKey(assetID))
+	if err != nil {
+		return Source{}, err
+	}
+	url, err := store.PresignGet(ctx, sourceKey(assetID), sourceURLTTL)
 	return Source{URL: url, Size: obj.Size}, err
 }
 
@@ -334,9 +339,14 @@ func (a *API) sign(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp := SignResponse{Action: "continue", URLs: make(map[string]string, len(paths)), ExpiresAt: time.Now().Add(putURLTTL).UTC()}
+	store, err := a.Stores.ForAsset(r.Context(), att.AssetID)
+	if err != nil {
+		a.internal(w, "storage", err)
+		return
+	}
 	prefix := "media/" + att.AssetID + "/" + att.OutputID + "/"
 	for _, p := range paths {
-		url, err := a.Store.PresignPut(r.Context(), prefix+p, putURLTTL)
+		url, err := store.PresignPut(r.Context(), prefix+p, putURLTTL)
 		if err != nil {
 			a.internal(w, "sign put", err)
 			return

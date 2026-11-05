@@ -12,6 +12,7 @@
 !packages/
 !dashboard/
 !e2e/web/package.json
+!worker/package.json
 **/node_modules
 **/dist
 internal/web/dist/node_modules

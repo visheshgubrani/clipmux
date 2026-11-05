@@ -97,6 +97,20 @@ type Attempt struct {
 	SignedPaths     int32
 }
 
+type CloudflareConnection struct {
+	ProjectID     string
+	AccountID     string
+	ZoneID        string
+	Hostname      string
+	Bucket        string
+	ScriptName    string
+	TokenID       string
+	StorageID     string
+	WorkerVersion string
+	ConnectedAt   pgtype.Timestamptz
+	DeployedAt    pgtype.Timestamptz
+}
+
 type ContentKeySecret struct {
 	ProjectID       string
 	Version         int32
@@ -115,25 +129,28 @@ type IdempotencyKey struct {
 }
 
 type Job struct {
-	ID             string
-	ProjectID      string
-	AssetID        string
-	Kind           string
-	Status         string
-	Phase          pgtype.Text
-	Progress       pgtype.Float4
-	ProfileID      string
-	ProfileVersion int32
-	PinnedAgentID  pgtype.Text
-	LostCount      int32
-	FailedCount    int32
-	ErrorCode      pgtype.Text
-	RoutedTo       pgtype.Text
-	RouteReason    pgtype.Text
-	AvailableAt    pgtype.Timestamptz
-	CreatedAt      pgtype.Timestamptz
-	StartedAt      pgtype.Timestamptz
-	FinishedAt     pgtype.Timestamptz
+	ID              string
+	ProjectID       string
+	AssetID         string
+	Kind            string
+	Status          string
+	Phase           pgtype.Text
+	Progress        pgtype.Float4
+	ProfileID       string
+	ProfileVersion  int32
+	PinnedAgentID   pgtype.Text
+	LostCount       int32
+	FailedCount     int32
+	ErrorCode       pgtype.Text
+	RoutedTo        pgtype.Text
+	RouteReason     pgtype.Text
+	AvailableAt     pgtype.Timestamptz
+	CreatedAt       pgtype.Timestamptz
+	StartedAt       pgtype.Timestamptz
+	FinishedAt      pgtype.Timestamptz
+	SourceStorageID pgtype.Text
+	TargetStorageID pgtype.Text
+	ImportUrl       pgtype.Text
 }
 
 type Outbox struct {
@@ -201,6 +218,8 @@ type Project struct {
 	CreatedAt               pgtype.Timestamptz
 	SecretsCheck            []byte
 	UrlsConfirmedAt         pgtype.Timestamptz
+	Delivery                string
+	DeliveryStorageID       pgtype.Text
 }
 
 type SetupTest struct {

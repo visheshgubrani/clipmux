@@ -25,6 +25,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/settings"
 	"github.com/visheshgubrani/clipmux/internal/signingkeys"
 	"github.com/visheshgubrani/clipmux/internal/storage"
+	"github.com/visheshgubrani/clipmux/internal/stores"
 	"github.com/visheshgubrani/clipmux/internal/uploads"
 	"github.com/visheshgubrani/clipmux/internal/worker"
 	"github.com/visheshgubrani/clipmux/internal/workerapi"
@@ -70,14 +71,14 @@ func TestSetupTestPassesEveryCheckOnAFreshInstall(t *testing.T) {
 	secret, _ := contentkey.FromHex(1, strings.Repeat("cd", 32))
 	ring := contentkey.NewRing(secret)
 	q := queue.New(pool)
-	committer := outputs.New(pool, q, store)
-	upl := uploads.New(pool, store)
-	mux.Handle("POST /worker/v1/", workerapi.New(q, workerapi.BuiltinKey("k"), store, ring, committer).Handler())
+	committer := outputs.New(pool, q, stores.Fixed(store))
+	upl := uploads.New(pool, stores.Fixed(store))
+	mux.Handle("POST /worker/v1/", workerapi.New(q, workerapi.BuiltinKey("k"), stores.Fixed(store), ring, committer).Handler())
 	for _, m := range []string{"GET", "PUT", "OPTIONS"} {
 		mux.Handle(m+" /_storage/", store.Handler())
 	}
 	upl.Register(mux)
-	delivery.New(pool, store, ring).Register(mux)
+	delivery.New(pool, stores.Fixed(store), ring).Register(mux)
 	urls, err := settings.Load(ctx, pool, "prj_default", config.Config{PublicURL: srv.URL, MediaURL: srv.URL, URLsPinned: true})
 	if err != nil {
 		t.Fatal(err)
@@ -92,7 +93,7 @@ func TestSetupTestPassesEveryCheckOnAFreshInstall(t *testing.T) {
 	}()
 	defer func() { cancel(); <-done }()
 
-	r := New(pool, store, box, urls, upl, lifecycle.New(pool, store, committer), "")
+	r := New(pool, stores.Fixed(store), box, urls, upl, lifecycle.New(pool, stores.Fixed(store), committer), "")
 	r.EncodeTimeout = 3 * time.Minute
 	if _, err := r.Queue(ctx, "manual"); err != nil {
 		t.Fatal(err)

@@ -120,7 +120,7 @@ func TestOneActiveMutatingJobPerAsset(t *testing.T) {
 	mustExec(t, pool, `INSERT INTO jobs (id, project_id, asset_id, kind, status) VALUES ('job_1', 'prj_default', $1, 'transcode', 'running')`, asset)
 
 	// A move while the transcode runs must be refused (the API turns this into 409).
-	err := exec(t, pool, `INSERT INTO jobs (id, project_id, asset_id, kind, status) VALUES ('job_2', 'prj_default', $1, 'move', 'queued')`, asset)
+	err := exec(t, pool, `INSERT INTO jobs (id, project_id, asset_id, kind, status, source_storage_id, target_storage_id) VALUES ('job_2', 'prj_default', $1, 'move', 'queued', 'sto_default', 'sto_default')`, asset)
 	wantPgCode(t, err, pgUniqueViolation)
 
 	// Once the first job ends, the next one may queue.

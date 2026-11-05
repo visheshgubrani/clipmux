@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -23,9 +24,12 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/accounts"
 	"github.com/visheshgubrani/clipmux/internal/apikeys"
 	"github.com/visheshgubrani/clipmux/internal/assets"
+	"github.com/visheshgubrani/clipmux/internal/cloudflare"
 	"github.com/visheshgubrani/clipmux/internal/db"
 	"github.com/visheshgubrani/clipmux/internal/httpjson"
 	"github.com/visheshgubrani/clipmux/internal/ids"
+	"github.com/visheshgubrani/clipmux/internal/lifecycle"
+	"github.com/visheshgubrani/clipmux/internal/routes"
 	"github.com/visheshgubrani/clipmux/internal/secrets"
 	"github.com/visheshgubrani/clipmux/internal/settings"
 	"github.com/visheshgubrani/clipmux/internal/setuptest"
@@ -50,7 +54,11 @@ type API struct {
 	// URLsSaved runs after the owner saves new URLs (the setup test).
 	URLsSaved func(settings.URLs)
 	// Tests runs setup tests; nil leaves their routes answering 404.
-	Tests  *setuptest.Runner
+	Tests *setuptest.Runner
+	// Cloudflare connects Worker delivery; nil leaves its routes 404.
+	Cloudflare *cloudflare.Connector
+	// Life queues library moves; nil leaves their routes 404.
+	Life   *lifecycle.Service
 	Now    func() time.Time
 	Logger *slog.Logger
 }
@@ -105,6 +113,89 @@ func (m *API) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/assets/{id}/preview-token", m.owned(m.previewToken))
 	mux.HandleFunc("POST /v1/setup-test", m.owned(m.startSetupTest))
 	mux.HandleFunc("GET /v1/setup-test/latest", m.owned(m.latestSetupTest))
+	mux.HandleFunc("GET /v1/cloudflare", m.owned(m.cloudflareStatus))
+	mux.HandleFunc("POST /v1/cloudflare/connect", m.owned(m.connectCloudflare))
+	mux.HandleFunc("GET /v1/storage/moves", m.owned(m.moveProgress))
+	mux.HandleFunc("POST /v1/storage/moves", m.owned(m.moveLibrary))
+}
+
+// moveProgress reports the library move: assets still off the default store
+// (they still need this server to play) and the move jobs by state.
+func (m *API) moveProgress(w http.ResponseWriter, r *http.Request, o accounts.Owner) error {
+	if m.Life == nil {
+		return errNotFound
+	}
+	q := db.New(m.pool)
+	def, err := q.GetDefaultStorage(r.Context(), o.ProjectID)
+	if err != nil {
+		return err
+	}
+	off, err := q.CountAssetsOffStore(r.Context(), db.CountAssetsOffStoreParams{ProjectID: o.ProjectID, Target: def.ID})
+	if err != nil {
+		return err
+	}
+	p, err := q.MoveProgress(r.Context(), o.ProjectID)
+	if err != nil {
+		return err
+	}
+	httpjson.Write(w, http.StatusOK, map[string]any{
+		"default_storage_id": def.ID, "default_kind": def.Kind, "not_on_default": off,
+		"active": p.Active, "moved": p.Moved, "failed": p.Failed,
+	})
+	return nil
+}
+
+// moveLibrary queues a move to the default store for every asset elsewhere.
+func (m *API) moveLibrary(w http.ResponseWriter, r *http.Request, o accounts.Owner) error {
+	if m.Life == nil {
+		return errNotFound
+	}
+	def, err := db.New(m.pool).GetDefaultStorage(r.Context(), o.ProjectID)
+	if err != nil {
+		return err
+	}
+	n, err := m.Life.MoveLibrary(r.Context(), o.ProjectID, def.ID)
+	if err != nil {
+		return err
+	}
+	httpjson.Write(w, http.StatusAccepted, map[string]any{"queued": n, "target_storage_id": def.ID})
+	return nil
+}
+
+// cloudflareStatus reports the Cloudflare connection, whether this build
+// carries a newer Worker, and whether R2 still accepts the credentials.
+func (m *API) cloudflareStatus(w http.ResponseWriter, r *http.Request, _ accounts.Owner) error {
+	if m.Cloudflare == nil {
+		return errNotFound
+	}
+	st, err := m.Cloudflare.Status(r.Context())
+	if err != nil {
+		return err
+	}
+	httpjson.Write(w, http.StatusOK, st)
+	return nil
+}
+
+// connectCloudflare runs Connect Cloudflare with a token the owner pastes.
+// The token is used for this request only; every step's result comes back,
+// and a failed step can be fixed and connected again.
+func (m *API) connectCloudflare(w http.ResponseWriter, r *http.Request, _ accounts.Owner) error {
+	if m.Cloudflare == nil {
+		return errNotFound
+	}
+	var req cloudflare.Request
+	if err := decode(w, r, &req); err != nil {
+		return err
+	}
+	res, err := m.Cloudflare.Connect(r.Context(), req)
+	if errors.Is(err, cloudflare.ErrInvalid) {
+		return httpjson.Fail(http.StatusBadRequest, "invalid_request", strings.TrimPrefix(err.Error(), cloudflare.ErrInvalid.Error()+": "))
+	}
+	if err != nil {
+		return err
+	}
+	httpjson.Write(w, http.StatusOK, res)
+	return nil
 }
 
 // startSetupTest queues a setup test (or returns the one already queued).
@@ -269,8 +360,18 @@ func isUniqueViolation(err error) bool {
 
 func (m *API) setDisabled(disabled bool) ownedHandler {
 	return func(w http.ResponseWriter, r *http.Request, o accounts.Owner) error {
+		var app db.App
+		err := pgx.BeginFunc(r.Context(), m.pool, func(tx pgx.Tx) error {
+			var err error
+			q := db.New(tx)
+			if app, err = q.SetAppDisabled(r.Context(), db.SetAppDisabledParams{ProjectID: o.ProjectID, ID: r.PathValue("id"), Disabled: disabled}); err != nil {
+				return err
+			}
+			// Delivery refuses a disabled app's IDs; the Worker learns it when
+			// their routes are unpublished (and republished on enable).
+			return routes.QueueAppRefresh(r.Context(), q, o.ProjectID, app.ID)
+		})
 		q := db.New(m.pool)
-		app, err := q.SetAppDisabled(r.Context(), db.SetAppDisabledParams{ProjectID: o.ProjectID, ID: r.PathValue("id"), Disabled: disabled})
 		if errors.Is(err, pgx.ErrNoRows) {
 			if a, gerr := q.GetApp(r.Context(), db.GetAppParams{ProjectID: o.ProjectID, ID: r.PathValue("id")}); gerr == nil && a.IsBuiltin {
 				return httpjson.Fail(http.StatusConflict, "builtin_app", "the Dashboard app can't be disabled")
@@ -423,7 +524,16 @@ func (m *API) createSigningKey(w http.ResponseWriter, r *http.Request, o account
 }
 
 func (m *API) revokeSigningKey(w http.ResponseWriter, r *http.Request, o accounts.Owner) error {
-	n, err := db.New(m.pool).RevokeSigningKey(r.Context(), db.RevokeSigningKeyParams{ProjectID: o.ProjectID, ID: r.PathValue("id")})
+	var n int64
+	err := pgx.BeginFunc(r.Context(), m.pool, func(tx pgx.Tx) error {
+		q := db.New(tx)
+		var err error
+		if n, err = q.RevokeSigningKey(r.Context(), db.RevokeSigningKeyParams{ProjectID: o.ProjectID, ID: r.PathValue("id")}); err != nil || n == 0 {
+			return err
+		}
+		// Revocation reaches the Worker through _keys.json (60 s cache).
+		return routes.QueueKeys(r.Context(), q, o.ProjectID)
+	})
 	return noContent(w, n, err)
 }
 

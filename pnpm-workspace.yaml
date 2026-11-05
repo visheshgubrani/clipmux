@@ -2,3 +2,8 @@ packages:
   - packages/*
   - e2e/web
   - dashboard
+  - worker
+
+allowBuilds:
+  esbuild: false
+  workerd: false

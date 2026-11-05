@@ -5,11 +5,9 @@ when you introduce or discover it; remove it when it is closed.
 
 ## Bootstrap (2026-11-05)
 
-- Phase 1 is feature-complete. The exit test's Go and Chromium suites pass
-  locally; the Safari (`exit-safari.yml`) and ExoPlayer (`exit.yml`
-  android job) runs and the CI image job have not run yet, and Phase 1 exits
-  when they are green. iPhone and AirPlay are checked by hand only; Firefox
-  isn't in CI. The dashboard is minimal: no jobs or workers pages, no
+- Phase 1 has exited (D040): the Go, Chromium, Safari and ExoPlayer exit
+  suites and the image job pass in CI. iPhone and AirPlay are checked by hand
+  only; Firefox isn't in CI. The dashboard is minimal: no jobs or workers pages, no
   share links, no playback-ID management in the UI, and a sample preview
   that waits for Play rather than autoplaying.
 - Superseded and failed re-encodes leave their writing outputs and files in
@@ -49,9 +47,12 @@ when you introduce or discover it; remove it when it is closed.
   not reserved up front; a full disk fails the part write. Abandoned
   multipart uploads are cleaned up by the upload sweeper (T05), and `tmp/`
   leftovers from a crash are not swept yet.
-- Every asset uses the one filesystem store; `storage_configs` rows are not
-  read yet (per-asset storage arrives with R2 in Phase 2).
-- Sweepers assume one `serve` replica (no `pg_try_advisory_lock` leader yet).
+- Storage configs other than the filesystem can be added only from code
+  (`stores.AddS3`) until Connect Cloudflare (P2-T04); there is no API or
+  dashboard form for a generic S3 bucket, and no way to remove a config or
+  rotate its credentials.
+- One replica runs the background loops (advisory-lock leader, D035), but
+  the sign-in limiter, setup token and storage signer are per process.
   Saving new URLs updates the storage signer of the serve that saved them
   only; another replica keeps the old public URL until it restarts.
 - The owner can't turn on TOTP yet. The sign-in limiter and the setup token
@@ -69,6 +70,18 @@ when you introduce or discover it; remove it when it is closed.
   create-key, create-signing-key and create-webhook.
 - The image is ~575 MB and built from source on a cache miss (~20 min); it
   isn't published, so every install builds it until launch.
+- Phase 2's exit test passes on the binary with a fake Cloudflare API and
+  the Worker's logic on Node in front of S3 (D041). Still open before the
+  phase exits on Cloudflare: the setup test through the Worker, the Chromium
+  suites against the Worker hostname, and a run on a real test zone.
+- Connect Cloudflare is tested against a fake API, not a real account: the
+  Workers Paid check (plan name containing "workers" and "paid"), the script
+  upload format and the custom-domain call need a run against a real test
+  zone before the Phase 2 exit (D037). The manual wrangler path has no CLI
+  for adding R2 storage, switching delivery or printing `CONTENT_KEYS`.
+- Disconnecting Cloudflare (back to built-in delivery) has no endpoint yet.
+- The content key secret can't be rotated; when it can, rotation must
+  redeploy the Worker's ring through Connect before new outputs use it.
 - No captions, chapters or transcripts. The LMS depends on them, so they gate
   the LMS migration (plans/lms-migration.md); OSS-V2 leaves them as an open
   roadmap decision.
@@ -82,8 +95,6 @@ when you introduce or discover it; remove it when it is closed.
 - When captions, storyboards and viewer analytics enter the roadmap.
 - Confirm defaults: 7-day max token lifetime, retry budgets 5/3, 15-minute
   reconciler, per-output keys derived from one secret.
-- Audit leftovers: leader election with `pg_try_advisory_lock` for multiple
-  replicas; shared Go/Worker test vectors; where the `vid` claim is logged; SSRF
-  hardening (pin resolved IP, block IPv6 ULA and IPv4-mapped); timeouts for jobs
+- Audit leftovers: shared Go/Worker test vectors; where the `vid` claim is logged; timeouts for jobs
   pinned to an agent that never returns; route caching in the built-in handler;
   backup docs for Postgres, the secrets-encryption key and the content key secret.

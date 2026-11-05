@@ -45,12 +45,12 @@ UPDATE jobs SET status = 'running', started_at = coalesce(started_at, now()),
     available_at = now() + make_interval(secs => $1::double precision)
 WHERE id = (
     SELECT c.id FROM jobs c
-    WHERE c.kind = 'delete' AND c.status IN ('queued', 'running') AND c.available_at <= now()
+    WHERE c.kind IN ('delete', 'move') AND c.status IN ('queued', 'running') AND c.available_at <= now()
       AND ($2::text IS NULL OR c.id = $2)
     ORDER BY c.available_at, c.id
     LIMIT 1
     FOR UPDATE SKIP LOCKED)
-RETURNING id, project_id, asset_id, kind, status, phase, progress, profile_id, profile_version, pinned_agent_id, lost_count, failed_count, error_code, routed_to, route_reason, available_at, created_at, started_at, finished_at
+RETURNING id, project_id, asset_id, kind, status, phase, progress, profile_id, profile_version, pinned_agent_id, lost_count, failed_count, error_code, routed_to, route_reason, available_at, created_at, started_at, finished_at, source_storage_id, target_storage_id, import_url
 `
 
 type ClaimControlJobParams struct {
@@ -58,7 +58,7 @@ type ClaimControlJobParams struct {
 	JobID        pgtype.Text
 }
 
-// serve runs delete jobs itself; workers never claim them. A claim leases the
+// serve runs delete and move jobs itself; workers never claim them. A claim leases the
 // job by pushing available_at out, so a crashed pass is picked up again.
 func (q *Queries) ClaimControlJob(ctx context.Context, arg ClaimControlJobParams) (Job, error) {
 	row := q.db.QueryRow(ctx, claimControlJob, arg.LeaseSeconds, arg.JobID)
@@ -83,8 +83,28 @@ func (q *Queries) ClaimControlJob(ctx context.Context, arg ClaimControlJobParams
 		&i.CreatedAt,
 		&i.StartedAt,
 		&i.FinishedAt,
+		&i.SourceStorageID,
+		&i.TargetStorageID,
+		&i.ImportUrl,
 	)
 	return i, err
+}
+
+const countAssetsOffStore = `-- name: CountAssetsOffStore :one
+SELECT count(*) FROM assets
+WHERE project_id = $1 AND status IN ('ready', 'errored', 'processing') AND storage_id <> $2::text
+`
+
+type CountAssetsOffStoreParams struct {
+	ProjectID string
+	Target    string
+}
+
+func (q *Queries) CountAssetsOffStore(ctx context.Context, arg CountAssetsOffStoreParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countAssetsOffStore, arg.ProjectID, arg.Target)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
 }
 
 const countLivePlaybackIDs = `-- name: CountLivePlaybackIDs :one
@@ -93,6 +113,17 @@ SELECT count(*) FROM playback_ids WHERE asset_id = $1 AND status <> 'revoked'
 
 func (q *Queries) CountLivePlaybackIDs(ctx context.Context, assetID string) (int64, error) {
 	row := q.db.QueryRow(ctx, countLivePlaybackIDs, assetID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countPendingRouteSyncsForAsset = `-- name: CountPendingRouteSyncsForAsset :one
+SELECT count(*) FROM outbox WHERE kind = 'route_sync' AND done_at IS NULL AND asset_id = $1
+`
+
+func (q *Queries) CountPendingRouteSyncsForAsset(ctx context.Context, assetID pgtype.Text) (int64, error) {
+	row := q.db.QueryRow(ctx, countPendingRouteSyncsForAsset, assetID)
 	var count int64
 	err := row.Scan(&count)
 	return count, err
@@ -114,7 +145,7 @@ func (q *Queries) DeferJob(ctx context.Context, arg DeferJobParams) error {
 }
 
 const getActiveJobForAsset = `-- name: GetActiveJobForAsset :one
-SELECT id, project_id, asset_id, kind, status, phase, progress, profile_id, profile_version, pinned_agent_id, lost_count, failed_count, error_code, routed_to, route_reason, available_at, created_at, started_at, finished_at FROM jobs WHERE asset_id = $1 AND status IN ('queued', 'running')
+SELECT id, project_id, asset_id, kind, status, phase, progress, profile_id, profile_version, pinned_agent_id, lost_count, failed_count, error_code, routed_to, route_reason, available_at, created_at, started_at, finished_at, source_storage_id, target_storage_id, import_url FROM jobs WHERE asset_id = $1 AND status IN ('queued', 'running')
 `
 
 func (q *Queries) GetActiveJobForAsset(ctx context.Context, assetID string) (Job, error) {
@@ -140,6 +171,9 @@ func (q *Queries) GetActiveJobForAsset(ctx context.Context, assetID string) (Job
 		&i.CreatedAt,
 		&i.StartedAt,
 		&i.FinishedAt,
+		&i.SourceStorageID,
+		&i.TargetStorageID,
+		&i.ImportUrl,
 	)
 	return i, err
 }
@@ -191,6 +225,68 @@ func (q *Queries) LateWritesUntil(ctx context.Context, arg LateWritesUntilParams
 	var i LateWritesUntilRow
 	err := row.Scan(&i.Pending, &i.WaitSeconds)
 	return i, err
+}
+
+const listAssetsToMove = `-- name: ListAssetsToMove :many
+SELECT a.id, a.storage_id FROM assets a
+WHERE a.project_id = $1 AND a.status IN ('ready', 'errored') AND a.storage_id <> $2::text
+  AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.asset_id = a.id AND j.status IN ('queued', 'running'))
+ORDER BY a.created_at, a.id
+`
+
+type ListAssetsToMoveParams struct {
+	ProjectID string
+	Target    string
+}
+
+type ListAssetsToMoveRow struct {
+	ID        string
+	StorageID string
+}
+
+// Live assets not on the target store and with no active job.
+func (q *Queries) ListAssetsToMove(ctx context.Context, arg ListAssetsToMoveParams) ([]ListAssetsToMoveRow, error) {
+	rows, err := q.db.Query(ctx, listAssetsToMove, arg.ProjectID, arg.Target)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListAssetsToMoveRow{}
+	for rows.Next() {
+		var i ListAssetsToMoveRow
+		if err := rows.Scan(&i.ID, &i.StorageID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listServableOutputIDs = `-- name: ListServableOutputIDs :many
+SELECT id FROM outputs WHERE asset_id = $1 AND status IN ('committed', 'retired') ORDER BY id
+`
+
+func (q *Queries) ListServableOutputIDs(ctx context.Context, assetID string) ([]string, error) {
+	rows, err := q.db.Query(ctx, listServableOutputIDs, assetID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listUploadsForAsset = `-- name: ListUploadsForAsset :many
@@ -358,4 +454,111 @@ func (q *Queries) MarkPlaybackIDsRevoking(ctx context.Context, assetID string) (
 		return nil, err
 	}
 	return items, nil
+}
+
+const moveAssetStorage = `-- name: MoveAssetStorage :execrows
+UPDATE assets SET storage_id = $1::text, version = version + 1, updated_at = now()
+WHERE id = $2 AND storage_id = $3::text
+`
+
+type MoveAssetStorageParams struct {
+	Target string
+	ID     string
+	Source string
+}
+
+func (q *Queries) MoveAssetStorage(ctx context.Context, arg MoveAssetStorageParams) (int64, error) {
+	result, err := q.db.Exec(ctx, moveAssetStorage, arg.Target, arg.ID, arg.Source)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const moveProgress = `-- name: MoveProgress :one
+SELECT
+    count(*) FILTER (WHERE j.status IN ('queued', 'running'))::bigint AS active,
+    count(*) FILTER (WHERE j.status = 'succeeded')::bigint AS moved,
+    count(*) FILTER (WHERE j.status = 'failed')::bigint AS failed
+FROM jobs j WHERE j.project_id = $1 AND j.kind = 'move'
+`
+
+type MoveProgressRow struct {
+	Active int64
+	Moved  int64
+	Failed int64
+}
+
+func (q *Queries) MoveProgress(ctx context.Context, projectID string) (MoveProgressRow, error) {
+	row := q.db.QueryRow(ctx, moveProgress, projectID)
+	var i MoveProgressRow
+	err := row.Scan(&i.Active, &i.Moved, &i.Failed)
+	return i, err
+}
+
+const queueMoveJob = `-- name: QueueMoveJob :one
+INSERT INTO jobs (id, project_id, asset_id, kind, source_storage_id, target_storage_id)
+VALUES ($1, $2, $3, 'move', $4, $5)
+RETURNING id, project_id, asset_id, kind, status, phase, progress, profile_id, profile_version, pinned_agent_id, lost_count, failed_count, error_code, routed_to, route_reason, available_at, created_at, started_at, finished_at, source_storage_id, target_storage_id, import_url
+`
+
+type QueueMoveJobParams struct {
+	ID              string
+	ProjectID       string
+	AssetID         string
+	SourceStorageID pgtype.Text
+	TargetStorageID pgtype.Text
+}
+
+// One mutating job per asset: the partial unique index refuses a second.
+func (q *Queries) QueueMoveJob(ctx context.Context, arg QueueMoveJobParams) (Job, error) {
+	row := q.db.QueryRow(ctx, queueMoveJob,
+		arg.ID,
+		arg.ProjectID,
+		arg.AssetID,
+		arg.SourceStorageID,
+		arg.TargetStorageID,
+	)
+	var i Job
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.AssetID,
+		&i.Kind,
+		&i.Status,
+		&i.Phase,
+		&i.Progress,
+		&i.ProfileID,
+		&i.ProfileVersion,
+		&i.PinnedAgentID,
+		&i.LostCount,
+		&i.FailedCount,
+		&i.ErrorCode,
+		&i.RoutedTo,
+		&i.RouteReason,
+		&i.AvailableAt,
+		&i.CreatedAt,
+		&i.StartedAt,
+		&i.FinishedAt,
+		&i.SourceStorageID,
+		&i.TargetStorageID,
+		&i.ImportUrl,
+	)
+	return i, err
+}
+
+const setJobPhase = `-- name: SetJobPhase :exec
+UPDATE jobs SET phase = $1, available_at = now() + make_interval(secs => $2::double precision)
+WHERE id = $3
+`
+
+type SetJobPhaseParams struct {
+	Phase        pgtype.Text
+	DelaySeconds float64
+	ID           string
+}
+
+func (q *Queries) SetJobPhase(ctx context.Context, arg SetJobPhaseParams) error {
+	_, err := q.db.Exec(ctx, setJobPhase, arg.Phase, arg.DelaySeconds, arg.ID)
+	return err
 }

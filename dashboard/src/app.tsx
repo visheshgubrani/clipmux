@@ -3,6 +3,7 @@ import { BrowserRouter, Link, Navigate, NavLink, Route, Routes, useNavigate } fr
 import { api, type Setup } from './api.ts'
 import { AppDetail, Apps } from './pages/apps.tsx'
 import { AssetPage } from './pages/asset.tsx'
+import { Delivery } from './pages/delivery.tsx'
 import { Library } from './pages/library.tsx'
 import { Login } from './pages/login.tsx'
 import { SetupWizard } from './pages/setup.tsx'
@@ -41,6 +42,7 @@ export function App() {
               <Route path="/assets/:id" element={<AssetPage />} />
               <Route path="/apps" element={<Apps />} />
               <Route path="/apps/:id" element={<AppDetail keysAllowed={setup.keys_allowed} />} />
+              <Route path="/delivery" element={<Delivery />} />
             </>
           ) : (
             <Route path="*" element={<Navigate to={setup.owner_exists ? '/login' : '/setup'} />} />
@@ -69,6 +71,9 @@ function Nav({ email, onSignOut }: { email: string; onSignOut: () => void }) {
         </NavLink>
         <NavLink to="/apps" className={link}>
           Apps
+        </NavLink>
+        <NavLink to="/delivery" className={link}>
+          Delivery
         </NavLink>
         <NavLink to="/setup" className={link}>
           Setup

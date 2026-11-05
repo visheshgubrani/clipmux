@@ -25,6 +25,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/settings"
 	"github.com/visheshgubrani/clipmux/internal/signingkeys"
 	"github.com/visheshgubrani/clipmux/internal/storage"
+	"github.com/visheshgubrani/clipmux/internal/stores"
 	"github.com/visheshgubrani/clipmux/internal/tokens"
 	"github.com/visheshgubrani/clipmux/internal/uploads"
 )
@@ -59,13 +60,13 @@ func newRig(t *testing.T, cfg config.Config) *rig {
 	t.Cleanup(func() { store.Close() })
 	acct := accounts.New(pool, "prj_default", urls.PublicURL)
 	m := manage.New(pool, box, acct, urls)
-	upl := uploads.New(pool, store)
+	upl := uploads.New(pool, stores.Fixed(store))
 	upl.Auth.Session = m.ActAsApp
 	a := assets.New(pool)
 	a.Auth.Session = m.ActAsApp
 	keys, _ := contentkey.FromHex(1, strings.Repeat("00", 32))
 	mux := http.NewServeMux()
-	for _, reg := range []interface{ Register(*http.ServeMux) }{acct, m, upl, a, delivery.New(pool, store, contentkey.NewRing(keys))} {
+	for _, reg := range []interface{ Register(*http.ServeMux) }{acct, m, upl, a, delivery.New(pool, stores.Fixed(store), contentkey.NewRing(keys))} {
 		reg.Register(mux)
 	}
 	srv := httptest.NewServer(mux)

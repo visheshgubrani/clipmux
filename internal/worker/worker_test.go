@@ -141,6 +141,22 @@ func TestPutTreatsAlreadyWrittenAsDone(t *testing.T) {
 	}
 }
 
+// R2 and S3 sign If-None-Match: * into a create-once URL, so a PUT without
+// the header is refused there (D016).
+func TestPutSendsTheCreateOnceHeader(t *testing.T) {
+	var got string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		got = r.Header.Get("If-None-Match")
+	}))
+	defer srv.Close()
+	f := filepath.Join(t.TempDir(), "seg")
+	_ = os.WriteFile(f, []byte("data"), 0o600)
+	if err := testWorker(srv.URL).putFile(context.Background(), srv.URL+"/x", f); err != nil || got != "*" {
+		t.Fatalf("putFile = %v, If-None-Match %q; want *", err, got)
+	}
+}
+
 // Once the owner sets a public URL, signed storage URLs point at it. The
 // built-in worker reaches serve over loopback instead, so it never depends
 // on the public hostname routing back to this machine (a hairpin).

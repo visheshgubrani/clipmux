@@ -7,6 +7,7 @@
 *.out
 node_modules/
 packages/*/dist/
+worker/dist/
 e2e/web/dist/
 e2e/web/test-results/
 e2e/web/playwright-report/

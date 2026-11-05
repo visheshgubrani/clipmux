@@ -49,7 +49,7 @@ func (q *Queries) CreateSigningKey(ctx context.Context, arg CreateSigningKeyPara
 const getRoute = `-- name: GetRoute :one
 
 SELECT p.id AS playback_id, p.policy, p.status AS playback_status,
-       a.id AS asset_id, a.app_id, a.status AS asset_status, a.current_output_id,
+       a.id AS asset_id, a.app_id, a.status AS asset_status, a.current_output_id, a.storage_id,
        pr.id AS project_id, pr.max_token_lifetime_seconds,
        (ap.disabled_at IS NOT NULL)::boolean AS app_disabled
 FROM playback_ids p
@@ -67,6 +67,7 @@ type GetRouteRow struct {
 	AppID                   string
 	AssetStatus             string
 	CurrentOutputID         pgtype.Text
+	StorageID               string
 	ProjectID               string
 	MaxTokenLifetimeSeconds int32
 	AppDisabled             bool
@@ -85,6 +86,7 @@ func (q *Queries) GetRoute(ctx context.Context, id string) (GetRouteRow, error) 
 		&i.AppID,
 		&i.AssetStatus,
 		&i.CurrentOutputID,
+		&i.StorageID,
 		&i.ProjectID,
 		&i.MaxTokenLifetimeSeconds,
 		&i.AppDisabled,

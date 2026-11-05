@@ -76,6 +76,8 @@ type Storage interface {
 	// List returns objects whose keys start with prefix, in key order, a page
 	// at a time. next is empty on the last page.
 	List(ctx context.Context, prefix, cursor string) (objs []Object, next string, err error)
+	// Delete deletes one object; a missing object is not an error.
+	Delete(ctx context.Context, key string) error
 	// DeletePrefix deletes every object under prefix, which must end in "/".
 	DeletePrefix(ctx context.Context, prefix string) error
 }

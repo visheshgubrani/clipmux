@@ -16,6 +16,7 @@ import (
 
 	"github.com/visheshgubrani/clipmux/internal/db"
 	"github.com/visheshgubrani/clipmux/internal/ids"
+	"github.com/visheshgubrani/clipmux/internal/routes"
 	"github.com/visheshgubrani/clipmux/internal/secrets"
 	"github.com/visheshgubrani/clipmux/internal/tokens"
 )
@@ -30,9 +31,14 @@ func CreateForApp(ctx context.Context, conn db.DBTX, projectID, appID string) (s
 		return "", "", err
 	}
 	kid := ids.New(ids.SigningKey)
-	if _, err := db.New(conn).CreateSigningKey(ctx, db.CreateSigningKeyParams{
+	q := db.New(conn)
+	if _, err := q.CreateSigningKey(ctx, db.CreateSigningKeyParams{
 		ID: kid, ProjectID: projectID, AppID: pgtype.Text{String: appID, Valid: true}, PublicKeyPem: publicPEM,
 	}); err != nil {
+		return "", "", fmt.Errorf("create signing key: %w", err)
+	}
+	// The Worker learns of the key through _keys.json.
+	if err := routes.QueueKeys(ctx, q, projectID); err != nil {
 		return "", "", fmt.Errorf("create signing key: %w", err)
 	}
 	return kid, privatePEM, nil
@@ -57,7 +63,7 @@ func EnsureInternal(ctx context.Context, conn db.DBTX, box *secrets.Box, project
 	if err != nil {
 		return fmt.Errorf("create internal signing key: %w", err)
 	}
-	return nil
+	return routes.QueueKeys(ctx, q, projectID)
 }
 
 // Signer signs playback tokens with one key.

@@ -30,6 +30,7 @@ refused (`403 cross_origin`).
 | `GET /v1/uploads/{id}/parts` | upload token | `{parts: [{part_number, etag, size}]}` — what storage holds, for resuming |
 | `POST /v1/uploads/{id}/complete` | upload token | `{parts: [{part_number, etag}]}` → the asset, `processing` |
 | `POST /v1/uploads/{id}/cancel` | upload token or `uploads:write` | the asset becomes `errored` / `upload_cancelled` |
+| `POST /v1/assets` | `assets:write` | `{url, playback_policy?, passthrough?}` → `201` the asset, `processing`; serve fetches the public http(s) URL and transcodes it. `400 import_url_refused` for a non-public or credentialed URL; a fetch that fails ends `errored` with `import_url_refused`, `import_failed` or `import_too_large` |
 | `GET /v1/assets/{id}` | `assets:read` | the asset (below) |
 | `GET /v1/assets?passthrough=` | `assets:read` | the app's assets with that reference, newest first |
 | `GET /v1/assets?updated_since=&cursor=&limit=` | `assets:read` | every change since an RFC 3339 time, oldest first, deleted included, ≤ 100 per page, `next_cursor` |
@@ -103,3 +104,7 @@ means stop; `404` means the ID is unknown or revoked.
 | `GET`/`POST /v1/apps/{id}/webhook-endpoints` · `DELETE /v1/webhook-endpoints/{id}` | `secret` in the create response only |
 | `GET /v1/library?app_id=&status=&cursor=&limit=` | every app's assets, newest first |
 | `POST /v1/assets/{id}/preview-token` | a one-hour `v` token signed with the server's internal key: `{playback_id, token, url, expires_at}` |
+| `GET /v1/cloudflare` | `{connected, hostname, bucket, account_id, worker_version, current_version, needs_redeploy, storage_ok}` |
+| `POST /v1/cloudflare/connect` | `{token, hostname, bucket?, account_id?}` → `{connected, steps: [{name, ok, detail}]}`; runs Connect Cloudflare, stopping at the first failed step (each is safe to repeat). The token is used for this request only |
+| `GET /v1/storage/moves` | `{default_storage_id, default_kind, not_on_default, active, moved, failed}`: assets not on the default store still play through this server |
+| `POST /v1/storage/moves` | queues a `move` job to the default store for every live asset elsewhere with no active job → `202 {queued, target_storage_id}` |
