@@ -120,35 +120,101 @@ type ToolVersions struct {
 	Packager string `json:"packager"`
 }
 
-var keyLine = regexp.MustCompile(`^#EXT-X-KEY:METHOD=([A-Z0-9-]+),URI="([^"]*)"`)
-var mapLine = regexp.MustCompile(`^#EXT-X-MAP:URI="([^"]*)"`)
 var segmentName = regexp.MustCompile(`^seg_[0-9]{5,6}\.m4s$`)
+var attrName = regexp.MustCompile(`^[A-Z0-9-]+$`)
+var unsignedInt = regexp.MustCompile(`^[0-9]{1,9}$`)
+var extinf = regexp.MustCompile(`^#EXTINF:[0-9]{1,6}(\.[0-9]{1,6})?,$`)
+var hexIV = regexp.MustCompile(`^0[xX][0-9A-Fa-f]{32}$`)
 
-// CheckMediaPlaylist rejects a media playlist that isn't encrypted from its
-// first segment with METHOD=AES-128 and the expected key URI, or that
-// references anything but init.mp4 and seg_NNNNN.m4s in its own directory.
-// It returns the segment names. Workers run it after packaging; the server
-// runs it again at commit, because worker output is untrusted.
+// attribute is one value of an HLS attribute list.
+type attribute struct {
+	value  string
+	quoted bool
+}
+
+// parseAttributes parses an HLS attribute list (RFC 8216 section 4.2)
+// strictly: upper-case names, no duplicates, quoted strings without quotes
+// inside, unquoted values without commas, and nothing left over. Lenient
+// parsing is how a hostile playlist smuggles a second URI past a check.
+func parseAttributes(list string) (map[string]attribute, error) {
+	out := map[string]attribute{}
+	for rest := list; ; {
+		name, after, ok := strings.Cut(rest, "=")
+		if !ok || !attrName.MatchString(name) {
+			return nil, fmt.Errorf("bad attribute name in %q", list)
+		}
+		if _, dup := out[name]; dup {
+			return nil, fmt.Errorf("duplicate attribute %s", name)
+		}
+		var a attribute
+		if strings.HasPrefix(after, `"`) {
+			end := strings.IndexByte(after[1:], '"')
+			if end < 0 {
+				return nil, fmt.Errorf("unterminated string in %q", list)
+			}
+			a = attribute{value: after[1 : end+1], quoted: true}
+			after = after[end+2:]
+		} else {
+			v, tail, more := strings.Cut(after, ",")
+			if v == "" || strings.ContainsAny(v, `"`) {
+				return nil, fmt.Errorf("bad value for %s", name)
+			}
+			a = attribute{value: v}
+			after = ""
+			if more {
+				after = "," + tail
+			}
+		}
+		out[name] = a
+		if after == "" {
+			return out, nil
+		}
+		if !strings.HasPrefix(after, ",") || after == "," {
+			return nil, fmt.Errorf("trailing data in %q", list)
+		}
+		rest = after[1:]
+	}
+}
+
+// CheckMediaPlaylist accepts only the media playlist Shaka Packager writes
+// for this output format: every line is an allowed tag, the init segment is
+// init.mp4, every segment is seg_NNNNN.m4s in the same directory, and every
+// segment is preceded by METHOD=AES-128 with the expected key URI. It
+// returns the segment names. Workers run it after packaging; the server runs
+// it again at commit, because worker output is untrusted.
 func CheckMediaPlaylist(text string, keyVersion int32) ([]string, error) {
 	wantURI := Key{Version: keyVersion}.KeyURI()
 	keyed := false
 	var segments []string
 	for line := range strings.Lines(text) {
 		line = strings.TrimSpace(line)
+		tag, value, _ := strings.Cut(line, ":")
 		switch {
-		case strings.HasPrefix(line, "#EXT-X-KEY:"):
-			m := keyLine.FindStringSubmatch(line)
-			if m == nil || m[1] != "AES-128" || m[2] != wantURI {
+		case line == "" || line == "#EXTM3U" || line == "#EXT-X-ENDLIST" || line == "#EXT-X-INDEPENDENT-SEGMENTS" ||
+			line == "#EXT-X-PLAYLIST-TYPE:VOD" || strings.HasPrefix(line, "## "):
+		case tag == "#EXT-X-VERSION" || tag == "#EXT-X-TARGETDURATION" || tag == "#EXT-X-MEDIA-SEQUENCE":
+			if !unsignedInt.MatchString(value) {
+				return nil, fmt.Errorf("media playlist: bad %s", tag)
+			}
+		case strings.HasPrefix(line, "#EXTINF:"):
+			if !extinf.MatchString(line) {
+				return nil, fmt.Errorf("media playlist: bad %q", line)
+			}
+		case tag == "#EXT-X-MAP":
+			a, err := parseAttributes(value)
+			if err != nil || len(a) != 1 || !a["URI"].quoted || a["URI"].value != "init.mp4" {
+				return nil, fmt.Errorf("media playlist init %q, want URI=\"init.mp4\" only", line)
+			}
+		case tag == "#EXT-X-KEY":
+			a, err := parseAttributes(value)
+			_, hasIV := a["IV"]
+			if err != nil || a["METHOD"].value != "AES-128" || !a["URI"].quoted || a["URI"].value != wantURI ||
+				len(a) != 2+map[bool]int{true: 1}[hasIV] || (hasIV && !hexIV.MatchString(a["IV"].value)) {
 				return nil, fmt.Errorf("media playlist key %q, want METHOD=AES-128 with URI %q", line, wantURI)
 			}
 			keyed = true
-		case strings.HasPrefix(line, "#EXT-X-MAP:"):
-			if m := mapLine.FindStringSubmatch(line); m == nil || m[1] != "init.mp4" {
-				return nil, fmt.Errorf("media playlist init %q, want init.mp4", line)
-			}
-		case strings.Contains(line, "URI="):
-			return nil, fmt.Errorf("media playlist has an unexpected reference: %q", line)
-		case line == "" || strings.HasPrefix(line, "#"):
+		case strings.HasPrefix(line, "#"):
+			return nil, fmt.Errorf("media playlist: unexpected line %q", line)
 		default:
 			if !segmentName.MatchString(line) {
 				return nil, fmt.Errorf("media playlist references %q", line)
@@ -168,12 +234,13 @@ func CheckMediaPlaylist(text string, keyVersion int32) ([]string, error) {
 	return segments, nil
 }
 
-var uriAttr = regexp.MustCompile(`URI="([^"]*)"`)
 var variantPath = regexp.MustCompile(`^([1-9][0-9]{1,3}p|audio)/index\.m3u8$`)
 
-// CheckMaster rejects a master playlist that references anything but the
-// output's own media playlists, or that carries a key. It returns the
-// rendition directories it references, e.g. ["360p", "audio"].
+// CheckMaster accepts only the master Shaka Packager writes: allowed tags,
+// EXT-X-MEDIA with at most one quoted URI to the output's own audio
+// playlist, EXT-X-STREAM-INF with no URI attribute, and variant lines
+// naming the output's own media playlists. It returns the rendition
+// directories referenced, e.g. ["360p", "audio"].
 func CheckMaster(text string) ([]string, error) {
 	var dirs []string
 	add := func(ref string) error {
@@ -188,16 +255,37 @@ func CheckMaster(text string) ([]string, error) {
 	}
 	for line := range strings.Lines(text) {
 		line = strings.TrimSpace(line)
+		tag, value, _ := strings.Cut(line, ":")
 		switch {
-		case strings.Contains(line, "KEY:"):
-			return nil, fmt.Errorf("master playlist carries a key: %q", line)
-		case strings.HasPrefix(line, "#"):
-			for _, m := range uriAttr.FindAllStringSubmatch(line, -1) {
-				if err := add(m[1]); err != nil {
+		case line == "" || line == "#EXTM3U" || line == "#EXT-X-INDEPENDENT-SEGMENTS" || strings.HasPrefix(line, "## "):
+		case tag == "#EXT-X-VERSION":
+			if !unsignedInt.MatchString(value) {
+				return nil, fmt.Errorf("master playlist: bad version")
+			}
+		case tag == "#EXT-X-MEDIA":
+			a, err := parseAttributes(value)
+			if err != nil {
+				return nil, fmt.Errorf("master playlist: %w", err)
+			}
+			if uri, ok := a["URI"]; ok {
+				if !uri.quoted {
+					return nil, fmt.Errorf("master playlist: unquoted URI")
+				}
+				if err := add(uri.value); err != nil {
 					return nil, err
 				}
 			}
-		case line != "":
+		case tag == "#EXT-X-STREAM-INF":
+			a, err := parseAttributes(value)
+			if err != nil {
+				return nil, fmt.Errorf("master playlist: %w", err)
+			}
+			if _, ok := a["URI"]; ok {
+				return nil, fmt.Errorf("master playlist: URI on EXT-X-STREAM-INF")
+			}
+		case strings.HasPrefix(line, "#"):
+			return nil, fmt.Errorf("master playlist: unexpected line %q", line)
+		default:
 			if err := add(line); err != nil {
 				return nil, err
 			}

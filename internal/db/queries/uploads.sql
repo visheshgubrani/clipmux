@@ -14,7 +14,11 @@ RETURNING *;
 SELECT * FROM playback_ids WHERE asset_id = $1 AND status <> 'revoked' ORDER BY created_at, id;
 
 -- name: GetUploadByTokenHash :one
-SELECT * FROM uploads WHERE token_hash = $1;
+-- Disabling an app cuts off everything it owns, upload tokens included.
+SELECT * FROM uploads u
+WHERE u.token_hash = $1
+  AND NOT EXISTS (SELECT 1 FROM assets a JOIN apps ap ON ap.id = a.app_id
+                  WHERE a.id = u.asset_id AND ap.disabled_at IS NOT NULL);
 
 -- name: GetUpload :one
 SELECT * FROM uploads WHERE id = $1;
@@ -32,7 +36,12 @@ UPDATE uploads SET parts_seen = $2, last_activity_at = now() WHERE id = $1;
 UPDATE uploads SET status = $2, finished_at = now() WHERE id = $1;
 
 -- name: ListActiveUploads :many
-SELECT id FROM uploads WHERE status = 'active' ORDER BY last_activity_at, id LIMIT $1;
+SELECT id FROM uploads WHERE status = 'active'
+ORDER BY last_swept_at NULLS FIRST, last_activity_at, id
+LIMIT $1;
+
+-- name: MarkUploadSwept :exec
+UPDATE uploads SET last_swept_at = now() WHERE id = $1;
 
 -- name: UploadIdleSince :one
 -- Whether the upload has had no activity for the given number of seconds.
@@ -62,5 +71,5 @@ SELECT * FROM idempotency_keys WHERE app_id = $1 AND key = $2;
 -- name: SaveIdempotentResponse :exec
 UPDATE idempotency_keys SET response_status = $3, response_body = $4 WHERE app_id = $1 AND key = $2;
 
--- name: RotateUploadToken :exec
+-- name: RotateUploadToken :execrows
 UPDATE uploads SET token_hash = $2 WHERE id = $1 AND status = 'active';

@@ -146,8 +146,15 @@ func objectPath(key string) string { return "objects/" + key }
 
 // --- objects ---
 
-// Put writes an object atomically.
+// Put writes an object atomically, replacing any existing one.
 func (f *Filesystem) Put(_ context.Context, key string, body io.Reader) error {
+	return f.write(key, body, true)
+}
+
+// write stages body in tmp/ and moves it into place: by rename when
+// replacing, by hard link when it must create (link fails if the name
+// exists, atomically).
+func (f *Filesystem) write(key string, body io.Reader, replace bool) error {
 	if !ValidKey(key) {
 		return ErrInvalidKey
 	}
@@ -166,8 +173,15 @@ func (f *Filesystem) Put(_ context.Context, key string, body io.Reader) error {
 	if err == nil {
 		err = f.root.MkdirAll(path.Dir(objectPath(key)), 0o750)
 	}
-	if err == nil {
+	if err == nil && replace {
 		err = f.root.Rename(tmp, objectPath(key))
+	}
+	if err == nil && !replace {
+		err = f.root.Link(tmp, objectPath(key))
+		_ = f.root.Remove(tmp)
+		if errors.Is(err, fs.ErrExist) {
+			return ErrExists
+		}
 	}
 	if err != nil {
 		_ = f.root.Remove(tmp)
@@ -466,7 +480,13 @@ func (f *Filesystem) CompleteMultipart(ctx context.Context, key, uploadID string
 		return fmt.Errorf("complete %s: %w", key, err)
 	}
 	if err := f.root.Rename(uploadDir(uploadID)+"/data", dst); err != nil {
-		return fmt.Errorf("complete %s: %w", key, err)
+		// A crash after the rename and before the cleanup below leaves the
+		// staging directory without its data: the object is already in
+		// place, so finish the cleanup instead of failing every retry.
+		info, serr := f.root.Stat(dst)
+		if !errors.Is(err, fs.ErrNotExist) || serr != nil || info.Size() != m.Size {
+			return fmt.Errorf("complete %s: %w", key, err)
+		}
 	}
 	if err := f.root.RemoveAll(uploadDir(uploadID)); err != nil {
 		return fmt.Errorf("complete %s: clean up: %w", key, err)
@@ -606,7 +626,8 @@ func (f *Filesystem) servePut(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid or expired signature", http.StatusForbidden)
 		return
 	}
-	if err := f.Put(r.Context(), key, r.Body); err != nil {
+	// Presigned PUTs create once and never overwrite.
+	if err := f.write(key, r.Body, false); err != nil {
 		writeStorageError(w, err)
 		return
 	}
@@ -617,6 +638,8 @@ func writeStorageError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, ErrNotFound):
 		http.Error(w, "not found", http.StatusNotFound)
+	case errors.Is(err, ErrExists):
+		http.Error(w, "object already exists", http.StatusPreconditionFailed)
 	case errors.Is(err, ErrTooLarge):
 		http.Error(w, "too large", http.StatusRequestEntityTooLarge)
 	case errors.Is(err, ErrInvalidKey), errors.Is(err, ErrInvalidParts), errors.Is(err, errShortPart):

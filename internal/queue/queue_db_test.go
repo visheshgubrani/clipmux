@@ -468,3 +468,26 @@ func TestClaimWaitLongPolls(t *testing.T) {
 		t.Fatalf("empty long-poll returned early or with work: %v, %v after %v", c, err, time.Since(start))
 	}
 }
+
+func TestReleaseGivesAnUndeliveredClaimBackWithoutCountingALoss(t *testing.T) {
+	f := newFixture(t)
+	job := f.enqueue(f.asset("ast_1", false), "transcode")
+	c := f.claim(builtin)
+	if err := f.q.Release(context.Background(), c.Token); err != nil {
+		t.Fatal(err)
+	}
+	if j := f.job(job.ID); j.Status != "queued" || j.LostCount != 0 || j.FailedCount != 0 {
+		t.Fatalf("job = %s lost %d failed %d, want queued with no losses", j.Status, j.LostCount, j.FailedCount)
+	}
+	var attempts, outputs int
+	_ = f.pool.QueryRow(context.Background(), `SELECT (SELECT count(*) FROM attempts), (SELECT count(*) FROM outputs)`).Scan(&attempts, &outputs)
+	if attempts != 0 || outputs != 0 {
+		t.Fatalf("%d attempts and %d outputs left behind", attempts, outputs)
+	}
+	if _, err := f.q.Heartbeat(context.Background(), c.Token, queue.Progress{}); err != queue.ErrUnknownToken {
+		t.Fatalf("the released token must be unknown: %v", err)
+	}
+	if again := f.claim(builtin); again == nil || again.Attempt.AttemptNumber != 1 {
+		t.Fatalf("re-claim = %+v, want attempt 1 again", again)
+	}
+}

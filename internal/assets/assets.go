@@ -23,6 +23,8 @@ import (
 type PlaybackID struct {
 	ID     string `json:"id"`
 	Policy string `json:"policy"`
+	// Playable is false until the asset has an output to serve.
+	Playable bool `json:"playable"`
 }
 
 // View is an asset as the API returns it.
@@ -46,13 +48,14 @@ func Load(ctx context.Context, q *db.Queries, a db.Asset, baseURL string) (View,
 	if err != nil {
 		return View{}, err
 	}
+	playable := a.CurrentOutputID.Valid && a.Status != "deleted"
 	v := View{
 		ID: a.ID, Status: a.Status, Version: a.Version, BaseURL: baseURL,
 		Passthrough: a.Passthrough.String, ErrorCode: a.ErrorCode.String,
 		PlaybackIDs: make([]PlaybackID, 0, len(pids)), CreatedAt: a.CreatedAt.Time,
 	}
 	for _, p := range pids {
-		v.PlaybackIDs = append(v.PlaybackIDs, PlaybackID{ID: p.ID, Policy: p.Policy})
+		v.PlaybackIDs = append(v.PlaybackIDs, PlaybackID{ID: p.ID, Policy: p.Policy, Playable: playable})
 	}
 	return v, nil
 }

@@ -117,3 +117,9 @@ VALUES ($1, $2, $3, $4, $5, $6);
 UPDATE attempts SET signed_paths = signed_paths + sqlc.arg(n)::integer
 WHERE id = sqlc.arg(id) AND signed_paths + sqlc.arg(n)::integer <= sqlc.arg(budget)::integer
 RETURNING signed_paths;
+
+-- name: DeleteAttempt :exec
+DELETE FROM attempts WHERE id = $1;
+
+-- name: DeleteWritingOutput :exec
+DELETE FROM outputs WHERE id = $1 AND status = 'writing';

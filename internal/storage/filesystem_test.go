@@ -408,3 +408,52 @@ func TestSigningKeySurvivesARestart(t *testing.T) {
 		t.Fatalf("URL signed before a restart: %d, want 200", res.StatusCode)
 	}
 }
+
+func TestPresignedPutsCreateOnceAndNeverOverwrite(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	put, _ := h.fs.PresignPut(ctx, "media/a/o1/720p/index.m3u8", 15*time.Minute)
+	if res := h.do(http.MethodPut, put, []byte("encrypted playlist"), nil); res.StatusCode != http.StatusOK {
+		t.Fatalf("first PUT: %d", res.StatusCode)
+	}
+	// After commit, the worker still holds a valid URL: it must not be able
+	// to swap the playlist.
+	if res := h.do(http.MethodPut, put, []byte("swapped"), nil); res.StatusCode != http.StatusPreconditionFailed {
+		t.Fatalf("second PUT: %d, want 412", res.StatusCode)
+	}
+	if got := h.read("media/a/o1/720p/index.m3u8"); got != "encrypted playlist" {
+		t.Fatalf("object = %q after an attempted overwrite", got)
+	}
+	// The control plane's own Put still replaces (route records, key lists).
+	if err := h.fs.Put(ctx, "media/a/o1/720p/index.m3u8", strings.NewReader("replaced")); err != nil || h.read("media/a/o1/720p/index.m3u8") != "replaced" {
+		t.Fatalf("Put must replace: %v", err)
+	}
+	if entries, _ := os.ReadDir(filepath.Join(h.dir, "tmp")); len(entries) != 0 {
+		t.Fatalf("tmp/ holds %d leftover files", len(entries))
+	}
+}
+
+func TestCompleteRecoversFromACrashBetweenRenameAndCleanup(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	const key = "uploads/ast_1/source"
+	mp, _ := h.fs.CreateMultipart(ctx, key, 16)
+	e1 := h.putPart(key, mp.UploadID, 1, "AAAAAAAA").Header.Get("ETag")
+	e2 := h.putPart(key, mp.UploadID, 2, "BBBBBBBB").Header.Get("ETag")
+	// The process died right after moving data into place.
+	if err := os.MkdirAll(filepath.Join(h.dir, "objects", "uploads", "ast_1"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(filepath.Join(h.dir, "multipart", mp.UploadID, "data"), filepath.Join(h.dir, "objects", key)); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.fs.CompleteMultipart(ctx, key, mp.UploadID, []Part{{Number: 1, ETag: e1}, {Number: 2, ETag: e2}}); err != nil {
+		t.Fatalf("retry after the crash: %v", err)
+	}
+	if got := h.read(key); got != "AAAAAAAABBBBBBBB" {
+		t.Fatalf("object = %q", got)
+	}
+	if _, err := h.fs.ListParts(ctx, key, mp.UploadID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("staging must be cleaned up: %v", err)
+	}
+}

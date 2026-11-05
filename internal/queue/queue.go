@@ -41,6 +41,23 @@ func (q *Queue) ReserveSigns(ctx context.Context, token string, n, budget int) (
 	return v, attempt, err
 }
 
+// Release undoes a claim whose payload never reached the worker: the
+// attempt and its empty output are deleted and the job is queued again at
+// once, without counting a lost lease. If the worker did get the token
+// after all, its next call is refused as unknown and it stops.
+func (q *Queue) Release(ctx context.Context, token string) error {
+	_, err := q.withLiveAttempt(ctx, token, func(qs *db.Queries, l locked) (Verdict, error) {
+		if err := qs.DeleteAttempt(ctx, l.attempt.ID); err != nil {
+			return Verdict{}, err
+		}
+		if err := qs.DeleteWritingOutput(ctx, l.attempt.OutputID); err != nil {
+			return Verdict{}, err
+		}
+		return Verdict{}, qs.RequeueJob(ctx, db.RequeueJobParams{ID: l.job.ID})
+	})
+	return err
+}
+
 // CommitAttempt runs commit for a live attempt inside the locked liveness
 // transaction (job, then attempt, locked), then marks the attempt committed
 // and the job succeeded in the same transaction. A late completion from an

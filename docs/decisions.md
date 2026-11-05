@@ -101,14 +101,26 @@ Consequences: iOS Safari plays natively under Video.js by default, where no web 
 
 ## D015 Built-in delivery — accepted (2026-11-05)
 Decisions within the architecture's rules, made in P1-T08:
-- Tokens are ES256 JWTs on the standard library only (`internal/tokens`), interoperable with openssl and Node in both directions. Only `alg: ES256` with a `kid` is accepted, and base64url decoding is strict, so a token has exactly one spelling (a lenient decoder accepted 15 spellings of one token).
+- Tokens are ES256 JWTs on the standard library only (`internal/tokens`), interoperable with openssl and Node in both directions. Only `alg: ES256` with a `kid` is accepted. base64url decoding is strict (a lenient decoder accepted 15 spellings of one token), and claim names are matched exactly with the last duplicate winning, as `JSON.parse` does, so the Go handler and the Worker read every token alike. Both ECDSA forms `(r, s)` and `(r, n−s)` verify: JWT libraries, openssl and WebCrypto produce and accept either, so rejecting one would refuse about half of all app tokens (amended in D016).
 - Checks, in order: route (unknown, revoked, deleted or not-yet-playable → 404), policy (a signed ID without a token → 403), signature with a key that belongs to the route's app or is the server's internal key (no app), `sub` = playback ID, `aud` ∈ {v, t}, `iat` no more than 60 s ahead, `exp − iat` within the project maximum (→ 403), then `exp` (→ 401 token_expired).
 - The master is generated per request: every URI gets `{output_id}/` in front, so a session stays pinned to one output; served `no-store`. Pinned files are served only from this asset's committed or retired outputs, only for output-grammar names (never manifest.json), with Content-Type from the extension (`.m3u8 .mp4 .m4s .jpg`), `nosniff`, and `private` (signed) or `public` `max-age=31536000, immutable`. The key path derives the key, `no-store`, and only for the output's key version.
 - A `t` token fetches only the poster, unpinned at `{playback_id}/poster.jpg` (or pinned). Public IDs need no token and also play under a token URL.
 - CORS `*` on every delivery response: the URL is the credential and there are no cookies.
 - `CLIPMUX_MEDIA_URL` (default `CLIPMUX_PUBLIC_URL`) is returned as `base_url` on assets and in ready/updated webhooks.
-- `testdata/vectors.json` (37 cases, test-only keys, Python-computed content keys) is the contract the Phase 2 Worker must also pass.
+- `testdata/vectors.json` (43 cases since D016, test-only keys, Python-computed content keys) is the contract the Phase 2 Worker must also pass.
 - `clipmux admin create-signing-key --app NAME` stores the public key and prints the private key once, until the dashboard exists.
+
+## D016 Review of P1-T01 to T08 and its fixes — accepted (2026-11-05)
+Context: two independent code reviews (correctness and security/spec) and a functional matrix on the real binary (36 checks: uploads, playback, token rules, isolation, cancel, bad sources, concurrency, a killed worker, a serve restart). The functional checks all passed; the reviews found the defects below, each fixed with a test that fails without the fix.
+- Playlist checks parse HLS attribute lists strictly (upper-case names, no duplicates, quoted URIs, nothing trailing) and allow only the tags Shaka writes. Before, a duplicate or unquoted `URI=` passed and hls.js would follow it to another host.
+- Presigned PUTs are create-once (filesystem: hard link from tmp; R2/S3: signed `If-None-Match: *`), so a worker can't overwrite an output after commit with a URL that is still valid. The worker treats 412 as already written; commit verifies every size.
+- `CompleteMultipart` recovers when a crash fell between moving the data into place and cleaning up staging, instead of failing every retry and leaving the upload stuck.
+- The worker bounds transfers with an idle watchdog (60 s without a byte cancels), bounds connecting and response headers, and bounds each attempt to 6 h (`job_timeout`), so a stalled connection can't hold a lease forever. A download that completes on its last try succeeds. `fail` and `complete` check the HTTP status and retry 5xx. Errors never carry a signed URL or a playback token.
+- A claim whose payload can't be delivered (the worker hung up, or signing the source failed) is released: attempt and empty output deleted, job requeued, no lost lease counted.
+- Delivery denies a disabled app's playback IDs, refuses retired signing keys, and requires the server's internal key to belong to the route's project. Upload tokens of a disabled app stop working.
+- The unpinned poster is cached for 5 minutes (it follows the current output); a `t` token may fetch the pinned poster.
+- Playback IDs carry `playable` (false until the asset has an output). A replayed create for a finished upload returns no token instead of one that can never work.
+- The upload sweeper visits uploads least-recently-swept first, so one that keeps failing can't starve the rest.
 
 ## D007 Shaka Packager 3.9.3 — accepted (2026-11-05)
 Decision: pin v3.9.3 (`toolchain/versions.env`), the version clipmux-lms runs with AES-128 in production, which needs the init-segment workaround for Shaka issue 1616. Move to a release that fixes 1616 when one exists, re-running the Phase 1 player tests.

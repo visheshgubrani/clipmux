@@ -233,10 +233,13 @@ func (s *Service) replay(ctx context.Context, q *db.Queries, key apikeys.Key, id
 		return err
 	}
 	token := rand.Text()
-	if err := q.RotateUploadToken(ctx, db.RotateUploadTokenParams{ID: out.UploadID, TokenHash: tokenHash(token)}); err != nil {
+	n, err := q.RotateUploadToken(ctx, db.RotateUploadTokenParams{ID: out.UploadID, TokenHash: tokenHash(token)})
+	if err != nil {
 		return err
 	}
-	out.UploadToken = token
+	if n == 1 {
+		out.UploadToken = token // still active: a fresh token to finish it with
+	}
 	return nil
 }
 
@@ -455,6 +458,11 @@ func (s *Service) Sweep(ctx context.Context, limit int) (int, error) {
 	handled := 0
 	var firstErr error
 	for _, id := range active {
+		// Recorded outside the pass's transaction, so it sticks even when the
+		// pass fails: a failing upload moves to the back of the line.
+		if err := db.New(s.pool).MarkUploadSwept(ctx, id); err != nil {
+			return handled, err
+		}
 		done, err := s.sweepOne(ctx, id)
 		if err != nil {
 			firstErr = cmpErr(firstErr, fmt.Errorf("sweep upload %s: %w", id, err))

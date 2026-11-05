@@ -43,6 +43,7 @@ type Claims struct {
 	Vid string `json:"vid,omitempty"` // optional viewer ID, for auditing
 }
 
+// header is what Sign writes; Parse reads members by exact name instead.
 type header struct {
 	Alg string `json:"alg"`
 	Kid string `json:"kid"`
@@ -87,22 +88,62 @@ func Parse(token string) (Token, error) {
 	if len(parts) != 3 || len(token) > 4096 {
 		return Token{}, ErrMalformed
 	}
-	var h header
-	if raw, err := b64.DecodeString(parts[0]); err != nil || json.Unmarshal(raw, &h) != nil {
-		return Token{}, ErrMalformed
+	hdr, err := object(parts[0])
+	if err != nil {
+		return Token{}, err
 	}
-	if h.Alg != "ES256" || h.Kid == "" {
-		return Token{}, fmt.Errorf("%w: alg %q, kid %q", ErrMalformed, h.Alg, h.Kid)
+	alg, kid := str(hdr, "alg"), str(hdr, "kid")
+	if alg != "ES256" || kid == "" {
+		return Token{}, fmt.Errorf("%w: alg %q, kid %q", ErrMalformed, alg, kid)
 	}
-	var c Claims
-	if raw, err := b64.DecodeString(parts[1]); err != nil || json.Unmarshal(raw, &c) != nil {
-		return Token{}, ErrMalformed
+	claims, err := object(parts[1])
+	if err != nil {
+		return Token{}, err
+	}
+	c := Claims{Sub: str(claims, "sub"), Aud: str(claims, "aud"), Vid: str(claims, "vid")}
+	var ok1, ok2 bool
+	c.Iat, ok1 = integer(claims, "iat")
+	c.Exp, ok2 = integer(claims, "exp")
+	if !ok1 || !ok2 {
+		return Token{}, fmt.Errorf("%w: iat and exp must be integers", ErrMalformed)
 	}
 	sig, err := b64.DecodeString(parts[2])
 	if err != nil || len(sig) != 64 {
 		return Token{}, ErrMalformed
 	}
-	return Token{Kid: h.Kid, Claims: c, input: parts[0] + "." + parts[1], sig: sig}, nil
+	return Token{Kid: kid, Claims: c, input: parts[0] + "." + parts[1], sig: sig}, nil
+}
+
+// object decodes a base64url JSON object into raw members. Member names are
+// matched exactly (encoding/json would also accept "SUB" for "sub"), and the
+// last of duplicate names wins, which is what JSON.parse does: the
+// Cloudflare Worker reads a token exactly as this handler does.
+func object(part string) (map[string]json.RawMessage, error) {
+	raw, err := b64.DecodeString(part)
+	if err != nil {
+		return nil, ErrMalformed
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &m); err != nil || m == nil {
+		return nil, ErrMalformed
+	}
+	return m, nil
+}
+
+// str returns a string member, or "" if it is missing or not a string.
+func str(m map[string]json.RawMessage, name string) string {
+	var s string
+	if json.Unmarshal(m[name], &s) != nil {
+		return ""
+	}
+	return s
+}
+
+// integer returns an integer member; NumericDate values must be whole seconds.
+func integer(m map[string]json.RawMessage, name string) (int64, bool) {
+	var n int64
+	err := json.Unmarshal(m[name], &n)
+	return n, err == nil && m[name] != nil
 }
 
 // Verify checks the signature with key. It does not check claims.

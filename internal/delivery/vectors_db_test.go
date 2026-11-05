@@ -2,10 +2,16 @@ package delivery
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"io"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -30,6 +36,7 @@ type vectors struct {
 	ContentKeyVersion       int32              `json:"content_key_version"`
 	MaxTokenLifetimeSeconds int                `json:"max_token_lifetime_seconds"`
 	Apps                    []string           `json:"apps"`
+	DisabledApps            []string           `json:"disabled_apps,omitempty"`
 	SigningKeys             []vKey             `json:"signing_keys"`
 	Assets                  []vAsset           `json:"assets"`
 	Outputs                 []vOutput          `json:"outputs"`
@@ -44,6 +51,7 @@ type vKey struct {
 	Kid           string `json:"kid"`
 	AppID         string `json:"app_id"`
 	Revoked       bool   `json:"revoked,omitempty"`
+	Retired       bool   `json:"retired,omitempty"`
 	PublicKeyPEM  string `json:"public_key_pem,omitempty"`
 	PrivateKeyPEM string `json:"private_key_pem,omitempty"`
 }
@@ -88,6 +96,8 @@ type vClaims struct {
 	Aud string `json:"aud"`
 	Iat int64  `json:"iat"`
 	Exp int64  `json:"exp"`
+	// Raw, when set, is signed as the payload verbatim (for claim-parsing cases).
+	Raw string `json:"raw,omitempty"`
 }
 
 type vCase struct {
@@ -143,6 +153,9 @@ func regenerate(t *testing.T, v *vectors) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		if c.Raw != "" {
+			tok = signRaw(t, priv, c.Kid, c.Raw)
+		}
 		v.Tokens[name] = tok
 	}
 	// Flip one signature byte of a valid token.
@@ -158,8 +171,15 @@ func regenerate(t *testing.T, v *vectors) {
 	canonical := v.Tokens["v"]
 	last := strings.IndexByte(alphabet, canonical[len(canonical)-1])
 	v.Tokens["noncanonical"] = canonical[:len(canonical)-1] + string(alphabet[last^1])
-	raw, _ := json.MarshalIndent(v, "", "  ")
-	if err := os.WriteFile(vectorsFile, append(raw, '\n'), 0o644); err != nil {
+	// The other ECDSA form of the same signature: (r, n-s).
+	parts := strings.Split(canonical, ".")
+	raw, _ := base64.RawURLEncoding.DecodeString(parts[2])
+	sv := new(big.Int).SetBytes(raw[32:])
+	sv.Sub(elliptic.P256().Params().N, sv)
+	sv.FillBytes(raw[32:])
+	v.Tokens["alt_form"] = parts[0] + "." + parts[1] + "." + base64.RawURLEncoding.EncodeToString(raw)
+	out, _ := json.MarshalIndent(v, "", "  ")
+	if err := os.WriteFile(vectorsFile, append(out, '\n'), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -193,6 +213,12 @@ func TestVectors(t *testing.T) {
 		if k.Revoked {
 			exec(`UPDATE signing_keys SET revoked_at = now() WHERE id = $1`, k.Kid)
 		}
+		if k.Retired {
+			exec(`UPDATE signing_keys SET retired_at = to_timestamp($1) WHERE id = $2`, v.Now-86400, k.Kid)
+		}
+	}
+	for _, app := range v.DisabledApps {
+		exec(`UPDATE apps SET disabled_at = now() WHERE id = $1`, app)
 	}
 	store, err := storage.OpenFilesystem(t.TempDir(), storage.FilesystemOptions{BaseURL: "http://unused"})
 	if err != nil {
@@ -277,4 +303,20 @@ func TestRewriteMasterHandlesCRLF(t *testing.T) {
 	if got != want {
 		t.Fatalf("got %q", got)
 	}
+}
+
+// signRaw signs payload verbatim, for cases a Claims struct can't express.
+func signRaw(t *testing.T, key *ecdsa.PrivateKey, kid, payload string) string {
+	t.Helper()
+	enc := base64.RawURLEncoding
+	input := enc.EncodeToString([]byte(`{"alg":"ES256","kid":"`+kid+`","typ":"JWT"}`)) + "." + enc.EncodeToString([]byte(payload))
+	digest := sha256.Sum256([]byte(input))
+	r, s, err := ecdsa.Sign(rand.Reader, key, digest[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	sig := make([]byte, 64)
+	r.FillBytes(sig[:32])
+	s.FillBytes(sig[32:])
+	return input + "." + enc.EncodeToString(sig)
 }

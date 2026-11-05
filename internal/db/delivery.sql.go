@@ -50,9 +50,11 @@ const getRoute = `-- name: GetRoute :one
 
 SELECT p.id AS playback_id, p.policy, p.status AS playback_status,
        a.id AS asset_id, a.app_id, a.status AS asset_status, a.current_output_id,
-       pr.max_token_lifetime_seconds
+       pr.id AS project_id, pr.max_token_lifetime_seconds,
+       (ap.disabled_at IS NOT NULL)::boolean AS app_disabled
 FROM playback_ids p
 JOIN assets a ON a.id = p.asset_id
+JOIN apps ap ON ap.id = a.app_id
 JOIN projects pr ON pr.id = a.project_id
 WHERE p.id = $1
 `
@@ -65,7 +67,9 @@ type GetRouteRow struct {
 	AppID                   string
 	AssetStatus             string
 	CurrentOutputID         pgtype.Text
+	ProjectID               string
 	MaxTokenLifetimeSeconds int32
+	AppDisabled             bool
 }
 
 // Built-in delivery (docs/architecture.md, "Delivery"). The built-in handler
@@ -81,7 +85,9 @@ func (q *Queries) GetRoute(ctx context.Context, id string) (GetRouteRow, error) 
 		&i.AppID,
 		&i.AssetStatus,
 		&i.CurrentOutputID,
+		&i.ProjectID,
 		&i.MaxTokenLifetimeSeconds,
+		&i.AppDisabled,
 	)
 	return i, err
 }

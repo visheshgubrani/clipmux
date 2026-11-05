@@ -136,3 +136,50 @@ func TestNonCanonicalEncodingsAreRejected(t *testing.T) {
 		t.Fatalf("%d other spellings of the same token verified", accepted)
 	}
 }
+
+// Claim names are exact and the last duplicate wins, as in JSON.parse, so
+// the Go handler and the Worker read every token the same way.
+func TestClaimsAreReadExactlyAsJavaScriptReadsThem(t *testing.T) {
+	sig := b64.EncodeToString(make([]byte, 64))
+	h := b64.EncodeToString([]byte(`{"alg":"ES256","kid":"k"}`))
+	cases := map[string]struct {
+		body string
+		sub  string
+		ok   bool
+	}{
+		"upper-case name is a different claim": {`{"SUB":"pid_x","aud":"v","iat":1,"exp":2}`, "", true},
+		"last duplicate wins":                  {`{"sub":"pid_a","sub":"pid_b","aud":"v","iat":1,"exp":2}`, "pid_b", true},
+		"fractional exp":                       {`{"sub":"p","aud":"v","iat":1,"exp":2.5}`, "", false},
+		"string iat":                           {`{"sub":"p","aud":"v","iat":"1","exp":2}`, "", false},
+		"missing exp":                          {`{"sub":"p","aud":"v","iat":1}`, "", false},
+		"not an object":                        {`["sub"]`, "", false},
+	}
+	for name, c := range cases {
+		tok, err := Parse(h + "." + b64.EncodeToString([]byte(c.body)) + "." + sig)
+		if (err == nil) != c.ok || (c.ok && tok.Claims.Sub != c.sub) {
+			t.Errorf("%s: sub %q, err %v", name, tok.Claims.Sub, err)
+		}
+	}
+	if _, err := Parse(b64.EncodeToString([]byte(`{"ALG":"ES256","kid":"k"}`)) + "." + b64.EncodeToString([]byte(`{"sub":"p","aud":"v","iat":1,"exp":2}`)) + "." + sig); err == nil {
+		t.Error("an upper-case ALG must not satisfy alg")
+	}
+}
+
+// ECDSA signatures (r, s) and (r, n-s) both verify. JWT libraries, openssl
+// and WebCrypto produce and accept either, so both are valid spellings; a
+// verifier that rejected one would refuse about half of all app tokens.
+func TestBothSignatureFormsVerify(t *testing.T) {
+	privPEM, pubPEM := keys(t)
+	priv, _ := ParsePrivateKey(privPEM)
+	pub, _ := ParsePublicKey(pubPEM)
+	tok, _ := Sign(priv, "k", Claims{Sub: "p", Aud: "v", Iat: 1, Exp: 2})
+	parts := strings.Split(tok, ".")
+	sig, _ := b64.DecodeString(parts[2])
+	s := new(big.Int).SetBytes(sig[32:])
+	s.Sub(pub.Curve.Params().N, s)
+	s.FillBytes(sig[32:])
+	other, err := Parse(parts[0] + "." + parts[1] + "." + b64.EncodeToString(sig))
+	if err != nil || other.Verify(pub) != nil {
+		t.Fatalf("the (r, n-s) form must verify: %v", err)
+	}
+}

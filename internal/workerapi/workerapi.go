@@ -193,6 +193,12 @@ func (a *API) claim(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
+	// The worker hung up while the claim was committing: it will never see
+	// the token, so give the job back rather than burn a lease on it.
+	if r.Context().Err() != nil {
+		a.release(r.Context(), c.Token)
+		return
+	}
 	src, err := a.source(r.Context(), c.Job.AssetID)
 	if errors.Is(err, storage.ErrNotFound) {
 		// The source is gone; no executor can ever run this job.
@@ -203,6 +209,7 @@ func (a *API) claim(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
+		a.release(r.Context(), c.Token)
 		a.internal(w, "claim source", err)
 		return
 	}
@@ -255,6 +262,13 @@ func (a *API) complete(w http.ResponseWriter, r *http.Request) {
 		a.verdict(w, v)
 	default:
 		httpjson.Write(w, http.StatusOK, verdictResponse{Action: "done"})
+	}
+}
+
+// release gives an undelivered claim back to the queue.
+func (a *API) release(ctx context.Context, token string) {
+	if err := a.Queue.Release(context.WithoutCancel(ctx), token); err != nil {
+		a.Logger.Error("worker api", "op", "release undelivered claim", "err", err)
 	}
 }
 

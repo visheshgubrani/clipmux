@@ -11,6 +11,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -26,13 +28,14 @@ import (
 const partSize = 8
 
 type env struct {
-	t     *testing.T
-	pool  *pgxpool.Pool
-	store *storage.Filesystem
-	svc   *uploads.Service
-	url   string
-	key   string // uploads:write + assets:read for app "LMS"
-	other string // a key for another app
+	t        *testing.T
+	pool     *pgxpool.Pool
+	store    *storage.Filesystem
+	svc      *uploads.Service
+	url      string
+	key      string // uploads:write + assets:read for app "LMS"
+	storeDir string
+	other    string // a key for another app
 }
 
 func newEnv(t *testing.T) *env {
@@ -42,7 +45,8 @@ func newEnv(t *testing.T) *env {
 	mux := http.NewServeMux()
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
-	store, err := storage.OpenFilesystem(t.TempDir(), storage.FilesystemOptions{BaseURL: srv.URL, PartSize: partSize})
+	storeDir := t.TempDir()
+	store, err := storage.OpenFilesystem(storeDir, storage.FilesystemOptions{BaseURL: srv.URL, PartSize: partSize})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,7 +60,7 @@ func newEnv(t *testing.T) *env {
 	svc.Register(mux)
 	assets.New(pool, "https://media.example").Register(mux)
 
-	e := &env{t: t, pool: pool, store: store, svc: svc, url: srv.URL}
+	e := &env{t: t, pool: pool, store: store, svc: svc, url: srv.URL, storeDir: storeDir}
 	for _, app := range []string{"app_lms", "app_site"} {
 		if _, err := pool.Exec(ctx, `INSERT INTO apps (id, project_id, name) VALUES ($1, 'prj_default', $1)`, app); err != nil {
 			t.Fatal(err)
@@ -225,7 +229,8 @@ func TestUppyCallOrderUploadsAndQueuesProcessing(t *testing.T) {
 	// The app reads the asset back, by ID and by its own reference.
 	code, asset, _ := e.call("GET", "/v1/assets/"+c.AssetID, e.key, nil, nil)
 	pids, _ := asset["playback_ids"].([]any)
-	if code != http.StatusOK || str(asset, "status") != "processing" || len(pids) != 1 || str(pids[0].(map[string]any), "policy") != "signed" || str(asset, "base_url") != "https://media.example" {
+	if code != http.StatusOK || str(asset, "status") != "processing" || len(pids) != 1 || str(pids[0].(map[string]any), "policy") != "signed" ||
+		str(asset, "base_url") != "https://media.example" || pids[0].(map[string]any)["playable"] != false {
 		t.Fatalf("GET asset: %d %v", code, asset)
 	}
 	code, found, _ := e.call("GET", "/v1/assets?passthrough=lesson-42", e.key, nil, nil)
@@ -281,6 +286,13 @@ func TestIdempotentCreateNeverDuplicatesAnAsset(t *testing.T) {
 	}
 	if code, _, _ := e.call("GET", "/v1/uploads/"+first.UploadID+"/parts", retry.Token, nil, nil); code != http.StatusOK {
 		t.Fatalf("new token: %d", code)
+	}
+
+	// Once the upload has finished, a replay returns the same IDs and no
+	// token, rather than a token that can never work.
+	e.pool.Exec(context.Background(), `UPDATE uploads SET status = 'completed' WHERE id = $1`, first.UploadID)
+	if code, out, _ := e.call("POST", "/v1/uploads", e.key, map[string]any{"size": 20, "passthrough": "lesson-42"}, idem); code != http.StatusCreated || str(out, "upload_id") != first.UploadID || out["upload_token"] != nil {
+		t.Fatalf("replay of a finished upload: %d %v", code, out)
 	}
 
 	code, out, _ := e.call("POST", "/v1/uploads", e.key, map[string]any{"size": 21, "passthrough": "lesson-42"}, idem)
@@ -458,5 +470,33 @@ func TestSigningPartsCountsAsActivity(t *testing.T) {
 	e.pool.QueryRow(context.Background(), `SELECT last_activity_at < now() - interval '1 minute' FROM uploads WHERE id = $1`, c.UploadID).Scan(&idle)
 	if idle {
 		t.Fatal("a part URL request must count as activity")
+	}
+}
+
+func TestADisabledAppsUploadTokensStopWorking(t *testing.T) {
+	e := newEnv(t)
+	c := e.create(20, nil, nil)
+	e.pool.Exec(context.Background(), `UPDATE apps SET disabled_at = now() WHERE id = 'app_lms'`)
+	if code, _, _ := e.call("POST", "/v1/uploads/"+c.UploadID+"/parts", c.Token, map[string]any{"part_numbers": []int{1}}, nil); code != http.StatusUnauthorized {
+		t.Fatalf("upload token of a disabled app: %d, want 401", code)
+	}
+}
+
+func TestAnUploadThatKeepsFailingCantStarveTheSweeper(t *testing.T) {
+	e := newEnv(t)
+	broken, healthy := e.create(20, nil, nil), e.create(20, nil, nil)
+	e.pool.Exec(context.Background(), `UPDATE uploads SET last_activity_at = now() - interval '26 hours' WHERE id = $1`, broken.UploadID)
+	e.pool.Exec(context.Background(), `UPDATE uploads SET last_activity_at = now() - interval '25 hours' WHERE id = $1`, healthy.UploadID)
+	// Corrupt the broken upload's staging so every pass over it errors.
+	var mp string
+	e.pool.QueryRow(context.Background(), `SELECT multipart_id FROM uploads WHERE id = $1`, broken.UploadID).Scan(&mp)
+	if err := os.WriteFile(filepath.Join(e.storeDir, "multipart", mp, "meta.json"), []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		_, _ = e.svc.Sweep(context.Background(), 1) // one upload per pass
+	}
+	if s := e.row(`SELECT status FROM uploads WHERE id = $1`, healthy.UploadID)[0]; s != "expired" {
+		t.Fatalf("healthy idle upload = %v after two passes, want expired", s)
 	}
 }

@@ -30,6 +30,8 @@ var (
 	ErrInvalidKey   = errors.New("storage: invalid key")
 	ErrInvalidParts = errors.New("storage: invalid parts")
 	ErrTooLarge     = errors.New("storage: too large")
+	// ErrExists means a create-once write found the object already there.
+	ErrExists = errors.New("storage: object already exists")
 )
 
 // Multipart is a started multipart upload.
@@ -63,6 +65,10 @@ type Storage interface {
 	CompleteMultipart(ctx context.Context, key, uploadID string, parts []Part) error
 	AbortMultipart(ctx context.Context, key, uploadID string) error
 	PresignGet(ctx context.Context, key string, ttl time.Duration) (string, error)
+	// PresignPut returns a create-once URL: it can write the object if it
+	// doesn't exist and can never overwrite it (412), so a worker can't
+	// change an output after commit while its URLs are still valid. On R2
+	// and S3 this is a signed If-None-Match: *.
 	PresignPut(ctx context.Context, key string, ttl time.Duration) (string, error)
 	Put(ctx context.Context, key string, body io.Reader) error
 	Get(ctx context.Context, key string) (io.ReadCloser, error)

@@ -29,8 +29,7 @@ when you introduce or discover it; remove it when it is closed.
   (T08), and `GET /v1/assets` only looks up by `passthrough` (full listing
   comes with the dashboard).
 - Idempotency keys are kept forever; a cleanup window (e.g. 24 h) is not
-  enforced yet. A replayed create returns 201 even if the upload has since
-  completed, with a token that no longer works.
+  enforced yet.
 - If the create transaction fails after storage started a multipart upload,
   the abort is best effort; a failed abort leaves an orphaned staging
   directory that nothing sweeps.

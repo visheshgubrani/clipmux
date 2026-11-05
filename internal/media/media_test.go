@@ -152,7 +152,7 @@ func TestRepairInitDuplicatesTheSampleDescription(t *testing.T) {
 }
 
 func TestCheckPlaylistsRequiresEncryptionAndRelativeURIs(t *testing.T) {
-	good := "#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"../key/1\",IV=0x00\n#EXT-X-MAP:URI=\"init.mp4\"\n#EXTINF:6,\nseg_00001.m4s\n"
+	good := "#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"../key/1\",IV=0x00000000000000000000000000000001\n#EXT-X-MAP:URI=\"init.mp4\"\n#EXTINF:6,\nseg_00001.m4s\n"
 	if _, err := CheckMediaPlaylist(good, 1); err != nil {
 		t.Fatalf("good playlist: %v", err)
 	}
@@ -162,7 +162,7 @@ func TestCheckPlaylistsRequiresEncryptionAndRelativeURIs(t *testing.T) {
 		"absolute seg":  strings.Replace(good, "seg_00001.m4s", "https://cdn.example/seg_00001.m4s", 1),
 		"escaping seg":  strings.Replace(good, "seg_00001.m4s", "../../other/seg_00001.m4s", 1),
 		"wrong version": strings.Replace(good, "../key/1", "../key/2", 1),
-		"clear lead":    "#EXTM3U\n#EXT-X-MAP:URI=\"init.mp4\"\n#EXTINF:6,\nseg_00001.m4s\n#EXT-X-KEY:METHOD=AES-128,URI=\"../key/1\",IV=0x00\n#EXTINF:6,\nseg_00002.m4s\n",
+		"clear lead":    "#EXTM3U\n#EXT-X-MAP:URI=\"init.mp4\"\n#EXTINF:6,\nseg_00001.m4s\n#EXT-X-KEY:METHOD=AES-128,URI=\"../key/1\",IV=0x00000000000000000000000000000001\n#EXTINF:6,\nseg_00002.m4s\n",
 		"extra ref":     strings.Replace(good, "#EXTINF", "#EXT-X-PART:URI=\"../../x\"\n#EXTINF", 1),
 	} {
 		if _, err := CheckMediaPlaylist(text, 1); err == nil {
@@ -191,6 +191,56 @@ func TestCheckMasterAllowsOnlyTheOutputsOwnPlaylists(t *testing.T) {
 	} {
 		if _, err := CheckMaster(text); err == nil {
 			t.Errorf("%s: want an error", name)
+		}
+	}
+}
+
+// Bypasses found in review: duplicate, unquoted or trailing URI attributes
+// that a prefix match accepted while hls.js would follow the last one.
+func TestPlaylistChecksRejectSmuggledURIs(t *testing.T) {
+	media := "#EXTM3U\n#EXT-X-MAP:URI=\"init.mp4\"\n#EXT-X-KEY:METHOD=AES-128,URI=\"../key/1\",IV=0x00000000000000000000000000000001\n#EXTINF:6.000,\nseg_00001.m4s\n#EXT-X-ENDLIST\n"
+	if _, err := CheckMediaPlaylist(media, 1); err != nil {
+		t.Fatalf("clean playlist: %v", err)
+	}
+	for name, bad := range map[string]string{
+		"duplicate key URI":      strings.Replace(media, `URI="../key/1",`, `URI="../key/1",URI="https://evil/k",`, 1),
+		"trailing key attribute": strings.Replace(media, "IV=0x00000000000000000000000000000001", "IV=0x00000000000000000000000000000001,URI=\"https://evil/k\"", 1),
+		"duplicate map URI":      strings.Replace(media, `#EXT-X-MAP:URI="init.mp4"`, `#EXT-X-MAP:URI="init.mp4",URI="https://evil/init.mp4"`, 1),
+		"map byterange":          strings.Replace(media, `#EXT-X-MAP:URI="init.mp4"`, `#EXT-X-MAP:URI="init.mp4",BYTERANGE="10@0"`, 1),
+		"unknown tag":            strings.Replace(media, "#EXT-X-ENDLIST", "#EXT-X-PRELOAD-HINT:TYPE=PART,URI=\"https://evil/x\"\n#EXT-X-ENDLIST", 1),
+		"lower-case uri":         strings.Replace(media, "#EXTINF:6.000,", "#EXT-X-DATERANGE:uri=\"https://evil\"\n#EXTINF:6.000,", 1),
+	} {
+		if _, err := CheckMediaPlaylist(bad, 1); err == nil {
+			t.Errorf("media playlist with %s was accepted", name)
+		}
+	}
+
+	master := "#EXTM3U\n## Generated with https://github.com/shaka-project/shaka-packager version v3.9.3\n#EXT-X-INDEPENDENT-SEGMENTS\n#EXT-X-MEDIA:TYPE=AUDIO,URI=\"audio/index.m3u8\",GROUP-ID=\"a\",NAME=\"x\",DEFAULT=NO,AUTOSELECT=YES,CHANNELS=\"2\"\n#EXT-X-STREAM-INF:BANDWIDTH=1,AVERAGE-BANDWIDTH=1,CODECS=\"avc1.64001e,mp4a.40.2\",RESOLUTION=640x360,FRAME-RATE=25.000,AUDIO=\"a\",CLOSED-CAPTIONS=NONE\n360p/index.m3u8\n"
+	if _, err := CheckMaster(master); err != nil {
+		t.Fatalf("clean master: %v", err)
+	}
+	for name, bad := range map[string]string{
+		"unquoted URI":         strings.Replace(master, `URI="audio/index.m3u8",`, `URI="audio/index.m3u8",X=1,`, 1) + "#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"a\",NAME=\"y\",URI=https://evil/a.m3u8\n",
+		"duplicate URI":        strings.Replace(master, `URI="audio/index.m3u8"`, `URI="audio/index.m3u8",URI="https://evil/a.m3u8"`, 1),
+		"URI on STREAM-INF":    strings.Replace(master, "CLOSED-CAPTIONS=NONE", "CLOSED-CAPTIONS=NONE,URI=\"https://evil/x\"", 1),
+		"unknown tag":          master + "#EXT-X-I-FRAME-STREAM-INF:BANDWIDTH=1,URI=\"https://evil/i.m3u8\"\n",
+		"session data":         master + "#EXT-X-SESSION-DATA:DATA-ID=\"x\",URI=\"https://evil/d.json\"\n",
+		"lower-case attribute": strings.Replace(master, `URI="audio/index.m3u8"`, `uri="https://evil/a.m3u8",URI="audio/index.m3u8"`, 1),
+	} {
+		if _, err := CheckMaster(bad); err == nil {
+			t.Errorf("master with %s was accepted", name)
+		}
+	}
+}
+
+func TestParseAttributes(t *testing.T) {
+	attrs, err := parseAttributes(`TYPE=AUDIO,URI="a/b.m3u8",CODECS="avc1.64001e,mp4a.40.2",X=1`)
+	if err != nil || attrs["URI"].value != "a/b.m3u8" || !attrs["URI"].quoted || attrs["CODECS"].value != "avc1.64001e,mp4a.40.2" || attrs["X"].quoted {
+		t.Fatalf("parseAttributes = %+v, %v", attrs, err)
+	}
+	for _, bad := range []string{`URI="a",URI="b"`, `uri="a"`, `URI="a`, `URI="a"x`, `=1`, `A=1,,B=2`, `A=1,`} {
+		if _, err := parseAttributes(bad); err == nil {
+			t.Errorf("parseAttributes(%q) accepted", bad)
 		}
 	}
 }

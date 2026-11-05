@@ -114,6 +114,11 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, token string, si
 		return
 	}
 
+	if route.AppDisabled {
+		denied(w) // disabling an app cuts off everything it owns
+		return
+	}
+
 	audience := tokens.AudiencePlayback
 	if route.Policy == "signed" {
 		if !signedURL {
@@ -138,8 +143,9 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, token string, si
 	case p == "master.m3u8" && audience == tokens.AudiencePlayback:
 		h.master(w, r, route.AssetID, current)
 	case p == "poster.jpg":
-		h.object(w, r, route.AssetID, current, "poster.jpg", route.Policy)
-	case audience != tokens.AudiencePlayback:
+		// Unpinned: it follows the current output, so it can't be immutable.
+		h.object(w, r, route.AssetID, current, "poster.jpg", route.Policy, "max-age=300")
+	case audience != tokens.AudiencePlayback && !strings.HasSuffix(p, "/poster.jpg"):
 		denied(w) // a thumbnail token fetches posters only
 	default:
 		outputID, rest, ok := strings.Cut(p, "/")
@@ -160,7 +166,11 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, token string, si
 			h.key(w, route.AssetID, out, v)
 			return
 		}
-		h.object(w, r, route.AssetID, outputID, rest, route.Policy)
+		if audience != tokens.AudiencePlayback && rest != "poster.jpg" {
+			denied(w)
+			return
+		}
+		h.object(w, r, route.AssetID, outputID, rest, route.Policy, "max-age=31536000, immutable")
 	}
 }
 
@@ -172,12 +182,12 @@ func (h *Handler) authorize(ctx context.Context, q *db.Queries, route db.GetRout
 		return "", http.StatusForbidden
 	}
 	key, err := q.GetSigningKey(ctx, tok.Kid)
-	if err != nil || key.RevokedAt.Valid {
+	if err != nil || key.RevokedAt.Valid || (key.RetiredAt.Valid && !key.RetiredAt.Time.After(h.Now())) {
 		return "", http.StatusForbidden
 	}
 	// An app's key signs only its own playback IDs; the server's internal
-	// key (no app) signs for any.
-	if key.AppID.Valid && key.AppID.String != route.AppID {
+	// key (no app) signs for any app of its own project.
+	if key.ProjectID != route.ProjectID || (key.AppID.Valid && key.AppID.String != route.AppID) {
 		return "", http.StatusForbidden
 	}
 	pub, err := tokens.ParsePublicKey(key.PublicKeyPem)
@@ -248,7 +258,7 @@ func (h *Handler) key(w http.ResponseWriter, assetID string, out db.Output, vers
 
 // object streams one stored file of an output, if the grammar and the
 // extension allowlist permit it.
-func (h *Handler) object(w http.ResponseWriter, r *http.Request, assetID, outputID, rel, policy string) {
+func (h *Handler) object(w http.ResponseWriter, r *http.Request, assetID, outputID, rel, policy, cache string) {
 	ctype, ok := contentTypes[path.Ext(rel)]
 	if !ok || rel == "manifest.json" || !media.ValidOutputPath(rel) {
 		notFound(w)
@@ -265,13 +275,13 @@ func (h *Handler) object(w http.ResponseWriter, r *http.Request, assetID, output
 	}
 	defer rc.Close()
 	w.Header().Set("Content-Type", ctype)
-	// A path is never reused, so pinned files are immutable. Signed bytes
-	// stay out of shared caches.
+	// A pinned path is never reused, so pinned files are immutable. Signed
+	// bytes stay out of shared caches.
 	scope := "public"
 	if policy == "signed" {
 		scope = "private"
 	}
-	w.Header().Set("Cache-Control", scope+", max-age=31536000, immutable")
+	w.Header().Set("Cache-Control", scope+", "+cache)
 	if rs, ok := rc.(io.ReadSeeker); ok {
 		http.ServeContent(w, r, "", time.Time{}, rs) // ranges and HEAD
 		return

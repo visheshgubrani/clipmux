@@ -211,6 +211,7 @@ type Upload struct {
 	CreatedAt      pgtype.Timestamptz
 	FinishedAt     pgtype.Timestamptz
 	PartsSeen      int32
+	LastSweptAt    pgtype.Timestamptz
 }
 
 type WebhookEndpoint struct {

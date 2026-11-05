@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -52,7 +51,7 @@ func runWorker(args []string, getenv func(string) string, stderr io.Writer) int 
 	}
 	w := &worker.Worker{
 		Server: *server, Key: key, WorkDir: *workDir, Tools: tools, Logger: logger,
-		HTTP: &http.Client{Timeout: 0}, // long-polls and large uploads; contexts bound them
+		HTTP: worker.DefaultHTTPClient(),
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

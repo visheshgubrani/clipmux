@@ -76,7 +76,7 @@ const createUpload = `-- name: CreateUpload :one
 
 INSERT INTO uploads (id, project_id, asset_id, multipart_id, declared_size, part_size, token_hash)
 VALUES ($1, $2, $3, $4, $5, $6, $7)
-RETURNING id, project_id, asset_id, multipart_id, declared_size, part_size, token_hash, status, last_activity_at, created_at, finished_at, parts_seen
+RETURNING id, project_id, asset_id, multipart_id, declared_size, part_size, token_hash, status, last_activity_at, created_at, finished_at, parts_seen, last_swept_at
 `
 
 type CreateUploadParams struct {
@@ -114,6 +114,7 @@ func (q *Queries) CreateUpload(ctx context.Context, arg CreateUploadParams) (Upl
 		&i.CreatedAt,
 		&i.FinishedAt,
 		&i.PartsSeen,
+		&i.LastSweptAt,
 	)
 	return i, err
 }
@@ -185,7 +186,7 @@ func (q *Queries) GetIdempotencyKey(ctx context.Context, arg GetIdempotencyKeyPa
 }
 
 const getUpload = `-- name: GetUpload :one
-SELECT id, project_id, asset_id, multipart_id, declared_size, part_size, token_hash, status, last_activity_at, created_at, finished_at, parts_seen FROM uploads WHERE id = $1
+SELECT id, project_id, asset_id, multipart_id, declared_size, part_size, token_hash, status, last_activity_at, created_at, finished_at, parts_seen, last_swept_at FROM uploads WHERE id = $1
 `
 
 func (q *Queries) GetUpload(ctx context.Context, id string) (Upload, error) {
@@ -204,14 +205,19 @@ func (q *Queries) GetUpload(ctx context.Context, id string) (Upload, error) {
 		&i.CreatedAt,
 		&i.FinishedAt,
 		&i.PartsSeen,
+		&i.LastSweptAt,
 	)
 	return i, err
 }
 
 const getUploadByTokenHash = `-- name: GetUploadByTokenHash :one
-SELECT id, project_id, asset_id, multipart_id, declared_size, part_size, token_hash, status, last_activity_at, created_at, finished_at, parts_seen FROM uploads WHERE token_hash = $1
+SELECT id, project_id, asset_id, multipart_id, declared_size, part_size, token_hash, status, last_activity_at, created_at, finished_at, parts_seen, last_swept_at FROM uploads u
+WHERE u.token_hash = $1
+  AND NOT EXISTS (SELECT 1 FROM assets a JOIN apps ap ON ap.id = a.app_id
+                  WHERE a.id = u.asset_id AND ap.disabled_at IS NOT NULL)
 `
 
+// Disabling an app cuts off everything it owns, upload tokens included.
 func (q *Queries) GetUploadByTokenHash(ctx context.Context, tokenHash []byte) (Upload, error) {
 	row := q.db.QueryRow(ctx, getUploadByTokenHash, tokenHash)
 	var i Upload
@@ -228,12 +234,15 @@ func (q *Queries) GetUploadByTokenHash(ctx context.Context, tokenHash []byte) (U
 		&i.CreatedAt,
 		&i.FinishedAt,
 		&i.PartsSeen,
+		&i.LastSweptAt,
 	)
 	return i, err
 }
 
 const listActiveUploads = `-- name: ListActiveUploads :many
-SELECT id FROM uploads WHERE status = 'active' ORDER BY last_activity_at, id LIMIT $1
+SELECT id FROM uploads WHERE status = 'active'
+ORDER BY last_swept_at NULLS FIRST, last_activity_at, id
+LIMIT $1
 `
 
 func (q *Queries) ListActiveUploads(ctx context.Context, limit int32) ([]string, error) {
@@ -289,7 +298,7 @@ func (q *Queries) ListPlaybackIDs(ctx context.Context, assetID string) ([]Playba
 }
 
 const lockUpload = `-- name: LockUpload :one
-SELECT id, project_id, asset_id, multipart_id, declared_size, part_size, token_hash, status, last_activity_at, created_at, finished_at, parts_seen FROM uploads WHERE id = $1 FOR UPDATE
+SELECT id, project_id, asset_id, multipart_id, declared_size, part_size, token_hash, status, last_activity_at, created_at, finished_at, parts_seen, last_swept_at FROM uploads WHERE id = $1 FOR UPDATE
 `
 
 func (q *Queries) LockUpload(ctx context.Context, id string) (Upload, error) {
@@ -308,6 +317,7 @@ func (q *Queries) LockUpload(ctx context.Context, id string) (Upload, error) {
 		&i.CreatedAt,
 		&i.FinishedAt,
 		&i.PartsSeen,
+		&i.LastSweptAt,
 	)
 	return i, err
 }
@@ -348,7 +358,16 @@ func (q *Queries) MarkAssetProcessing(ctx context.Context, arg MarkAssetProcessi
 	return i, err
 }
 
-const rotateUploadToken = `-- name: RotateUploadToken :exec
+const markUploadSwept = `-- name: MarkUploadSwept :exec
+UPDATE uploads SET last_swept_at = now() WHERE id = $1
+`
+
+func (q *Queries) MarkUploadSwept(ctx context.Context, id string) error {
+	_, err := q.db.Exec(ctx, markUploadSwept, id)
+	return err
+}
+
+const rotateUploadToken = `-- name: RotateUploadToken :execrows
 UPDATE uploads SET token_hash = $2 WHERE id = $1 AND status = 'active'
 `
 
@@ -357,9 +376,12 @@ type RotateUploadTokenParams struct {
 	TokenHash []byte
 }
 
-func (q *Queries) RotateUploadToken(ctx context.Context, arg RotateUploadTokenParams) error {
-	_, err := q.db.Exec(ctx, rotateUploadToken, arg.ID, arg.TokenHash)
-	return err
+func (q *Queries) RotateUploadToken(ctx context.Context, arg RotateUploadTokenParams) (int64, error) {
+	result, err := q.db.Exec(ctx, rotateUploadToken, arg.ID, arg.TokenHash)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const saveIdempotentResponse = `-- name: SaveIdempotentResponse :exec

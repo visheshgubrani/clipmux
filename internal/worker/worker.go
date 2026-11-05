@@ -15,7 +15,9 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
+	neturl "net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -42,6 +44,12 @@ type Worker struct {
 	// interval (tests).
 	Wait           time.Duration
 	HeartbeatEvery time.Duration
+	// MaxJob bounds one attempt's wall-clock time (default 6 h). Without it a
+	// wedged attempt would heartbeat its lease forever.
+	MaxJob time.Duration
+	// IdleTimeout fails a transfer that moves no bytes for this long
+	// (default 60 s), so a half-open connection can't hang the attempt.
+	IdleTimeout time.Duration
 }
 
 var errStopped = errors.New("worker: the server told this attempt to stop")
@@ -53,6 +61,7 @@ const (
 	codeTranscode         = "transcode_failed"
 	codeUpload            = "upload_failed"
 	codeCommit            = "commit_failed"
+	codeTimeout           = "job_timeout"
 )
 
 // Run claims and runs jobs until ctx ends.
@@ -124,7 +133,11 @@ func (w *Worker) handle(ctx context.Context, job *workerapi.Job) error {
 	dir := filepath.Join(w.WorkDir, job.AttemptID)
 	defer os.RemoveAll(dir)
 
-	jobCtx, cancel := context.WithCancel(ctx)
+	maxJob := w.MaxJob
+	if maxJob == 0 {
+		maxJob = 6 * time.Hour
+	}
+	jobCtx, cancel := context.WithTimeout(ctx, maxJob)
 	defer cancel()
 	hb := w.startHeartbeat(jobCtx, cancel, job)
 	m, code, err := w.process(jobCtx, job, dir, hb.report)
@@ -136,28 +149,52 @@ func (w *Worker) handle(ctx context.Context, job *workerapi.Job) error {
 		return nil
 	case ctx.Err() != nil:
 		return ctx.Err() // shutting down; the lease will lapse and the job retries
+	case errors.Is(jobCtx.Err(), context.DeadlineExceeded):
+		code, err = codeTimeout, fmt.Errorf("attempt exceeded %s", maxJob)
+		fallthrough
 	case err != nil:
 		w.Logger.Error("attempt failed", "attempt", job.AttemptID, "code", code, "err", err)
 		return w.fail(ctx, job, code == codeUnsupportedSource, code, err)
 	}
-	status, err := w.post(ctx, "/worker/v1/attempts/"+job.AttemptID+"/complete", job.AttemptToken, map[string]any{"manifest": m}, nil)
-	if err == nil && status != http.StatusOK {
-		err = fmt.Errorf("complete: HTTP %d", status)
-	}
-	if err != nil {
+	// complete is safe to retry: after a commit the server answers "stop".
+	if _, err := w.report(ctx, job, "complete", map[string]any{"manifest": m}); err != nil {
 		return w.fail(ctx, job, false, codeCommit, err)
 	}
 	return nil
 }
 
 func (w *Worker) fail(ctx context.Context, job *workerapi.Job, permanent bool, code string, cause error) error {
-	_, err := w.post(ctx, "/worker/v1/attempts/"+job.AttemptID+"/fail", job.AttemptToken, map[string]any{
+	_, err := w.report(ctx, job, "fail", map[string]any{
 		"permanent": permanent, "error_code": code, "message": truncate(cause.Error(), 500),
-	}, nil)
+	})
 	if err != nil {
 		return fmt.Errorf("report failure %s: %w (cause: %v)", code, err, cause)
 	}
 	return nil
+}
+
+// report posts to an attempt endpoint, retrying transport errors and 5xx
+// a few times, and treats any other non-200 as an error.
+func (w *Worker) report(ctx context.Context, job *workerapi.Job, call string, body any) (int, error) {
+	var status int
+	var err error
+	for try := 0; try < 4; try++ {
+		if try > 0 {
+			if serr := sleep(ctx, time.Duration(1<<(try-1))*time.Second); serr != nil {
+				return 0, serr
+			}
+		}
+		status, err = w.post(ctx, "/worker/v1/attempts/"+job.AttemptID+"/"+call, job.AttemptToken, body, nil)
+		switch {
+		case err == nil && status == http.StatusOK:
+			return status, nil
+		case err == nil && status < 500:
+			return status, fmt.Errorf("%s: HTTP %d", call, status)
+		case err == nil:
+			err = fmt.Errorf("%s: HTTP %d", call, status)
+		}
+	}
+	return status, err
 }
 
 // process downloads, transcodes and uploads. It returns a failure code with
@@ -207,7 +244,8 @@ func contentKey(e workerapi.Encryption) (media.Key, error) {
 }
 
 // download fetches the source, resuming with Range after a dropped
-// connection and asking sign for a fresh URL when one expires.
+// connection and asking sign for a fresh URL when one expires. A transfer
+// that stalls for IdleTimeout counts as dropped.
 func (w *Worker) download(ctx context.Context, job *workerapi.Job, dst string) error {
 	f, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY, 0o640)
 	if err != nil {
@@ -217,27 +255,30 @@ func (w *Worker) download(ctx context.Context, job *workerapi.Job, dst string) e
 	url := job.Source.URL
 	var lastErr error
 	for try := 0; try < 6; try++ {
+		offset, _ := f.Seek(0, io.SeekEnd)
+		if offset == job.Source.Size {
+			return nil
+		}
 		if try > 0 {
 			if err := sleep(ctx, time.Duration(try)*time.Second); err != nil {
 				return err
 			}
 		}
-		offset, _ := f.Seek(0, io.SeekEnd)
-		if offset == job.Source.Size {
-			return nil
-		}
-		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		reqCtx, watch := idle(ctx, w.idleTimeout())
+		req, _ := http.NewRequestWithContext(reqCtx, http.MethodGet, url, nil)
 		if offset > 0 {
 			req.Header.Set("Range", fmt.Sprintf("bytes=%d-", offset))
 		}
-		res, err := w.HTTP.Do(req)
+		res, err := w.httpClient().Do(req)
 		if err != nil {
-			lastErr = err
+			watch.stop()
+			lastErr = redact(err)
 			continue
 		}
 		switch {
 		case res.StatusCode == http.StatusForbidden:
 			res.Body.Close()
+			watch.stop()
 			fresh, err := w.sign(ctx, job, nil, true)
 			if err != nil {
 				return err
@@ -248,20 +289,29 @@ func (w *Worker) download(ctx context.Context, job *workerapi.Job, dst string) e
 			// The server ignored Range: start over.
 			if err := f.Truncate(0); err != nil {
 				res.Body.Close()
+				watch.stop()
 				return err
 			}
 			_, _ = f.Seek(0, io.SeekStart)
 		case res.StatusCode != http.StatusOK && res.StatusCode != http.StatusPartialContent:
 			res.Body.Close()
+			watch.stop()
 			lastErr = fmt.Errorf("download: HTTP %d", res.StatusCode)
 			continue
 		}
-		_, err = io.Copy(f, io.LimitReader(res.Body, job.Source.Size+1))
+		_, err = io.Copy(f, watch.reader(io.LimitReader(res.Body, job.Source.Size+1)))
 		res.Body.Close()
-		lastErr = err
+		watch.stop()
+		lastErr = redact(err)
 		if size, _ := f.Seek(0, io.SeekEnd); size > job.Source.Size {
 			return fmt.Errorf("download: got %d bytes, the source has %d", size, job.Source.Size)
 		}
+	}
+	if offset, _ := f.Seek(0, io.SeekEnd); offset == job.Source.Size {
+		return nil // the last try finished it
+	}
+	if lastErr == nil {
+		lastErr = errors.New("source incomplete")
 	}
 	return fmt.Errorf("download: %w", lastErr)
 }
@@ -356,20 +406,81 @@ func (w *Worker) putFile(ctx context.Context, url, path string) error {
 	if err != nil {
 		return err
 	}
-	req, _ := http.NewRequestWithContext(ctx, http.MethodPut, url, f)
+	reqCtx, watch := idle(ctx, w.idleTimeout())
+	defer watch.stop()
+	req, _ := http.NewRequestWithContext(reqCtx, http.MethodPut, url, watch.reader(f))
 	req.ContentLength = info.Size()
-	res, err := w.HTTP.Do(req)
+	res, err := w.httpClient().Do(req)
 	if err != nil {
-		return err
+		return redact(err)
 	}
 	res.Body.Close()
-	switch {
-	case res.StatusCode == http.StatusForbidden:
+	switch res.StatusCode {
+	case http.StatusOK:
+		return nil
+	case http.StatusPreconditionFailed:
+		// Outputs are create-once: an earlier try that lost its response
+		// already wrote it. Commit verifies every size.
+		return nil
+	case http.StatusForbidden:
 		return errURLExpired
-	case res.StatusCode != http.StatusOK:
+	default:
 		return fmt.Errorf("PUT: HTTP %d", res.StatusCode)
 	}
-	return nil
+}
+
+func (w *Worker) idleTimeout() time.Duration {
+	if w.IdleTimeout > 0 {
+		return w.IdleTimeout
+	}
+	return time.Minute
+}
+
+func (w *Worker) httpClient() *http.Client {
+	if w.HTTP != nil {
+		return w.HTTP
+	}
+	return DefaultHTTPClient()
+}
+
+// DefaultHTTPClient bounds connecting and waiting for response headers;
+// bodies are bounded per transfer by the idle watchdog instead, because
+// a long upload or long-poll is legitimate.
+func DefaultHTTPClient() *http.Client {
+	return &http.Client{Transport: &http.Transport{
+		Proxy:                 http.ProxyFromEnvironment,
+		DialContext:           (&net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+		TLSHandshakeTimeout:   15 * time.Second,
+		ResponseHeaderTimeout: 2 * time.Minute,
+		IdleConnTimeout:       90 * time.Second,
+		MaxIdleConnsPerHost:   8,
+	}}
+}
+
+// redact drops the query (which carries a signature) from URL errors, so
+// signed URLs never reach logs or failure reports.
+func redact(err error) error {
+	var ue *neturl.Error
+	if err == nil || !errors.As(err, &ue) {
+		return err
+	}
+	u, perr := neturl.Parse(ue.URL)
+	if perr != nil {
+		return fmt.Errorf("%s: %w", ue.Op, ue.Err)
+	}
+	u.RawQuery = ""
+	u.Path = redactPath(u.Path)
+	return fmt.Errorf("%s %s: %w", ue.Op, u.String(), ue.Err)
+}
+
+// redactPath hides a playback token embedded in a /v/{token}/ path.
+func redactPath(p string) string {
+	if rest, ok := strings.CutPrefix(p, "/v/"); ok {
+		if _, after, ok := strings.Cut(rest, "/"); ok {
+			return "/v/REDACTED/" + after
+		}
+	}
+	return p
 }
 
 // sign asks the server for PUT URLs or a fresh source URL. A stop verdict
@@ -401,9 +512,9 @@ func (w *Worker) post(ctx context.Context, path, bearer string, body, out any) (
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+bearer)
-	res, err := w.HTTP.Do(req)
+	res, err := w.httpClient().Do(req)
 	if err != nil {
-		return 0, err
+		return 0, redact(err)
 	}
 	defer res.Body.Close()
 	if out != nil && res.StatusCode == http.StatusOK {

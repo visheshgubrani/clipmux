@@ -190,6 +190,24 @@ func (q *Queries) CreateOutput(ctx context.Context, arg CreateOutputParams) (Out
 	return i, err
 }
 
+const deleteAttempt = `-- name: DeleteAttempt :exec
+DELETE FROM attempts WHERE id = $1
+`
+
+func (q *Queries) DeleteAttempt(ctx context.Context, id string) error {
+	_, err := q.db.Exec(ctx, deleteAttempt, id)
+	return err
+}
+
+const deleteWritingOutput = `-- name: DeleteWritingOutput :exec
+DELETE FROM outputs WHERE id = $1 AND status = 'writing'
+`
+
+func (q *Queries) DeleteWritingOutput(ctx context.Context, id string) error {
+	_, err := q.db.Exec(ctx, deleteWritingOutput, id)
+	return err
+}
+
 const failJob = `-- name: FailJob :exec
 UPDATE jobs SET status = 'failed', error_code = $2, finished_at = now() WHERE id = $1
 `
