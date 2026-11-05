@@ -9,6 +9,8 @@ sandboxed encode and encrypt; signed delivery; webhooks.
 and ExoPlayer (with a separate audio rendition), and killing a worker mid-job
 recovers the job.
 
+Next: [Phase 2 — Cloudflare delivery](P2-cloudflare-delivery.md).
+
 ## Milestone M1 — walking skeleton (D004)
 
 Minimal T01–T08 reach a scripted end-to-end test:
