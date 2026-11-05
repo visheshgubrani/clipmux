@@ -70,6 +70,10 @@ when you introduce or discover it; remove it when it is closed.
   create-key, create-signing-key and create-webhook.
 - The image is ~575 MB and built from source on a cache miss (~20 min); it
   isn't published, so every install builds it until launch.
+- Phase 2's exit test passes on the binary with a fake Cloudflare API and
+  the Worker's logic on Node in front of S3 (D041). Still open before the
+  phase exits on Cloudflare: the setup test through the Worker, the Chromium
+  suites against the Worker hostname, and a run on a real test zone.
 - Connect Cloudflare is tested against a fake API, not a real account: the
   Workers Paid check (plan name containing "workers" and "paid"), the script
   upload format and the custom-domain call need a run against a real test

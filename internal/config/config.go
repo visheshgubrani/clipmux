@@ -57,6 +57,13 @@ type Config struct {
 	// and routing (CLIPMUX_SELF_DIAL, e.g. caddy): a container can't always
 	// reach its own public hostname. A bare host keeps each URL's port.
 	SelfDial string
+	// CloudflareAPI is Cloudflare's API base (CLIPMUX_CLOUDFLARE_API;
+	// default the public v4 API), for an API proxy or a test double.
+	CloudflareAPI string
+	// R2Endpoint is the R2 S3 endpoint, {account_id} replaced by the
+	// account (CLIPMUX_R2_ENDPOINT; default https://{account_id}.r2.cloudflarestorage.com),
+	// e.g. the EU jurisdiction's https://{account_id}.eu.r2.cloudflarestorage.com.
+	R2Endpoint string
 	// Tools are the media binaries (CLIPMUX_FFMPEG, CLIPMUX_FFPROBE,
 	// CLIPMUX_PACKAGER; default: found on PATH).
 	Tools media.Tools
@@ -72,11 +79,13 @@ const (
 // FromEnv builds a Config from a getenv function (os.Getenv in production).
 func FromEnv(getenv func(string) string) (Config, error) {
 	cfg := Config{
-		ListenAddr:  orDefault(getenv("CLIPMUX_LISTEN"), DefaultListenAddr),
-		DatabaseURL: getenv("DATABASE_URL"),
-		DataDir:     orDefault(getenv("CLIPMUX_DATA_DIR"), DefaultDataDir),
-		SecretsKey:  getenv("CLIPMUX_SECRETS_KEY"),
-		SelfDial:    getenv("CLIPMUX_SELF_DIAL"),
+		ListenAddr:    orDefault(getenv("CLIPMUX_LISTEN"), DefaultListenAddr),
+		DatabaseURL:   getenv("DATABASE_URL"),
+		DataDir:       orDefault(getenv("CLIPMUX_DATA_DIR"), DefaultDataDir),
+		SecretsKey:    getenv("CLIPMUX_SECRETS_KEY"),
+		SelfDial:      getenv("CLIPMUX_SELF_DIAL"),
+		CloudflareAPI: getenv("CLIPMUX_CLOUDFLARE_API"),
+		R2Endpoint:    getenv("CLIPMUX_R2_ENDPOINT"),
 	}
 	if cfg.DatabaseURL == "" {
 		return Config{}, errors.New("DATABASE_URL is required")

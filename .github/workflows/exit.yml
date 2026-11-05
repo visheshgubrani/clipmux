@@ -15,6 +15,8 @@ on:
       - "packages/**"
       - "dashboard/**"
       - "e2e/**"
+      - "worker/**"
+      - "deploy/compose.dev.yml"
       - "toolchain/**"
       - "go.mod"
       - "pnpm-lock.yaml"
@@ -59,7 +61,16 @@ jobs:
           mkdir -p "$RUNNER_TEMP/bin" && toolchain/install_packager.sh "$RUNNER_TEMP/bin"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
       - run: pnpm install --frozen-lockfile && pnpm -r run build
-      - name: Real binary (playback, a killed worker, the setup test)
+      - name: S3-compatible store (R2 in the Phase 2 exit test)
+        run: |
+          docker compose -f deploy/compose.dev.yml up -d seaweedfs
+          for i in $(seq 60); do curl -s -o /dev/null http://127.0.0.1:8333/ && exit 0; sleep 1; done; exit 1
+      - name: Real binary (Phase 1 and Phase 2 exit tests)
+        env:
+          CLIPMUX_REQUIRE_S3: "1"
+          CLIPMUX_TEST_S3_ENDPOINT: http://127.0.0.1:8333
+          CLIPMUX_TEST_S3_ACCESS_KEY: clipmuxdev
+          CLIPMUX_TEST_S3_SECRET_KEY: clipmuxdevsecret0123456789
         run: CLIPMUX_E2E=1 go test ./internal/e2e -count=1 -timeout 30m -v
       - name: Chromium suites
         working-directory: e2e/web

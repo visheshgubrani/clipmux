@@ -250,6 +250,7 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 	mgmt.Life = life
 	mgmt.Cloudflare = &cloudflare.Connector{
 		Pool: pool, Stores: set, Keys: keys, URLs: b.urls, ProjectID: db.DefaultProjectID,
+		API: cfg.CloudflareAPI, R2Endpoint: cloudflare.EndpointTemplate(cfg.R2Endpoint),
 		SetupTest: func(ctx context.Context) error { _, err := tests.Queue(ctx, "urls_saved"); return err },
 	}
 	assetsAPI := assets.New(pool)

@@ -87,6 +87,15 @@ type Connector struct {
 // r2Endpoint is an account's R2 S3 API.
 func r2Endpoint(accountID string) string { return "https://" + accountID + ".r2.cloudflarestorage.com" }
 
+// EndpointTemplate turns "https://{account_id}.eu.r2.cloudflarestorage.com"
+// into an endpoint function; empty means the default.
+func EndpointTemplate(tmpl string) func(string) string {
+	if tmpl == "" {
+		return nil
+	}
+	return func(accountID string) string { return strings.ReplaceAll(tmpl, "{account_id}", accountID) }
+}
+
 var hostnameRE = regexp.MustCompile(`^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$`)
 var bucketRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$`)
 
@@ -215,7 +224,15 @@ func (c *Connector) Connect(ctx context.Context, req Request) (Result, error) {
 	}) && step("domain", func() (string, error) {
 		return req.Hostname, cf.AttachDomain(ctx, accountID, zoneID, req.Hostname, DefaultScript)
 	}) && step("media_url", func() (string, error) {
-		u, err := c.URLs.Set(ctx, c.URLs.PublicURL(), "https://"+req.Hostname)
+		want := "https://" + req.Hostname
+		if c.URLs.URLs().Pinned {
+			// The environment owns the URLs; it must already name the Worker.
+			if c.URLs.MediaURL() != want {
+				return "", fmt.Errorf("CLIPMUX_MEDIA_URL pins the media URL to %s; set it to %s and restart", c.URLs.MediaURL(), want)
+			}
+			return want + " (pinned)", nil
+		}
+		u, err := c.URLs.Set(ctx, c.URLs.PublicURL(), want)
 		return u.Media, err
 	}) && step("saved", func() (string, error) {
 		_, err := q.SaveCloudflareConnection(ctx, db.SaveCloudflareConnectionParams{

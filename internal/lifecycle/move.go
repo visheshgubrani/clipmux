@@ -80,14 +80,9 @@ func (s *Service) runMove(ctx context.Context, job db.Job) error {
 		}
 		return q.SucceedJob(ctx, job.ID)
 	}
-	// PUT URLs signed for earlier jobs may still write into the old store.
-	late, err := q.LateWritesUntil(ctx, db.LateWritesUntilParams{AssetID: job.AssetID, WindowSeconds: s.LateWrites.Seconds()})
-	if err != nil {
-		return err
-	}
-	if late.Pending {
-		return q.DeferJob(ctx, db.DeferJobParams{ID: job.ID, DelaySeconds: late.WaitSeconds})
-	}
+	// PUT URLs signed for earlier jobs may still be valid. They can only add
+	// files no manifest names, so they can't change what is copied; cleanup
+	// waits them out so none lands after the old copies are deleted.
 	src, err := s.stores.Get(ctx, from)
 	if err != nil {
 		return err
@@ -159,6 +154,13 @@ func (s *Service) moveCleanup(ctx context.Context, job db.Job, from string) erro
 	}
 	if pending > 0 {
 		return q.SetJobPhase(ctx, db.SetJobPhaseParams{ID: job.ID, Phase: pgtype.Text{String: "cleanup", Valid: true}, DelaySeconds: moveCleanupDelay.Seconds()})
+	}
+	late, err := q.LateWritesUntil(ctx, db.LateWritesUntilParams{AssetID: job.AssetID, WindowSeconds: s.LateWrites.Seconds()})
+	if err != nil {
+		return err
+	}
+	if late.Pending {
+		return q.SetJobPhase(ctx, db.SetJobPhaseParams{ID: job.ID, Phase: pgtype.Text{String: "cleanup", Valid: true}, DelaySeconds: late.WaitSeconds})
 	}
 	old, err := s.stores.Get(ctx, from)
 	if err != nil {

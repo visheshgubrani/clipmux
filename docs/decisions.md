@@ -280,8 +280,8 @@ Decisions within the architecture's rules and the P2 open questions, made in P2-
 ## D038 The move job — accepted (2026-11-05)
 Decisions within the architecture's rules, made in P2-T05:
 - `move` is a control-plane job like `delete` (D008, D019), claimed by the same loop, and it records `source_storage_id` and `target_storage_id`. The one-active-job index makes it exclusive with uploads' transcode, reencode and delete; a delete cancels it.
-- One pass waits out PUT URLs that earlier jobs may still use (`LateWritesUntil`). It then copies `uploads/{id}/` and the prefix of every committed or retired output (never a writing or lost attempt's files), skipping objects already there at the same size, so a crashed pass resumes. Objects over 5 GiB go up through the target's multipart upload in 32 MiB parts. Every size is verified by listing the target. One transaction then switches `storage_id` (only if it is still the source), queues a `refresh` of every live route (its `backend` changes) and `video.asset.updated` with `job: {kind: "move"}`.
-- Cleanup is a second phase, at least 2 minutes later (past the Worker's 60 s route cache) and only once the asset's route rows are confirmed. It deletes the old prefixes and succeeds the job.
+- One pass copies `uploads/{id}/` and the prefix of every committed or retired output (never a writing or lost attempt's files), skipping objects already there at the same size, so a crashed pass resumes. Objects over 5 GiB go up through the target's multipart upload in 32 MiB parts. Every size is verified by listing the target. One transaction then switches `storage_id` (only if it is still the source), queues a `refresh` of every live route (its `backend` changes) and `video.asset.updated` with `job: {kind: "move"}`.
+- Cleanup is a second phase, at least 2 minutes later (past the Worker's 60 s route cache), once the asset's route rows are confirmed and PUT URLs signed for earlier jobs have expired (`LateWritesUntil`; such a URL can only add a file no manifest names, so it can't affect the copy). It deletes the old prefixes and succeeds the job.
 - `POST /v1/storage/moves` (owner) queues a move to the default store for every ready or errored asset elsewhere with no active job. `GET /v1/storage/moves` reports how many assets are still off the default store and the move jobs by state. The dashboard's Delivery page offers the move after Connect Cloudflare and polls progress.
 
 ## D039 Import from URL — accepted (2026-11-05)
@@ -294,6 +294,19 @@ Decisions within the architecture's rules, made in P2-T06:
 
 ## D040 Phase 1 exit — accepted (2026-11-05)
 The Phase 1 exit test passed in CI at `14586f5` (visheshgubrani/clipmux#2): CI run 42072842722 (Go, TypeScript, lint, sqlc, toolchain, and the image under compose with the setup test through Caddy), Exit test run 42072842708 (the real binary: signed encrypted playback, a SIGKILLed worker recovering on a new attempt and output, the setup test; the Chromium suites; ExoPlayer on an Android emulator) and Exit test (Safari) run 42072842730 (native HLS with separate audio, and `<clipmux-player>` refresh). Getting there took four CI fixes: building the packages before type-checking, freeing disk for the emulator, the kill-worker test waiting out the first-boot setup test, and the packager in its own image layer, plus bounded install steps. Phase 2 started on its branch before this exit, but nothing of it merged before it. `docs/plans/launch.md` is now unblocked (D005); the owner put Phase 2 first.
+
+## D041 Phase 2 exit test — accepted (2026-11-05)
+Made in P2-T07:
+- `TestPhase2ExitAppsPlayUnchangedThroughTheWorker` (`internal/e2e`, CI's Linux exit job with SeaweedFS required) runs the real binary. An app (API key, signing key, a playing filesystem asset) is set up on built-in delivery, then Connect Cloudflare runs against a fake Cloudflare API, with R2 played by the test S3 store under the identity the fake token derives. Then:
+  - The same token for the same playback ID plays at the edge through `origin`.
+  - A new upload with the same key lands in R2 and plays from it (ffmpeg as the HLS client).
+  - A segment read straight from the bucket is ciphertext.
+  - A revoked ID returns 404 at the edge within 65 s; 60 s was measured, the shipped TTL, with no test knob.
+  - After the library move, the old asset's route says `r2`, and with serve stopped it plays from R2 in a fresh isolate.
+- The edge is `worker/e2e/harness.ts`: the Worker's own `createWorker` behind a Node HTTP server, its `MEDIA` binding reading the same bucket through a minimal SigV4 client. workerd's local R2 can't share a bucket with serve's S3 writes; the bundle's behaviour in workerd is covered by `worker/src/workerd.test.ts`.
+- `CLIPMUX_CLOUDFLARE_API` (the API base) and `CLIPMUX_R2_ENDPOINT` (with `{account_id}`, e.g. the EU jurisdiction's endpoint) are configuration. When the environment pins the URLs, Connect's media URL step passes only if `CLIPMUX_MEDIA_URL` already names the Worker's hostname, and otherwise says to set it.
+- The move job's late-write wait moved from the copy to the cleanup (D038). The exit test found it held every move for 16 minutes after the asset's last job, though a late PUT can't affect the copy.
+- Not covered here, and required before Phase 2 exits against Cloudflare: the setup test through the Worker (its media URL must resolve to the edge), the Chromium suites against the Worker hostname, and the same run on a real Cloudflare account (D037). These need a test zone, a scoped token and Workers Paid as repository secrets.
 
 ## D007 Shaka Packager 3.9.3 — accepted (2026-11-05)
 Decision: pin v3.9.3 (`toolchain/versions.env`), the version clipmux-lms runs with AES-128 in production, which needs the init-segment workaround for Shaka issue 1616. Move to a release that fixes 1616 when one exists, re-running the Phase 1 player tests.

@@ -73,13 +73,13 @@ func freePort(t *testing.T) int {
 
 // start boots serve on a fresh schema with the built-in worker, its public
 // URL pinned to where it listens.
-func start(t *testing.T) *instance { return boot(t, true) }
+func start(t *testing.T, extraEnv ...string) *instance { return boot(t, true, extraEnv...) }
 
 // startUnpinned boots serve without CLIPMUX_PUBLIC_URL, as a fresh install
 // whose owner picks the URLs at first boot.
 func startUnpinned(t *testing.T) *instance { return boot(t, false) }
 
-func boot(t *testing.T, pinned bool) *instance {
+func boot(t *testing.T, pinned bool, extraEnv ...string) *instance {
 	t.Helper()
 	pool := dbtest.New(t)
 	var schema string
@@ -106,6 +106,7 @@ func boot(t *testing.T, pinned bool) *instance {
 	if pinned {
 		in.env = append(in.env, "CLIPMUX_PUBLIC_URL="+in.url)
 	}
+	in.env = append(in.env, extraEnv...)
 	for _, k := range []string{"CLIPMUX_PACKAGER", "CLIPMUX_UNSANDBOXED_WORKER"} {
 		if v := os.Getenv(k); v != "" {
 			in.env = append(in.env, k+"="+v)
