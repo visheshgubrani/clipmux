@@ -369,15 +369,22 @@ func errorKind(err error) string {
 	return "the request failed"
 }
 
-func (r *Runner) waitReady(ctx context.Context, assetID string) error {
-	ctx, cancel := context.WithTimeout(ctx, r.EncodeTimeout)
+func (r *Runner) waitReady(parent context.Context, assetID string) error {
+	ctx, cancel := context.WithTimeout(parent, r.EncodeTimeout)
 	defer cancel()
+	// A server shutting down cancels parent; that isn't a slow worker.
+	timedOut := func() error {
+		if err := parent.Err(); err != nil {
+			return fmt.Errorf("stopped before the sample was ready: %w", err)
+		}
+		return fmt.Errorf("not ready after %s; is a worker running?", r.EncodeTimeout)
+	}
 	q := db.New(r.pool)
 	for {
 		a, err := q.GetAssetByID(ctx, assetID)
 		switch {
 		case err != nil && ctx.Err() != nil:
-			return fmt.Errorf("not ready after %s; is a worker running?", r.EncodeTimeout)
+			return timedOut()
 		case err != nil:
 			return err
 		case a.Status == "ready":
@@ -387,7 +394,7 @@ func (r *Runner) waitReady(ctx context.Context, assetID string) error {
 		}
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("not ready after %s; is a worker running?", r.EncodeTimeout)
+			return timedOut()
 		case <-time.After(r.Poll):
 		}
 	}
