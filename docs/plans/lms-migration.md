@@ -21,7 +21,7 @@ met. Then `clipmux-lms` retires.
 | --- | --- | --- |
 | Single-file signed upload token tied to an LMS record | `POST /v1/uploads` with `passthrough` + `upload_token` | Phase 1 |
 | Find a video by LMS reference (recovery) | `GET /v1/assets?passthrough=` | Phase 1 (T05) |
-| Signed HLS, renewable in the player | App backend signs ES256 tokens; player `getToken()` | Phase 1 — LMS signs tokens itself instead of calling `/playback-token` |
+| Signed HLS, renewable in the player | App backend signs ES256 tokens; `@clipmux/player` (Video.js) `getToken()` | Phase 1 — LMS signs tokens itself instead of calling `/playback-token`, and swaps its vendored Vidstack player for the Video.js one |
 | Webhook trigger + re-fetch | Outbox webhooks + `GET /v1/assets/{id}` | Phase 1 |
 | Delete a video | `DELETE /v1/assets/{id}` | Phase 1 |
 | Auto subtitles, chapters, transcript VTT (feed AI summary/quiz/chat) | **Not designed** | Decide: add to ClipMux before migration, or move transcription into the LMS |

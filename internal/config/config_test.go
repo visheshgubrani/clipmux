@@ -74,3 +74,17 @@ func TestBuiltinWorkerAndTools(t *testing.T) {
 		t.Fatal("an unclear boolean must be refused")
 	}
 }
+
+func TestMediaURLDefaultsToThePublicURL(t *testing.T) {
+	cfg, err := FromEnv(env(map[string]string{"DATABASE_URL": "postgres://x", "CLIPMUX_PUBLIC_URL": "https://video.example.com"}))
+	if err != nil || cfg.MediaURL != "https://video.example.com" {
+		t.Fatalf("got %q, %v", cfg.MediaURL, err)
+	}
+	cfg, err = FromEnv(env(map[string]string{"DATABASE_URL": "postgres://x", "CLIPMUX_MEDIA_URL": "https://media.example.net/"}))
+	if err != nil || cfg.MediaURL != "https://media.example.net" {
+		t.Fatalf("got %q, %v", cfg.MediaURL, err)
+	}
+	if _, err := FromEnv(env(map[string]string{"DATABASE_URL": "postgres://x", "CLIPMUX_MEDIA_URL": "https://m.example.net/path"})); err == nil {
+		t.Fatal("a media URL with a path must be refused")
+	}
+}

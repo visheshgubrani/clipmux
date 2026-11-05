@@ -24,9 +24,15 @@ make run          # clipmux serve on :8080 (prints a setup token)
 Until the dashboard exists, create an app and API key on the host:
 
 ```bash
-DATABASE_URL=postgres://clipmux:clipmux@localhost:5444/clipmux?sslmode=disable \
-  go run ./cmd/clipmux admin create-key --app MyApp
+export DATABASE_URL=postgres://clipmux:clipmux@localhost:5444/clipmux?sslmode=disable
+go run ./cmd/clipmux admin create-key --app MyApp          # API key for uploads and reads
+go run ./cmd/clipmux admin create-signing-key --app MyApp  # ES256 key your backend signs playback tokens with
 ```
+
+Playback URLs are `{base_url}/v/{token}/{playback_id}/master.m3u8` (signed) and
+`{base_url}/p/{playback_id}/master.m3u8` (public); tokens are ES256 JWTs with
+`sub` = playback ID, `aud` = `v` (or `t` for posters), `iat`, `exp` and the
+`kid` from `create-signing-key`.
 
 Media tools (needed from P1-T06): FFmpeg from the pinned recipe in
 [toolchain/](toolchain/) and Shaka Packager via `toolchain/install_packager.sh`.

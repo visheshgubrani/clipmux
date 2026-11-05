@@ -53,7 +53,9 @@ func newFx(t *testing.T) *fx {
 	}
 	t.Cleanup(func() { store.Close() })
 	q := queue.New(pool)
-	return &fx{t: t, pool: pool, store: store, q: q, c: New(pool, q, store)}
+	c := New(pool, q, store)
+	c.BaseURL = "https://media.example"
+	return &fx{t: t, pool: pool, store: store, q: q, c: c}
 }
 
 func (f *fx) exec(sql string, args ...any) {
@@ -182,6 +184,9 @@ func TestFirstCommitMakesTheAssetReadyAfterItsRoutesPublish(t *testing.T) {
 	pids := f.scalar(`SELECT payload->'data'->'playback_ids' FROM outbox WHERE kind = 'webhook'`)
 	if raw, _ := json.Marshal(pids); !strings.Contains(string(raw), "pid_0") || !strings.Contains(string(raw), "pid_1") {
 		t.Fatalf("ready event playback_ids = %s", raw)
+	}
+	if b := f.scalar(`SELECT payload->'data'->>'base_url' FROM outbox WHERE kind = 'webhook'`); b != "https://media.example" {
+		t.Fatalf("ready event base_url = %v", b)
 	}
 	if m := f.scalar(`SELECT manifest->>'key_version' FROM outputs WHERE id = $1`, c.Output.ID); m != "1" {
 		t.Fatalf("stored manifest key_version = %v", m)

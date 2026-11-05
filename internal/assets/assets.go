@@ -27,23 +27,27 @@ type PlaybackID struct {
 
 // View is an asset as the API returns it.
 type View struct {
-	ID          string       `json:"id"`
-	Status      string       `json:"status"`
-	Version     int64        `json:"version"`
-	Passthrough string       `json:"passthrough,omitempty"`
-	ErrorCode   string       `json:"error_code,omitempty"`
+	ID          string `json:"id"`
+	Status      string `json:"status"`
+	Version     int64  `json:"version"`
+	Passthrough string `json:"passthrough,omitempty"`
+	ErrorCode   string `json:"error_code,omitempty"`
+	// BaseURL is the media origin; playback URLs are
+	// {base_url}/v/{token}/{playback_id}/master.m3u8 (signed) and
+	// {base_url}/p/{playback_id}/master.m3u8 (public).
+	BaseURL     string       `json:"base_url"`
 	PlaybackIDs []PlaybackID `json:"playback_ids"`
 	CreatedAt   time.Time    `json:"created_at"`
 }
 
 // Load builds the view of an asset.
-func Load(ctx context.Context, q *db.Queries, a db.Asset) (View, error) {
+func Load(ctx context.Context, q *db.Queries, a db.Asset, baseURL string) (View, error) {
 	pids, err := q.ListPlaybackIDs(ctx, a.ID)
 	if err != nil {
 		return View{}, err
 	}
 	v := View{
-		ID: a.ID, Status: a.Status, Version: a.Version,
+		ID: a.ID, Status: a.Status, Version: a.Version, BaseURL: baseURL,
 		Passthrough: a.Passthrough.String, ErrorCode: a.ErrorCode.String,
 		PlaybackIDs: make([]PlaybackID, 0, len(pids)), CreatedAt: a.CreatedAt.Time,
 	}
@@ -55,11 +59,12 @@ func Load(ctx context.Context, q *db.Queries, a db.Asset) (View, error) {
 
 // API serves GET /v1/assets and GET /v1/assets/{id}.
 type API struct {
-	pool *pgxpool.Pool
+	pool    *pgxpool.Pool
+	baseURL string
 }
 
 // New returns the assets API.
-func New(pool *pgxpool.Pool) *API { return &API{pool: pool} }
+func New(pool *pgxpool.Pool, baseURL string) *API { return &API{pool: pool, baseURL: baseURL} }
 
 // Register adds the routes to mux.
 func (a *API) Register(mux *http.ServeMux) {
@@ -95,7 +100,7 @@ func (a *API) get(w http.ResponseWriter, r *http.Request) {
 		httpjson.Error(w, http.StatusInternalServerError, "internal", "internal error")
 		return
 	}
-	v, err := Load(r.Context(), q, asset)
+	v, err := Load(r.Context(), q, asset, a.baseURL)
 	if err != nil {
 		httpjson.Error(w, http.StatusInternalServerError, "internal", "internal error")
 		return
@@ -125,7 +130,7 @@ func (a *API) list(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]View, 0, len(rows))
 	for _, asset := range rows {
-		v, err := Load(r.Context(), q, asset)
+		v, err := Load(r.Context(), q, asset, a.baseURL)
 		if err != nil {
 			httpjson.Error(w, http.StatusInternalServerError, "internal", "internal error")
 			return

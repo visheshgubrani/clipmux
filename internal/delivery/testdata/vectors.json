@@ -1,0 +1,424 @@
+{
+  "description": "Delivery contract shared by the built-in Go handler and the Phase 2 Cloudflare Worker. Each case is a GET relative to the media origin; {name} in a path is replaced by tokens[name]. Signing keys here are test-only. Regenerate keys and tokens with: go test ./internal/delivery -run TestVectors -update",
+  "now": 1800000000,
+  "content_key_secret_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+  "content_key_version": 1,
+  "max_token_lifetime_seconds": 604800,
+  "apps": [
+    "app_a",
+    "app_b"
+  ],
+  "signing_keys": [
+    {
+      "kid": "kid_app_a",
+      "app_id": "app_a",
+      "public_key_pem": "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE5SXRtdbEO6MaacfKhK7n172wxmVz\nieIBKzkSy8UaT+9O/0j77uzkhNc530kI9hgBAXEaTFbeMn3iwzMimx5+pg==\n-----END PUBLIC KEY-----\n",
+      "private_key_pem": "-----BEGIN PRIVATE KEY-----\nMIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgrn4oT1UVEVxGwlYB\nYQjAJ6SMtIDvgsYAcms4oeajoZ2hRANCAATlJdG11sQ7oxppx8qErufXvbDGZXOJ\n4gErORLLxRpP707/SPvu7OSE1znfSQj2GAEBcRpMVt4yfeLDMyKbHn6m\n-----END PRIVATE KEY-----\n"
+    },
+    {
+      "kid": "kid_app_b",
+      "app_id": "app_b",
+      "public_key_pem": "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEup8rnRcboiipkrve+0EgSd+EGOgK\nO8jbfyxakYb6JXRk4U7nao5B779WzuYmFLOndQscnm7jGMzzrTFUoH/EXg==\n-----END PUBLIC KEY-----\n",
+      "private_key_pem": "-----BEGIN PRIVATE KEY-----\nMIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgSnV4I7xqh7SdYTtQ\n6/Vt3icfFj+BZdWtfzKbwlrAT4GhRANCAAS6nyudFxuiKKmSu977QSBJ34QY6Ao7\nyNt/LFqRhvoldGThTudqjkHvv1bO5iYUs6d1CxyebuMYzPOtMVSgf8Re\n-----END PRIVATE KEY-----\n"
+    },
+    {
+      "kid": "kid_revoked",
+      "app_id": "app_a",
+      "revoked": true,
+      "public_key_pem": "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE7Pn8e6vFZG7oJlRpfTMqwX1izMqk\nX6E0Rj0Xn8y5YXMnTCLIZaFlz7Z0yFuA3PvtcSomkKe66OpH9TgKwlR1aQ==\n-----END PUBLIC KEY-----\n",
+      "private_key_pem": "-----BEGIN PRIVATE KEY-----\nMIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgIExidn5OvP+XnL6Q\nt55wGdnRt7Al1dau96vruf/gbNqhRANCAATs+fx7q8VkbugmVGl9MyrBfWLMyqRf\noTRGPRefzLlhcydMIshloWXPtnTIW4Dc++1xKiaQp7ro6kf1OArCVHVp\n-----END PRIVATE KEY-----\n"
+    },
+    {
+      "kid": "kid_internal",
+      "app_id": "",
+      "public_key_pem": "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEZeAHEdex2aImlChqPmTTtJGXLkjR\nUn6GXI21sL+nTpI2R2axHzzMPlYAb+SU4n3up26Ra+ZhqOfR8NtVhT9plQ==\n-----END PUBLIC KEY-----\n",
+      "private_key_pem": "-----BEGIN PRIVATE KEY-----\nMIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg13vv+xHI2ZocuuLf\nRmrLZYHCWB+OXgSAXTkHBFFRO6ihRANCAARl4AcR17HZoiaUKGo+ZNO0kZcuSNFS\nfoZcjbWwv6dOkjZHZrEfPMw+VgBv5JTife6nbpFr5mGo59Hw21WFP2mV\n-----END PRIVATE KEY-----\n"
+    }
+  ],
+  "assets": [
+    {
+      "app_id": "app_a",
+      "current_output_id": "out_v",
+      "id": "ast_v",
+      "status": "ready"
+    },
+    {
+      "app_id": "app_a",
+      "current_output_id": "out_p",
+      "id": "ast_p",
+      "status": "ready"
+    },
+    {
+      "app_id": "app_a",
+      "current_output_id": "",
+      "id": "ast_n",
+      "status": "processing"
+    }
+  ],
+  "outputs": [
+    {
+      "id": "out_v",
+      "asset_id": "ast_v",
+      "status": "committed",
+      "key_version": 1
+    },
+    {
+      "id": "out_v_old",
+      "asset_id": "ast_v",
+      "status": "retired",
+      "key_version": 1
+    },
+    {
+      "id": "out_w",
+      "asset_id": "ast_v",
+      "status": "writing",
+      "key_version": 1
+    },
+    {
+      "id": "out_p",
+      "asset_id": "ast_p",
+      "status": "committed",
+      "key_version": 1
+    },
+    {
+      "id": "out_x",
+      "asset_id": "ast_p",
+      "status": "committed",
+      "key_version": 1
+    }
+  ],
+  "playback_ids": [
+    {
+      "id": "pid_signed",
+      "asset_id": "ast_v",
+      "policy": "signed",
+      "status": "active"
+    },
+    {
+      "id": "pid_public",
+      "asset_id": "ast_p",
+      "policy": "public",
+      "status": "active"
+    },
+    {
+      "id": "pid_revoked",
+      "asset_id": "ast_v",
+      "policy": "signed",
+      "status": "revoked"
+    },
+    {
+      "id": "pid_pending",
+      "asset_id": "ast_n",
+      "policy": "signed",
+      "status": "active"
+    }
+  ],
+  "files": {
+    "360p/index.m3u8": "#EXTM3U\n#EXT-X-MAP:URI=\"init.mp4\"\n#EXT-X-KEY:METHOD=AES-128,URI=\"../key/1\",IV=0x00000000000000000000000000000001\n#EXTINF:6.000,\nseg_00001.m4s\n#EXT-X-ENDLIST\n",
+    "360p/init.mp4": "init",
+    "360p/seg_00001.m4s": "segment-one",
+    "manifest.json": "{}",
+    "master.m3u8": "#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,URI=\"audio/index.m3u8\",GROUP-ID=\"a\",NAME=\"x\"\n#EXT-X-STREAM-INF:BANDWIDTH=800000,AUDIO=\"a\"\n360p/index.m3u8\n",
+    "poster.jpg": "jpeg-bytes"
+  },
+  "token_claims": {
+    "bad_aud": {
+      "kid": "kid_app_a",
+      "sub": "pid_signed",
+      "aud": "x",
+      "iat": 1799999940,
+      "exp": 1800003600
+    },
+    "expired": {
+      "kid": "kid_app_a",
+      "sub": "pid_signed",
+      "aud": "v",
+      "iat": 1799992800,
+      "exp": 1799999940
+    },
+    "future_iat": {
+      "kid": "kid_app_a",
+      "sub": "pid_signed",
+      "aud": "v",
+      "iat": 1800003600,
+      "exp": 1800007200
+    },
+    "internal": {
+      "kid": "kid_internal",
+      "sub": "pid_signed",
+      "aud": "v",
+      "iat": 1799999940,
+      "exp": 1800003600
+    },
+    "other_app": {
+      "kid": "kid_app_b",
+      "sub": "pid_signed",
+      "aud": "v",
+      "iat": 1799999940,
+      "exp": 1800003600
+    },
+    "other_sub": {
+      "kid": "kid_app_a",
+      "sub": "pid_public",
+      "aud": "v",
+      "iat": 1799999940,
+      "exp": 1800003600
+    },
+    "revoked": {
+      "kid": "kid_revoked",
+      "sub": "pid_signed",
+      "aud": "v",
+      "iat": 1799999940,
+      "exp": 1800003600
+    },
+    "t": {
+      "kid": "kid_app_a",
+      "sub": "pid_signed",
+      "aud": "t",
+      "iat": 1799999940,
+      "exp": 1800003600
+    },
+    "too_long": {
+      "kid": "kid_app_a",
+      "sub": "pid_signed",
+      "aud": "v",
+      "iat": 1799999940,
+      "exp": 1800691200
+    },
+    "unknown_kid": {
+      "kid": "kid_nobody",
+      "sub": "pid_signed",
+      "aud": "v",
+      "iat": 1799999940,
+      "exp": 1800003600
+    },
+    "v": {
+      "kid": "kid_app_a",
+      "sub": "pid_signed",
+      "aud": "v",
+      "iat": 1799999940,
+      "exp": 1800003600
+    }
+  },
+  "tokens": {
+    "bad_aud": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9hcHBfYSIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJwaWRfc2lnbmVkIiwiYXVkIjoieCIsImlhdCI6MTc5OTk5OTk0MCwiZXhwIjoxODAwMDAzNjAwfQ.Yvdc5A5hZr5AmVMC5wxPSWecLYjnwqOsHqNP-Z14qec8G-Uafdl4PonKEqe0hfRQFuUDB-UC3UYwiIgLgQ3o3A",
+    "expired": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9hcHBfYSIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJwaWRfc2lnbmVkIiwiYXVkIjoidiIsImlhdCI6MTc5OTk5MjgwMCwiZXhwIjoxNzk5OTk5OTQwfQ.D1TvuLEIccWYnht59d1IVCBumeIp94CaKzyixleojejr1dA5Kq4CWTzHWpO1A-x8uF3BcHB0I602AuczWZ6D6A",
+    "future_iat": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9hcHBfYSIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJwaWRfc2lnbmVkIiwiYXVkIjoidiIsImlhdCI6MTgwMDAwMzYwMCwiZXhwIjoxODAwMDA3MjAwfQ.m_WaqfeMx4qchhIdfRIYqwr-XE-AQw3HNiFRL72kuBmUERod5q4n2Lh0g1rD9oTsmT7tGt6YqqDQ7tS7rqiEyg",
+    "internal": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9pbnRlcm5hbCIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJwaWRfc2lnbmVkIiwiYXVkIjoidiIsImlhdCI6MTc5OTk5OTk0MCwiZXhwIjoxODAwMDAzNjAwfQ.zKqdEnqccY0gcmYcOSId1jEgFsURZISjwUw-ZoLgjCwV73HhgqlwiUSjUfj4P_l8NziNECMMlMtzLh8Rgjap9w",
+    "noncanonical": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9hcHBfYSIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJwaWRfc2lnbmVkIiwiYXVkIjoidiIsImlhdCI6MTc5OTk5OTk0MCwiZXhwIjoxODAwMDAzNjAwfQ.rCjpg9TAWFiHETonBi1bmAUJU9BNaPRKj8o-jzfS3J7SBJP-_n78bRR4xrcir8BuoS-noKM8ZiZj-Y_LuNEF7x",
+    "other_app": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9hcHBfYiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJwaWRfc2lnbmVkIiwiYXVkIjoidiIsImlhdCI6MTc5OTk5OTk0MCwiZXhwIjoxODAwMDAzNjAwfQ.yyo5R31Z-cr3mMZ8KTiAPESnEh3HzQlUB1Xqi_klSfQaef-cTK-ktI1ttqumWE7l4Lu70ua0r6nRm6EjXTIKCg",
+    "other_sub": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9hcHBfYSIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJwaWRfcHVibGljIiwiYXVkIjoidiIsImlhdCI6MTc5OTk5OTk0MCwiZXhwIjoxODAwMDAzNjAwfQ.eXzw1V5CX47j9rp29HwY_6ok1pKPIjoaX874f4z1LBZ5RmokAEW-gol34h6MC1-LpE4jTvOQgg55LL5ehAwoEQ",
+    "revoked": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9yZXZva2VkIiwidHlwIjoiSldUIn0.eyJzdWIiOiJwaWRfc2lnbmVkIiwiYXVkIjoidiIsImlhdCI6MTc5OTk5OTk0MCwiZXhwIjoxODAwMDAzNjAwfQ.4pga6owhr42UogHbeyy7E9fu2VXwPltRUscFjfqEpQJaU-em7P1R-xjDmAc9EFWNh8CGZr-84bz11xnlfU2hWg",
+    "t": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9hcHBfYSIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJwaWRfc2lnbmVkIiwiYXVkIjoidCIsImlhdCI6MTc5OTk5OTk0MCwiZXhwIjoxODAwMDAzNjAwfQ.a58LQd0mBTUqFVlBvU_DYa4cnsUA8Zjw_C2EMKrTX2TCEObH5DG9VTM9L_JmmIfH5WetjBjLhLG8b09V2q1DPQ",
+    "tampered": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9hcHBfYSIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJwaWRfc2lnbmVkIiwiYXVkIjoidiIsImlhdCI6MTc5OTk5OTk0MCwiZXhwIjoxODAwMDAzNjAwfQ.rCjpg9TAWFiHETonBi1bmAUJU9BNaPRKj8o-jzfS3J7SBJP-_n78bRR4xrcir8BuoS-noKM8ZiZj-Y_LuOEF7w",
+    "too_long": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9hcHBfYSIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJwaWRfc2lnbmVkIiwiYXVkIjoidiIsImlhdCI6MTc5OTk5OTk0MCwiZXhwIjoxODAwNjkxMjAwfQ.t1_nnFWWHOo4VTytEzVbNamwpuw_aA3Q-I5r3yCblHsPBq8asX8DJ6IxZCfOoFDe9-s43tajm0v9DeLWbJjFhg",
+    "unknown_kid": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9ub2JvZHkiLCJ0eXAiOiJKV1QifQ.eyJzdWIiOiJwaWRfc2lnbmVkIiwiYXVkIjoidiIsImlhdCI6MTc5OTk5OTk0MCwiZXhwIjoxODAwMDAzNjAwfQ.5nsPG_9V2sxKGaEgJpaqqld_g_Hq2XFUDq0LPoJbxssV3cTHLaFGSfUGoMn03Xr_HtZlHpuIcRhgdDrWt0r2Lw",
+    "v": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9hcHBfYSIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJwaWRfc2lnbmVkIiwiYXVkIjoidiIsImlhdCI6MTc5OTk5OTk0MCwiZXhwIjoxODAwMDAzNjAwfQ.rCjpg9TAWFiHETonBi1bmAUJU9BNaPRKj8o-jzfS3J7SBJP-_n78bRR4xrcir8BuoS-noKM8ZiZj-Y_LuNEF7w"
+  },
+  "cases": [
+    {
+      "name": "signed master is generated with the output pinned",
+      "path": "/v/{v}/pid_signed/master.m3u8",
+      "status": 200,
+      "content_type": "application/vnd.apple.mpegurl",
+      "cache_control": "no-store",
+      "body": "#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,URI=\"out_v/audio/index.m3u8\",GROUP-ID=\"a\",NAME=\"x\"\n#EXT-X-STREAM-INF:BANDWIDTH=800000,AUDIO=\"a\"\nout_v/360p/index.m3u8\n"
+    },
+    {
+      "name": "a signed ID without a token is denied",
+      "path": "/p/pid_signed/master.m3u8",
+      "status": 403
+    },
+    {
+      "name": "an unknown ID is refused",
+      "path": "/v/{v}/pid_nope/master.m3u8",
+      "status": 404
+    },
+    {
+      "name": "a revoked ID is refused",
+      "path": "/v/{v}/pid_revoked/master.m3u8",
+      "status": 404
+    },
+    {
+      "name": "an asset without an output is not servable",
+      "path": "/v/{v}/pid_pending/master.m3u8",
+      "status": 404
+    },
+    {
+      "name": "a pinned segment",
+      "path": "/v/{v}/pid_signed/out_v/360p/seg_00001.m4s",
+      "status": 200,
+      "content_type": "video/iso.segment",
+      "cache_control": "private, max-age=31536000, immutable",
+      "body": "segment-one"
+    },
+    {
+      "name": "a pinned media playlist",
+      "path": "/v/{v}/pid_signed/out_v/360p/index.m3u8",
+      "status": 200,
+      "content_type": "application/vnd.apple.mpegurl"
+    },
+    {
+      "name": "an init segment",
+      "path": "/v/{v}/pid_signed/out_v/360p/init.mp4",
+      "status": 200,
+      "content_type": "video/mp4",
+      "body": "init"
+    },
+    {
+      "name": "the content key",
+      "path": "/v/{v}/pid_signed/out_v/key/1",
+      "status": 200,
+      "content_type": "application/octet-stream",
+      "cache_control": "no-store",
+      "body_hex": "8d33a325736d6290dd0b4d1bcb9bab85"
+    },
+    {
+      "name": "a retired output still serves its key",
+      "path": "/v/{v}/pid_signed/out_v_old/key/1",
+      "status": 200,
+      "body_hex": "3d0827ee773ac15123957d5e1d34d0c5"
+    },
+    {
+      "name": "a key version the output doesn't use",
+      "path": "/v/{v}/pid_signed/out_v/key/2",
+      "status": 404
+    },
+    {
+      "name": "a thumbnail token can't fetch the key",
+      "path": "/v/{t}/pid_signed/out_v/key/1",
+      "status": 403
+    },
+    {
+      "name": "a thumbnail token fetches the poster",
+      "path": "/v/{t}/pid_signed/poster.jpg",
+      "status": 200,
+      "content_type": "image/jpeg",
+      "body": "jpeg-bytes"
+    },
+    {
+      "name": "a thumbnail token can't fetch a segment",
+      "path": "/v/{t}/pid_signed/out_v/360p/seg_00001.m4s",
+      "status": 403
+    },
+    {
+      "name": "a thumbnail token can't fetch the master",
+      "path": "/v/{t}/pid_signed/master.m3u8",
+      "status": 403
+    },
+    {
+      "name": "an expired token asks for a new one",
+      "path": "/v/{expired}/pid_signed/master.m3u8",
+      "status": 401
+    },
+    {
+      "name": "a token for another playback ID",
+      "path": "/v/{other_sub}/pid_signed/master.m3u8",
+      "status": 403
+    },
+    {
+      "name": "a token signed by another app's key",
+      "path": "/v/{other_app}/pid_signed/master.m3u8",
+      "status": 403
+    },
+    {
+      "name": "a token signed by a revoked key",
+      "path": "/v/{revoked}/pid_signed/master.m3u8",
+      "status": 403
+    },
+    {
+      "name": "a token longer-lived than the project allows",
+      "path": "/v/{too_long}/pid_signed/master.m3u8",
+      "status": 403
+    },
+    {
+      "name": "a token issued in the future",
+      "path": "/v/{future_iat}/pid_signed/master.m3u8",
+      "status": 403
+    },
+    {
+      "name": "a token with an unknown audience",
+      "path": "/v/{bad_aud}/pid_signed/master.m3u8",
+      "status": 403
+    },
+    {
+      "name": "a token with an unknown kid",
+      "path": "/v/{unknown_kid}/pid_signed/master.m3u8",
+      "status": 403
+    },
+    {
+      "name": "a token with a tampered signature",
+      "path": "/v/{tampered}/pid_signed/master.m3u8",
+      "status": 403
+    },
+    {
+      "name": "a non-canonical spelling of a valid token",
+      "path": "/v/{noncanonical}/pid_signed/master.m3u8",
+      "status": 403
+    },
+    {
+      "name": "a malformed token",
+      "path": "/v/not-a-token/pid_signed/master.m3u8",
+      "status": 403
+    },
+    {
+      "name": "the server's internal key signs for any app",
+      "path": "/v/{internal}/pid_signed/master.m3u8",
+      "status": 200
+    },
+    {
+      "name": "manifest.json is never served",
+      "path": "/v/{v}/pid_signed/out_v/manifest.json",
+      "status": 404
+    },
+    {
+      "name": "a name outside the output grammar",
+      "path": "/v/{v}/pid_signed/out_v/360p/evil.sh",
+      "status": 404
+    },
+    {
+      "name": "another asset's output",
+      "path": "/v/{v}/pid_signed/out_x/360p/seg_00001.m4s",
+      "status": 404
+    },
+    {
+      "name": "an output still being written",
+      "path": "/v/{v}/pid_signed/out_w/360p/seg_00001.m4s",
+      "status": 404
+    },
+    {
+      "name": "an unknown output",
+      "path": "/v/{v}/pid_signed/out_nope/360p/seg_00001.m4s",
+      "status": 404
+    },
+    {
+      "name": "a retired output's segment",
+      "path": "/v/{v}/pid_signed/out_v_old/360p/seg_00001.m4s",
+      "status": 200,
+      "body": "segment-one"
+    },
+    {
+      "name": "a public master needs no token",
+      "path": "/p/pid_public/master.m3u8",
+      "status": 200,
+      "body": "#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,URI=\"out_p/audio/index.m3u8\",GROUP-ID=\"a\",NAME=\"x\"\n#EXT-X-STREAM-INF:BANDWIDTH=800000,AUDIO=\"a\"\nout_p/360p/index.m3u8\n"
+    },
+    {
+      "name": "a public key needs no token",
+      "path": "/p/pid_public/out_p/key/1",
+      "status": 200,
+      "body_hex": "c72b246e1df8074226fe2c9e0f8d2894"
+    },
+    {
+      "name": "a public segment is cacheable",
+      "path": "/p/pid_public/out_p/360p/seg_00001.m4s",
+      "status": 200,
+      "cache_control": "public, max-age=31536000, immutable"
+    },
+    {
+      "name": "a public ID also plays under a token URL",
+      "path": "/v/{v}/pid_public/master.m3u8",
+      "status": 200
+    }
+  ]
+}

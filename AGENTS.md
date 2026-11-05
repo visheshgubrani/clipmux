@@ -13,7 +13,8 @@ anything decided since, and wins over the architecture doc where they differ.
   everything else in `internal/`. Nothing is importable from outside.
 - Current packages: `config`, `db` (migrations, sqlc-generated queries and
   models, `dbtest`), `ids`, `apikeys`, `assets`, `uploads`, `queue`,
-  `workerapi`, `worker`, `outputs`, `media`, `contentkey`, `storage`, `outbox`,
+  `workerapi`, `worker`, `outputs`, `delivery`, `tokens`, `media`, `contentkey`,
+  `storage`, `outbox`,
   `httpjson`, `server`, `sweeper`, `web` (embedded dashboard build).
 - Media tests need ffmpeg, ffprobe and Shaka Packager ≥ 3.9.1
   (`toolchain/install_packager.sh`); they skip without them, except in CI
@@ -21,6 +22,9 @@ anything decided since, and wins over the architecture doc where they differ.
 - Adapter boundaries (storage, executor, delivery) keep core logic from
   branching on a vendor; if it needs to, the interface is leaking.
 - The dashboard and CLI are API clients with no private path into the server.
+- `internal/delivery/testdata/vectors.json` is the delivery contract shared with
+  the Phase 2 Cloudflare Worker. Change behaviour there first; regenerate test
+  tokens with `go test ./internal/delivery -run TestVectors -update`.
 - `toolchain/versions.env` is the only place a media tool version, URL or digest
   is written. Shaka Packager must be >= 3.9.1.
 - TypeScript lives only in the dashboard, the player/uploader packages and the

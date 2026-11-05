@@ -19,6 +19,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/config"
 	"github.com/visheshgubrani/clipmux/internal/contentkey"
 	"github.com/visheshgubrani/clipmux/internal/db"
+	"github.com/visheshgubrani/clipmux/internal/delivery"
 	"github.com/visheshgubrani/clipmux/internal/outputs"
 	"github.com/visheshgubrani/clipmux/internal/queue"
 	"github.com/visheshgubrani/clipmux/internal/storage"
@@ -144,6 +145,7 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 	q.KeyVersion = keys.Version
 	committer := outputs.New(pool, q, store)
 	committer.Logger = logger
+	committer.BaseURL = cfg.MediaURL
 	// The built-in worker's key lives only in memory and is handed to the
 	// child worker; it is never logged or stored.
 	workerKey := rand.Text()
@@ -151,6 +153,9 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 	worker.Logger = logger
 	upl := uploads.New(pool, store)
 	upl.Logger = logger
+	upl.BaseURL = cfg.MediaURL
+	playback := delivery.New(pool, store, keys)
+	playback.Logger = logger
 	if cfg.MaxUploadBytes > 0 {
 		upl.MaxSize = cfg.MaxUploadBytes
 	}
@@ -185,7 +190,7 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 	srv := &http.Server{
 		Handler: Handler(Deps{
 			DB: pool, Worker: worker.Handler(), Storage: store.Handler(),
-			APIs: []Registrar{upl, assets.New(pool)},
+			APIs: []Registrar{upl, assets.New(pool, cfg.MediaURL), playback},
 		}),
 		ReadHeaderTimeout: 10 * time.Second,
 		// Requests inherit ctx, so long-poll claims end at shutdown.

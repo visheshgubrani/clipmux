@@ -84,3 +84,12 @@ func LoadOrCreate(dir string) (Secret, error) {
 	}
 	return Secret{Version: int32(version), key: key}, nil
 }
+
+// FromHex builds a secret from its hex encoding (test vectors and restores).
+func FromHex(version int32, h string) (Secret, error) {
+	key, err := hex.DecodeString(h)
+	if err != nil || len(key) < 32 || version < 1 {
+		return Secret{}, errors.New("contentkey: a secret is at least 32 bytes of hex with a version of 1 or more")
+	}
+	return Secret{Version: version, key: key}, nil
+}

@@ -52,8 +52,9 @@ func newEnv(t *testing.T) *env {
 	}
 	svc := uploads.New(pool, store)
 	svc.MaxSize = 1000
+	svc.BaseURL = "https://media.example"
 	svc.Register(mux)
-	assets.New(pool).Register(mux)
+	assets.New(pool, "https://media.example").Register(mux)
 
 	e := &env{t: t, pool: pool, store: store, svc: svc, url: srv.URL}
 	for _, app := range []string{"app_lms", "app_site"} {
@@ -224,7 +225,7 @@ func TestUppyCallOrderUploadsAndQueuesProcessing(t *testing.T) {
 	// The app reads the asset back, by ID and by its own reference.
 	code, asset, _ := e.call("GET", "/v1/assets/"+c.AssetID, e.key, nil, nil)
 	pids, _ := asset["playback_ids"].([]any)
-	if code != http.StatusOK || str(asset, "status") != "processing" || len(pids) != 1 || str(pids[0].(map[string]any), "policy") != "signed" {
+	if code != http.StatusOK || str(asset, "status") != "processing" || len(pids) != 1 || str(pids[0].(map[string]any), "policy") != "signed" || str(asset, "base_url") != "https://media.example" {
 		t.Fatalf("GET asset: %d %v", code, asset)
 	}
 	code, found, _ := e.call("GET", "/v1/assets?passthrough=lesson-42", e.key, nil, nil)

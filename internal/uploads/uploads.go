@@ -65,7 +65,9 @@ type Service struct {
 	PartURLTTL time.Duration
 	// IdleExpiry is how long an upload may go without activity.
 	IdleExpiry time.Duration
-	Logger     *slog.Logger
+	// BaseURL is the media origin returned with assets.
+	BaseURL string
+	Logger  *slog.Logger
 }
 
 // New returns a Service with the architecture's defaults.
@@ -381,7 +383,7 @@ func (s *Service) markCompleted(ctx context.Context, tx pgx.Tx, up db.Upload) (a
 	if _, err := queue.Enqueue(ctx, tx, queue.Job{ProjectID: asset.ProjectID, AssetID: asset.ID, Kind: "transcode"}); err != nil {
 		return assets.View{}, err
 	}
-	return assets.Load(ctx, q, asset)
+	return assets.Load(ctx, q, asset, s.BaseURL)
 }
 
 // Cancel stops an active upload: storage is aborted and the asset errors
@@ -436,7 +438,7 @@ func (s *Service) assetView(ctx context.Context, q *db.Queries, assetID string) 
 	if err != nil {
 		return assets.View{}, err
 	}
-	return assets.Load(ctx, q, a)
+	return assets.Load(ctx, q, a, s.BaseURL)
 }
 
 // --- sweeper ---

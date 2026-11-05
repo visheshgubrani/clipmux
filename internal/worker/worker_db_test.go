@@ -22,16 +22,19 @@ import (
 
 	"github.com/visheshgubrani/clipmux/internal/contentkey"
 	"github.com/visheshgubrani/clipmux/internal/db/dbtest"
+	"github.com/visheshgubrani/clipmux/internal/delivery"
 	"github.com/visheshgubrani/clipmux/internal/media"
 	"github.com/visheshgubrani/clipmux/internal/outputs"
 	"github.com/visheshgubrani/clipmux/internal/queue"
 	"github.com/visheshgubrani/clipmux/internal/storage"
+	"github.com/visheshgubrani/clipmux/internal/tokens"
 	"github.com/visheshgubrani/clipmux/internal/workerapi"
 )
 
 type rig struct {
 	pool   *pgxpool.Pool
 	store  *storage.Filesystem
+	media  string // base URL serving delivery
 	worker *Worker
 }
 
@@ -74,7 +77,8 @@ func newRig(t *testing.T) *rig {
 	for _, m := range []string{"GET", "PUT"} {
 		mux.Handle(m+" /_storage/", store.Handler())
 	}
-	return &rig{pool: pool, store: store, worker: &Worker{
+	delivery.New(pool, store, keys).Register(mux)
+	return &rig{pool: pool, store: store, media: srv.URL, worker: &Worker{
 		Server: srv.URL, Key: "k", WorkDir: t.TempDir(), Tools: tl, HTTP: http.DefaultClient,
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Wait: time.Millisecond,
 	}}
@@ -252,5 +256,58 @@ func TestRunOnceTakesAnUploadedSourceToReady(t *testing.T) {
 	entries, _ := os.ReadDir(r.worker.WorkDir)
 	if len(entries) != 0 {
 		t.Fatalf("work dir not cleaned: %d entries", len(entries))
+	}
+}
+
+// Milestone M1 (docs/plans/P1-core-product.md): an upload goes to ready, and
+// an HLS client plays the signed, encrypted output over HTTP: it fetches the
+// generated master, the pinned media playlists, the content key and the
+// encrypted segments, and decodes frames. ffmpeg is the client here; the
+// browser players are the Phase 1 exit test.
+func TestM1SignedEncryptedPlaybackOverHTTP(t *testing.T) {
+	r := newRig(t)
+	r.uploaded(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	privPEM, pubPEM, err := tokens.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, sql := range []string{
+		`INSERT INTO playback_ids (id, project_id, asset_id, policy) VALUES ('pid_1', 'prj_default', 'ast_1', 'signed')`,
+		`INSERT INTO signing_keys (id, project_id, app_id, public_key_pem) VALUES ('kid_1', 'prj_default', 'app_dashboard', '` + pubPEM + `')`,
+	} {
+		if _, err := r.pool.Exec(ctx, sql); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := r.worker.RunOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	priv, _ := tokens.ParsePrivateKey(privPEM)
+	now := time.Now().Unix()
+	tok, _ := tokens.Sign(priv, "kid_1", tokens.Claims{Sub: "pid_1", Aud: "v", Iat: now, Exp: now + 4*3600})
+	signed := r.media + "/v/" + tok + "/pid_1/master.m3u8"
+
+	out, err := exec.CommandContext(ctx, "ffmpeg", "-v", "error", "-protocol_whitelist", "http,tcp,crypto,data",
+		"-i", signed, "-map", "0:v:0", "-map", "0:a:0", "-f", "framemd5", "-").CombinedOutput()
+	if err != nil {
+		t.Fatalf("ffmpeg could not play the signed URL: %v\n%s", err, out)
+	}
+	frames := strings.Count(string(out), "\n0,") // video stream frame lines
+	audio := strings.Count(string(out), "\n1,")
+	if frames < 190 || audio == 0 { // 8 s at 25 fps
+		t.Fatalf("decoded %d video frames and %d audio frames, want about 200 and some", frames, audio)
+	}
+
+	// Without the token, the same video is refused.
+	res, err := http.Get(r.media + "/p/pid_1/master.m3u8")
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.StatusCode != http.StatusForbidden {
+		t.Fatalf("unsigned request: %d, want 403", res.StatusCode)
 	}
 }

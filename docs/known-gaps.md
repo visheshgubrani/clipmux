@@ -5,11 +5,16 @@ when you introduce or discover it; remove it when it is closed.
 
 ## Bootstrap (2026-11-05)
 
-- Phase 1 beyond T07: uploads go all the way to `ready` (the built-in worker
-  encodes, encrypts and uploads; commit verifies and publishes), but nothing
-  serves playback until delivery (T08), and the `ready` webhook has no
-  `base_url` yet. Webhooks are written to the outbox but not sent until T09.
-  No dashboard yet.
+- Phase 1 beyond T08 (M1 done): upload → encode → encrypt → commit → signed
+  playback works end to end. Webhooks are written to the outbox but not sent
+  until T09; no dashboard, first-boot setup or player package yet.
+- Delivery reads Postgres on every request (route, output, signing key);
+  there is no route cache yet, so revocation is immediate but every segment
+  costs a few queries. The server's internal signing key (dashboard preview,
+  share links) arrives with T10.
+- Serving playback from the same origin as the API and dashboard is the
+  default; set `CLIPMUX_MEDIA_URL` to a separate registrable domain in
+  production so a hostile stored file can't reach dashboard cookies.
 - Retired outputs and files from failed or lost attempts are not deleted yet
   (the 7-day retire window and 30-minute cleanup from the architecture).
 - Worker sandbox is the M1 subset: empty environment, demuxer and protocol
