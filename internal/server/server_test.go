@@ -262,8 +262,12 @@ func TestBuiltinWorkerEnvironmentIsMinimal(t *testing.T) {
 			t.Fatalf("the child inherited %q", kv)
 		}
 	}
-	if args := strings.Join(b.args(), " "); !strings.Contains(args, "--storage-via-server") {
-		t.Fatalf("child args %q: the built-in worker must reach storage over loopback", args)
+	if args := strings.Join(b.args(), " "); !strings.Contains(args, "--storage-via-server") || !strings.Contains(args, "--sandbox") {
+		t.Fatalf("child args %q: the built-in worker must reach storage over loopback and confine its tools", args)
+	}
+	b.unsandboxed = true
+	if args := strings.Join(b.args(), " "); strings.Contains(args, "--sandbox") {
+		t.Fatalf("child args %q with CLIPMUX_UNSANDBOXED_WORKER: no --sandbox", args)
 	}
 }
 

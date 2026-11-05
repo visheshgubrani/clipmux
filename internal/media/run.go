@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/visheshgubrani/clipmux/internal/sandbox"
 )
 
 // allowedDemuxers are the only input formats ffmpeg may open. HLS playlists
@@ -31,6 +33,28 @@ var ErrUnsupportedSource = errors.New("media: unsupported or corrupt source")
 // Tools are the binaries the pipeline runs.
 type Tools struct {
 	FFmpeg, FFprobe, Packager string
+	// Sandbox, when set, confines every tool (internal/sandbox).
+	Sandbox *Sandbox
+}
+
+// Sandbox runs each tool as `Exec sandbox-exec … -- tool args`.
+type Sandbox struct {
+	// Exec is the clipmux binary.
+	Exec string
+	// Dir is the only directory the tools may write: one attempt's.
+	Dir string
+	// MemoryMB bounds each tool's address space (0: the default).
+	MemoryMB uint64
+}
+
+// In returns the tools confined to dir, for one attempt.
+func (t Tools) In(dir string) Tools {
+	if t.Sandbox != nil {
+		s := *t.Sandbox
+		s.Dir = dir
+		t.Sandbox = &s
+	}
+	return t
 }
 
 // DefaultTools finds the binaries on PATH.
@@ -39,10 +63,10 @@ func DefaultTools() Tools { return Tools{FFmpeg: "ffmpeg", FFprobe: "ffprobe", P
 // Versions reports the tool versions, e.g. "8.0.1-3ubuntu2" and "v3.9.3".
 func (t Tools) Versions(ctx context.Context) (ToolVersions, error) {
 	var ff, pk bytes.Buffer
-	if err := run(ctx, t.FFmpeg, []string{"-hide_banner", "-version"}, "", &ff); err != nil {
+	if err := t.run(ctx, t.FFmpeg, []string{"-hide_banner", "-version"}, "", &ff); err != nil {
 		return ToolVersions{}, err
 	}
-	if err := run(ctx, t.Packager, []string{"--version"}, "", &pk); err != nil {
+	if err := t.run(ctx, t.Packager, []string{"--version"}, "", &pk); err != nil {
 		return ToolVersions{}, err
 	}
 	v := ToolVersions{}
@@ -55,11 +79,20 @@ func (t Tools) Versions(ctx context.Context) (ToolVersions, error) {
 	return v, nil
 }
 
-// run executes a tool sandboxed: no inherited environment (so no secrets),
-// the given working directory, and the caller's deadline. stderr is kept
-// only as a short tail for the error, and never contains a key because keys
-// go through a flag file.
-func run(ctx context.Context, bin string, args []string, dir string, stdout io.Writer) error {
+// run executes a tool with no inherited environment (so no secrets), the
+// given working directory and the caller's deadline, and through the sandbox
+// when there is one. stderr is kept only as a short tail for the error, and
+// never contains a key because keys go through a flag file.
+func (t Tools) run(ctx context.Context, bin string, args []string, dir string, stdout io.Writer) error {
+	name := filepath.Base(bin)
+	if t.Sandbox != nil {
+		abs, err := exec.LookPath(bin)
+		if err != nil {
+			return fmt.Errorf("%s: %w", name, err)
+		}
+		policy := sandbox.Policy{Write: t.Sandbox.Dir, MemoryMB: t.Sandbox.MemoryMB}
+		args, bin = sandbox.Args(policy, append([]string{abs}, args...)...), t.Sandbox.Exec
+	}
 	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.Env = []string{}
 	cmd.Dir = dir
@@ -68,7 +101,7 @@ func run(ctx context.Context, bin string, args []string, dir string, stdout io.W
 	cmd.Stderr = &stderr
 	cmd.WaitDelay = 5 * time.Second
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("%s: %w: %s", filepath.Base(bin), err, strings.TrimSpace(stderr.String()))
+		return fmt.Errorf("%s: %w: %s", name, err, strings.TrimSpace(stderr.String()))
 	}
 	return nil
 }
@@ -99,7 +132,7 @@ type Source struct {
 func Probe(ctx context.Context, t Tools, path string) (Source, error) {
 	var out bytes.Buffer
 	args := append(inputGuard(), "-v", "error", "-show_streams", "-show_format", "-of", "json", "-i", path)
-	if err := run(ctx, t.FFprobe, args, filepath.Dir(path), &out); err != nil {
+	if err := t.run(ctx, t.FFprobe, args, filepath.Dir(path), &out); err != nil {
 		if ctx.Err() != nil {
 			return Source{}, err
 		}

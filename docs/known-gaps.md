@@ -19,9 +19,10 @@ when you introduce or discover it; remove it when it is closed.
   production so a hostile stored file can't reach dashboard cookies.
 - Retired outputs and files from failed or lost attempts are not deleted yet
   (the 7-day retire window and 30-minute cleanup from the architecture).
-- Worker sandbox is the M1 subset: empty environment, demuxer and protocol
-  allowlists, wall-clock limits. No network namespace, rlimits or CPU cap
-  yet, so the built-in worker can still compete with the API for CPU.
+- The media tool sandbox (D027) gives the CPU a priority, not a quota:
+  `SCHED_IDLE` yields to the API, and only compose `cpus:` caps it. Landlock
+  is best effort: on kernels before 5.13 (or with it disabled) the tools can
+  read any file the worker's user can. Agents off Linux have no sandbox.
 - Workers report no free disk space at claim, and the server doesn't check
   it; a full disk fails the attempt (transient).
 - Content key secrets live in Postgres sealed with the secrets key (D022).

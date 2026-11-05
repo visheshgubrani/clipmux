@@ -292,7 +292,7 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 	if cfg.BuiltinWorker {
 		bw := &builtinWorker{
 			server: loopbackURL(ln.Addr()), key: workerKey, workDir: workerDir(cfg.DataDir),
-			tools: cfg.Tools, logger: logger,
+			tools: cfg.Tools, logger: logger, unsandboxed: cfg.UnsandboxedWorker,
 		}
 		wg.Go(func() { bw.run(ctx) })
 	}

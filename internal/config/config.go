@@ -48,6 +48,10 @@ type Config struct {
 	// is believed when limiting sign-ins (CLIPMUX_TRUSTED_PROXIES, comma-
 	// separated addresses or CIDR ranges).
 	TrustedProxies []netip.Prefix
+	// UnsandboxedWorker runs the built-in worker even where the sandbox
+	// doesn't hold (CLIPMUX_UNSANDBOXED_WORKER). Only for hosts that isolate
+	// the worker another way: its tools parse hostile uploads.
+	UnsandboxedWorker bool
 	// SelfDial, when set (host:port, e.g. caddy:443), is where the setup
 	// test connects for every URL it checks, keeping the URL's hostname for
 	// TLS and routing (CLIPMUX_SELF_DIAL): a container can't always reach its
@@ -121,6 +125,13 @@ func FromEnv(getenv func(string) string) (Config, error) {
 		if _, _, err := net.SplitHostPort(cfg.SelfDial); err != nil {
 			return Config{}, fmt.Errorf("CLIPMUX_SELF_DIAL %q must be host:port: %w", cfg.SelfDial, err)
 		}
+	}
+	switch v := getenv("CLIPMUX_UNSANDBOXED_WORKER"); v {
+	case "", "false", "0":
+	case "true", "1":
+		cfg.UnsandboxedWorker = true
+	default:
+		return Config{}, fmt.Errorf("CLIPMUX_UNSANDBOXED_WORKER %q must be true or false", v)
 	}
 	cfg.Tools = media.DefaultTools()
 	cfg.Tools.FFmpeg = orDefault(getenv("CLIPMUX_FFMPEG"), cfg.Tools.FFmpeg)

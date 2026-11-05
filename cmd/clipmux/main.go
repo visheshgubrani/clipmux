@@ -12,6 +12,7 @@ import (
 	"syscall"
 
 	"github.com/visheshgubrani/clipmux/internal/config"
+	"github.com/visheshgubrani/clipmux/internal/sandbox"
 	"github.com/visheshgubrani/clipmux/internal/server"
 )
 
@@ -51,6 +52,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return admin(args[1:], os.Getenv, os.Stdin, stdout, stderr)
 	case "worker":
 		return runWorker(args[1:], os.Getenv, stderr)
+	case "sandbox-exec":
+		// Not in the usage: the worker runs each media tool through it.
+		return sandbox.Main(args[1:], stdout, stderr)
 	case "push", "listen":
 		fmt.Fprintf(stderr, "clipmux %s: not implemented yet (see docs/plans/P1-core-product.md)\n", args[0])
 		return 1

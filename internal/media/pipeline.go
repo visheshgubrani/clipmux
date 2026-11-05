@@ -126,14 +126,14 @@ func Transcode(ctx context.Context, t Tools, input string, src Source, workDir, 
 		defer close(done)
 		reportFFmpegProgress(pr, src.Duration, func(f float64) { progress("transcode", f) })
 	}()
-	err = run(ctx, t.FFmpeg, EncodeArgs(src, input, encDir, rungs), workDir, pw)
+	err = t.run(ctx, t.FFmpeg, EncodeArgs(src, input, encDir, rungs), workDir, pw)
 	pw.Close()
 	<-done
 	if err != nil {
 		return Manifest{}, fmt.Errorf("encode video: %w", err)
 	}
 	if src.HasAudio {
-		if err := run(ctx, t.FFmpeg, AudioArgs(input, encDir), workDir, io.Discard); err != nil {
+		if err := t.run(ctx, t.FFmpeg, AudioArgs(input, encDir), workDir, io.Discard); err != nil {
 			return Manifest{}, fmt.Errorf("encode audio: %w", err)
 		}
 	}
@@ -145,7 +145,7 @@ func Transcode(ctx context.Context, t Tools, input string, src Source, workDir, 
 		return Manifest{}, err
 	}
 	argv = append(argv, "--flagfile="+flagPath)
-	err = run(ctx, t.Packager, argv, outDir, io.Discard)
+	err = t.run(ctx, t.Packager, argv, outDir, io.Discard)
 	_ = os.Remove(flagPath)
 	if err != nil {
 		return Manifest{}, fmt.Errorf("package: %w", err)
@@ -169,7 +169,7 @@ func Transcode(ctx context.Context, t Tools, input string, src Source, workDir, 
 			return Manifest{}, fmt.Errorf("%s: %w", d, err)
 		}
 	}
-	if err := run(ctx, t.FFmpeg, PosterArgs(src, input, outDir), workDir, io.Discard); err != nil {
+	if err := t.run(ctx, t.FFmpeg, PosterArgs(src, input, outDir), workDir, io.Discard); err != nil {
 		return Manifest{}, fmt.Errorf("poster: %w", err)
 	}
 

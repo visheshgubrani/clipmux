@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/visheshgubrani/clipmux/internal/media"
+	"github.com/visheshgubrani/clipmux/internal/sandbox"
 )
 
 // builtinWorker runs `clipmux worker` as a child process over loopback
@@ -22,6 +23,8 @@ type builtinWorker struct {
 	workDir string
 	tools   media.Tools
 	logger  *slog.Logger
+	// unsandboxed runs the tools unconfined (CLIPMUX_UNSANDBOXED_WORKER).
+	unsandboxed bool
 }
 
 // loopbackURL is how the child reaches serve: the listener's own address, or
@@ -49,6 +52,9 @@ func (b *builtinWorker) childEnv() []string {
 		"CLIPMUX_FFPROBE=" + b.tools.FFprobe,
 		"CLIPMUX_PACKAGER=" + b.tools.Packager,
 	}
+	if mem := os.Getenv("CLIPMUX_TOOL_MEMORY_MB"); mem != "" {
+		env = append(env, "CLIPMUX_TOOL_MEMORY_MB="+mem)
+	}
 	if tmp := os.Getenv("TMPDIR"); tmp != "" {
 		env = append(env, "TMPDIR="+tmp)
 	}
@@ -56,9 +62,14 @@ func (b *builtinWorker) childEnv() []string {
 }
 
 // args are the child's arguments. It reaches storage through serve over
-// loopback, never back through the public URL.
+// loopback, never back through the public URL, and confines its tools
+// unless the owner opted out.
 func (b *builtinWorker) args() []string {
-	return []string{"worker", "--work-dir", b.workDir, "--storage-via-server"}
+	args := []string{"worker", "--work-dir", b.workDir, "--storage-via-server"}
+	if !b.unsandboxed {
+		args = append(args, "--sandbox")
+	}
+	return args
 }
 
 // run supervises the child until ctx ends, restarting it with backoff.
@@ -72,6 +83,18 @@ func (b *builtinWorker) run(ctx context.Context) {
 	if err != nil {
 		b.logger.Error("built-in worker not started", "err", err)
 		return
+	}
+	// The tools parse hostile uploads: without the sandbox the worker stays
+	// off, unless the owner said the host isolates it another way.
+	if st, err := sandbox.ProbeExec(ctx, self); err != nil {
+		if !b.unsandboxed {
+			b.logger.Error("built-in worker not started: the media tool sandbox doesn't hold on this host; uploads will wait in processing",
+				"err", err, "hint", "run on Linux (or in Docker), or set CLIPMUX_UNSANDBOXED_WORKER=true if the host isolates the worker another way")
+			return
+		}
+		b.logger.Warn("built-in worker runs its media tools unconfined (CLIPMUX_UNSANDBOXED_WORKER)", "err", err)
+	} else {
+		b.logger.Info("built-in worker sandbox", "enforced", st.String())
 	}
 	backoff := time.Second
 	for ctx.Err() == nil {
