@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"errors"
+	"io/fs"
 	"log/slog"
 	"net"
 	"os"
@@ -98,6 +100,11 @@ func (b *builtinWorker) run(ctx context.Context) {
 	}
 	backoff := time.Second
 	for ctx.Err() == nil {
+		// A child that was killed couldn't remove its attempt directories;
+		// only this supervisor's child uses them, so start each one clean.
+		if err := clearDir(b.workDir); err != nil {
+			b.logger.Warn("clear the worker's scratch directory", "err", err)
+		}
 		started := time.Now()
 		cmd := exec.CommandContext(ctx, self, b.args()...)
 		cmd.Env = b.childEnv()
@@ -123,3 +130,20 @@ func (b *builtinWorker) run(ctx context.Context) {
 }
 
 func workerDir(dataDir string) string { return filepath.Join(dataDir, "worker") }
+
+// clearDir removes everything inside dir, keeping dir.
+func clearDir(dir string) error {
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		if err := os.RemoveAll(filepath.Join(dir, e.Name())); err != nil {
+			return err
+		}
+	}
+	return nil
+}
