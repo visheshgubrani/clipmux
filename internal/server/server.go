@@ -18,6 +18,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/accounts"
 	"github.com/visheshgubrani/clipmux/internal/apikeys"
 	"github.com/visheshgubrani/clipmux/internal/assets"
+	"github.com/visheshgubrani/clipmux/internal/cloudflare"
 	"github.com/visheshgubrani/clipmux/internal/config"
 	"github.com/visheshgubrani/clipmux/internal/contentkey"
 	"github.com/visheshgubrani/clipmux/internal/db"
@@ -246,6 +247,10 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 	tests := setuptest.New(pool, set, box, b.urls, upl, life, cfg.SelfDial)
 	tests.Logger = logger
 	mgmt.Tests = tests
+	mgmt.Cloudflare = &cloudflare.Connector{
+		Pool: pool, Stores: set, Keys: keys, URLs: b.urls, ProjectID: db.DefaultProjectID,
+		SetupTest: func(ctx context.Context) error { _, err := tests.Queue(ctx, "urls_saved"); return err },
+	}
 	assetsAPI := assets.New(pool)
 	// The dashboard calls the integration API with the owner's session,
 	// acting as one app; integration keys never reach the management API.

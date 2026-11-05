@@ -1,4 +1,4 @@
-.PHONY: db-up db-down test test-db run build web fmt lint sqlc sqlc-check
+.PHONY: db-up db-down test test-db run build web worker worker-check fmt lint sqlc sqlc-check
 
 COMPOSE := docker compose -f deploy/compose.dev.yml
 
@@ -27,6 +27,16 @@ run:
 web:
 	pnpm install --frozen-lockfile
 	pnpm --filter "@clipmux/dashboard..." run build
+
+# The Cloudflare Worker, bundled into internal/cloudflare for the binary to
+# embed and deploy. The bundle is committed; CI checks it is current.
+worker:
+	pnpm install --frozen-lockfile
+	pnpm --filter @clipmux/worker run build
+	cp worker/dist/worker.js internal/cloudflare/worker.js
+
+worker-check: worker
+	git diff --exit-code internal/cloudflare/worker.js
 
 build: web
 	go build -o bin/clipmux ./cmd/clipmux

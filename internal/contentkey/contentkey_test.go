@@ -39,3 +39,13 @@ func TestRingServesEveryVersionAndUsesTheNewestForNewOutputs(t *testing.T) {
 		t.Fatal("an unknown version must not resolve")
 	}
 }
+
+func TestTheWorkerSecretCarriesEveryVersion(t *testing.T) {
+	v1, _ := FromHex(1, "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f")
+	v2, _ := FromHex(2, "1f1e1d1c1b1a191817161514131211100f0e0d0c0b0a09080706050403020100")
+	got := NewRing(v1, v2).WorkerSecret()
+	want := `{"1":"000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f","2":"1f1e1d1c1b1a191817161514131211100f0e0d0c0b0a09080706050403020100"}`
+	if got != want {
+		t.Fatalf("WorkerSecret = %s", got)
+	}
+}

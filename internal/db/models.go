@@ -97,6 +97,20 @@ type Attempt struct {
 	SignedPaths     int32
 }
 
+type CloudflareConnection struct {
+	ProjectID     string
+	AccountID     string
+	ZoneID        string
+	Hostname      string
+	Bucket        string
+	ScriptName    string
+	TokenID       string
+	StorageID     string
+	WorkerVersion string
+	ConnectedAt   pgtype.Timestamptz
+	DeployedAt    pgtype.Timestamptz
+}
+
 type ContentKeySecret struct {
 	ProjectID       string
 	Version         int32

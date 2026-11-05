@@ -77,6 +77,10 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm test
       - run: pnpm build
+      - name: The embedded Worker bundle is current
+        run: |
+          cp worker/dist/worker.js internal/cloudflare/worker.js
+          git diff --exit-code internal/cloudflare/worker.js
   toolchain:
     runs-on: ubuntu-24.04
     steps:

@@ -133,3 +133,17 @@ func (q *Queries) SetDefaultStorage(ctx context.Context, arg SetDefaultStoragePa
 	}
 	return result.RowsAffected(), nil
 }
+
+const updateStorageSecrets = `-- name: UpdateStorageSecrets :exec
+UPDATE storage_configs SET secrets_encrypted = $2 WHERE id = $1
+`
+
+type UpdateStorageSecretsParams struct {
+	ID               string
+	SecretsEncrypted []byte
+}
+
+func (q *Queries) UpdateStorageSecrets(ctx context.Context, arg UpdateStorageSecretsParams) error {
+	_, err := q.db.Exec(ctx, updateStorageSecrets, arg.ID, arg.SecretsEncrypted)
+	return err
+}

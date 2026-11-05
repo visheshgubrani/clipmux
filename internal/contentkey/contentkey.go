@@ -13,6 +13,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -174,4 +175,16 @@ func FromHex(version int32, h string) (Secret, error) {
 		return Secret{}, errors.New("contentkey: a secret is at least 32 bytes of hex with a version of 1 or more")
 	}
 	return Secret{Version: version, key: key}, nil
+}
+
+// WorkerSecret is the ring as the Cloudflare Worker's CONTENT_KEYS secret:
+// {"<version>": "<hex>"}. It is the content key secret itself, so it goes
+// only to Cloudflare as a Worker secret, never to a log or a response.
+func (r Ring) WorkerSecret() string {
+	m := make(map[string]string, len(r.versions))
+	for v, s := range r.versions {
+		m[strconv.Itoa(int(v))] = hex.EncodeToString(s.key)
+	}
+	b, _ := json.Marshal(m) // strings only; can't fail
+	return string(b)
 }

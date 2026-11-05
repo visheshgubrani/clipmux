@@ -72,6 +72,14 @@ when you introduce or discover it; remove it when it is closed.
   create-key, create-signing-key and create-webhook.
 - The image is ~575 MB and built from source on a cache miss (~20 min); it
   isn't published, so every install builds it until launch.
+- Connect Cloudflare is tested against a fake API, not a real account: the
+  Workers Paid check (plan name containing "workers" and "paid"), the script
+  upload format and the custom-domain call need a run against a real test
+  zone before the Phase 2 exit (D037). The manual wrangler path has no CLI
+  for adding R2 storage, switching delivery or printing `CONTENT_KEYS`.
+- Disconnecting Cloudflare (back to built-in delivery) has no endpoint yet.
+- The content key secret can't be rotated; when it can, rotation must
+  redeploy the Worker's ring through Connect before new outputs use it.
 - No captions, chapters or transcripts. The LMS depends on them, so they gate
   the LMS migration (plans/lms-migration.md); OSS-V2 leaves them as an open
   roadmap decision.

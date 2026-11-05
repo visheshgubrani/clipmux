@@ -19,3 +19,6 @@ UPDATE storage_configs SET is_default = false WHERE project_id = $1 AND is_defau
 
 -- name: SetDefaultStorage :execrows
 UPDATE storage_configs SET is_default = true WHERE project_id = $1 AND id = $2;
+
+-- name: UpdateStorageSecrets :exec
+UPDATE storage_configs SET secrets_encrypted = $2 WHERE id = $1;

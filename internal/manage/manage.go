@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -23,6 +24,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/accounts"
 	"github.com/visheshgubrani/clipmux/internal/apikeys"
 	"github.com/visheshgubrani/clipmux/internal/assets"
+	"github.com/visheshgubrani/clipmux/internal/cloudflare"
 	"github.com/visheshgubrani/clipmux/internal/db"
 	"github.com/visheshgubrani/clipmux/internal/httpjson"
 	"github.com/visheshgubrani/clipmux/internal/ids"
@@ -51,9 +53,11 @@ type API struct {
 	// URLsSaved runs after the owner saves new URLs (the setup test).
 	URLsSaved func(settings.URLs)
 	// Tests runs setup tests; nil leaves their routes answering 404.
-	Tests  *setuptest.Runner
-	Now    func() time.Time
-	Logger *slog.Logger
+	Tests *setuptest.Runner
+	// Cloudflare connects Worker delivery; nil leaves its routes 404.
+	Cloudflare *cloudflare.Connector
+	Now        func() time.Time
+	Logger     *slog.Logger
 }
 
 // New returns the management API.
@@ -106,6 +110,44 @@ func (m *API) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/assets/{id}/preview-token", m.owned(m.previewToken))
 	mux.HandleFunc("POST /v1/setup-test", m.owned(m.startSetupTest))
 	mux.HandleFunc("GET /v1/setup-test/latest", m.owned(m.latestSetupTest))
+	mux.HandleFunc("GET /v1/cloudflare", m.owned(m.cloudflareStatus))
+	mux.HandleFunc("POST /v1/cloudflare/connect", m.owned(m.connectCloudflare))
+}
+
+// cloudflareStatus reports the Cloudflare connection, whether this build
+// carries a newer Worker, and whether R2 still accepts the credentials.
+func (m *API) cloudflareStatus(w http.ResponseWriter, r *http.Request, _ accounts.Owner) error {
+	if m.Cloudflare == nil {
+		return errNotFound
+	}
+	st, err := m.Cloudflare.Status(r.Context())
+	if err != nil {
+		return err
+	}
+	httpjson.Write(w, http.StatusOK, st)
+	return nil
+}
+
+// connectCloudflare runs Connect Cloudflare with a token the owner pastes.
+// The token is used for this request only; every step's result comes back,
+// and a failed step can be fixed and connected again.
+func (m *API) connectCloudflare(w http.ResponseWriter, r *http.Request, _ accounts.Owner) error {
+	if m.Cloudflare == nil {
+		return errNotFound
+	}
+	var req cloudflare.Request
+	if err := decode(w, r, &req); err != nil {
+		return err
+	}
+	res, err := m.Cloudflare.Connect(r.Context(), req)
+	if errors.Is(err, cloudflare.ErrInvalid) {
+		return httpjson.Fail(http.StatusBadRequest, "invalid_request", strings.TrimPrefix(err.Error(), cloudflare.ErrInvalid.Error()+": "))
+	}
+	if err != nil {
+		return err
+	}
+	httpjson.Write(w, http.StatusOK, res)
+	return nil
 }
 
 // startSetupTest queues a setup test (or returns the one already queued).

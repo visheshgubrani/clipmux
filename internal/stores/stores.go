@@ -217,3 +217,27 @@ func (s *Set) SetDefault(ctx context.Context, projectID, id string) error {
 	}
 	return tx.Commit(ctx)
 }
+
+// UpdateS3Secret checks new credentials for an existing r2 or s3 config
+// against its bucket and stores them sealed, as when a Cloudflare token is
+// replaced. The config itself doesn't change.
+func (s *Set) UpdateS3Secret(ctx context.Context, id string, cfg S3Config, sec S3Secret) error {
+	st, err := storage.OpenS3(options(cfg, sec))
+	if err != nil {
+		return err
+	}
+	if err := st.Check(ctx); err != nil {
+		return fmt.Errorf("check bucket: %w", err)
+	}
+	if err := st.ApplyCORS(ctx); err != nil {
+		return fmt.Errorf("apply CORS: %w", err)
+	}
+	plain, _ := json.Marshal(sec)
+	if err := db.New(s.pool).UpdateStorageSecrets(ctx, db.UpdateStorageSecretsParams{ID: id, SecretsEncrypted: s.box.Seal("storage_configs", id, plain)}); err != nil {
+		return fmt.Errorf("update storage credentials: %w", err)
+	}
+	s.mu.Lock()
+	s.open[id] = st
+	s.mu.Unlock()
+	return nil
+}

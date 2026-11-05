@@ -1,0 +1,274 @@
+package cloudflare
+
+import (
+	"context"
+	"crypto/sha256"
+	_ "embed"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"net/http"
+	"net/url"
+	"regexp"
+	"strings"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/visheshgubrani/clipmux/internal/contentkey"
+	"github.com/visheshgubrani/clipmux/internal/db"
+	"github.com/visheshgubrani/clipmux/internal/routes"
+	"github.com/visheshgubrani/clipmux/internal/settings"
+	"github.com/visheshgubrani/clipmux/internal/stores"
+)
+
+// workerJS is the bundled Worker (worker/, `make worker`); CI checks it is
+// current.
+//
+//go:embed worker.js
+var workerJS []byte
+
+// WorkerVersion identifies the embedded Worker build.
+func WorkerVersion() string {
+	sum := sha256.Sum256(workerJS)
+	return hex.EncodeToString(sum[:6])
+}
+
+// CompatibilityDate is the Workers runtime behaviour the Worker is tested
+// against (worker/src/workerd.test.ts).
+const CompatibilityDate = "2026-07-01"
+
+// Defaults the owner can leave alone.
+const (
+	DefaultBucket = "clipmux-media"
+	DefaultScript = "clipmux-media"
+)
+
+// Request is what the owner gives: a token, the media hostname, and
+// optionally the bucket (create it first to scope the token to it) and the
+// account when the token reaches several.
+type Request struct {
+	Token     string `json:"token"`
+	Hostname  string `json:"hostname"`
+	Bucket    string `json:"bucket,omitempty"`
+	AccountID string `json:"account_id,omitempty"`
+}
+
+// Step is one stage of connecting, reported to the dashboard.
+type Step struct {
+	Name   string `json:"name"`
+	OK     bool   `json:"ok"`
+	Detail string `json:"detail,omitempty"`
+}
+
+// Result lists every step taken; Connected is true when all passed.
+type Result struct {
+	Connected bool   `json:"connected"`
+	Steps     []Step `json:"steps"`
+}
+
+// Connector connects a project to Cloudflare.
+type Connector struct {
+	Pool      *pgxpool.Pool
+	Stores    *stores.Set
+	Keys      contentkey.Ring
+	URLs      *settings.Store
+	ProjectID string
+	// API is Cloudflare's API base, and R2Endpoint an account's S3
+	// endpoint; tests point both at fakes.
+	API        string
+	R2Endpoint func(accountID string) string
+	HTTP       *http.Client
+	// SetupTest queues the setup test once delivery has moved.
+	SetupTest func(ctx context.Context) error
+}
+
+// r2Endpoint is an account's R2 S3 API.
+func r2Endpoint(accountID string) string { return "https://" + accountID + ".r2.cloudflarestorage.com" }
+
+var hostnameRE = regexp.MustCompile(`^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$`)
+var bucketRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$`)
+
+// ErrInvalid is a request the owner must correct.
+var ErrInvalid = errors.New("cloudflare: invalid request")
+
+// Connect runs every step in order and stops at the first that fails. Each
+// step is safe to repeat, so the owner fixes the cause and connects again;
+// a later connect with a new token is also how an upgraded Worker is
+// redeployed.
+func (c *Connector) Connect(ctx context.Context, req Request) (Result, error) {
+	req.Hostname = strings.ToLower(strings.TrimSpace(req.Hostname))
+	if req.Bucket == "" {
+		req.Bucket = DefaultBucket
+	}
+	switch {
+	case req.Token == "":
+		return Result{}, fmt.Errorf("%w: a token is required", ErrInvalid)
+	case !hostnameRE.MatchString(req.Hostname):
+		return Result{}, fmt.Errorf("%w: %q is not a hostname", ErrInvalid, req.Hostname)
+	case !bucketRE.MatchString(req.Bucket):
+		return Result{}, fmt.Errorf("%w: %q is not an R2 bucket name", ErrInvalid, req.Bucket)
+	}
+	if pub, err := url.Parse(c.URLs.PublicURL()); err == nil && pub.Hostname() == req.Hostname {
+		return Result{}, fmt.Errorf("%w: the media hostname must differ from the public URL's", ErrInvalid)
+	}
+
+	cf := &Client{Base: c.API, Token: req.Token, HTTP: c.HTTP}
+	var res Result
+	step := func(name string, fn func() (string, error)) bool {
+		detail, err := fn()
+		s := Step{Name: name, OK: err == nil, Detail: detail}
+		if err != nil {
+			s.Detail = err.Error()
+		}
+		res.Steps = append(res.Steps, s)
+		return err == nil
+	}
+
+	var tokenID, accountID, zoneID, storageID string
+	q := db.New(c.Pool)
+	ok := step("token", func() (string, error) {
+		var err error
+		tokenID, err = cf.VerifyToken(ctx)
+		return "active", err
+	}) && step("account", func() (string, error) {
+		accts, err := cf.Accounts(ctx)
+		if err != nil {
+			return "", err
+		}
+		for _, a := range accts {
+			if a.ID == req.AccountID || (req.AccountID == "" && len(accts) == 1) {
+				accountID = a.ID
+				return a.Name, nil
+			}
+		}
+		names := make([]string, len(accts))
+		for i, a := range accts {
+			names[i] = a.Name + " (" + a.ID + ")"
+		}
+		return "", fmt.Errorf("choose the account: %s", strings.Join(names, ", "))
+	}) && step("zone", func() (string, error) {
+		z, err := cf.ZoneFor(ctx, accountID, req.Hostname)
+		if err != nil {
+			return "", err
+		}
+		if z.Status != "active" {
+			return "", fmt.Errorf("zone %s is %s; it must be active in this account", z.Name, z.Status)
+		}
+		zoneID = z.ID
+		return z.Name, nil
+	}) && step("workers_paid", func() (string, error) {
+		paid, err := cf.WorkersPaid(ctx, accountID)
+		if err == nil && !paid {
+			err = errors.New("the account needs Workers Paid: video delivery exceeds the free plan's limits and terms")
+		}
+		return "subscribed", err
+	}) && step("bucket", func() (string, error) {
+		created, err := cf.EnsureBucket(ctx, accountID, req.Bucket)
+		if created {
+			return req.Bucket + " created; unless the token is scoped to one bucket, it reaches every bucket in the account", err
+		}
+		return req.Bucket + " exists", err
+	}) && step("storage", func() (string, error) {
+		// R2's S3 credentials derive from the token: its ID and the
+		// SHA-256 of its value. They stop working if the token is revoked.
+		sum := sha256.Sum256([]byte(req.Token))
+		cfg := stores.S3Config{Endpoint: c.endpoint(accountID), Region: "auto", Bucket: req.Bucket, AccountID: accountID}
+		sec := stores.S3Secret{AccessKeyID: tokenID, SecretAccessKey: hex.EncodeToString(sum[:])}
+		existing, err := q.FindStorageConfigByBucket(ctx, db.FindStorageConfigByBucketParams{ProjectID: c.ProjectID, Bucket: req.Bucket, AccountID: accountID})
+		switch {
+		case err == nil:
+			storageID = existing.ID
+			return "credentials renewed", c.Stores.UpdateS3Secret(ctx, existing.ID, cfg, sec)
+		case !errors.Is(err, pgx.ErrNoRows):
+			return "", err
+		}
+		row, err := c.Stores.AddS3(ctx, c.ProjectID, stores.KindR2, cfg, sec)
+		storageID = row.ID
+		return "R2 bucket checked: list, write, read, delete and CORS", err
+	}) && step("worker", func() (string, error) {
+		return "version " + WorkerVersion(), cf.UploadWorker(ctx, accountID, DefaultScript, workerJS, CompatibilityDate, []Binding{
+			{Type: "r2_bucket", Name: "MEDIA", BucketName: req.Bucket},
+			{Type: "plain_text", Name: "ORIGIN_URL", Text: c.URLs.PublicURL()},
+			{Type: "secret_text", Name: "CONTENT_KEYS", Text: c.Keys.WorkerSecret()},
+		})
+	}) && step("routes", func() (string, error) {
+		// The bucket gets every route before the hostname moves, so the
+		// Worker serves from its first request. New uploads go to R2;
+		// existing assets play through origin until they move.
+		if err := q.SetProjectDelivery(ctx, db.SetProjectDeliveryParams{ID: c.ProjectID, Delivery: "worker", DeliveryStorageID: pgtype.Text{String: storageID, Valid: true}}); err != nil {
+			return "", err
+		}
+		if err := c.Stores.SetDefault(ctx, c.ProjectID, storageID); err != nil {
+			return "", err
+		}
+		d, bucketID, err := routes.ForProject(ctx, q, c.Stores, c.ProjectID)
+		if err != nil {
+			return "", err
+		}
+		r, err := routes.Reconcile(ctx, q, d, bucketID, c.ProjectID)
+		return fmt.Sprintf("%d routes written; new uploads go to R2", r.Written), err
+	}) && step("dns", func() (string, error) {
+		n, err := cf.ClearHostname(ctx, zoneID, req.Hostname)
+		return fmt.Sprintf("%d records at %s removed", n, req.Hostname), err
+	}) && step("domain", func() (string, error) {
+		return req.Hostname, cf.AttachDomain(ctx, accountID, zoneID, req.Hostname, DefaultScript)
+	}) && step("media_url", func() (string, error) {
+		u, err := c.URLs.Set(ctx, c.URLs.PublicURL(), "https://"+req.Hostname)
+		return u.Media, err
+	}) && step("saved", func() (string, error) {
+		_, err := q.SaveCloudflareConnection(ctx, db.SaveCloudflareConnectionParams{
+			ProjectID: c.ProjectID, AccountID: accountID, ZoneID: zoneID, Hostname: req.Hostname, Bucket: req.Bucket,
+			ScriptName: DefaultScript, TokenID: tokenID, StorageID: storageID, WorkerVersion: WorkerVersion(),
+		})
+		return "the token itself is not kept; its Workers and DNS permissions stay live in Cloudflare", err
+	})
+	if ok && c.SetupTest != nil {
+		ok = step("setup_test", func() (string, error) { return "queued", c.SetupTest(ctx) })
+	}
+	res.Connected = ok
+	return res, nil
+}
+
+func (c *Connector) endpoint(accountID string) string {
+	if c.R2Endpoint != nil {
+		return c.R2Endpoint(accountID)
+	}
+	return r2Endpoint(accountID)
+}
+
+// Status is what the dashboard shows about the connection.
+type Status struct {
+	Connected      bool   `json:"connected"`
+	Hostname       string `json:"hostname,omitempty"`
+	Bucket         string `json:"bucket,omitempty"`
+	AccountID      string `json:"account_id,omitempty"`
+	WorkerVersion  string `json:"worker_version,omitempty"`
+	CurrentVersion string `json:"current_version"`
+	// NeedsRedeploy: this binary carries a newer Worker; connecting again
+	// with a token deploys it.
+	NeedsRedeploy bool `json:"needs_redeploy"`
+	// StorageOK is false when R2 refuses the stored credentials (the token
+	// was revoked or rolled): the dashboard offers Reconnect Cloudflare.
+	StorageOK bool `json:"storage_ok"`
+}
+
+// Status reads the connection and checks that R2 still accepts it.
+func (c *Connector) Status(ctx context.Context) (Status, error) {
+	st := Status{CurrentVersion: WorkerVersion()}
+	row, err := db.New(c.Pool).GetCloudflareConnection(ctx, c.ProjectID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return st, nil
+	}
+	if err != nil {
+		return st, err
+	}
+	st.Connected, st.Hostname, st.Bucket, st.AccountID, st.WorkerVersion = true, row.Hostname, row.Bucket, row.AccountID, row.WorkerVersion
+	st.NeedsRedeploy = row.WorkerVersion != WorkerVersion()
+	if store, err := c.Stores.Get(ctx, row.StorageID); err == nil {
+		_, _, err = store.List(ctx, "_routes/", "")
+		st.StorageOK = err == nil
+	}
+	return st, nil
+}
