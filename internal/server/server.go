@@ -17,6 +17,7 @@ import (
 
 	"github.com/visheshgubrani/clipmux/internal/assets"
 	"github.com/visheshgubrani/clipmux/internal/config"
+	"github.com/visheshgubrani/clipmux/internal/contentkey"
 	"github.com/visheshgubrani/clipmux/internal/db"
 	"github.com/visheshgubrani/clipmux/internal/queue"
 	"github.com/visheshgubrani/clipmux/internal/storage"
@@ -114,24 +115,31 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	defer store.Close()
 	logger.Info("storage ready", "kind", "fs", "public_url", cfg.PublicURL)
 
+	// The content key secret; losing it makes every output unplayable.
+	keys, err := contentkey.LoadOrCreate(cfg.DataDir)
+	if err != nil {
+		return err
+	}
+
 	ln, err := net.Listen("tcp", cfg.ListenAddr)
 	if err != nil {
 		return err
 	}
-	return serve(ctx, cfg, ln, logger, pool, store)
+	return serve(ctx, cfg, ln, logger, pool, store, keys)
 }
 
 // serve runs the HTTP server and background loops. It returns only after
 // every goroutine it started has stopped, so the caller can close the pool
 // and storage.
-func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog.Logger, pool *pgxpool.Pool, store *storage.Filesystem) error {
+func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog.Logger, pool *pgxpool.Pool, store *storage.Filesystem, keys contentkey.Secret) error {
 	// Until the owner table exists (P1-T10) every boot is a first boot.
 	logger.Info("first boot: create the owner account with this setup token", "setup_token", rand.Text())
 
 	q := queue.New(pool)
+	q.KeyVersion = keys.Version
 	// The built-in worker's key lives only in memory and is handed to the
 	// child worker (P1-T06); it is never logged or stored.
-	worker := workerapi.New(q, workerapi.BuiltinKey(rand.Text()))
+	worker := workerapi.New(q, workerapi.BuiltinKey(rand.Text()), store, keys)
 	worker.Logger = logger
 	upl := uploads.New(pool, store)
 	upl.Logger = logger

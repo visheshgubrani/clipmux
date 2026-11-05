@@ -3,8 +3,10 @@ package workerapi
 import (
 	"context"
 	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"regexp"
@@ -13,8 +15,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/visheshgubrani/clipmux/internal/contentkey"
 	"github.com/visheshgubrani/clipmux/internal/httpjson"
+	"github.com/visheshgubrani/clipmux/internal/media"
 	"github.com/visheshgubrani/clipmux/internal/queue"
+	"github.com/visheshgubrani/clipmux/internal/storage"
 )
 
 // ContractVersion is the job payload / output contract this server speaks.
@@ -51,34 +56,67 @@ func (k BuiltinKey) AuthenticateWorker(_ context.Context, key string) (queue.Wor
 	return queue.Worker{Executor: "builtin"}, true
 }
 
-// Source and Encryption are added to the payload by providers that land
-// with storage (P1-T04) and delivery keys (P1-T08).
+// Source is where a worker downloads the asset's source from. URLs are
+// minted at claim time or later, never at enqueue.
 type Source struct {
-	URL           string `json:"url,omitempty"`
-	Size          int64  `json:"size"`
-	AgentSourceID string `json:"agent_source_id,omitempty"`
+	URL  string `json:"url"`
+	Size int64  `json:"size"`
 }
 
-// Encryption is the per-output content key handed over at claim time.
+// Encryption is the output's content key, handed over at claim time. It
+// opens only this attempt's output.
 type Encryption struct {
 	Method     string `json:"method"`
 	KeyVersion int32  `json:"key_version"`
-	Key        string `json:"key"`
+	Key        string `json:"key"`    // hex
+	KeyID      string `json:"key_id"` // hex
 }
+
+// Profile names the encoding profile.
+type Profile struct {
+	ID      string `json:"id"`
+	Version int32  `json:"version"`
+}
+
+// Job is the claim payload (docs/architecture.md, "Job payload"). It holds
+// no storage credentials.
+type Job struct {
+	ContractVersion  int        `json:"contract_version"`
+	AttemptID        string     `json:"attempt_id"`
+	AttemptToken     string     `json:"attempt_token"`
+	LeaseSeconds     int        `json:"lease_seconds"`
+	HeartbeatSeconds int        `json:"heartbeat_seconds"`
+	JobID            string     `json:"job_id"`
+	Kind             string     `json:"kind"`
+	AssetID          string     `json:"asset_id"`
+	OutputID         string     `json:"output_id"`
+	Source           Source     `json:"source"`
+	Profile          Profile    `json:"profile"`
+	OutputFormat     int32      `json:"output_format"`
+	Encryption       Encryption `json:"encryption"`
+}
+
+const (
+	// SignBudget caps the files one attempt may sign.
+	SignBudget = 20_000
+	// MaxSignPaths caps the paths in one sign call.
+	MaxSignPaths = 500
+	putURLTTL    = 15 * time.Minute
+	sourceURLTTL = time.Hour
+)
 
 // API serves /worker/v1.
 type API struct {
 	Queue  *queue.Queue
 	Auth   WorkerAuth
+	Store  storage.Storage
+	Keys   contentkey.Secret
 	Logger *slog.Logger
-	// Optional payload providers; nil until their tasks land.
-	Source     func(ctx context.Context, c *queue.Claim) (*Source, error)
-	Encryption func(ctx context.Context, c *queue.Claim) (*Encryption, error)
 }
 
 // New returns the worker API.
-func New(q *queue.Queue, auth WorkerAuth) *API {
-	return &API{Queue: q, Auth: auth, Logger: slog.Default()}
+func New(q *queue.Queue, auth WorkerAuth, store storage.Storage, keys contentkey.Secret) *API {
+	return &API{Queue: q, Auth: auth, Store: store, Keys: keys, Logger: slog.Default()}
 }
 
 // Handler returns the /worker/v1 routes.
@@ -86,8 +124,21 @@ func (a *API) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /worker/v1/claim", a.claim)
 	mux.HandleFunc("POST /worker/v1/attempts/{id}/heartbeat", a.heartbeat)
+	mux.HandleFunc("POST /worker/v1/attempts/{id}/sign", a.sign)
 	mux.HandleFunc("POST /worker/v1/attempts/{id}/fail", a.fail)
 	return mux
+}
+
+func sourceKey(assetID string) string { return "uploads/" + assetID + "/source" }
+
+// source signs a fresh download URL for an asset's source.
+func (a *API) source(ctx context.Context, assetID string) (Source, error) {
+	obj, err := a.Store.Head(ctx, sourceKey(assetID))
+	if err != nil {
+		return Source{}, err
+	}
+	url, err := a.Store.PresignGet(ctx, sourceKey(assetID), sourceURLTTL)
+	return Source{URL: url, Size: obj.Size}, err
 }
 
 type claimRequest struct {
@@ -97,27 +148,6 @@ type claimRequest struct {
 	Encoders         []string `json:"encoders"`
 	FreeDiskBytes    int64    `json:"free_disk_bytes"`
 	WaitSeconds      *float64 `json:"wait_seconds"`
-}
-
-type profile struct {
-	ID      string `json:"id"`
-	Version int32  `json:"version"`
-}
-
-type claimResponse struct {
-	ContractVersion  int         `json:"contract_version"`
-	AttemptID        string      `json:"attempt_id"`
-	AttemptToken     string      `json:"attempt_token"`
-	LeaseSeconds     int         `json:"lease_seconds"`
-	HeartbeatSeconds int         `json:"heartbeat_seconds"`
-	JobID            string      `json:"job_id"`
-	Kind             string      `json:"kind"`
-	AssetID          string      `json:"asset_id"`
-	OutputID         string      `json:"output_id"`
-	Source           *Source     `json:"source,omitempty"`
-	Profile          profile     `json:"profile"`
-	OutputFormat     int32       `json:"output_format"`
-	Encryption       *Encryption `json:"encryption,omitempty"`
 }
 
 func (a *API) claim(w http.ResponseWriter, r *http.Request) {
@@ -160,7 +190,21 @@ func (a *API) claim(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	resp := claimResponse{
+	src, err := a.source(r.Context(), c.Job.AssetID)
+	if errors.Is(err, storage.ErrNotFound) {
+		// The source is gone; no executor can ever run this job.
+		if _, ferr := a.Queue.Fail(r.Context(), c.Token, queue.Failure{Permanent: true, Code: "source_missing"}); ferr != nil {
+			a.Logger.Error("worker api", "op", "fail sourceless job", "err", ferr)
+		}
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if err != nil {
+		a.internal(w, "claim source", err)
+		return
+	}
+	key, kid := a.Keys.Derive(c.Job.AssetID, c.Output.ID), contentkey.KeyID(c.Output.ID)
+	httpjson.Write(w, http.StatusOK, Job{
 		ContractVersion:  ContractVersion,
 		AttemptID:        c.Attempt.ID,
 		AttemptToken:     c.Token,
@@ -170,21 +214,84 @@ func (a *API) claim(w http.ResponseWriter, r *http.Request) {
 		Kind:             c.Job.Kind,
 		AssetID:          c.Job.AssetID,
 		OutputID:         c.Output.ID,
-		Profile:          profile{ID: c.Job.ProfileID, Version: c.Job.ProfileVersion},
+		Source:           src,
+		Profile:          Profile{ID: c.Job.ProfileID, Version: c.Job.ProfileVersion},
 		OutputFormat:     c.Output.OutputFormat,
+		Encryption: Encryption{
+			Method: "aes-128", KeyVersion: c.Output.KeyVersion,
+			Key: hex.EncodeToString(key[:]), KeyID: hex.EncodeToString(kid[:]),
+		},
+	})
+}
+
+type signRequest struct {
+	Paths  []string `json:"paths"`
+	Source bool     `json:"source"`
+}
+
+// SignResponse answers sign: PUT URLs keyed by output path, and a fresh
+// source URL when asked for one.
+type SignResponse struct {
+	Action    string            `json:"action"`
+	Reason    string            `json:"reason,omitempty"`
+	URLs      map[string]string `json:"urls,omitempty"`
+	Source    *Source           `json:"source,omitempty"`
+	ExpiresAt time.Time         `json:"expires_at"`
+}
+
+// sign returns PUT URLs for output paths. Paths must match the output
+// grammar; the server adds the attempt's own prefix, so an attempt can't
+// write outside its output.
+func (a *API) sign(w http.ResponseWriter, r *http.Request) {
+	token, ok := a.attemptToken(w, r)
+	if !ok {
+		return
 	}
-	// URLs and keys are minted at claim time, never at enqueue.
-	if a.Source != nil {
-		if resp.Source, err = a.Source(r.Context(), c); err != nil {
-			a.internal(w, "claim source", err)
+	var req signRequest
+	if !httpjson.Decode(w, r, &req) {
+		return
+	}
+	paths := slices.Compact(slices.Sorted(slices.Values(req.Paths)))
+	if len(paths) > MaxSignPaths || (len(paths) == 0 && !req.Source) {
+		httpjson.Error(w, http.StatusBadRequest, "invalid_request", "sign 1 to 500 paths, or ask for the source")
+		return
+	}
+	for _, p := range paths {
+		if !media.ValidOutputPath(p) {
+			httpjson.Error(w, http.StatusBadRequest, "invalid_path", fmt.Sprintf("%q is not a name the output format allows", p))
 			return
 		}
 	}
-	if a.Encryption != nil {
-		if resp.Encryption, err = a.Encryption(r.Context(), c); err != nil {
-			a.internal(w, "claim encryption", err)
+	v, att, err := a.Queue.ReserveSigns(r.Context(), token, len(paths), SignBudget)
+	if errors.Is(err, queue.ErrSignBudget) {
+		httpjson.Error(w, http.StatusConflict, "sign_budget_exceeded", fmt.Sprintf("an attempt may sign at most %d files", SignBudget))
+		return
+	}
+	if err != nil {
+		a.internal(w, "sign", err)
+		return
+	}
+	if v.Stop {
+		a.verdict(w, v)
+		return
+	}
+	resp := SignResponse{Action: "continue", URLs: make(map[string]string, len(paths)), ExpiresAt: time.Now().Add(putURLTTL).UTC()}
+	prefix := "media/" + att.AssetID + "/" + att.OutputID + "/"
+	for _, p := range paths {
+		url, err := a.Store.PresignPut(r.Context(), prefix+p, putURLTTL)
+		if err != nil {
+			a.internal(w, "sign put", err)
 			return
 		}
+		resp.URLs[p] = url
+	}
+	if req.Source {
+		src, err := a.source(r.Context(), att.AssetID)
+		if err != nil {
+			a.internal(w, "sign source", err)
+			return
+		}
+		resp.Source = &src
 	}
 	httpjson.Write(w, http.StatusOK, resp)
 }

@@ -12,6 +12,9 @@ test:
 	go vet ./...
 	go test ./...
 
+# Media tests run when ffmpeg, ffprobe and packager are on PATH (or
+# CLIPMUX_PACKAGER points at Shaka); toolchain/install_packager.sh installs
+# the pinned packager.
 test-db:
 	TEST_DATABASE_URL=postgres://clipmux:clipmux@localhost:5444/clipmux_test?sslmode=disable go test ./...
 

@@ -94,6 +94,7 @@ type Attempt struct {
 	StartedAt       pgtype.Timestamptz
 	LastHeartbeatAt pgtype.Timestamptz
 	FinishedAt      pgtype.Timestamptz
+	SignedPaths     int32
 }
 
 type IdempotencyKey struct {

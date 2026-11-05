@@ -46,7 +46,7 @@ const createAttempt = `-- name: CreateAttempt :one
 INSERT INTO attempts (id, project_id, job_id, asset_id, attempt_number, output_id, executor, agent_id,
                       token_hash, lease_expires_at, worker_info)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now() + make_interval(secs => $11::double precision), $10)
-RETURNING id, project_id, job_id, asset_id, attempt_number, output_id, executor, agent_id, status, token_hash, lease_expires_at, phase, progress, worker_info, failure_kind, error_code, started_at, last_heartbeat_at, finished_at
+RETURNING id, project_id, job_id, asset_id, attempt_number, output_id, executor, agent_id, status, token_hash, lease_expires_at, phase, progress, worker_info, failure_kind, error_code, started_at, last_heartbeat_at, finished_at, signed_paths
 `
 
 type CreateAttemptParams struct {
@@ -98,6 +98,7 @@ func (q *Queries) CreateAttempt(ctx context.Context, arg CreateAttemptParams) (A
 		&i.StartedAt,
 		&i.LastHeartbeatAt,
 		&i.FinishedAt,
+		&i.SignedPaths,
 	)
 	return i, err
 }
@@ -204,7 +205,7 @@ func (q *Queries) FailJob(ctx context.Context, arg FailJobParams) error {
 }
 
 const getAttempt = `-- name: GetAttempt :one
-SELECT id, project_id, job_id, asset_id, attempt_number, output_id, executor, agent_id, status, token_hash, lease_expires_at, phase, progress, worker_info, failure_kind, error_code, started_at, last_heartbeat_at, finished_at FROM attempts WHERE id = $1
+SELECT id, project_id, job_id, asset_id, attempt_number, output_id, executor, agent_id, status, token_hash, lease_expires_at, phase, progress, worker_info, failure_kind, error_code, started_at, last_heartbeat_at, finished_at, signed_paths FROM attempts WHERE id = $1
 `
 
 func (q *Queries) GetAttempt(ctx context.Context, id string) (Attempt, error) {
@@ -230,12 +231,13 @@ func (q *Queries) GetAttempt(ctx context.Context, id string) (Attempt, error) {
 		&i.StartedAt,
 		&i.LastHeartbeatAt,
 		&i.FinishedAt,
+		&i.SignedPaths,
 	)
 	return i, err
 }
 
 const getAttemptByTokenHash = `-- name: GetAttemptByTokenHash :one
-SELECT id, project_id, job_id, asset_id, attempt_number, output_id, executor, agent_id, status, token_hash, lease_expires_at, phase, progress, worker_info, failure_kind, error_code, started_at, last_heartbeat_at, finished_at FROM attempts WHERE token_hash = $1
+SELECT id, project_id, job_id, asset_id, attempt_number, output_id, executor, agent_id, status, token_hash, lease_expires_at, phase, progress, worker_info, failure_kind, error_code, started_at, last_heartbeat_at, finished_at, signed_paths FROM attempts WHERE token_hash = $1
 `
 
 func (q *Queries) GetAttemptByTokenHash(ctx context.Context, tokenHash []byte) (Attempt, error) {
@@ -261,6 +263,7 @@ func (q *Queries) GetAttemptByTokenHash(ctx context.Context, tokenHash []byte) (
 		&i.StartedAt,
 		&i.LastHeartbeatAt,
 		&i.FinishedAt,
+		&i.SignedPaths,
 	)
 	return i, err
 }
@@ -389,7 +392,7 @@ func (q *Queries) LockAsset(ctx context.Context, id string) (Asset, error) {
 }
 
 const lockAttempt = `-- name: LockAttempt :one
-SELECT attempts.id, attempts.project_id, attempts.job_id, attempts.asset_id, attempts.attempt_number, attempts.output_id, attempts.executor, attempts.agent_id, attempts.status, attempts.token_hash, attempts.lease_expires_at, attempts.phase, attempts.progress, attempts.worker_info, attempts.failure_kind, attempts.error_code, attempts.started_at, attempts.last_heartbeat_at, attempts.finished_at, (lease_expires_at < now())::boolean AS lease_expired
+SELECT attempts.id, attempts.project_id, attempts.job_id, attempts.asset_id, attempts.attempt_number, attempts.output_id, attempts.executor, attempts.agent_id, attempts.status, attempts.token_hash, attempts.lease_expires_at, attempts.phase, attempts.progress, attempts.worker_info, attempts.failure_kind, attempts.error_code, attempts.started_at, attempts.last_heartbeat_at, attempts.finished_at, attempts.signed_paths, (lease_expires_at < now())::boolean AS lease_expired
 FROM attempts WHERE id = $1 FOR UPDATE
 `
 
@@ -421,6 +424,7 @@ func (q *Queries) LockAttempt(ctx context.Context, id string) (LockAttemptRow, e
 		&i.Attempt.StartedAt,
 		&i.Attempt.LastHeartbeatAt,
 		&i.Attempt.FinishedAt,
+		&i.Attempt.SignedPaths,
 		&i.LeaseExpired,
 	)
 	return i, err
@@ -575,6 +579,26 @@ type RequeueJobParams struct {
 func (q *Queries) RequeueJob(ctx context.Context, arg RequeueJobParams) error {
 	_, err := q.db.Exec(ctx, requeueJob, arg.DelaySeconds, arg.ID)
 	return err
+}
+
+const reserveSignedPaths = `-- name: ReserveSignedPaths :one
+UPDATE attempts SET signed_paths = signed_paths + $1::integer
+WHERE id = $2 AND signed_paths + $1::integer <= $3::integer
+RETURNING signed_paths
+`
+
+type ReserveSignedPathsParams struct {
+	N      int32
+	ID     string
+	Budget int32
+}
+
+// Counts paths against the attempt's budget; no row means the budget is spent.
+func (q *Queries) ReserveSignedPaths(ctx context.Context, arg ReserveSignedPathsParams) (int32, error) {
+	row := q.db.QueryRow(ctx, reserveSignedPaths, arg.N, arg.ID, arg.Budget)
+	var signed_paths int32
+	err := row.Scan(&signed_paths)
+	return signed_paths, err
 }
 
 const setAttemptStatus = `-- name: SetAttemptStatus :exec

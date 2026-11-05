@@ -22,6 +22,25 @@ import (
 // ErrUnknownToken means no attempt carries the presented token.
 var ErrUnknownToken = errors.New("queue: unknown attempt token")
 
+// ErrSignBudget means the attempt has signed as many paths as it may.
+var ErrSignBudget = errors.New("queue: attempt sign budget spent")
+
+// ReserveSigns checks the attempt is live and counts n paths against its
+// budget, in one locked transaction. It returns the attempt so the caller
+// can build URLs under the attempt's own output prefix.
+func (q *Queue) ReserveSigns(ctx context.Context, token string, n, budget int) (Verdict, db.Attempt, error) {
+	var attempt db.Attempt
+	v, err := q.withLiveAttempt(ctx, token, func(qs *db.Queries, l locked) (Verdict, error) {
+		attempt = l.attempt
+		_, err := qs.ReserveSignedPaths(ctx, db.ReserveSignedPathsParams{ID: l.attempt.ID, N: int32(n), Budget: int32(budget)})
+		if errors.Is(err, pgx.ErrNoRows) {
+			return Verdict{}, ErrSignBudget
+		}
+		return Verdict{}, err
+	})
+	return v, attempt, err
+}
+
 // Error codes the queue itself assigns.
 const (
 	// CodeWorkerLost: the lost-lease budget was spent.

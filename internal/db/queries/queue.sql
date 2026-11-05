@@ -111,3 +111,9 @@ RETURNING version;
 -- name: InsertOutbox :exec
 INSERT INTO outbox (id, project_id, kind, app_id, asset_id, payload)
 VALUES ($1, $2, $3, $4, $5, $6);
+
+-- name: ReserveSignedPaths :one
+-- Counts paths against the attempt's budget; no row means the budget is spent.
+UPDATE attempts SET signed_paths = signed_paths + sqlc.arg(n)::integer
+WHERE id = sqlc.arg(id) AND signed_paths + sqlc.arg(n)::integer <= sqlc.arg(budget)::integer
+RETURNING signed_paths;

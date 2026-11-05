@@ -5,9 +5,19 @@ when you introduce or discover it; remove it when it is closed.
 
 ## Bootstrap (2026-11-05)
 
-- Phase 1 beyond T05: no worker, worker sign/complete, delivery or dashboard
-  yet. Uploads complete into `processing` and queue a transcode job that no
-  worker runs until T06. Asset responses carry no `base_url` until delivery
+- Phase 1 beyond T06: the worker encodes, encrypts and uploads outputs, but
+  `complete` (commit) arrives in T07 and `serve` does not yet start the
+  built-in worker, so uploaded videos stay in `processing`. No delivery or
+  dashboard yet.
+- Worker sandbox is the M1 subset: empty environment, demuxer and protocol
+  allowlists, wall-clock limits. No network namespace, rlimits or CPU cap
+  yet, so the built-in worker can still compete with the API for CPU.
+- Workers report no free disk space at claim, and the server doesn't check
+  it; a full disk fails the attempt (transient).
+- The content key secret is a file in the data directory, not yet encrypted
+  in Postgres (T10). Back it up: losing it makes every output unplayable.
+- Sign caps file count per attempt, not total bytes; a presigned filesystem
+  PUT is capped at 5 GiB per object. Asset responses carry no `base_url` until delivery
   (T08), and `GET /v1/assets` only looks up by `passthrough` (full listing
   comes with the dashboard).
 - Idempotency keys are kept forever; a cleanup window (e.g. 24 h) is not

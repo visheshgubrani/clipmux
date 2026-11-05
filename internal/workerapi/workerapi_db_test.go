@@ -3,14 +3,20 @@ package workerapi_test
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/visheshgubrani/clipmux/internal/contentkey"
 	"github.com/visheshgubrani/clipmux/internal/db/dbtest"
 	"github.com/visheshgubrani/clipmux/internal/queue"
+	"github.com/visheshgubrani/clipmux/internal/storage"
 	"github.com/visheshgubrani/clipmux/internal/workerapi"
 )
 
@@ -26,30 +32,165 @@ var capable = map[string]any{
 }
 
 type env struct {
-	t    *testing.T
-	srv  *httptest.Server
-	exec func(string, ...any)
+	t     *testing.T
+	pool  *pgxpool.Pool
+	srv   *httptest.Server
+	store *storage.Filesystem
+	keys  contentkey.Secret
+	exec  func(string, ...any)
 }
 
 func newEnv(t *testing.T) *env {
 	t.Helper()
 	pool := dbtest.New(t)
-	api := workerapi.New(queue.New(pool), workerapi.BuiltinKey(workerKey))
-	srv := httptest.NewServer(api.Handler())
+	mux := http.NewServeMux()
+	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
+	store, err := storage.OpenFilesystem(t.TempDir(), storage.FilesystemOptions{BaseURL: srv.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+	keys, err := contentkey.LoadOrCreate(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	api := workerapi.New(queue.New(pool), workerapi.BuiltinKey(workerKey), store, keys)
+	mux.Handle("POST /worker/v1/", api.Handler())
+	for _, m := range []string{"GET", "PUT"} {
+		mux.Handle(m+" /_storage/", store.Handler())
+	}
 	exec := func(sql string, args ...any) {
 		t.Helper()
 		if _, err := pool.Exec(context.Background(), sql, args...); err != nil {
 			t.Fatal(err)
 		}
 	}
-	return &env{t: t, srv: srv, exec: exec}
+	return &env{t: t, pool: pool, srv: srv, store: store, keys: keys, exec: exec}
 }
 
+// enqueue creates an uploaded asset with a source and a queued transcode.
 func (e *env) enqueue() {
 	e.exec(`INSERT INTO assets (id, project_id, app_id, status, storage_id) VALUES ('ast_1', 'prj_default', 'app_dashboard', 'processing', 'sto_default')`)
 	e.exec(`INSERT INTO jobs (id, project_id, asset_id, kind) VALUES ('job_1', 'prj_default', 'ast_1', 'transcode')`)
+	if err := e.store.Put(context.Background(), "uploads/ast_1/source", strings.NewReader("source-bytes")); err != nil {
+		e.t.Fatal(err)
+	}
 }
+
+func (e *env) claim() map[string]any {
+	e.t.Helper()
+	code, job := e.post("/worker/v1/claim", workerKey, capable)
+	if code != http.StatusOK {
+		e.t.Fatalf("claim: %d %v", code, job)
+	}
+	return job
+}
+
+func download(t *testing.T, url string) string {
+	t.Helper()
+	res, err := http.Get(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	b, _ := io.ReadAll(res.Body)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("GET source: %d", res.StatusCode)
+	}
+	return string(b)
+}
+
+func TestClaimPayloadCarriesASourceURLAndTheOutputsKey(t *testing.T) {
+	e := newEnv(t)
+	e.enqueue()
+	job := e.claim()
+
+	src, _ := job["source"].(map[string]any)
+	if src["size"] != float64(len("source-bytes")) || download(t, str(src, "url")) != "source-bytes" {
+		t.Fatalf("source = %v", src)
+	}
+	enc, _ := job["encryption"].(map[string]any)
+	key := e.keys.Derive("ast_1", str(job, "output_id"))
+	kid := contentkey.KeyID(str(job, "output_id"))
+	if str(enc, "method") != "aes-128" || enc["key_version"] != float64(1) ||
+		str(enc, "key") != hex.EncodeToString(key[:]) || str(enc, "key_id") != hex.EncodeToString(kid[:]) {
+		t.Fatalf("encryption = %v", enc)
+	}
+}
+
+func TestSignWritesOnlyGrammarPathsUnderTheAttemptsOwnOutput(t *testing.T) {
+	e := newEnv(t)
+	e.enqueue()
+	job := e.claim()
+	token, base := str(job, "attempt_token"), "/worker/v1/attempts/"+str(job, "attempt_id")
+
+	for _, bad := range [][]string{{"../uploads/ast_1/source"}, {"key/1"}, {"720p/evil.sh"}, {"/master.m3u8"}, {}} {
+		if code, out := e.post(base+"/sign", token, map[string]any{"paths": bad}); code != http.StatusBadRequest {
+			t.Errorf("sign %v: %d %v, want 400", bad, code, out)
+		}
+	}
+	code, out := e.post(base+"/sign", token, map[string]any{"paths": []string{"720p/seg_00001.m4s", "master.m3u8"}, "source": true})
+	if code != http.StatusOK || out["action"] != "continue" {
+		t.Fatalf("sign: %d %v", code, out)
+	}
+	urls, _ := out["urls"].(map[string]any)
+	put := str(urls, "720p/seg_00001.m4s")
+	req, _ := http.NewRequest(http.MethodPut, put, strings.NewReader("segment"))
+	if res, err := http.DefaultClient.Do(req); err != nil || res.StatusCode != http.StatusOK {
+		t.Fatalf("PUT signed segment: %v %v", res.StatusCode, err)
+	}
+	want := "media/ast_1/" + str(job, "output_id") + "/720p/seg_00001.m4s"
+	if _, err := e.store.Head(context.Background(), want); err != nil {
+		t.Fatalf("segment not stored at %s: %v", want, err)
+	}
+	if src, _ := out["source"].(map[string]any); download(t, str(src, "url")) != "source-bytes" {
+		t.Fatal("a fresh source URL must download the source")
+	}
+}
+
+func TestSignBudgetCapsFilesPerAttempt(t *testing.T) {
+	e := newEnv(t)
+	e.enqueue()
+	job := e.claim()
+	token, base := str(job, "attempt_token"), "/worker/v1/attempts/"+str(job, "attempt_id")
+	e.exec(`UPDATE attempts SET signed_paths = $1`, workerapi.SignBudget-1)
+	if code, _ := e.post(base+"/sign", token, map[string]any{"paths": []string{"master.m3u8"}}); code != http.StatusOK {
+		t.Fatalf("last allowed path: %d", code)
+	}
+	if code, out := e.post(base+"/sign", token, map[string]any{"paths": []string{"poster.jpg"}}); code != http.StatusConflict || errorCode(out) != "sign_budget_exceeded" {
+		t.Fatalf("over budget: %d %v", code, out)
+	}
+}
+
+func TestSignTellsAStaleWorkerToStop(t *testing.T) {
+	e := newEnv(t)
+	e.enqueue()
+	job := e.claim()
+	e.exec(`UPDATE jobs SET status = 'cancelled'`)
+	code, out := e.post("/worker/v1/attempts/"+str(job, "attempt_id")+"/sign", str(job, "attempt_token"), map[string]any{"paths": []string{"master.m3u8"}})
+	if code != http.StatusOK || out["action"] != "stop" || out["urls"] != nil {
+		t.Fatalf("sign for a cancelled job: %d %v", code, out)
+	}
+}
+
+func TestClaimFailsAJobWhoseSourceIsGone(t *testing.T) {
+	e := newEnv(t)
+	e.exec(`INSERT INTO assets (id, project_id, app_id, status, storage_id) VALUES ('ast_1', 'prj_default', 'app_dashboard', 'processing', 'sto_default')`)
+	e.exec(`INSERT INTO jobs (id, project_id, asset_id, kind) VALUES ('job_1', 'prj_default', 'ast_1', 'transcode')`)
+	if code, _ := e.post("/worker/v1/claim", workerKey, capable); code != http.StatusNoContent {
+		t.Fatalf("claim: %d, want 204", code)
+	}
+	var jobStatus, assetStatus, code string
+	if err := e.pool.QueryRow(context.Background(), `SELECT j.status, a.status, a.error_code FROM jobs j JOIN assets a ON a.id = j.asset_id`).Scan(&jobStatus, &assetStatus, &code); err != nil {
+		t.Fatal(err)
+	}
+	if jobStatus != "failed" || assetStatus != "errored" || code != "source_missing" {
+		t.Fatalf("sourceless job: job %s, asset %s/%s", jobStatus, assetStatus, code)
+	}
+}
+
+func str(m map[string]any, k string) string { s, _ := m[k].(string); return s }
 
 func (e *env) post(path, bearer string, body any) (int, map[string]any) {
 	e.t.Helper()
