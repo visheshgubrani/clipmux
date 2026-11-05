@@ -111,10 +111,16 @@ jobs:
             go test ./internal/e2e -run TestPlayerFixture -count=1 -timeout 60m -v > fixture.log 2>&1 &
           for i in $(seq 300); do curl -sf http://127.0.0.1:8099/config && exit 0; sleep 2; done
           cat fixture.log; exit 1
+      - name: Free disk space for the emulator
+        # The API 35 image needs ~7.2 GB for userdata; the runner had 6.7 GB free.
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
       - name: ExoPlayer on an emulator
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 35
+          disk-size: 4096M
           arch: x86_64
           target: google_apis
           disable-animations: true
