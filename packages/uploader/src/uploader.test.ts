@@ -324,3 +324,18 @@ test('rememberUpload keeps only what resuming needs', () => {
   memory.forget(file)
   assert.equal(memory.load(file), null)
 })
+
+test('a pause between parts stops before the next part is sent', async () => {
+  const f = fakeClipMux()
+  const up = f.upload({
+    onProgress: (p) => {
+      if (p.partsDone === 1) up.pause()
+    },
+  })
+  void up.start()
+  await new Promise((r) => setTimeout(r, 20))
+  assert.deepEqual(
+    f.calls.filter((c) => c.startsWith('PUT')),
+    ['PUT 1'],
+  )
+})

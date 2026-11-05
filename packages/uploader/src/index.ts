@@ -385,6 +385,8 @@ export class ClipMuxUpload {
     let resigned = false
     let fresh = false
     for (let attempt = 1; ; ) {
+      // A pause or a sibling's failure between parts stops here.
+      if (signal.aborted) throw signal.reason
       const url = await urlFor(part.number, fresh)
       fresh = false
       this.#sent.set(part.number, 0)
@@ -503,6 +505,7 @@ function defaultPut(f: typeof fetch): PutPart {
   }
   return (url, body, { signal, onBytes }) =>
     new Promise((resolve, reject) => {
+      if (signal.aborted) return reject(signal.reason)
       const xhr = new XMLHttpRequest()
       xhr.open('PUT', url)
       xhr.upload.onprogress = (e) => onBytes(e.loaded)

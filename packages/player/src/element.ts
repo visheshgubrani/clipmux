@@ -4,7 +4,10 @@
 //   import '@clipmux/player/element'
 //   const player = document.querySelector('clipmux-player')
 //   player.getToken = async () => (await fetch('/my/token')).text()
-//   player.token = initialToken
+//
+// With getToken and no token, the element asks for the first token itself;
+// set token instead to start with one. autoplay and muted pass through to
+// the media element.
 //
 // Events: clipmux-token (a new token is in use), clipmux-denied (getToken
 // returned null or delivery answered 403; playback stops), clipmux-error
@@ -23,12 +26,14 @@ interface MediaElement extends HTMLVideoElement {
 }
 
 export class ClipMuxPlayerElement extends HTMLElement {
-  static observedAttributes = ['base-url', 'playback-id', 'poster']
+  static observedAttributes = ['base-url', 'playback-id', 'poster', 'autoplay', 'muted']
   #token = ''
   #getToken: GetToken | undefined
   #hls: Record<string, unknown> = {}
   #media: MediaElement | null = null
   #session: TokenSession | null = null
+  #loaded = ''
+  #fetching = false
 
   /** The playback token; unset for a public playback ID. */
   get token(): string {
@@ -84,8 +89,36 @@ export class ClipMuxPlayerElement extends HTMLElement {
     if (!media || !baseUrl || !playbackId) return
     const poster = this.getAttribute('poster')
     if (poster) media.poster = poster
+    for (const flag of ['autoplay', 'muted'] as const) {
+      if (this.hasAttribute(flag)) media.setAttribute(flag, '')
+      else media.removeAttribute(flag)
+    }
+    media.muted = this.hasAttribute('muted')
+    // A signed ID needs its first token before anything loads.
+    if (!this.#token && this.#getToken) {
+      if (!this.#fetching) {
+        this.#fetching = true
+        this.#getToken().then(
+          (t) => {
+            this.#fetching = false
+            if (t === null) return this.#emit('clipmux-denied', {})
+            this.#token = t
+            this.#load()
+          },
+          () => {
+            this.#fetching = false
+            this.#emit('clipmux-error', { status: 0 })
+          },
+        )
+      }
+      return
+    }
+    // Reload only when what plays changes; a refreshed token doesn't.
+    const loading = `${baseUrl}|${playbackId}|${this.#token}`
+    if (loading === this.#loaded) return
+    this.#loaded = loading
     this.#session = this.#token
-      ? new TokenSession(this.#token, this.#getToken, {
+      ? new TokenSession(this.#token, () => this.#getToken?.() ?? Promise.resolve(null), {
           onToken: (token) => this.#emit('clipmux-token', { token }),
           onDenied: () => {
             media.pause()

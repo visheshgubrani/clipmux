@@ -1,7 +1,14 @@
 {
   "$schema": "./node_modules/@biomejs/biome/configuration_schema.json",
   "files": {
-    "includes": ["packages/**", "!**/dist", "!**/node_modules"]
+    "includes": [
+      "packages/**",
+      "e2e/web/**",
+      "!**/dist",
+      "!**/node_modules",
+      "!**/test-results",
+      "!**/playwright-report"
+    ]
   },
   "formatter": {
     "indentStyle": "space",

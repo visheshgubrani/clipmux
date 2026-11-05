@@ -207,5 +207,18 @@ Decisions within the architecture's rules, made in P1-T10:
 - `deploy/compose.yml` runs the app (`read_only`, tmpfs `/tmp`, `cap_drop: ALL`, `no-new-privileges`, port 8080 on 127.0.0.1 only), `postgres:18-alpine` and `caddy:2`. The Caddyfile names no host: on-demand TLS asks `/_tls/ask`, which is blocked from outside; plain HTTP serves first boot. The app trusts Docker's private ranges as proxies and self-dials `caddy` for the setup test.
 - CI's image job builds with the GHA cache, starts the stack, requires the sandbox probe and a refused socket inside the container, passes `clipmux admin setup-test --wait` through Caddy, and checks health through Caddy. Locally all of that holds under Docker's default seccomp profile, including Landlock.
 
+## D029 Video.js 10 with a refresh loader — accepted (2026-11-05)
+Amends D014. Made in P1-T11/T12:
+- Video.js 10 went stable on 1 October 2026, so `@clipmux/player` uses it: `@videojs/html` 10.2.0 (`<video-player>`, `<video-skin>`) around `<hlsjs-video>` (`@videojs/hlsjs-video` 10.2.0, hls.js 1.6.19), preferring MSE. Versions are pinned exactly and are at least two weeks old when taken.
+- Refresh is an hls.js `loader` wrapping hls.js's own: hls.js loads playlists, segments and AES-128 keys through it, and never retries a 4xx. Every request carries the session's current token (`/v/{token}/{playback_id}/` on the media origin only); a 401 calls `getToken()` once for every waiting request and retries through a fresh inner loader, so hls.js never sees the error and the position holds. A second 401 on one request, a 403, or `null` from `getToken` stops playback (`clipmux-denied`). There are no timers: VOD fetches ahead, so the first 401 arrives while seconds are still buffered.
+- `<clipmux-player base-url playback-id>` fetches its first token through `getToken` when none is set, and reloads only when what plays changes.
+- The spike passed in Chromium (the exit suites below: AES-128, separate audio, an 8 s token refreshed mid-playback with one continuous played range). iOS 17.1+ plays through hls.js on ManagedMediaSource and refreshes; native HLS (older iOS, AirPlay, Chromecast) can't and relies on the token lifetime. Safari's run is the macOS CI job; if it fails there, the fallback recorded in docs/plans/P1-T09-T12.md (Video.js 8 + VHS) applies.
+
+## D030 TypeScript workspace — accepted (2026-11-05)
+- A pnpm workspace at the root (pnpm 12.11.2, Node 24): `packages/uploader`, `packages/player`, `e2e/web`, and the dashboard. TypeScript 7 builds the packages with `tsc` (ESM and declarations); tests run on Node's built-in runner with type stripping; Biome lints and formats. Packages are `0.3.0` and private until launch (D006).
+
+## D031 Uploader resume and retries — accepted (2026-11-05)
+- Storage is the source of truth: the uploader keeps only `upload_id`, `upload_token`, `part_size` and `part_count` (`rememberUpload(localStorage)`), and each start lists stored parts and sends the rest; a part URL is signed in windows of 100 and again within 5 minutes of expiry or after a storage 403. Network errors, 5xx, 408 and 429 retry `min(30 s, 1 s·2ⁿ)` plus up to 1 s of jitter, 6 tries, honouring Retry-After and waiting while offline. A fatal error stops the other parts and never cancels the server upload, which stays resumable for 24 h. `pause()` stops between parts, `cancel()` ends the upload.
+
 ## D007 Shaka Packager 3.9.3 — accepted (2026-11-05)
 Decision: pin v3.9.3 (`toolchain/versions.env`), the version clipmux-lms runs with AES-128 in production, which needs the init-segment workaround for Shaka issue 1616. Move to a release that fixes 1616 when one exists, re-running the Phase 1 player tests.
