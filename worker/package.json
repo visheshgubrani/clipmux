@@ -1,0 +1,17 @@
+{
+  "name": "@clipmux/worker",
+  "version": "0.3.0",
+  "private": true,
+  "description": "The ClipMux Cloudflare Worker: signed delivery from R2 at the edge. Embedded in the binary and deployed by Connect Cloudflare.",
+  "type": "module",
+  "scripts": {
+    "build": "esbuild src/index.ts --bundle --format=esm --target=es2023 --outfile=dist/worker.js --legal-comments=none",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "pnpm run build && node --test src/*.test.ts"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20261022.1",
+    "esbuild": "0.28.2",
+    "miniflare": "4.20260730.0"
+  }
+}

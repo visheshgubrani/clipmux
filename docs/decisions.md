@@ -253,5 +253,16 @@ Decisions within the architecture's rules, made in P2-T02:
 - The reconciler runs every 15 minutes. It lists `_routes/`, deletes records for IDs that shouldn't be served, rewrites any whose MD5 ETag differs from the bytes Postgres implies, writes missing ones, and rewrites `_keys.json`. A clean pass writes nothing.
 - One serve replica runs every background loop, holding the session advisory lock `0x636c69706d757831` on its own connection, re-checked every 10 s. Serve waits up to 2 s for the election at boot. Every loop was already safe to run twice, so a handover costs duplicate work only.
 
+## D036 The Cloudflare Worker — accepted (2026-11-05)
+Decisions within the architecture's rules, made in P2-T03:
+- `worker/` is a pnpm workspace package with no runtime dependencies. esbuild bundles it into one ES module, `dist/worker.js`. `src/index.ts` only exports the handler, because workerd refuses any other export from the entry module; the logic is in `src/delivery.ts`, and tokens are in `src/token.ts` on WebCrypto.
+- Bindings: `MEDIA` (the R2 bucket of `projects.delivery_storage_id`), `CONTENT_KEYS` (a secret, JSON `{"<version>": "<hex>"}`: the whole ring, D022) and `ORIGIN_URL` (a var, the built-in handler for `backend: "origin"`).
+- The checks and responses follow `internal/delivery` in the same order, with the same 401/403/404 JSON bodies, CORS, `nosniff`, Content-Type from the extension and Cache-Control. The `outputs` map stands in for the output query, and `_keys.json` for the key query. A key whose `not_after` has passed is refused, like a retired key.
+- Tokens are read as Go reads them: strict base64url (one spelling), exact claim names, the last duplicate winning, `iat` and `exp` as integer literals (`null` reads as 0), and both ECDSA signature forms.
+- Routes and `_keys.json` are reused for 60 s per isolate, so revocation reaches the edge within a minute. An unknown ID is remembered for only 5 s, so a newly published ID plays soon.
+- Pinned objects (immutable, `max-age=31536000`) go through the Cache API, keyed by storage key, so tokens and playback IDs don't fragment it. The stored copy is public. What a viewer receives says `private` for signed IDs. A ranged request on a cache miss reads that range from R2 and isn't cached. Several ranges get the whole object (the Go handler answers multipart). Masters and keys are never cached.
+- The `origin` backend forwards the viewer's path (token included) and Range to `ORIGIN_URL` only after the Worker's own checks pass. Keys are always derived at the edge.
+- Tests: `vectors.test.ts` runs every case of `vectors.json` against an in-memory bucket filled from `testdata/worker-bucket.json`. That golden file is what the Go route publisher writes for the same vectors, checked by `TestVectors` (`-update-bucket` regenerates it), so a pass covers database → projection → response. `workerd.test.ts` runs the bundle in workerd through Miniflare 4.20260730.0, with a real R2 binding and the Cache API. All of it runs in CI's `ts` job.
+
 ## D007 Shaka Packager 3.9.3 — accepted (2026-11-05)
 Decision: pin v3.9.3 (`toolchain/versions.env`), the version clipmux-lms runs with AES-128 in production, which needs the init-segment workaround for Shaka issue 1616. Move to a release that fixes 1616 when one exists, re-running the Phase 1 player tests.

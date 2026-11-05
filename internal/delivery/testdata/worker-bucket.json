@@ -1,0 +1,102 @@
+{
+  "description": "What the route publisher writes for testdata/vectors.json (P2-T02): the Worker's fixture. Regenerate with: go test ./internal/delivery -run TestVectors -update-bucket",
+  "routes": {
+    "pid_disabled_app": {
+      "v": 1,
+      "app_id": "app_c",
+      "asset_id": "ast_c",
+      "output_id": "out_c",
+      "policy": "signed",
+      "backend": "r2",
+      "outputs": {
+        "out_c": 1
+      },
+      "denied": true
+    },
+    "pid_public": {
+      "v": 1,
+      "app_id": "app_a",
+      "asset_id": "ast_p",
+      "output_id": "out_p",
+      "policy": "public",
+      "backend": "r2",
+      "outputs": {
+        "out_p": 1,
+        "out_x": 1
+      }
+    },
+    "pid_signed": {
+      "v": 1,
+      "app_id": "app_a",
+      "asset_id": "ast_v",
+      "output_id": "out_v",
+      "policy": "signed",
+      "backend": "r2",
+      "outputs": {
+        "out_v": 1,
+        "out_v_old": 1
+      }
+    }
+  },
+  "keys": {
+    "v": 1,
+    "max_token_lifetime_seconds": 604800,
+    "keys": [
+      {
+        "kid": "kid_app_a",
+        "app_id": "app_a",
+        "jwk": {
+          "kty": "EC",
+          "crv": "P-256",
+          "x": "5SXRtdbEO6MaacfKhK7n172wxmVzieIBKzkSy8UaT-8",
+          "y": "Tv9I--7s5ITXOd9JCPYYAQFxGkxW3jJ94sMzIpsefqY"
+        },
+        "not_after": null
+      },
+      {
+        "kid": "kid_app_b",
+        "app_id": "app_b",
+        "jwk": {
+          "kty": "EC",
+          "crv": "P-256",
+          "x": "up8rnRcboiipkrve-0EgSd-EGOgKO8jbfyxakYb6JXQ",
+          "y": "ZOFO52qOQe-_Vs7mJhSzp3ULHJ5u4xjM860xVKB_xF4"
+        },
+        "not_after": null
+      },
+      {
+        "kid": "kid_app_c",
+        "app_id": "app_c",
+        "jwk": {
+          "kty": "EC",
+          "crv": "P-256",
+          "x": "jhkcFHhmSbiJnPmUfy7pVnEkGL63d_SOg8U_ttOITmI",
+          "y": "1Fgqcy0DaESYlDfv_Xhtn0RC3xIK-IzVOcNbmlL6ub8"
+        },
+        "not_after": null
+      },
+      {
+        "kid": "kid_internal",
+        "app_id": null,
+        "jwk": {
+          "kty": "EC",
+          "crv": "P-256",
+          "x": "ZeAHEdex2aImlChqPmTTtJGXLkjRUn6GXI21sL-nTpI",
+          "y": "NkdmsR88zD5WAG_klOJ97qdukWvmYajn0fDbVYU_aZU"
+        },
+        "not_after": null
+      },
+      {
+        "kid": "kid_retired",
+        "app_id": "app_a",
+        "jwk": {
+          "kty": "EC",
+          "crv": "P-256",
+          "x": "k8Yu87XR0KNgkMXtYhJ3OCbZB9l7_0aaqtbfZXwOEss",
+          "y": "XcnZkdpIwkubroRqIsZ6LWu0e7ZM2C4FTSunYu6BuR0"
+        },
+        "not_after": 1799913600
+      }
+    ]
+  }
+}

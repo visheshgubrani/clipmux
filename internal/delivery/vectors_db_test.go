@@ -19,14 +19,21 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/visheshgubrani/clipmux/internal/contentkey"
+	"github.com/visheshgubrani/clipmux/internal/db"
 	"github.com/visheshgubrani/clipmux/internal/db/dbtest"
+	"github.com/visheshgubrani/clipmux/internal/routes"
 	"github.com/visheshgubrani/clipmux/internal/storage"
 	"github.com/visheshgubrani/clipmux/internal/stores"
 	"github.com/visheshgubrani/clipmux/internal/tokens"
 )
 
-var update = flag.Bool("update", false, "regenerate test keys and tokens in testdata/vectors.json")
+var (
+	update       = flag.Bool("update", false, "regenerate test keys and tokens in testdata/vectors.json")
+	updateBucket = flag.Bool("update-bucket", false, "regenerate testdata/worker-bucket.json from the route publisher")
+)
 
 const vectorsFile = "testdata/vectors.json"
 
@@ -253,6 +260,11 @@ func TestVectors(t *testing.T) {
 		}
 	}
 
+	// The Worker has no Postgres: it reads what the route publisher writes.
+	// Build that projection from this same database, so the Worker's copy of
+	// these cases runs on exactly what serve would publish.
+	checkWorkerBucket(t, pool, v)
+
 	secret, err := contentkey.FromHex(v.ContentKeyVersion, v.ContentKeySecretHex)
 	if err != nil {
 		t.Fatal(err)
@@ -295,6 +307,53 @@ func TestVectors(t *testing.T) {
 				t.Errorf("body = %x, want %s", body, c.BodyHex)
 			}
 		})
+	}
+}
+
+const workerBucketFile = "testdata/worker-bucket.json"
+
+// workerBucket is the route records and _keys.json for the vectors, as the
+// Worker's tests load them (worker/src/vectors.test.ts).
+type workerBucket struct {
+	Description string                   `json:"description"`
+	Routes      map[string]routes.Record `json:"routes"`
+	Keys        routes.Keys              `json:"keys"`
+}
+
+func checkWorkerBucket(t *testing.T, pool *pgxpool.Pool, v vectors) {
+	t.Helper()
+	ctx := context.Background()
+	q := db.New(pool)
+	got := workerBucket{
+		Description: "What the route publisher writes for testdata/vectors.json (P2-T02): the Worker's fixture. Regenerate with: go test ./internal/delivery -run TestVectors -update-bucket",
+		Routes:      map[string]routes.Record{},
+	}
+	for _, p := range append(v.PlaybackIDs, vPlaybackID{ID: "pid_nope"}) {
+		// Every vectors asset is in the Worker's own bucket.
+		r, err := routes.Desired(ctx, q, p.ID, "sto_default")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if r != nil {
+			got.Routes[p.ID] = *r
+		}
+	}
+	keys, err := routes.DesiredKeys(ctx, q, db.DefaultProjectID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got.Keys = keys
+	out, _ := json.MarshalIndent(got, "", "  ")
+	out = append(out, '\n')
+	if *update || *updateBucket {
+		if err := os.WriteFile(workerBucketFile, out, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	want, err := os.ReadFile(workerBucketFile)
+	if err != nil || string(want) != string(out) {
+		t.Fatalf("%s is out of date with the publisher; run with -update-bucket and review the diff (%v)", workerBucketFile, err)
 	}
 }
 

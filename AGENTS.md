@@ -14,7 +14,7 @@ anything decided since, and wins over the architecture doc where they differ.
 - Current packages: `config`, `db` (migrations, sqlc-generated queries and
   models, `dbtest`), `ids`, `apikeys`, `assets`, `uploads`, `queue`,
   `workerapi`, `worker`, `outputs`, `delivery`, `tokens`, `media`, `contentkey`,
-  `storage`, `outbox`,
+  `storage` (filesystem and S3 adapters, `s3test`), `stores`, `routes`, `outbox`,
   `httpjson`, `server`, `sweeper`, `web` (embedded dashboard build).
 - Media tests need ffmpeg, ffprobe and Shaka Packager ≥ 3.9.1
   (`toolchain/install_packager.sh`); they skip without them, except in CI
@@ -28,7 +28,7 @@ anything decided since, and wins over the architecture doc where they differ.
 - `toolchain/versions.env` is the only place a media tool version, URL or digest
   is written. Shaka Packager must be >= 3.9.1.
 - TypeScript lives only in the dashboard, the player/uploader packages and the
-  Cloudflare Worker (Phase 2). The Worker and the Go delivery handler share JSON
+  Cloudflare Worker (`worker/`). The Worker and the Go delivery handler share JSON
   test vectors; change both together.
 
 ## Commands
