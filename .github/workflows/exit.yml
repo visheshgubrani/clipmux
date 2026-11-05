@@ -52,6 +52,8 @@ jobs:
           node-version-file: .node-version
           cache: pnpm
       - name: Media tools
+        # A stalled mirror or download fails fast and can be re-run.
+        timeout-minutes: 10
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
           mkdir -p "$RUNNER_TEMP/bin" && toolchain/install_packager.sh "$RUNNER_TEMP/bin"
@@ -97,6 +99,8 @@ jobs:
         with:
           gradle-version: "8.11.1"
       - name: Media tools
+        # A stalled mirror or download fails fast and can be re-run.
+        timeout-minutes: 10
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
           mkdir -p "$RUNNER_TEMP/bin" && toolchain/install_packager.sh "$RUNNER_TEMP/bin"
@@ -111,10 +115,16 @@ jobs:
             go test ./internal/e2e -run TestPlayerFixture -count=1 -timeout 60m -v > fixture.log 2>&1 &
           for i in $(seq 300); do curl -sf http://127.0.0.1:8099/config && exit 0; sleep 2; done
           cat fixture.log; exit 1
+      - name: Free disk space for the emulator
+        # The API 35 image needs ~7.2 GB for userdata; the runner had 6.7 GB free.
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
       - name: ExoPlayer on an emulator
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 35
+          disk-size: 4096M
           arch: x86_64
           target: google_apis
           disable-animations: true

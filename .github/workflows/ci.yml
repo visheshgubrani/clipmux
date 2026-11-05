@@ -29,6 +29,8 @@ jobs:
         with:
           go-version-file: go.mod
       - name: Media tools (ffmpeg, pinned Shaka Packager)
+        # A stalled mirror or download fails fast and can be re-run.
+        timeout-minutes: 10
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
           mkdir -p "$RUNNER_TEMP/bin" && toolchain/install_packager.sh "$RUNNER_TEMP/bin"
@@ -111,4 +113,5 @@ jobs:
         run: curl -fsS http://localhost/healthz
       - name: Logs
         if: failure()
-        run: docker compose -f deploy/compose.yml logs
+        # No deploy/.env means the stack never started (e.g. the build failed).
+        run: '[ -f deploy/.env ] || exit 0; docker compose -f deploy/compose.yml logs'

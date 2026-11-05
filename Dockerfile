@@ -20,8 +20,9 @@ RUN --mount=type=cache,target=/var/tmp/ffmpeg-build,sharing=locked \
     . /tmp/clipmux-toolchain/apt-packages.env; \
     apt-get update; \
     apt-get install -y --no-install-recommends "${CLIPMUX_BUILD_PACKAGES[@]}" curl ca-certificates xz-utils; \
-    CLIPMUX_BUILD_DIR=/var/tmp/ffmpeg-build bash /tmp/clipmux-toolchain/build_ffmpeg.sh /usr/local; \
-    bash /tmp/clipmux-toolchain/install_packager.sh /usr/local/bin
+    CLIPMUX_BUILD_DIR=/var/tmp/ffmpeg-build bash /tmp/clipmux-toolchain/build_ffmpeg.sh /usr/local
+# Its own layer: a failed download (GitHub releases can 504) keeps FFmpeg cached.
+RUN bash /tmp/clipmux-toolchain/install_packager.sh /usr/local/bin
 
 # ── The dashboard (embedded in the binary) ──────────────────────────────────
 FROM node:24 AS web

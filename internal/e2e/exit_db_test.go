@@ -80,17 +80,51 @@ func children(ppid int, want string) []int {
 	return out
 }
 
+// waitSetupTestsIdle waits until no setup test is queued or running.
+func (in *instance) waitSetupTestsIdle(limit time.Duration) {
+	in.t.Helper()
+	deadline := time.Now().Add(limit)
+	for {
+		var active int
+		if err := in.pool.QueryRow(context.Background(),
+			`SELECT count(*) FROM setup_tests WHERE status IN ('queued', 'running')`).Scan(&active); err != nil {
+			in.t.Fatal(err)
+		}
+		if active == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			in.t.Fatalf("a setup test was still active after %s", limit)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+}
+
+// attemptRunning reports whether asset has a running attempt.
+func (in *instance) attemptRunning(asset string) bool {
+	in.t.Helper()
+	var running bool
+	if err := in.pool.QueryRow(context.Background(),
+		`SELECT EXISTS (SELECT 1 FROM attempts WHERE asset_id = $1 AND status = 'running')`, asset).Scan(&running); err != nil {
+		in.t.Fatal(err)
+	}
+	return running
+}
+
 // Killing the built-in worker mid-encode loses its lease; the job comes back
 // on a new attempt with a new output, and the asset plays. Real lease (90 s)
 // and sweep (15 s): about two and a half minutes.
 func TestKilledWorkerRecoversOnANewAttemptAndOutput(t *testing.T) {
 	in := start(t)
 	key, kid, priv := in.credentials("LMS")
+	// serve queues a first-boot setup test before it listens. Let it finish,
+	// so the ffmpeg we kill below is encoding this test's asset, not the sample.
+	in.waitSetupTestsIdle(5 * time.Minute)
 	asset, pid := in.upload(key, fixture(t, 30, 1280, 720))
 
 	var worker int
 	deadline := time.Now().Add(2 * time.Minute)
-	for worker == 0 || len(children(worker, "ffmpeg")) == 0 {
+	for worker == 0 || len(children(worker, "ffmpeg")) == 0 || !in.attemptRunning(asset) {
 		if time.Now().After(deadline) {
 			t.Fatal("the built-in worker never started encoding")
 		}
