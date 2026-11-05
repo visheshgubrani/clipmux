@@ -80,11 +80,27 @@ func TestMediaURLDefaultsToThePublicURL(t *testing.T) {
 	if err != nil || cfg.MediaURL != "https://video.example.com" {
 		t.Fatalf("got %q, %v", cfg.MediaURL, err)
 	}
-	cfg, err = FromEnv(env(map[string]string{"DATABASE_URL": "postgres://x", "CLIPMUX_MEDIA_URL": "https://media.example.net/"}))
+	cfg, err = FromEnv(env(map[string]string{"DATABASE_URL": "postgres://x", "CLIPMUX_PUBLIC_URL": "https://video.example.com", "CLIPMUX_MEDIA_URL": "https://media.example.net/"}))
 	if err != nil || cfg.MediaURL != "https://media.example.net" {
 		t.Fatalf("got %q, %v", cfg.MediaURL, err)
 	}
-	if _, err := FromEnv(env(map[string]string{"DATABASE_URL": "postgres://x", "CLIPMUX_MEDIA_URL": "https://m.example.net/path"})); err == nil {
+	if _, err := FromEnv(env(map[string]string{"DATABASE_URL": "postgres://x", "CLIPMUX_PUBLIC_URL": "https://video.example.com", "CLIPMUX_MEDIA_URL": "https://m.example.net/path"})); err == nil {
 		t.Fatal("a media URL with a path must be refused")
+	}
+}
+
+// Setting CLIPMUX_PUBLIC_URL pins both URLs: the first-boot URL step shows
+// them read-only. A media URL alone has no public URL to belong to.
+func TestURLsArePinnedOnlyWhenSetInTheEnvironment(t *testing.T) {
+	cfg, err := FromEnv(env(map[string]string{"DATABASE_URL": "postgres://x"}))
+	if err != nil || cfg.URLsPinned {
+		t.Fatalf("defaults: pinned = %v, %v; want unpinned", cfg.URLsPinned, err)
+	}
+	cfg, err = FromEnv(env(map[string]string{"DATABASE_URL": "postgres://x", "CLIPMUX_PUBLIC_URL": "https://video.example.com"}))
+	if err != nil || !cfg.URLsPinned || cfg.MediaURL != "https://video.example.com" {
+		t.Fatalf("public URL set: %+v, %v; want pinned with media = public", cfg, err)
+	}
+	if _, err := FromEnv(env(map[string]string{"DATABASE_URL": "postgres://x", "CLIPMUX_MEDIA_URL": "https://media.example.net"})); err == nil {
+		t.Fatal("CLIPMUX_MEDIA_URL without CLIPMUX_PUBLIC_URL must be refused")
 	}
 }

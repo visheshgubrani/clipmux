@@ -19,6 +19,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -38,7 +39,7 @@ import (
 type Filesystem struct {
 	root          *os.Root
 	key           []byte
-	baseURL       string
+	baseURL       atomic.Pointer[string]
 	partSize      int64
 	maxObjectSize int64
 	now           func() time.Time
@@ -67,6 +68,13 @@ const (
 
 var errShortPart = errors.New("storage: part shorter than its range")
 
+// SetBaseURL changes the origin signed URLs point at, for when the owner
+// sets the public URL; URLs already handed out keep working where they point.
+func (f *Filesystem) SetBaseURL(u string) {
+	u = strings.TrimSuffix(u, "/")
+	f.baseURL.Store(&u)
+}
+
 // OpenFilesystem opens (creating if needed) a storage directory.
 func OpenFilesystem(dir string, opts FilesystemOptions) (*Filesystem, error) {
 	if err := os.MkdirAll(dir, 0o750); err != nil {
@@ -78,7 +86,6 @@ func OpenFilesystem(dir string, opts FilesystemOptions) (*Filesystem, error) {
 	}
 	f := &Filesystem{
 		root:          root,
-		baseURL:       strings.TrimSuffix(opts.BaseURL, "/"),
 		partSize:      orDefault(opts.PartSize, PartSize),
 		maxObjectSize: orDefault(opts.MaxObjectSize, 5<<30),
 		now:           opts.Now,
@@ -86,6 +93,7 @@ func OpenFilesystem(dir string, opts FilesystemOptions) (*Filesystem, error) {
 	if f.now == nil {
 		f.now = time.Now
 	}
+	f.SetBaseURL(opts.BaseURL)
 	for _, d := range []string{"objects", "multipart", "tmp"} {
 		if err := root.MkdirAll(d, 0o750); err != nil {
 			root.Close()
@@ -527,7 +535,7 @@ func (f *Filesystem) PresignPut(_ context.Context, key string, ttl time.Duration
 // to URL-safe characters, so the resource needs no escaping.
 func (f *Filesystem) sign(method, resource string, ttl time.Duration) string {
 	exp := strconv.FormatInt(f.now().Add(ttl).Unix(), 10)
-	return f.baseURL + pathPrefix + resource + "?exp=" + exp + "&sig=" + f.mac(method, resource, exp)
+	return *f.baseURL.Load() + pathPrefix + resource + "?exp=" + exp + "&sig=" + f.mac(method, resource, exp)
 }
 
 func (f *Filesystem) mac(method, resource, exp string) string {

@@ -45,12 +45,12 @@ type event struct {
 // AssetEvent queues a webhook event about an asset for its app. It reads the
 // asset inside the caller's transaction, so call it after the state change
 // the event reports. job is set for events a job caused.
-func AssetEvent(ctx context.Context, q *db.Queries, assetID, eventType, baseURL string, job *Job) error {
+func AssetEvent(ctx context.Context, q *db.Queries, assetID, eventType string, job *Job) error {
 	asset, err := q.GetAssetByID(ctx, assetID)
 	if err != nil {
 		return err
 	}
-	view, err := assets.Load(ctx, q, asset, baseURL)
+	view, err := assets.Load(ctx, q, asset)
 	if err != nil {
 		return err
 	}

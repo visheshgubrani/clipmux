@@ -66,7 +66,7 @@ func (r *rig) endpoint(appID, url string) (string, string) {
 func (r *rig) event(appID, assetID string) string {
 	r.t.Helper()
 	r.exec(`INSERT INTO assets (id, project_id, app_id, status, storage_id) VALUES ($1, 'prj_default', $2, 'processing', 'sto_default')`, assetID, appID)
-	if err := outbox.AssetEvent(context.Background(), r.q, assetID, outbox.AssetReady, "https://media.example", nil); err != nil {
+	if err := outbox.AssetEvent(context.Background(), r.q, assetID, outbox.AssetReady, nil); err != nil {
 		r.t.Fatal(err)
 	}
 	var id string

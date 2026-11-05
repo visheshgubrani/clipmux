@@ -56,8 +56,6 @@ type Committer struct {
 	queue  *queue.Queue
 	store  storage.Storage
 	Logger *slog.Logger
-	// BaseURL is the media origin, sent with ready and updated events.
-	BaseURL string
 
 	// publishInline publishes routes right after the commit; tests turn it
 	// off to stand in for a crash between the two steps.
@@ -83,7 +81,7 @@ func (c *Committer) Commit(ctx context.Context, token string, m media.Manifest) 
 		return queue.Verdict{}, err
 	}
 	v, err := c.queue.CommitAttempt(ctx, token, func(qs *db.Queries, a db.Attempt, _ db.Job) error {
-		return commit(ctx, qs, a, raw, c.BaseURL)
+		return commit(ctx, qs, a, raw)
 	})
 	if err != nil || v.Stop {
 		return v, err
@@ -260,7 +258,7 @@ func QueueUnpublish(ctx context.Context, qs *db.Queries, asset db.Asset, playbac
 }
 
 // commit is step 2, inside the liveness transaction.
-func commit(ctx context.Context, qs *db.Queries, a db.Attempt, manifest []byte, baseURL string) error {
+func commit(ctx context.Context, qs *db.Queries, a db.Attempt, manifest []byte) error {
 	asset, err := qs.LockAsset(ctx, a.AssetID)
 	if err != nil {
 		return err
@@ -294,7 +292,7 @@ func commit(ctx context.Context, qs *db.Queries, a db.Attempt, manifest []byte, 
 		}
 	}
 	if len(pids) == 0 {
-		return finishPublication(ctx, qs, asset.ID, a.OutputID, baseURL)
+		return finishPublication(ctx, qs, asset.ID, a.OutputID)
 	}
 	return nil
 }
@@ -346,12 +344,12 @@ func (c *Committer) SyncRoutes(ctx context.Context, limit int) (int, error) {
 			touched[key{r.AssetID, r.OutputID}] = true
 		}
 		for k := range touched {
-			if err := finishPublication(ctx, qs, k.asset, k.output, c.BaseURL); err != nil {
+			if err := finishPublication(ctx, qs, k.asset, k.output); err != nil {
 				return err
 			}
 		}
 		for assetID := range revokedFrom {
-			if err := finishRevocation(ctx, qs, assetID, c.BaseURL); err != nil {
+			if err := finishRevocation(ctx, qs, assetID); err != nil {
 				return err
 			}
 		}
@@ -363,7 +361,7 @@ func (c *Committer) SyncRoutes(ctx context.Context, limit int) (int, error) {
 // finishRevocation tells the app once a revoked playback ID has stopped
 // working: the asset's view no longer lists it. A deleted asset says so with
 // its own event instead.
-func finishRevocation(ctx context.Context, qs *db.Queries, assetID, baseURL string) error {
+func finishRevocation(ctx context.Context, qs *db.Queries, assetID string) error {
 	asset, err := qs.LockAsset(ctx, assetID)
 	if err != nil || asset.Status == "deleted" {
 		return err
@@ -371,13 +369,13 @@ func finishRevocation(ctx context.Context, qs *db.Queries, assetID, baseURL stri
 	if _, err := qs.BumpAssetVersion(ctx, assetID); err != nil {
 		return err
 	}
-	return outbox.AssetEvent(ctx, qs, assetID, outbox.AssetUpdated, baseURL, nil)
+	return outbox.AssetEvent(ctx, qs, assetID, outbox.AssetUpdated, nil)
 }
 
 // finishPublication is step 4. It locks the asset before counting pending
 // routes, so of two concurrent publishers the second sees the first's work
 // and exactly one of them finishes.
-func finishPublication(ctx context.Context, qs *db.Queries, assetID, outputID, baseURL string) error {
+func finishPublication(ctx context.Context, qs *db.Queries, assetID, outputID string) error {
 	asset, err := qs.LockAsset(ctx, assetID)
 	if err != nil {
 		return err
@@ -394,9 +392,9 @@ func finishPublication(ctx context.Context, qs *db.Queries, assetID, outputID, b
 		if _, err := qs.MarkAssetReady(ctx, assetID); err != nil {
 			return err
 		}
-		return outbox.AssetEvent(ctx, qs, assetID, outbox.AssetReady, baseURL, nil)
+		return outbox.AssetEvent(ctx, qs, assetID, outbox.AssetReady, nil)
 	case "ready":
-		return outbox.AssetEvent(ctx, qs, assetID, outbox.AssetUpdated, baseURL, nil)
+		return outbox.AssetEvent(ctx, qs, assetID, outbox.AssetUpdated, nil)
 	}
 	return nil
 }

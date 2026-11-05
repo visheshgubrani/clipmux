@@ -56,8 +56,9 @@ func newFx(t *testing.T) *fx {
 	t.Cleanup(func() { store.Close() })
 	q := queue.New(pool)
 	c := New(pool, q, store)
-	c.BaseURL = "https://media.example"
-	return &fx{t: t, pool: pool, store: store, q: q, c: c}
+	f := &fx{t: t, pool: pool, store: store, q: q, c: c}
+	f.exec(`UPDATE projects SET media_url = 'https://media.example'`)
+	return f
 }
 
 func (f *fx) exec(sql string, args ...any) {

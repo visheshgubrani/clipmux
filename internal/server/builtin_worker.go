@@ -55,6 +55,12 @@ func (b *builtinWorker) childEnv() []string {
 	return env
 }
 
+// args are the child's arguments. It reaches storage through serve over
+// loopback, never back through the public URL.
+func (b *builtinWorker) args() []string {
+	return []string{"worker", "--work-dir", b.workDir, "--storage-via-server"}
+}
+
 // run supervises the child until ctx ends, restarting it with backoff.
 func (b *builtinWorker) run(ctx context.Context) {
 	if _, err := b.tools.Versions(ctx); err != nil {
@@ -70,7 +76,7 @@ func (b *builtinWorker) run(ctx context.Context) {
 	backoff := time.Second
 	for ctx.Err() == nil {
 		started := time.Now()
-		cmd := exec.CommandContext(ctx, self, "worker", "--work-dir", b.workDir)
+		cmd := exec.CommandContext(ctx, self, b.args()...)
 		cmd.Env = b.childEnv()
 		cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr
 		cmd.Cancel = func() error { return cmd.Process.Signal(os.Interrupt) }

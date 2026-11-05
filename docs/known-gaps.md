@@ -48,6 +48,8 @@ when you introduce or discover it; remove it when it is closed.
 - Every asset uses the one filesystem store; `storage_configs` rows are not
   read yet (per-asset storage arrives with R2 in Phase 2).
 - Sweepers assume one `serve` replica (no `pg_try_advisory_lock` leader yet).
+  Saving new URLs updates the storage signer of the serve that saved them
+  only; another replica keeps the old public URL until it restarts.
 - `clipmux serve` prints a fresh setup token on every boot (no owner table
   until T10). The schema has no owner/session tables yet.
 - Webhooks: endpoints are created only with `clipmux admin create-webhook`;

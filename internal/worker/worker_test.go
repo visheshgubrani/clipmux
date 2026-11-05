@@ -140,3 +140,24 @@ func TestPutTreatsAlreadyWrittenAsDone(t *testing.T) {
 		t.Fatalf("412 on a create-once PUT means an earlier try landed: %v", err)
 	}
 }
+
+// Once the owner sets a public URL, signed storage URLs point at it. The
+// built-in worker reaches serve over loopback instead, so it never depends
+// on the public hostname routing back to this machine (a hairpin).
+func TestStorageURLsGoThroughTheServerWhenAsked(t *testing.T) {
+	w := &Worker{Server: "http://127.0.0.1:8080", StorageViaServer: true}
+	cases := map[string]string{
+		"https://video.example.com/_storage/objects/uploads/ast_1/source?exp=1&sig=ab": "http://127.0.0.1:8080/_storage/objects/uploads/ast_1/source?exp=1&sig=ab",
+		"https://bucket.r2.example.com/uploads/ast_1/source?X-Amz-Signature=cd":        "https://bucket.r2.example.com/uploads/ast_1/source?X-Amz-Signature=cd",
+	}
+	for in, want := range cases {
+		if got := w.storageURL(in); got != want {
+			t.Errorf("storageURL(%q) = %q, want %q", in, got, want)
+		}
+	}
+	w.StorageViaServer = false
+	in := "https://video.example.com/_storage/objects/x?exp=1&sig=ab"
+	if got := w.storageURL(in); got != in {
+		t.Errorf("without StorageViaServer: %q, want it unchanged", got)
+	}
+}

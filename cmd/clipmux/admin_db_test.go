@@ -114,3 +114,29 @@ func TestCreateWebhookPrintsTheSecretOnceAndStoresItSealed(t *testing.T) {
 		}
 	}
 }
+
+// No API key until the public URL changes from loopback: presigned URLs and
+// base_url are bound to it (docs/architecture.md, "First boot").
+func TestCreateKeyIsRefusedWhileThePublicURLIsLoopback(t *testing.T) {
+	ctx := context.Background()
+	pool := dbtest.New(t)
+	env := func(m map[string]string) func(string) string { return func(k string) string { return m[k] } }
+	if err := keysAllowed(ctx, pool, env(nil), false); err == nil {
+		t.Fatal("a fresh install (localhost) must refuse API keys")
+	}
+	if err := keysAllowed(ctx, pool, env(nil), true); err != nil {
+		t.Fatalf("--allow-loopback (local development): %v", err)
+	}
+	if err := keysAllowed(ctx, pool, env(map[string]string{"CLIPMUX_PUBLIC_URL": "https://video.example.com"}), false); err != nil {
+		t.Fatalf("a public URL pinned by the environment: %v", err)
+	}
+	if err := keysAllowed(ctx, pool, env(map[string]string{"CLIPMUX_PUBLIC_URL": "http://127.0.0.1:8080"}), false); err == nil {
+		t.Fatal("a loopback URL pinned by the environment must refuse too")
+	}
+	if _, err := pool.Exec(ctx, `UPDATE projects SET public_url = 'http://192.168.1.10:8080'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := keysAllowed(ctx, pool, env(nil), false); err != nil {
+		t.Fatalf("a LAN URL saved at first boot: %v", err)
+	}
+}

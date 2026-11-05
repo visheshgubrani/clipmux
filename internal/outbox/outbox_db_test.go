@@ -22,14 +22,15 @@ func TestEventsCarryTheFullAssetAtTheirVersion(t *testing.T) {
 		INSERT INTO assets (id, project_id, app_id, status, error_code, version, storage_id, passthrough, created_at, updated_at)
 		VALUES ('ast_1', 'prj_default', 'app_dashboard', 'errored', 'upload_cancelled', 2, 'sto_default', 'lesson-42',
 		        '2026-11-05T10:00:00Z', '2026-11-05T10:05:00Z');
-		INSERT INTO playback_ids (id, project_id, asset_id, policy) VALUES ('pid_1', 'prj_default', 'ast_1', 'signed');`); err != nil {
+		INSERT INTO playback_ids (id, project_id, asset_id, policy) VALUES ('pid_1', 'prj_default', 'ast_1', 'signed');
+		UPDATE projects SET media_url = 'https://media.example';`); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := outbox.AssetEvent(ctx, q, "ast_1", outbox.AssetErrored, "https://media.example", nil); err != nil {
+	if err := outbox.AssetEvent(ctx, q, "ast_1", outbox.AssetErrored, nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := outbox.AssetEvent(ctx, q, "ast_1", outbox.AssetReencodeFailed, "https://media.example",
+	if err := outbox.AssetEvent(ctx, q, "ast_1", outbox.AssetReencodeFailed,
 		&outbox.Job{ID: "job_1", Kind: "reencode", ErrorCode: "transcode_failed"}); err != nil {
 		t.Fatal(err)
 	}

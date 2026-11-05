@@ -12,12 +12,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/visheshgubrani/clipmux/internal/config"
 	"github.com/visheshgubrani/clipmux/internal/contentkey"
 	"github.com/visheshgubrani/clipmux/internal/db"
 	"github.com/visheshgubrani/clipmux/internal/db/dbtest"
 	"github.com/visheshgubrani/clipmux/internal/outbox"
 	"github.com/visheshgubrani/clipmux/internal/secrets"
+	"github.com/visheshgubrani/clipmux/internal/settings"
 	"github.com/visheshgubrani/clipmux/internal/storage"
 	"github.com/visheshgubrani/clipmux/internal/webhooks"
 )
@@ -31,6 +34,15 @@ func testRing(t *testing.T) contentkey.Ring {
 		t.Fatal(err)
 	}
 	return contentkey.NewRing(s)
+}
+
+func testBoot(t *testing.T, pool *pgxpool.Pool, store *storage.Filesystem, box *secrets.Box) boot {
+	t.Helper()
+	urls, err := settings.Load(context.Background(), pool, "prj_default", config.Config{PublicURL: config.DefaultPublicURL, MediaURL: config.DefaultPublicURL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return boot{pool: pool, store: store, keys: testRing(t), box: box, urls: urls}
 }
 
 func testBox(t *testing.T) *secrets.Box {
@@ -118,7 +130,7 @@ func TestServeStopsCleanlyOnShutdown(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		done <- serve(ctx, config.Config{}, ln, slog.New(slog.NewTextHandler(io.Discard, nil)), pool, store, testRing(t), testBox(t))
+		done <- serve(ctx, config.Config{}, ln, slog.New(slog.NewTextHandler(io.Discard, nil)), testBoot(t, pool, store, testBox(t)))
 	}()
 
 	url := "http://" + ln.Addr().String() + "/readyz"
@@ -161,7 +173,7 @@ func TestServeReturnsWhenTheListenerFails(t *testing.T) {
 	ln.Close() // Serve fails at once; the background loops must still stop.
 	done := make(chan error, 1)
 	go func() {
-		done <- serve(context.Background(), config.Config{}, ln, slog.New(slog.NewTextHandler(io.Discard, nil)), pool, store, testRing(t), testBox(t))
+		done <- serve(context.Background(), config.Config{}, ln, slog.New(slog.NewTextHandler(io.Discard, nil)), testBoot(t, pool, store, testBox(t)))
 	}()
 	select {
 	case err := <-done:
@@ -192,7 +204,7 @@ func TestServeDeliversWebhooks(t *testing.T) {
 	if _, err := pool.Exec(ctx, `INSERT INTO assets (id, project_id, app_id, status, storage_id) VALUES ('ast_1', 'prj_default', 'app_dashboard', 'processing', 'sto_default')`); err != nil {
 		t.Fatal(err)
 	}
-	if err := outbox.AssetEvent(ctx, db.New(pool), "ast_1", outbox.AssetReady, "", nil); err != nil {
+	if err := outbox.AssetEvent(ctx, db.New(pool), "ast_1", outbox.AssetReady, nil); err != nil {
 		t.Fatal(err)
 	}
 	store, err := storage.OpenFilesystem(t.TempDir(), storage.FilesystemOptions{BaseURL: "http://localhost"})
@@ -206,7 +218,7 @@ func TestServeDeliversWebhooks(t *testing.T) {
 	}
 	done := make(chan error, 1)
 	go func() {
-		done <- serve(ctx, config.Config{}, ln, slog.New(slog.NewTextHandler(io.Discard, nil)), pool, store, testRing(t), box)
+		done <- serve(ctx, config.Config{}, ln, slog.New(slog.NewTextHandler(io.Discard, nil)), testBoot(t, pool, store, box))
 	}()
 	select {
 	case event := <-got:
@@ -248,5 +260,24 @@ func TestBuiltinWorkerEnvironmentIsMinimal(t *testing.T) {
 		if strings.Contains(kv, "secret") {
 			t.Fatalf("the child inherited %q", kv)
 		}
+	}
+	if args := strings.Join(b.args(), " "); !strings.Contains(args, "--storage-via-server") {
+		t.Fatalf("child args %q: the built-in worker must reach storage over loopback", args)
+	}
+}
+
+func TestCaddyAskAllowsOnlyConfiguredHostnames(t *testing.T) {
+	h := Handler(Deps{DB: fakeDB{}, ServesHost: func(host string) bool { return host == "video.example.com" }})
+	for path, want := range map[string]int{
+		"/_tls/ask?domain=video.example.com": http.StatusOK,
+		"/_tls/ask?domain=evil.example.com":  http.StatusNotFound,
+		"/_tls/ask":                          http.StatusNotFound,
+	} {
+		if rec := get(t, h, path); rec.Code != want {
+			t.Errorf("GET %s = %d, want %d", path, rec.Code, want)
+		}
+	}
+	if rec := get(t, Handler(Deps{DB: fakeDB{}}), "/_tls/ask?domain=video.example.com"); rec.Code != http.StatusNotFound {
+		t.Errorf("with no settings every name is refused, got %d", rec.Code)
 	}
 }

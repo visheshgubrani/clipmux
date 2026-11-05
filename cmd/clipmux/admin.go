@@ -16,12 +16,13 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/db"
 	"github.com/visheshgubrani/clipmux/internal/ids"
 	"github.com/visheshgubrani/clipmux/internal/secrets"
+	"github.com/visheshgubrani/clipmux/internal/settings"
 	"github.com/visheshgubrani/clipmux/internal/signingkeys"
 	"github.com/visheshgubrani/clipmux/internal/webhooks"
 )
 
 const adminUsage = `Usage:
-  clipmux admin create-key --app NAME [--name KEY_NAME] [--scopes uploads:write,assets:read]
+  clipmux admin create-key --app NAME [--name KEY_NAME] [--scopes uploads:write,assets:read] [--allow-loopback]
   clipmux admin create-signing-key --app NAME
   clipmux admin create-webhook --app NAME --url URL
 
@@ -31,6 +32,11 @@ uses). Each command creates the app if it does not exist and prints a secret
 once: create-key an API key, create-signing-key the private key your backend
 signs playback tokens with (only the public key is stored), create-webhook
 the secret that signs the endpoint's deliveries.
+
+create-key refuses while the public URL is loopback (localhost), because
+signed upload URLs and base_url would point at this machine; set the public
+URL at first boot or with CLIPMUX_PUBLIC_URL, or pass --allow-loopback for
+local development.
 `
 
 const project = db.DefaultProjectID
@@ -48,6 +54,7 @@ func admin(args []string, getenv func(string) string, stdout, stderr io.Writer) 
 	name := fs.String("name", "default", "key name (create-key)")
 	scopes := fs.String("scopes", apikeys.UploadsWrite+","+apikeys.AssetsRead, "comma-separated scopes (create-key)")
 	endpoint := fs.String("url", "", "endpoint URL (create-webhook)")
+	allowLoopback := fs.Bool("allow-loopback", false, "issue a key while the public URL is loopback (create-key, development only)")
 	if err := fs.Parse(args[1:]); err != nil {
 		return 2
 	}
@@ -69,7 +76,9 @@ func admin(args []string, getenv func(string) string, stdout, stderr io.Writer) 
 	}
 	switch cmd {
 	case "create-key":
-		err = createKey(ctx, pool, *app, *name, strings.Split(*scopes, ","), stdout)
+		if err = keysAllowed(ctx, pool, getenv, *allowLoopback); err == nil {
+			err = createKey(ctx, pool, *app, *name, strings.Split(*scopes, ","), stdout)
+		}
 	case "create-signing-key":
 		err = createSigningKey(ctx, pool, *app, stdout)
 	case "create-webhook":
@@ -83,6 +92,26 @@ func admin(args []string, getenv func(string) string, stdout, stderr io.Writer) 
 		return 1
 	}
 	return 0
+}
+
+// keysAllowed applies the first-boot rule: no API key while the public URL
+// (pinned by CLIPMUX_PUBLIC_URL, or saved at first boot) is loopback.
+func keysAllowed(ctx context.Context, pool *pgxpool.Pool, getenv func(string) string, allowLoopback bool) error {
+	public := getenv("CLIPMUX_PUBLIC_URL")
+	if public == "" {
+		urls, err := db.New(pool).GetProjectURLs(ctx, project)
+		if err != nil {
+			return err
+		}
+		public = urls.PublicUrl.String
+	}
+	if allowLoopback || settings.KeysAllowed(public) {
+		return nil
+	}
+	if public == "" {
+		public = config.DefaultPublicURL
+	}
+	return fmt.Errorf("the public URL is %s; API keys need one reachable from outside this machine. Set it at first boot or with CLIPMUX_PUBLIC_URL, or pass --allow-loopback for local development", public)
 }
 
 // appID finds an app by name, creating it if needed.

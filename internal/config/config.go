@@ -28,6 +28,10 @@ type Config struct {
 	// returned to apps as base_url. Defaults to PublicURL; ideally a
 	// different registrable domain from the dashboard.
 	MediaURL string
+	// URLsPinned is set when CLIPMUX_PUBLIC_URL is: the environment then
+	// decides both URLs and the first-boot URL step is read-only. Unset,
+	// the URLs saved at first boot apply (internal/settings).
+	URLsPinned bool
 	// MaxUploadBytes caps a declared upload size (CLIPMUX_MAX_UPLOAD_BYTES);
 	// 0 means the storage limit (32 MiB × 10,000 parts).
 	MaxUploadBytes int64
@@ -64,12 +68,16 @@ func FromEnv(getenv func(string) string) (Config, error) {
 	if _, _, err := net.SplitHostPort(cfg.ListenAddr); err != nil {
 		return Config{}, fmt.Errorf("CLIPMUX_LISTEN %q: %w", cfg.ListenAddr, err)
 	}
-	publicURL, err := origin(orDefault(getenv("CLIPMUX_PUBLIC_URL"), DefaultPublicURL))
+	publicURL, err := Origin(orDefault(getenv("CLIPMUX_PUBLIC_URL"), DefaultPublicURL))
 	if err != nil {
 		return Config{}, fmt.Errorf("CLIPMUX_PUBLIC_URL: %w", err)
 	}
 	cfg.PublicURL = publicURL
-	if cfg.MediaURL, err = origin(orDefault(getenv("CLIPMUX_MEDIA_URL"), publicURL)); err != nil {
+	cfg.URLsPinned = getenv("CLIPMUX_PUBLIC_URL") != ""
+	if !cfg.URLsPinned && getenv("CLIPMUX_MEDIA_URL") != "" {
+		return Config{}, errors.New("CLIPMUX_MEDIA_URL needs CLIPMUX_PUBLIC_URL; set both, or neither and choose them at first boot")
+	}
+	if cfg.MediaURL, err = Origin(orDefault(getenv("CLIPMUX_MEDIA_URL"), publicURL)); err != nil {
 		return Config{}, fmt.Errorf("CLIPMUX_MEDIA_URL: %w", err)
 	}
 	if v := getenv("CLIPMUX_MAX_UPLOAD_BYTES"); v != "" {
@@ -93,9 +101,9 @@ func FromEnv(getenv func(string) string) (Config, error) {
 	return cfg, nil
 }
 
-// origin accepts an http(s) URL with no path, query or fragment and returns
+// Origin accepts an http(s) URL with no path, query or fragment and returns
 // it without a trailing slash.
-func origin(raw string) (string, error) {
+func Origin(raw string) (string, error) {
 	u, err := url.Parse(raw)
 	if err != nil {
 		return "", err

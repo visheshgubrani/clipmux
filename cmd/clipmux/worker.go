@@ -31,6 +31,7 @@ func runWorker(args []string, getenv func(string) string, stderr io.Writer) int 
 	server := fs.String("server", orEnv(getenv("CLIPMUX_SERVER"), "http://127.0.0.1:8080"), "ClipMux server URL")
 	workDir := fs.String("work-dir", filepath.Join(os.TempDir(), "clipmux-worker"), "scratch directory for attempts")
 	once := fs.Bool("once", false, "run at most one job, then exit (serverless)")
+	viaServer := fs.Bool("storage-via-server", false, "fetch and upload signed storage URLs through --server (the built-in worker)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -51,7 +52,7 @@ func runWorker(args []string, getenv func(string) string, stderr io.Writer) int 
 	}
 	w := &worker.Worker{
 		Server: *server, Key: key, WorkDir: *workDir, Tools: tools, Logger: logger,
-		HTTP: worker.DefaultHTTPClient(),
+		HTTP: worker.DefaultHTTPClient(), StorageViaServer: *viaServer,
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

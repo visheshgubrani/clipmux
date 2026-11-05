@@ -64,9 +64,7 @@ type Service struct {
 	PartURLTTL time.Duration
 	// IdleExpiry is how long an upload may go without activity.
 	IdleExpiry time.Duration
-	// BaseURL is the media origin returned with assets.
-	BaseURL string
-	Logger  *slog.Logger
+	Logger     *slog.Logger
 }
 
 // New returns a Service with the architecture's defaults.
@@ -355,7 +353,7 @@ func (s *Service) markCompleted(ctx context.Context, tx pgx.Tx, up db.Upload) (a
 	if _, err := queue.Enqueue(ctx, tx, queue.Job{ProjectID: asset.ProjectID, AssetID: asset.ID, Kind: "transcode"}); err != nil {
 		return assets.View{}, err
 	}
-	return assets.Load(ctx, q, asset, s.BaseURL)
+	return assets.Load(ctx, q, asset)
 }
 
 // Cancel stops an active upload: storage is aborted and the asset errors
@@ -401,7 +399,7 @@ func (s *Service) end(ctx context.Context, q *db.Queries, up db.Upload, status, 
 	if _, err := q.MarkAssetErrored(ctx, db.MarkAssetErroredParams{ID: asset.ID, ErrorCode: pgtype.Text{String: code, Valid: true}}); err != nil {
 		return err
 	}
-	return outbox.AssetEvent(ctx, q, asset.ID, outbox.AssetErrored, s.BaseURL, nil)
+	return outbox.AssetEvent(ctx, q, asset.ID, outbox.AssetErrored, nil)
 }
 
 func (s *Service) assetView(ctx context.Context, q *db.Queries, assetID string) (assets.View, error) {
@@ -409,7 +407,7 @@ func (s *Service) assetView(ctx context.Context, q *db.Queries, assetID string) 
 	if err != nil {
 		return assets.View{}, err
 	}
-	return assets.Load(ctx, q, a, s.BaseURL)
+	return assets.Load(ctx, q, a)
 }
 
 // --- sweeper ---

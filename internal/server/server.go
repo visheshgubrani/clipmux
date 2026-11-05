@@ -24,6 +24,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/outputs"
 	"github.com/visheshgubrani/clipmux/internal/queue"
 	"github.com/visheshgubrani/clipmux/internal/secrets"
+	"github.com/visheshgubrani/clipmux/internal/settings"
 	"github.com/visheshgubrani/clipmux/internal/signingkeys"
 	"github.com/visheshgubrani/clipmux/internal/storage"
 	"github.com/visheshgubrani/clipmux/internal/sweeper"
@@ -72,6 +73,9 @@ type Deps struct {
 	Storage http.Handler
 	// APIs register the integration API routes (/v1/...).
 	APIs []Registrar
+	// ServesHost answers Caddy's on-demand TLS check (/_tls/ask): whether
+	// a certificate may be obtained for a hostname. nil refuses every name.
+	ServesHost func(host string) bool
 }
 
 // Handler returns the root HTTP handler. /healthz reports the process is up;
@@ -98,6 +102,15 @@ func Handler(d Deps) http.Handler {
 		defer cancel()
 		if err := d.DB.Ping(ctx); err != nil {
 			text(w, http.StatusServiceUnavailable, "database unavailable")
+			return
+		}
+		text(w, http.StatusOK, "ok")
+	})
+	// Caddy asks before obtaining a certificate, so the Caddyfile needs no
+	// hostnames: only the configured public and media hostnames get one.
+	mux.HandleFunc("GET /_tls/ask", func(w http.ResponseWriter, r *http.Request) {
+		if d.ServesHost == nil || !d.ServesHost(r.URL.Query().Get("domain")) {
+			text(w, http.StatusNotFound, "not a configured hostname")
 			return
 		}
 		text(w, http.StatusOK, "ok")
@@ -132,14 +145,22 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		return err
 	}
 
+	// The public and media URLs: pinned by the environment, or chosen by the
+	// owner at first boot.
+	urls, err := settings.Load(ctx, pool, db.DefaultProjectID, cfg)
+	if err != nil {
+		return err
+	}
+
 	// v1 starts on filesystem storage; per-asset storage configs and the
 	// R2/S3 adapters arrive in Phase 2.
-	store, err := storage.OpenFilesystem(filepath.Join(cfg.DataDir, "storage"), storage.FilesystemOptions{BaseURL: cfg.PublicURL})
+	store, err := storage.OpenFilesystem(filepath.Join(cfg.DataDir, "storage"), storage.FilesystemOptions{BaseURL: urls.PublicURL()})
 	if err != nil {
 		return err
 	}
 	defer store.Close()
-	logger.Info("storage ready", "kind", "fs", "public_url", cfg.PublicURL)
+	urls.OnChange(func(u settings.URLs) { store.SetBaseURL(u.Public) })
+	logger.Info("storage ready", "kind", "fs", "public_url", urls.PublicURL(), "media_url", urls.MediaURL(), "pinned", urls.URLs().Pinned)
 
 	// The content key secrets, sealed in Postgres; losing them makes every
 	// output unplayable.
@@ -156,22 +177,30 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	return serve(ctx, cfg, ln, logger, pool, store, keys, box)
+	return serve(ctx, cfg, ln, logger, boot{pool: pool, store: store, keys: keys, box: box, urls: urls})
+}
+
+// boot is what Run opens before serving.
+type boot struct {
+	pool  *pgxpool.Pool
+	store *storage.Filesystem
+	keys  contentkey.Ring
+	box   *secrets.Box
+	urls  *settings.Store
 }
 
 // serve runs the HTTP server and background loops. It returns only after
 // every goroutine it started has stopped, so the caller can close the pool
 // and storage.
-func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog.Logger, pool *pgxpool.Pool, store *storage.Filesystem, keys contentkey.Ring, box *secrets.Box) error {
+func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog.Logger, b boot) error {
+	pool, store, keys, box := b.pool, b.store, b.keys, b.box
 	// Until the owner table exists (P1-T10) every boot is a first boot.
 	logger.Info("first boot: create the owner account with this setup token", "setup_token", rand.Text())
 
 	q := queue.New(pool)
 	q.KeyVersion = keys.Current().Version
-	q.BaseURL = cfg.MediaURL
 	committer := outputs.New(pool, q, store)
 	committer.Logger = logger
-	committer.BaseURL = cfg.MediaURL
 	// The built-in worker's key lives only in memory and is handed to the
 	// child worker; it is never logged or stored.
 	workerKey := rand.Text()
@@ -179,7 +208,6 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 	worker.Logger = logger
 	upl := uploads.New(pool, store)
 	upl.Logger = logger
-	upl.BaseURL = cfg.MediaURL
 	playback := delivery.New(pool, store, keys)
 	playback.Logger = logger
 	if cfg.MaxUploadBytes > 0 {
@@ -188,7 +216,6 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 	hooks := webhooks.New(pool, box)
 	hooks.Logger = logger
 	life := lifecycle.New(pool, store, committer)
-	life.BaseURL = cfg.MediaURL
 	life.Logger = logger
 
 	// Defers run last in, first out: stop cancels the loops before wg.Wait
@@ -228,8 +255,8 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 
 	srv := &http.Server{
 		Handler: Handler(Deps{
-			DB: pool, Worker: worker.Handler(), Storage: store.Handler(),
-			APIs: []Registrar{upl, assets.New(pool, cfg.MediaURL), life, playback},
+			DB: pool, Worker: worker.Handler(), Storage: store.Handler(), ServesHost: b.urls.ServesHost,
+			APIs: []Registrar{upl, assets.New(pool), life, playback},
 		}),
 		ReadHeaderTimeout: 10 * time.Second,
 		// Requests inherit ctx, so long-poll claims end at shutdown.

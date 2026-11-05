@@ -50,9 +50,7 @@ type Service struct {
 	store  storage.Storage
 	routes *outputs.Committer
 
-	// BaseURL is the media origin, carried in webhook events.
-	BaseURL string
-	Logger  *slog.Logger
+	Logger *slog.Logger
 	// Inline is how long DELETE runs the delete job itself before answering
 	// 202; 0 leaves the job to Run.
 	Inline time.Duration
@@ -130,7 +128,7 @@ func (s *Service) Delete(ctx context.Context, key apikeys.Key, assetID string) (
 	if err != nil {
 		return assets.View{}, false, err
 	}
-	view, err := assets.Load(ctx, q, asset, s.BaseURL)
+	view, err := assets.Load(ctx, q, asset)
 	return view, asset.DeletedAt.Valid, err
 }
 
@@ -297,7 +295,7 @@ func (s *Service) runDelete(ctx context.Context, job db.Job) error {
 			return err
 		}
 		if first == 1 {
-			if err := outbox.AssetEvent(ctx, qs, job.AssetID, outbox.AssetDeleted, s.BaseURL, nil); err != nil {
+			if err := outbox.AssetEvent(ctx, qs, job.AssetID, outbox.AssetDeleted, nil); err != nil {
 				return err
 			}
 		}

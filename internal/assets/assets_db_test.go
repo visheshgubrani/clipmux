@@ -36,7 +36,7 @@ func TestCatchUpListsChangesSinceATimeInOrderWithACursor(t *testing.T) {
 		t.Fatal(err)
 	}
 	mux := http.NewServeMux()
-	assets.New(pool, "https://media.example").Register(mux)
+	assets.New(pool).Register(mux)
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 

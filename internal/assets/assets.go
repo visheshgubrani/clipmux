@@ -50,8 +50,13 @@ type View struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
-// Load builds the view of an asset.
-func Load(ctx context.Context, q *db.Queries, a db.Asset, baseURL string) (View, error) {
+// Load builds the view of an asset. base_url is the project's media URL,
+// read in the same transaction as the asset.
+func Load(ctx context.Context, q *db.Queries, a db.Asset) (View, error) {
+	baseURL, err := q.GetMediaURL(ctx, a.ProjectID)
+	if err != nil {
+		return View{}, err
+	}
 	pids, err := q.ListPlaybackIDs(ctx, a.ID)
 	if err != nil {
 		return View{}, err
@@ -71,12 +76,11 @@ func Load(ctx context.Context, q *db.Queries, a db.Asset, baseURL string) (View,
 
 // API serves GET /v1/assets and GET /v1/assets/{id}.
 type API struct {
-	pool    *pgxpool.Pool
-	baseURL string
+	pool *pgxpool.Pool
 }
 
 // New returns the assets API.
-func New(pool *pgxpool.Pool, baseURL string) *API { return &API{pool: pool, baseURL: baseURL} }
+func New(pool *pgxpool.Pool) *API { return &API{pool: pool} }
 
 // Register adds the routes to mux.
 func (a *API) Register(mux *http.ServeMux) {
@@ -103,7 +107,7 @@ func (a *API) get(w http.ResponseWriter, r *http.Request) {
 		httpjson.Error(w, http.StatusInternalServerError, "internal", "internal error")
 		return
 	}
-	v, err := Load(r.Context(), q, asset, a.baseURL)
+	v, err := Load(r.Context(), q, asset)
 	if err != nil {
 		httpjson.Error(w, http.StatusInternalServerError, "internal", "internal error")
 		return
@@ -187,7 +191,7 @@ func (a *API) updatedSince(w http.ResponseWriter, r *http.Request, key apikeys.K
 func (a *API) writeList(w http.ResponseWriter, r *http.Request, q *db.Queries, rows []db.Asset, next string) {
 	out := make([]View, 0, len(rows))
 	for _, asset := range rows {
-		v, err := Load(r.Context(), q, asset, a.baseURL)
+		v, err := Load(r.Context(), q, asset)
 		if err != nil {
 			httpjson.Error(w, http.StatusInternalServerError, "internal", "internal error")
 			return

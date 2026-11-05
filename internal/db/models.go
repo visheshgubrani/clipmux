@@ -178,10 +178,11 @@ type Project struct {
 	ID                      string
 	Name                    string
 	PublicUrl               pgtype.Text
-	MediaHostname           pgtype.Text
+	MediaUrl                pgtype.Text
 	MaxTokenLifetimeSeconds int32
 	CreatedAt               pgtype.Timestamptz
 	SecretsCheck            []byte
+	UrlsConfirmedAt         pgtype.Timestamptz
 }
 
 type SigningKey struct {

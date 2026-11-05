@@ -58,13 +58,12 @@ func newRig(t *testing.T) *rig {
 	q := queue.New(pool)
 	committer := outputs.New(pool, q, store)
 	svc := lifecycle.New(pool, store, committer)
-	svc.BaseURL = "https://media.example"
 	keys, err := contentkey.FromHex(1, strings.Repeat("00", 32))
 	if err != nil {
 		t.Fatal(err)
 	}
 	mux := http.NewServeMux()
-	assets.New(pool, "https://media.example").Register(mux)
+	assets.New(pool).Register(mux)
 	svc.Register(mux)
 	delivery.New(pool, store, contentkey.NewRing(keys)).Register(mux)
 	srv := httptest.NewServer(mux)

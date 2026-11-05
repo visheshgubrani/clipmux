@@ -50,6 +50,24 @@ type Worker struct {
 	// IdleTimeout fails a transfer that moves no bytes for this long
 	// (default 60 s), so a half-open connection can't hang the attempt.
 	IdleTimeout time.Duration
+	// StorageViaServer sends signed filesystem-storage URLs (/_storage/…)
+	// to Server instead of the public URL they name: the built-in worker
+	// reaches serve over loopback. The signature doesn't cover the host.
+	StorageViaServer bool
+}
+
+// storageURL applies StorageViaServer to a signed URL.
+func (w *Worker) storageURL(raw string) string {
+	if !w.StorageViaServer {
+		return raw
+	}
+	u, err := neturl.Parse(raw)
+	s, serr := neturl.Parse(w.Server)
+	if err != nil || serr != nil || !strings.HasPrefix(u.Path, "/_storage/") {
+		return raw
+	}
+	u.Scheme, u.Host = s.Scheme, s.Host
+	return u.String()
 }
 
 var errStopped = errors.New("worker: the server told this attempt to stop")
@@ -265,7 +283,7 @@ func (w *Worker) download(ctx context.Context, job *workerapi.Job, dst string) e
 			}
 		}
 		reqCtx, watch := idle(ctx, w.idleTimeout())
-		req, _ := http.NewRequestWithContext(reqCtx, http.MethodGet, url, nil)
+		req, _ := http.NewRequestWithContext(reqCtx, http.MethodGet, w.storageURL(url), nil)
 		if offset > 0 {
 			req.Header.Set("Range", fmt.Sprintf("bytes=%d-", offset))
 		}
@@ -408,7 +426,7 @@ func (w *Worker) putFile(ctx context.Context, url, path string) error {
 	}
 	reqCtx, watch := idle(ctx, w.idleTimeout())
 	defer watch.stop()
-	req, _ := http.NewRequestWithContext(reqCtx, http.MethodPut, url, watch.reader(f))
+	req, _ := http.NewRequestWithContext(reqCtx, http.MethodPut, w.storageURL(url), watch.reader(f))
 	req.ContentLength = info.Size()
 	res, err := w.httpClient().Do(req)
 	if err != nil {

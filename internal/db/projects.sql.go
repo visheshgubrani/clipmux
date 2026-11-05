@@ -7,7 +7,38 @@ package db
 
 import (
 	"context"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
+
+const getMediaURL = `-- name: GetMediaURL :one
+SELECT coalesce(media_url, public_url, '')::text FROM projects WHERE id = $1
+`
+
+// base_url in asset views and webhook events.
+func (q *Queries) GetMediaURL(ctx context.Context, id string) (string, error) {
+	row := q.db.QueryRow(ctx, getMediaURL, id)
+	var column_1 string
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const getProjectURLs = `-- name: GetProjectURLs :one
+SELECT public_url, media_url, urls_confirmed_at FROM projects WHERE id = $1
+`
+
+type GetProjectURLsRow struct {
+	PublicUrl       pgtype.Text
+	MediaUrl        pgtype.Text
+	UrlsConfirmedAt pgtype.Timestamptz
+}
+
+func (q *Queries) GetProjectURLs(ctx context.Context, id string) (GetProjectURLsRow, error) {
+	row := q.db.QueryRow(ctx, getProjectURLs, id)
+	var i GetProjectURLsRow
+	err := row.Scan(&i.PublicUrl, &i.MediaUrl, &i.UrlsConfirmedAt)
+	return i, err
+}
 
 const getSecretsCheck = `-- name: GetSecretsCheck :one
 
@@ -20,6 +51,37 @@ func (q *Queries) GetSecretsCheck(ctx context.Context, id string) ([]byte, error
 	var secrets_check []byte
 	err := row.Scan(&secrets_check)
 	return secrets_check, err
+}
+
+const initProjectURLs = `-- name: InitProjectURLs :exec
+UPDATE projects SET public_url = coalesce(public_url, $2), media_url = coalesce(media_url, $3) WHERE id = $1
+`
+
+type InitProjectURLsParams struct {
+	ID        string
+	PublicUrl pgtype.Text
+	MediaUrl  pgtype.Text
+}
+
+// First boot: the defaults, until the owner confirms real ones.
+func (q *Queries) InitProjectURLs(ctx context.Context, arg InitProjectURLsParams) error {
+	_, err := q.db.Exec(ctx, initProjectURLs, arg.ID, arg.PublicUrl, arg.MediaUrl)
+	return err
+}
+
+const setProjectURLs = `-- name: SetProjectURLs :exec
+UPDATE projects SET public_url = $2, media_url = $3, urls_confirmed_at = now() WHERE id = $1
+`
+
+type SetProjectURLsParams struct {
+	ID        string
+	PublicUrl pgtype.Text
+	MediaUrl  pgtype.Text
+}
+
+func (q *Queries) SetProjectURLs(ctx context.Context, arg SetProjectURLsParams) error {
+	_, err := q.db.Exec(ctx, setProjectURLs, arg.ID, arg.PublicUrl, arg.MediaUrl)
+	return err
 }
 
 const setSecretsCheck = `-- name: SetSecretsCheck :execrows
