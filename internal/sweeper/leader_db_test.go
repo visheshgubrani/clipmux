@@ -49,3 +49,16 @@ func waitFor(t *testing.T, cond func() bool) {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+// Advisory locks are per database: two installs in separate schemas of one
+// database must each have a leader, or one's loops never run.
+func TestInstallsInSeparateSchemasEachLead(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	a, b := NewLeader(dbtest.New(t), logger), NewLeader(dbtest.New(t), logger)
+	a.Retry, b.Retry = 20*time.Millisecond, 20*time.Millisecond
+	ctx, stop := context.WithCancel(context.Background())
+	defer stop()
+	go a.Run(ctx)
+	go b.Run(ctx)
+	waitFor(t, func() bool { return a.IsLeader() && b.IsLeader() })
+}

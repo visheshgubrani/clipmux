@@ -9,9 +9,12 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// leaderLockKey is the session advisory lock that elects the replica
-// running the background loops ("clipmux1" as an integer).
-const leaderLockKey = 0x636c69706d757831
+// leaderLockClass is the first key of the session advisory lock that elects
+// the replica running the background loops ("cmx1"). The second key is the
+// install's schema, hashed: advisory locks are per database, and installs
+// in separate schemas of one database (tests, shared servers) each elect
+// their own leader.
+const leaderLockClass = 0x636d7831
 
 // Leader elects one serve replica to run the background loops, with a
 // session advisory lock held on a connection of its own. Every loop is
@@ -54,7 +57,7 @@ func (l *Leader) hold(ctx context.Context) {
 	}
 	defer conn.Release()
 	var got bool
-	if err := conn.QueryRow(ctx, `SELECT pg_try_advisory_lock($1)`, int64(leaderLockKey)).Scan(&got); err != nil || !got {
+	if err := conn.QueryRow(ctx, `SELECT pg_try_advisory_lock($1, hashtext(current_schema()))`, int32(leaderLockClass)).Scan(&got); err != nil || !got {
 		return
 	}
 	l.held.Store(true)
@@ -62,7 +65,7 @@ func (l *Leader) hold(ctx context.Context) {
 	defer func() {
 		l.held.Store(false)
 		// Unlock on a live connection; a dead one has lost it already.
-		_, _ = conn.Exec(context.WithoutCancel(ctx), `SELECT pg_advisory_unlock($1)`, int64(leaderLockKey))
+		_, _ = conn.Exec(context.WithoutCancel(ctx), `SELECT pg_advisory_unlock($1, hashtext(current_schema()))`, int32(leaderLockClass))
 	}()
 	ticker := time.NewTicker(l.Retry)
 	defer ticker.Stop()

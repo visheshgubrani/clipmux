@@ -252,7 +252,7 @@ Decisions within the architecture's rules, made in P2-T02:
 - Disabling or enabling an app queues a `refresh` `route_sync` for each of its live IDs, which rewrites them (denied or not) without asset events.
 - `Storage` gains `Delete` (one object; a missing one is fine) for unpublishing.
 - The reconciler runs every 15 minutes. It lists `_routes/`, deletes records for IDs that shouldn't be served, rewrites any whose MD5 ETag differs from the bytes Postgres implies, writes missing ones, and rewrites `_keys.json`. A clean pass writes nothing.
-- One serve replica runs every background loop, holding the session advisory lock `0x636c69706d757831` on its own connection, re-checked every 10 s. Serve waits up to 2 s for the election at boot. Every loop was already safe to run twice, so a handover costs duplicate work only.
+- One serve replica runs every background loop, holding the session advisory lock `(0x636d7831, hashtext(current_schema()))` on its own connection, re-checked every 10 s. The schema is part of the key because advisory locks are per database: installs in separate schemas of one database each elect their own leader (the Chromium suites' two installs found this). Serve waits up to 2 s for the election at boot. Every loop was already safe to run twice, so a handover costs duplicate work only.
 
 ## D036 The Cloudflare Worker — accepted (2026-11-05)
 Decisions within the architecture's rules, made in P2-T03:
