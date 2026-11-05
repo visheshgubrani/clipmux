@@ -276,5 +276,12 @@ Decisions within the architecture's rules and the P2 open questions, made in P2-
 - `GET /v1/cloudflare` reports the connection, `needs_redeploy`, and `storage_ok` (a listing of `_routes/` with the stored credentials), which drives "Reconnect Cloudflare". `docs/cloudflare.md` documents the token permissions and the manual wrangler path.
 - Tests drive a fake Cloudflare API that checks the bearer token on every call. The R2 side runs on SeaweedFS, under a second dev identity that holds the credentials the fake token derives to. The dev SeaweedFS pins `-ip=127.0.0.1`, so its raft state survives a container restart.
 
+## D038 The move job — accepted (2026-11-05)
+Decisions within the architecture's rules, made in P2-T05:
+- `move` is a control-plane job like `delete` (D008, D019), claimed by the same loop, and it records `source_storage_id` and `target_storage_id`. The one-active-job index makes it exclusive with uploads' transcode, reencode and delete; a delete cancels it.
+- One pass waits out PUT URLs that earlier jobs may still use (`LateWritesUntil`). It then copies `uploads/{id}/` and the prefix of every committed or retired output (never a writing or lost attempt's files), skipping objects already there at the same size, so a crashed pass resumes. Objects over 5 GiB go up through the target's multipart upload in 32 MiB parts. Every size is verified by listing the target. One transaction then switches `storage_id` (only if it is still the source), queues a `refresh` of every live route (its `backend` changes) and `video.asset.updated` with `job: {kind: "move"}`.
+- Cleanup is a second phase, at least 2 minutes later (past the Worker's 60 s route cache) and only once the asset's route rows are confirmed. It deletes the old prefixes and succeeds the job.
+- `POST /v1/storage/moves` (owner) queues a move to the default store for every ready or errored asset elsewhere with no active job. `GET /v1/storage/moves` reports how many assets are still off the default store and the move jobs by state. The dashboard's Delivery page offers the move after Connect Cloudflare and polls progress.
+
 ## D007 Shaka Packager 3.9.3 — accepted (2026-11-05)
 Decision: pin v3.9.3 (`toolchain/versions.env`), the version clipmux-lms runs with AES-128 in production, which needs the init-segment workaround for Shaka issue 1616. Move to a release that fixes 1616 when one exists, re-running the Phase 1 player tests.

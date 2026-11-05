@@ -247,6 +247,7 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 	tests := setuptest.New(pool, set, box, b.urls, upl, life, cfg.SelfDial)
 	tests.Logger = logger
 	mgmt.Tests = tests
+	mgmt.Life = life
 	mgmt.Cloudflare = &cloudflare.Connector{
 		Pool: pool, Stores: set, Keys: keys, URLs: b.urls, ProjectID: db.DefaultProjectID,
 		SetupTest: func(ctx context.Context) error { _, err := tests.Queue(ctx, "urls_saved"); return err },

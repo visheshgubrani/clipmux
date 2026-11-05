@@ -249,8 +249,12 @@ func (s *Service) runNext(ctx context.Context, only pgtype.Text) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("claim control job: %w", err)
 	}
-	if err := s.runDelete(ctx, job); err != nil {
-		return true, fmt.Errorf("delete job %s: %w", job.ID, err)
+	run := s.runDelete
+	if job.Kind == "move" {
+		run = s.runMove
+	}
+	if err := run(ctx, job); err != nil {
+		return true, fmt.Errorf("%s job %s: %w", job.Kind, job.ID, err)
 	}
 	return true, nil
 }

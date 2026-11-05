@@ -24,6 +24,33 @@ func QueueKeys(ctx context.Context, q *db.Queries, projectID string) error {
 	})
 }
 
+// QueueAssetRefresh refreshes every live route of one asset, after
+// something every record of it carries changes, such as its store.
+func QueueAssetRefresh(ctx context.Context, q *db.Queries, projectID, appID, assetID string) error {
+	pids, err := q.ListPlaybackIDs(ctx, assetID)
+	if err != nil {
+		return err
+	}
+	for _, p := range pids {
+		if p.Status != "active" {
+			continue
+		}
+		if err := queueRefresh(ctx, q, projectID, appID, assetID, p.ID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func queueRefresh(ctx context.Context, q *db.Queries, projectID, appID, assetID, playbackID string) error {
+	payload, _ := json.Marshal(map[string]any{"v": 1, "op": OpRefresh, "playback_id": playbackID, "app_id": appID, "asset_id": assetID})
+	return q.InsertOutbox(ctx, db.InsertOutboxParams{
+		ID: ids.New(ids.Event), ProjectID: projectID, Kind: "route_sync",
+		AppID: pgtype.Text{String: appID, Valid: true}, AssetID: pgtype.Text{String: assetID, Valid: true},
+		Payload: payload,
+	})
+}
+
 // QueueAppRefresh refreshes every live route of an app after its disabled
 // state changes, so the Worker denies (or again serves) its IDs.
 func QueueAppRefresh(ctx context.Context, q *db.Queries, projectID, appID string) error {
@@ -32,12 +59,7 @@ func QueueAppRefresh(ctx context.Context, q *db.Queries, projectID, appID string
 		return err
 	}
 	for _, p := range pids {
-		payload, _ := json.Marshal(map[string]any{"v": 1, "op": OpRefresh, "playback_id": p.ID, "app_id": appID, "asset_id": p.AssetID})
-		if err := q.InsertOutbox(ctx, db.InsertOutboxParams{
-			ID: ids.New(ids.Event), ProjectID: projectID, Kind: "route_sync",
-			AppID: pgtype.Text{String: appID, Valid: true}, AssetID: pgtype.Text{String: p.AssetID, Valid: true},
-			Payload: payload,
-		}); err != nil {
+		if err := queueRefresh(ctx, q, projectID, appID, p.AssetID, p.ID); err != nil {
 			return err
 		}
 	}

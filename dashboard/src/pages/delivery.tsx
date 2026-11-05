@@ -15,6 +15,14 @@ interface Status {
   storage_ok: boolean
 }
 
+interface Moves {
+  default_kind: string
+  not_on_default: number
+  active: number
+  moved: number
+  failed: number
+}
+
 interface Step {
   name: string
   ok: boolean
@@ -44,7 +52,21 @@ export function Delivery() {
   const [steps, setSteps] = useState<Step[]>([])
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
-  const load = async () => setStatus(await api<Status>('/v1/cloudflare'))
+  const [moves, setMoves] = useState<Moves | null>(null)
+  const load = async () => {
+    setStatus(await api<Status>('/v1/cloudflare'))
+    setMoves(await api<Moves>('/v1/storage/moves'))
+  }
+  // Refresh progress while moves run.
+  useEffect(() => {
+    if (!moves?.active) return
+    const t = setTimeout(() => void api<Moves>('/v1/storage/moves').then(setMoves), 5000)
+    return () => clearTimeout(t)
+  }, [moves])
+  const moveLibrary = async () => {
+    await post('/v1/storage/moves')
+    setMoves(await api<Moves>('/v1/storage/moves'))
+  }
   // biome-ignore lint/correctness/useExhaustiveDependencies: load once
   useEffect(() => {
     void load()
@@ -105,6 +127,26 @@ export function Delivery() {
           </p>
         )}
       </Card>
+
+      {status?.connected && moves && (moves.not_on_default > 0 || moves.active > 0 || moves.moved > 0) && (
+        <Card className="grid gap-3">
+          <CardTitle>Move the library to R2</CardTitle>
+          <Muted>
+            {moves.not_on_default} videos are still stored on this server and play through it. Moving them
+            copies each source and output to R2, switches its playback to the edge, then removes the old copy.
+          </Muted>
+          <p className="text-sm">
+            {moves.active} moving · {moves.moved} moved{moves.failed > 0 ? ` · ${moves.failed} failed` : ''}
+          </p>
+          {moves.not_on_default > moves.active && (
+            <div>
+              <Button onClick={() => void moveLibrary()}>
+                Move {moves.not_on_default - moves.active} videos
+              </Button>
+            </div>
+          )}
+        </Card>
+      )}
 
       <Card className="grid gap-4">
         <CardTitle>{status?.connected ? 'Reconnect or redeploy Cloudflare' : 'Connect Cloudflare'}</CardTitle>

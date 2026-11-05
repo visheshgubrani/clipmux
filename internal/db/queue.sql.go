@@ -107,7 +107,7 @@ const createJob = `-- name: CreateJob :one
 
 INSERT INTO jobs (id, project_id, asset_id, kind, pinned_agent_id)
 VALUES ($1, $2, $3, $4, $5)
-RETURNING id, project_id, asset_id, kind, status, phase, progress, profile_id, profile_version, pinned_agent_id, lost_count, failed_count, error_code, routed_to, route_reason, available_at, created_at, started_at, finished_at
+RETURNING id, project_id, asset_id, kind, status, phase, progress, profile_id, profile_version, pinned_agent_id, lost_count, failed_count, error_code, routed_to, route_reason, available_at, created_at, started_at, finished_at, source_storage_id, target_storage_id
 `
 
 type CreateJobParams struct {
@@ -149,6 +149,8 @@ func (q *Queries) CreateJob(ctx context.Context, arg CreateJobParams) (Job, erro
 		&i.CreatedAt,
 		&i.StartedAt,
 		&i.FinishedAt,
+		&i.SourceStorageID,
+		&i.TargetStorageID,
 	)
 	return i, err
 }
@@ -287,7 +289,7 @@ func (q *Queries) GetAttemptByTokenHash(ctx context.Context, tokenHash []byte) (
 }
 
 const getJob = `-- name: GetJob :one
-SELECT id, project_id, asset_id, kind, status, phase, progress, profile_id, profile_version, pinned_agent_id, lost_count, failed_count, error_code, routed_to, route_reason, available_at, created_at, started_at, finished_at FROM jobs WHERE id = $1
+SELECT id, project_id, asset_id, kind, status, phase, progress, profile_id, profile_version, pinned_agent_id, lost_count, failed_count, error_code, routed_to, route_reason, available_at, created_at, started_at, finished_at, source_storage_id, target_storage_id FROM jobs WHERE id = $1
 `
 
 func (q *Queries) GetJob(ctx context.Context, id string) (Job, error) {
@@ -313,6 +315,8 @@ func (q *Queries) GetJob(ctx context.Context, id string) (Job, error) {
 		&i.CreatedAt,
 		&i.StartedAt,
 		&i.FinishedAt,
+		&i.SourceStorageID,
+		&i.TargetStorageID,
 	)
 	return i, err
 }
@@ -449,7 +453,7 @@ func (q *Queries) LockAttempt(ctx context.Context, id string) (LockAttemptRow, e
 }
 
 const lockJob = `-- name: LockJob :one
-SELECT id, project_id, asset_id, kind, status, phase, progress, profile_id, profile_version, pinned_agent_id, lost_count, failed_count, error_code, routed_to, route_reason, available_at, created_at, started_at, finished_at FROM jobs WHERE id = $1 FOR UPDATE
+SELECT id, project_id, asset_id, kind, status, phase, progress, profile_id, profile_version, pinned_agent_id, lost_count, failed_count, error_code, routed_to, route_reason, available_at, created_at, started_at, finished_at, source_storage_id, target_storage_id FROM jobs WHERE id = $1 FOR UPDATE
 `
 
 func (q *Queries) LockJob(ctx context.Context, id string) (Job, error) {
@@ -475,12 +479,14 @@ func (q *Queries) LockJob(ctx context.Context, id string) (Job, error) {
 		&i.CreatedAt,
 		&i.StartedAt,
 		&i.FinishedAt,
+		&i.SourceStorageID,
+		&i.TargetStorageID,
 	)
 	return i, err
 }
 
 const lockNextClaimableJob = `-- name: LockNextClaimableJob :one
-SELECT id, project_id, asset_id, kind, status, phase, progress, profile_id, profile_version, pinned_agent_id, lost_count, failed_count, error_code, routed_to, route_reason, available_at, created_at, started_at, finished_at FROM jobs
+SELECT id, project_id, asset_id, kind, status, phase, progress, profile_id, profile_version, pinned_agent_id, lost_count, failed_count, error_code, routed_to, route_reason, available_at, created_at, started_at, finished_at, source_storage_id, target_storage_id FROM jobs
 WHERE project_id = $1
   AND status = 'queued'
   AND available_at <= now()
@@ -523,6 +529,8 @@ func (q *Queries) LockNextClaimableJob(ctx context.Context, arg LockNextClaimabl
 		&i.CreatedAt,
 		&i.StartedAt,
 		&i.FinishedAt,
+		&i.SourceStorageID,
+		&i.TargetStorageID,
 	)
 	return i, err
 }

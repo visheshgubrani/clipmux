@@ -205,7 +205,8 @@ func TestConcurrentClaimsTakeAJobOnce(t *testing.T) {
 
 func TestExecutorsOnlyTakeMediaWorkTheyMayRun(t *testing.T) {
 	f := newFixture(t)
-	f.enqueue(f.asset("ast_move", false), "move")
+	// A move records both stores (it runs in the control plane, P2-T05).
+	f.exec(`INSERT INTO jobs (id, project_id, asset_id, kind, source_storage_id, target_storage_id) VALUES ('job_move', 'prj_default', $1, 'move', 'sto_default', 'sto_default')`, f.asset("ast_move", false))
 	f.enqueue(f.asset("ast_delete", false), "delete")
 	f.exec(`INSERT INTO agents (id, project_id, name, key_hash, status, scope, sandboxed) VALUES ('agt_pc', 'prj_default', 'pc', 'h', 'approved', 'local', false)`)
 	pinned, err := queue.Enqueue(context.Background(), f.pool, queue.Job{ProjectID: "prj_default", AssetID: f.asset("ast_local", false), Kind: "transcode", PinnedAgentID: "agt_pc"})

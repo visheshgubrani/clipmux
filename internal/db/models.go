@@ -129,25 +129,27 @@ type IdempotencyKey struct {
 }
 
 type Job struct {
-	ID             string
-	ProjectID      string
-	AssetID        string
-	Kind           string
-	Status         string
-	Phase          pgtype.Text
-	Progress       pgtype.Float4
-	ProfileID      string
-	ProfileVersion int32
-	PinnedAgentID  pgtype.Text
-	LostCount      int32
-	FailedCount    int32
-	ErrorCode      pgtype.Text
-	RoutedTo       pgtype.Text
-	RouteReason    pgtype.Text
-	AvailableAt    pgtype.Timestamptz
-	CreatedAt      pgtype.Timestamptz
-	StartedAt      pgtype.Timestamptz
-	FinishedAt     pgtype.Timestamptz
+	ID              string
+	ProjectID       string
+	AssetID         string
+	Kind            string
+	Status          string
+	Phase           pgtype.Text
+	Progress        pgtype.Float4
+	ProfileID       string
+	ProfileVersion  int32
+	PinnedAgentID   pgtype.Text
+	LostCount       int32
+	FailedCount     int32
+	ErrorCode       pgtype.Text
+	RoutedTo        pgtype.Text
+	RouteReason     pgtype.Text
+	AvailableAt     pgtype.Timestamptz
+	CreatedAt       pgtype.Timestamptz
+	StartedAt       pgtype.Timestamptz
+	FinishedAt      pgtype.Timestamptz
+	SourceStorageID pgtype.Text
+	TargetStorageID pgtype.Text
 }
 
 type Outbox struct {

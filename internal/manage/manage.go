@@ -28,6 +28,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/db"
 	"github.com/visheshgubrani/clipmux/internal/httpjson"
 	"github.com/visheshgubrani/clipmux/internal/ids"
+	"github.com/visheshgubrani/clipmux/internal/lifecycle"
 	"github.com/visheshgubrani/clipmux/internal/routes"
 	"github.com/visheshgubrani/clipmux/internal/secrets"
 	"github.com/visheshgubrani/clipmux/internal/settings"
@@ -56,8 +57,10 @@ type API struct {
 	Tests *setuptest.Runner
 	// Cloudflare connects Worker delivery; nil leaves its routes 404.
 	Cloudflare *cloudflare.Connector
-	Now        func() time.Time
-	Logger     *slog.Logger
+	// Life queues library moves; nil leaves their routes 404.
+	Life   *lifecycle.Service
+	Now    func() time.Time
+	Logger *slog.Logger
 }
 
 // New returns the management API.
@@ -112,6 +115,51 @@ func (m *API) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/setup-test/latest", m.owned(m.latestSetupTest))
 	mux.HandleFunc("GET /v1/cloudflare", m.owned(m.cloudflareStatus))
 	mux.HandleFunc("POST /v1/cloudflare/connect", m.owned(m.connectCloudflare))
+	mux.HandleFunc("GET /v1/storage/moves", m.owned(m.moveProgress))
+	mux.HandleFunc("POST /v1/storage/moves", m.owned(m.moveLibrary))
+}
+
+// moveProgress reports the library move: assets still off the default store
+// (they still need this server to play) and the move jobs by state.
+func (m *API) moveProgress(w http.ResponseWriter, r *http.Request, o accounts.Owner) error {
+	if m.Life == nil {
+		return errNotFound
+	}
+	q := db.New(m.pool)
+	def, err := q.GetDefaultStorage(r.Context(), o.ProjectID)
+	if err != nil {
+		return err
+	}
+	off, err := q.CountAssetsOffStore(r.Context(), db.CountAssetsOffStoreParams{ProjectID: o.ProjectID, Target: def.ID})
+	if err != nil {
+		return err
+	}
+	p, err := q.MoveProgress(r.Context(), o.ProjectID)
+	if err != nil {
+		return err
+	}
+	httpjson.Write(w, http.StatusOK, map[string]any{
+		"default_storage_id": def.ID, "default_kind": def.Kind, "not_on_default": off,
+		"active": p.Active, "moved": p.Moved, "failed": p.Failed,
+	})
+	return nil
+}
+
+// moveLibrary queues a move to the default store for every asset elsewhere.
+func (m *API) moveLibrary(w http.ResponseWriter, r *http.Request, o accounts.Owner) error {
+	if m.Life == nil {
+		return errNotFound
+	}
+	def, err := db.New(m.pool).GetDefaultStorage(r.Context(), o.ProjectID)
+	if err != nil {
+		return err
+	}
+	n, err := m.Life.MoveLibrary(r.Context(), o.ProjectID, def.ID)
+	if err != nil {
+		return err
+	}
+	httpjson.Write(w, http.StatusAccepted, map[string]any{"queued": n, "target_storage_id": def.ID})
+	return nil
 }
 
 // cloudflareStatus reports the Cloudflare connection, whether this build
