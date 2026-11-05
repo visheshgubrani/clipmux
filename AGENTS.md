@@ -27,7 +27,8 @@ anything decided since, and wins over the architecture doc where they differ.
 make db-up / make db-down     # dev Postgres on :5444 (deploy/compose.dev.yml)
 make test                     # go vet ./... && go test ./...
 make test-db                  # same, with TEST_DATABASE_URL pointing at dev Postgres
-make run                      # clipmux serve
+make run                      # clipmux serve (migrates the dev database on boot)
+make sqlc / make sqlc-check   # regenerate / verify internal/db/sqlc (runs sqlc in Docker)
 gofmt -l .                    # must print nothing
 ```
 
@@ -39,7 +40,12 @@ gofmt -l .                    # must print nothing
 - TDD at the seams: red → green vertical slices, one test per slice, expected
   values from literals or worked examples, never re-derived from the code.
 - Database behaviour is asserted against real Postgres (`TEST_DATABASE_URL`),
-  never with SQL-substring checks. Suites skip cleanly without it.
+  never with SQL-substring checks. Use `dbtest.New(t)`: each test gets its own
+  migrated schema and skips cleanly without the variable. Name such files
+  `*_db_test.go`.
+- Schema changes are new goose migrations in `internal/db/migrations` (never
+  edit an applied one) with a working Down. Queries go in `internal/db/queries`
+  and are generated with `make sqlc`.
 - Invariants from the architecture that must never be weakened: executors hold
   no storage credentials; outputs are immutable and only `current_output_id`
   moves; one mutating job per asset; side effects outside Postgres run from

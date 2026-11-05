@@ -31,6 +31,12 @@ jobs:
       - run: go vet ./...
       - run: go test -race ./...
       - run: go build ./cmd/clipmux
+  sqlc:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Generated queries are current
+        run: make sqlc-check
   toolchain:
     runs-on: ubuntu-24.04
     steps:

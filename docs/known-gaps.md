@@ -5,10 +5,14 @@ when you introduce or discover it; remove it when it is closed.
 
 ## Bootstrap (2026-11-05)
 
-- Everything in Phase 1 beyond the skeleton: no schema, queue, API, worker,
-  delivery or dashboard yet. `clipmux serve` only serves `/healthz` and a
-  placeholder page, prints a fresh setup token on every boot, and does not
-  connect to Postgres yet (it only checks DATABASE_URL is set).
+- Phase 1 beyond T02: no queue, API, worker, delivery or dashboard yet.
+  `clipmux serve` connects to Postgres, applies migrations, serves `/healthz`,
+  `/readyz` and a placeholder page, and prints a fresh setup token on every
+  boot (no owner table until T10).
+- The schema has no owner/session tables (T10) and no per-endpoint webhook
+  delivery tracking; the `outbox` table holds events only (T09 extends it).
+- Content-key and adapter-secret encryption columns exist, but nothing writes
+  or reads them yet; the external encryption key arrives with T08/T10.
 - `clipmux worker|push|listen|admin` print "not implemented".
 - No Dockerfile or production compose yet (P1-T10). The FFmpeg recipe in
   `toolchain/` is lifted from the archived repo and has not been built here.
