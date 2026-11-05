@@ -29,6 +29,8 @@ jobs:
         with:
           go-version-file: go.mod
       - name: Media tools (ffmpeg, pinned Shaka Packager)
+        # A stalled mirror or download fails fast and can be re-run.
+        timeout-minutes: 10
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
           mkdir -p "$RUNNER_TEMP/bin" && toolchain/install_packager.sh "$RUNNER_TEMP/bin"
