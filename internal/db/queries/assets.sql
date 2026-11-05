@@ -23,3 +23,12 @@ SELECT * FROM assets
 WHERE app_id = $1 AND passthrough = $2 AND status <> 'deleted'
 ORDER BY created_at DESC, id DESC
 LIMIT $3;
+
+-- name: ListAssetsUpdatedSince :many
+-- Catch-up for apps that missed webhooks: oldest change first, deleted
+-- assets included, keyset-paged on (updated_at, id).
+SELECT * FROM assets
+WHERE app_id = sqlc.arg(app_id)
+  AND (updated_at, id) > (sqlc.arg(after_time)::timestamptz, sqlc.arg(after_id)::text)
+ORDER BY updated_at, id
+LIMIT sqlc.arg(max_assets);

@@ -10,11 +10,13 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"net/http"
 	"slices"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/visheshgubrani/clipmux/internal/db"
+	"github.com/visheshgubrani/clipmux/internal/httpjson"
 	"github.com/visheshgubrani/clipmux/internal/ids"
 )
 
@@ -86,4 +88,20 @@ func Authenticate(ctx context.Context, conn db.DBTX, secret string) (Key, error)
 func hash(secret string) []byte {
 	sum := sha256.Sum256([]byte(secret))
 	return sum[:]
+}
+
+// Require authenticates the request's bearer key and checks that it carries
+// scope. Otherwise it writes 401 unauthorized or 403 insufficient_scope and
+// returns false.
+func Require(w http.ResponseWriter, r *http.Request, conn db.DBTX, scope string) (Key, bool) {
+	key, err := Authenticate(r.Context(), conn, httpjson.Bearer(r))
+	if err != nil {
+		httpjson.Error(w, http.StatusUnauthorized, "unauthorized", "a valid API key is required")
+		return Key{}, false
+	}
+	if !key.Can(scope) {
+		httpjson.Error(w, http.StatusForbidden, "insufficient_scope", "this key lacks "+scope)
+		return Key{}, false
+	}
+	return key, true
 }

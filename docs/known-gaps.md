@@ -5,9 +5,10 @@ when you introduce or discover it; remove it when it is closed.
 
 ## Bootstrap (2026-11-05)
 
-- Phase 1 beyond T08 (M1 done): upload → encode → encrypt → commit → signed
-  playback works end to end. Webhooks are written to the outbox but not sent
-  until T09; no dashboard, first-boot setup or player package yet.
+- Phase 1 beyond T09 (M1 done): upload → encode → encrypt → commit → signed
+  playback works end to end, with signed webhooks, asset delete and catch-up.
+  No re-encode or playback-ID endpoints until T09b; no dashboard, first-boot
+  setup or player package yet.
 - Delivery reads Postgres on every request (route, output, signing key);
   there is no route cache yet, so revocation is immediate but every segment
   costs a few queries. The server's internal signing key (dashboard preview,
@@ -25,9 +26,10 @@ when you introduce or discover it; remove it when it is closed.
 - The content key secret is a file in the data directory, not yet encrypted
   in Postgres (T10). Back it up: losing it makes every output unplayable.
 - Sign caps file count per attempt, not total bytes; a presigned filesystem
-  PUT is capped at 5 GiB per object. Asset responses carry no `base_url` until delivery
-  (T08), and `GET /v1/assets` only looks up by `passthrough` (full listing
-  comes with the dashboard).
+  PUT is capped at 5 GiB per object. `GET /v1/assets` looks up by
+  `passthrough` or lists changes `updated_since`; a general listing for the
+  dashboard comes with T10. Listing loads each asset's playback IDs with one
+  query per asset.
 - Idempotency keys are kept forever; a cleanup window (e.g. 24 h) is not
   enforced yet.
 - If the create transaction fails after storage started a multipart upload,
@@ -44,16 +46,19 @@ when you introduce or discover it; remove it when it is closed.
 - Every asset uses the one filesystem store; `storage_configs` rows are not
   read yet (per-asset storage arrives with R2 in Phase 2).
 - Sweepers assume one `serve` replica (no `pg_try_advisory_lock` leader yet).
-- Webhook events are written to the outbox (errored, reencode_failed) but not
-  delivered until T09; the event payload shape is provisional until then.
-  `clipmux serve` connects to Postgres, applies migrations, serves `/healthz`,
-  `/readyz` and a placeholder page, and prints a fresh setup token on every
-  boot (no owner table until T10).
-- The schema has no owner/session tables (T10) and no per-endpoint webhook
-  delivery tracking; the `outbox` table holds events only (T09 extends it).
-- Content-key and adapter-secret encryption columns exist, but nothing writes
-  or reads them yet; the external encryption key arrives with T08/T10.
-- `clipmux worker|push|listen|admin` print "not implemented".
+- `clipmux serve` prints a fresh setup token on every boot (no owner table
+  until T10). The schema has no owner/session tables yet.
+- Webhooks: endpoints are created only with `clipmux admin create-webhook`;
+  there is no way to list, disable or rotate one until the dashboard (T10).
+  No per-endpoint circuit breaker, so a dead endpoint costs up to 10 s per
+  delivery for a day. Outbox and delivery rows are never pruned. Owner-set
+  endpoint URLs are not filtered for private addresses (D018). A failed
+  re-encode is visible only through its webhook, not through catch-up.
+- The secrets key (D017) can't be rotated yet. Webhook secrets are sealed with
+  it; adapter secrets, the internal signing key and the content key secret
+  move under it in T10.
+- `clipmux push|listen` print "not implemented"; `clipmux admin` has
+  create-key, create-signing-key and create-webhook.
 - No Dockerfile or production compose yet (P1-T10). The FFmpeg recipe in
   `toolchain/` is lifted from the archived repo and has not been built here.
 - No captions, chapters or transcripts. The LMS depends on them, so they gate

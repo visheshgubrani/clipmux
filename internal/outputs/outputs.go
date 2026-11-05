@@ -215,15 +215,48 @@ func (c *Committer) read(ctx context.Context, key string) (string, error) {
 }
 
 // route is a route_sync row's payload: the record that makes a playback ID
-// servable (docs/architecture.md, "Route records").
+// servable (docs/architecture.md, "Route records"), or with Op "unpublish"
+// the instruction to remove it.
 type route struct {
 	V          int    `json:"v"`
+	Op         string `json:"op,omitempty"`
 	PlaybackID string `json:"playback_id"`
 	AppID      string `json:"app_id"`
 	AssetID    string `json:"asset_id"`
-	OutputID   string `json:"output_id"`
-	Policy     string `json:"policy"`
-	Backend    string `json:"backend"`
+	OutputID   string `json:"output_id,omitempty"`
+	Policy     string `json:"policy,omitempty"`
+	Backend    string `json:"backend,omitempty"`
+}
+
+const opUnpublish = "unpublish"
+
+func queueRouteSync(ctx context.Context, qs *db.Queries, asset db.Asset, r route) error {
+	payload, err := json.Marshal(r)
+	if err != nil {
+		return err
+	}
+	return qs.InsertOutbox(ctx, db.InsertOutboxParams{
+		ID: ids.New(ids.Event), ProjectID: asset.ProjectID, Kind: "route_sync",
+		AppID: pgtype.Text{String: asset.AppID, Valid: true}, AssetID: pgtype.Text{String: asset.ID, Valid: true},
+		Payload: payload,
+	})
+}
+
+// QueueRoute writes the route_sync row that publishes playback ID p of asset
+// at its output outputID. Call it in the transaction that changes either.
+func QueueRoute(ctx context.Context, qs *db.Queries, asset db.Asset, p db.PlaybackID, outputID string) error {
+	return queueRouteSync(ctx, qs, asset, route{
+		V: 1, PlaybackID: p.ID, AppID: asset.AppID, AssetID: asset.ID, OutputID: outputID, Policy: p.Policy,
+		// The built-in handler serves every asset from origin storage;
+		// "r2" arrives with the Cloudflare Worker in Phase 2.
+		Backend: "origin",
+	})
+}
+
+// QueueUnpublish writes the route_sync row that removes a revoking playback
+// ID's route; SyncRoutes marks the ID revoked once that is confirmed.
+func QueueUnpublish(ctx context.Context, qs *db.Queries, asset db.Asset, playbackID string) error {
+	return queueRouteSync(ctx, qs, asset, route{V: 1, Op: opUnpublish, PlaybackID: playbackID, AppID: asset.AppID, AssetID: asset.ID})
 }
 
 // commit is step 2, inside the liveness transaction.
@@ -256,17 +289,7 @@ func commit(ctx context.Context, qs *db.Queries, a db.Attempt, manifest []byte, 
 		return err
 	}
 	for _, p := range pids {
-		payload, _ := json.Marshal(route{
-			V: 1, PlaybackID: p.ID, AppID: asset.AppID, AssetID: asset.ID, OutputID: a.OutputID, Policy: p.Policy,
-			// The built-in handler serves every asset from origin storage;
-			// "r2" arrives with the Cloudflare Worker in Phase 2.
-			Backend: "origin",
-		})
-		if err := qs.InsertOutbox(ctx, db.InsertOutboxParams{
-			ID: ids.New(ids.Event), ProjectID: asset.ProjectID, Kind: "route_sync",
-			AppID: pgtype.Text{String: asset.AppID, Valid: true}, AssetID: pgtype.Text{String: asset.ID, Valid: true},
-			Payload: payload,
-		}); err != nil {
+		if err := QueueRoute(ctx, qs, asset, p, a.OutputID); err != nil {
 			return err
 		}
 	}
@@ -301,13 +324,21 @@ func (c *Committer) SyncRoutes(ctx context.Context, limit int) (int, error) {
 			}
 			// The built-in delivery handler reads routes straight from
 			// Postgres, so confirming the row is the whole publication. The
-			// Phase 2 Worker adapter writes _routes/{playback_id}.json here,
-			// and a failed write is retried through RetryOutbox.
+			// Phase 2 Worker adapter writes (or deletes)
+			// _routes/{playback_id}.json here, from the current state in
+			// Postgres since rows may be confirmed out of order, and a failed
+			// write is retried through RetryOutbox.
 			if err := qs.MarkOutboxDone(ctx, row.ID); err != nil {
 				return err
 			}
-			touched[key{r.AssetID, r.OutputID}] = true
 			published++
+			if r.Op == opUnpublish {
+				if err := qs.RevokePlaybackID(ctx, r.PlaybackID); err != nil {
+					return err
+				}
+				continue
+			}
+			touched[key{r.AssetID, r.OutputID}] = true
 		}
 		for k := range touched {
 			if err := finishPublication(ctx, qs, k.asset, k.output, c.BaseURL); err != nil {

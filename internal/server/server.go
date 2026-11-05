@@ -20,6 +20,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/contentkey"
 	"github.com/visheshgubrani/clipmux/internal/db"
 	"github.com/visheshgubrani/clipmux/internal/delivery"
+	"github.com/visheshgubrani/clipmux/internal/lifecycle"
 	"github.com/visheshgubrani/clipmux/internal/outputs"
 	"github.com/visheshgubrani/clipmux/internal/queue"
 	"github.com/visheshgubrani/clipmux/internal/secrets"
@@ -45,6 +46,11 @@ const RouteSyncInterval = 15 * time.Second
 // WebhookInterval is how often new events fan out and due deliveries are
 // sent; an event reaches its endpoints within about this long.
 const WebhookInterval = 5 * time.Second
+
+// ControlJobInterval is how often control-plane jobs (asset deletes) are
+// run; DELETE runs its job inline, so this mostly covers crashes, pending
+// unpublishes and second passes.
+const ControlJobInterval = 15 * time.Second
 
 // Registrar adds an API's routes to the root mux.
 type Registrar interface {
@@ -175,6 +181,9 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 	}
 	hooks := webhooks.New(pool, box)
 	hooks.Logger = logger
+	life := lifecycle.New(pool, store, committer)
+	life.BaseURL = cfg.MediaURL
+	life.Logger = logger
 
 	// Defers run last in, first out: stop cancels the loops before wg.Wait
 	// waits for them, whichever way serve returns.
@@ -200,6 +209,9 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 	wg.Go(func() {
 		sweeper.Every(ctx, WebhookInterval, "webhooks", hooks.Run, logger)
 	})
+	wg.Go(func() {
+		sweeper.Every(ctx, ControlJobInterval, "control_jobs", life.Run, logger)
+	})
 	if cfg.BuiltinWorker {
 		bw := &builtinWorker{
 			server: loopbackURL(ln.Addr()), key: workerKey, workDir: workerDir(cfg.DataDir),
@@ -211,7 +223,7 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 	srv := &http.Server{
 		Handler: Handler(Deps{
 			DB: pool, Worker: worker.Handler(), Storage: store.Handler(),
-			APIs: []Registrar{upl, assets.New(pool, cfg.MediaURL), playback},
+			APIs: []Registrar{upl, assets.New(pool, cfg.MediaURL), life, playback},
 		}),
 		ReadHeaderTimeout: 10 * time.Second,
 		// Requests inherit ctx, so long-poll claims end at shutdown.
