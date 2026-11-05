@@ -175,3 +175,13 @@ func TestOnlyOneSetupTestRunsAtATime(t *testing.T) {
 		t.Fatalf("setup tests = %d, want 1: a first-boot test is only queued on an install that never ran one", n)
 	}
 }
+
+func TestWaitingForTheSampleReportsAShutdownAsAShutdown(t *testing.T) {
+	r := newRig(t, "", true)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := r.runner.waitReady(ctx, "ast_never")
+	if err == nil || strings.Contains(err.Error(), "not ready after") || !strings.Contains(err.Error(), "stopped before the sample was ready") {
+		t.Fatalf("waitReady after shutdown = %v, want a shutdown error rather than the encode timeout", err)
+	}
+}
