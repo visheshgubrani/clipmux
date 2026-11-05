@@ -122,7 +122,7 @@ func Handler(d Deps) http.Handler {
 		}
 		text(w, http.StatusOK, "ok")
 	})
-	mux.Handle("GET /", http.FileServerFS(web.Dist()))
+	mux.Handle("GET /", web.Handler(web.Dist()))
 	return mux
 }
 

@@ -220,5 +220,10 @@ Amends D014. Made in P1-T11/T12:
 ## D031 Uploader resume and retries — accepted (2026-11-05)
 - Storage is the source of truth: the uploader keeps only `upload_id`, `upload_token`, `part_size` and `part_count` (`rememberUpload(localStorage)`), and each start lists stored parts and sends the rest; a part URL is signed in windows of 100 and again within 5 minutes of expiry or after a storage 403. Network errors, 5xx, 408 and 429 retry `min(30 s, 1 s·2ⁿ)` plus up to 1 s of jitter, 6 tries, honouring Retry-After and waiting while offline. A fatal error stops the other parts and never cancels the server upload, which stays resumable for 24 h. `pause()` stops between parts, `cancel()` ends the upload.
 
+## D032 Dashboard — accepted (2026-11-05)
+Made in P1-T10:
+- `dashboard/` is a Vite + React 19 SPA with React Router, Tailwind 4 and a few shadcn-style components (button, input, card, table, a Radix dialog). It uses `@clipmux/uploader` and `@clipmux/player`, and calls only the public API with the owner's session (D025): first-boot wizard (setup token → owner → URLs → setup test → the sample plays), sign-in, library, upload, asset detail with a preview, and apps with their API keys, signing keys and webhook endpoints (each secret shown once).
+- `make web` builds it into `internal/web/dist`, which is gitignored and embedded with `go:embed`; a binary built without it serves a placeholder page. The image builds it in its own stage. The SPA handler serves real files (hashed `assets/*` immutable for a year), sends every other path `index.html` uncached so deep links work, and answers a JSON 404 under the server's own prefixes (`/v1/`, `/v/`, `/p/`, `/_storage/`, `/worker/`, `/_tls/`, `/healthz`, `/readyz`).
+
 ## D007 Shaka Packager 3.9.3 — accepted (2026-11-05)
 Decision: pin v3.9.3 (`toolchain/versions.env`), the version clipmux-lms runs with AES-128 in production, which needs the init-segment workaround for Shaka issue 1616. Move to a release that fixes 1616 when one exists, re-running the Phase 1 player tests.

@@ -1,4 +1,4 @@
-.PHONY: db-up db-down test test-db run build fmt lint sqlc sqlc-check
+.PHONY: db-up db-down test test-db run build web fmt lint sqlc sqlc-check
 
 COMPOSE := docker compose -f deploy/compose.dev.yml
 
@@ -21,7 +21,12 @@ test-db:
 run:
 	DATABASE_URL=$${DATABASE_URL:-postgres://clipmux:clipmux@localhost:5444/clipmux?sslmode=disable} go run ./cmd/clipmux serve
 
-build:
+# The dashboard, built into internal/web/dist for the binary to embed.
+web:
+	pnpm install --frozen-lockfile
+	pnpm --filter "@clipmux/dashboard..." run build
+
+build: web
 	go build -o bin/clipmux ./cmd/clipmux
 
 fmt:

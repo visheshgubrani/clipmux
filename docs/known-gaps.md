@@ -5,10 +5,10 @@ when you introduce or discover it; remove it when it is closed.
 
 ## Bootstrap (2026-11-05)
 
-- Phase 1 beyond T09b (M1 done): upload → encode → encrypt → commit → signed
-  playback works end to end, with signed webhooks, asset delete, catch-up,
-  re-encode and playback-ID management. No dashboard, first-boot setup or
-  player package yet.
+- Phase 1 is feature-complete pending the exit test's Safari and ExoPlayer
+  runs (T12 CI jobs). The dashboard is minimal: no jobs or workers pages, no
+  share links, no playback-ID management in the UI, and a sample preview
+  that waits for Play rather than autoplaying.
 - Superseded and failed re-encodes leave their writing outputs and files in
   place, like lost attempts (cleanup is the 7-day / 30-minute gap below).
 - Delivery reads Postgres on every request (route, output, signing key);

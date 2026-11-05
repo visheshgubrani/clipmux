@@ -82,18 +82,23 @@ export class ClipMuxPlayerElement extends HTMLElement {
     this.dispatchEvent(new CustomEvent(type, { detail, bubbles: true }))
   }
 
-  #load(): void {
-    const media = this.#media
-    const baseUrl = this.getAttribute('base-url')
-    const playbackId = this.getAttribute('playback-id')
-    if (!media || !baseUrl || !playbackId) return
-    const poster = this.getAttribute('poster')
-    if (poster) media.poster = poster
+  // autoplay and muted reach the media element before any source does.
+  #flags(media: MediaElement): void {
     for (const flag of ['autoplay', 'muted'] as const) {
       if (this.hasAttribute(flag)) media.setAttribute(flag, '')
       else media.removeAttribute(flag)
     }
     media.muted = this.hasAttribute('muted')
+  }
+
+  #load(): void {
+    const media = this.#media
+    if (media) this.#flags(media)
+    const baseUrl = this.getAttribute('base-url')
+    const playbackId = this.getAttribute('playback-id')
+    if (!media || !baseUrl || !playbackId) return
+    const poster = this.getAttribute('poster')
+    if (poster) media.poster = poster
     // A signed ID needs its first token before anything loads.
     if (!this.#token && this.#getToken) {
       if (!this.#fetching) {
@@ -101,6 +106,7 @@ export class ClipMuxPlayerElement extends HTMLElement {
         this.#getToken().then(
           (t) => {
             this.#fetching = false
+            if (this.#token) return // a token was set meanwhile; it wins
             if (t === null) return this.#emit('clipmux-denied', {})
             this.#token = t
             this.#load()

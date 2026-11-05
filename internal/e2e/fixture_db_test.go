@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"regexp"
 	"strconv"
 	"syscall"
 	"testing"
@@ -19,7 +20,7 @@ import (
 // serve with an encoded 30 s, three-rung video, and on another origin the
 // built test pages plus:
 //
-//	GET  /config                 {base_url, playback_id, api}
+//	GET  /config                 {base_url, playback_id, api, dashboard, setup_token}
 //	GET  /token?aud=v&ttl=SECS   a fresh playback token (text)
 //	POST /uploads?size=BYTES     an upload created with the app's API key
 //
@@ -32,6 +33,13 @@ func TestPlayerFixture(t *testing.T) {
 	key, kid, priv := in.credentials("Browser suites")
 	asset, pid := in.upload(key, fixture(t, 30, 1280, 720))
 	in.waitReady(key, asset, 5*time.Minute)
+	// A second, fresh install for the dashboard's first-boot suite: its URLs
+	// aren't pinned, so the owner chooses them in the wizard.
+	fresh := startUnpinned(t)
+	setupToken := regexp.MustCompile(`setup_token=(\S+)`).FindStringSubmatch(fresh.log())
+	if setupToken == nil {
+		t.Fatalf("the fresh install printed no setup token:\n%s", fresh.log())
+	}
 	signer, err := tokens.ParsePrivateKey(priv)
 	if err != nil {
 		t.Fatal(err)
@@ -45,7 +53,10 @@ func TestPlayerFixture(t *testing.T) {
 	mux.Handle("GET /", http.FileServer(http.Dir(pages)))
 	mux.HandleFunc("GET /config", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]string{"base_url": in.url, "playback_id": pid, "api": in.url})
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"base_url": in.url, "playback_id": pid, "api": in.url,
+			"dashboard": fresh.url, "setup_token": setupToken[1],
+		})
 	})
 	mux.HandleFunc("GET /token", func(w http.ResponseWriter, r *http.Request) {
 		ttl, _ := strconv.Atoi(r.URL.Query().Get("ttl"))

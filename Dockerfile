@@ -23,6 +23,18 @@ RUN --mount=type=cache,target=/var/tmp/ffmpeg-build,sharing=locked \
     CLIPMUX_BUILD_DIR=/var/tmp/ffmpeg-build bash /tmp/clipmux-toolchain/build_ffmpeg.sh /usr/local; \
     bash /tmp/clipmux-toolchain/install_packager.sh /usr/local/bin
 
+# ── The dashboard (embedded in the binary) ──────────────────────────────────
+FROM node:24 AS web
+WORKDIR /src
+RUN corepack enable
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json ./
+COPY packages/ packages/
+COPY dashboard/ dashboard/
+COPY e2e/web/package.json e2e/web/
+RUN --mount=type=cache,target=/root/.local/share/pnpm/store \
+    pnpm install --frozen-lockfile --filter "@clipmux/dashboard..." \
+    && mkdir -p internal/web/dist && pnpm --filter "@clipmux/dashboard..." run build
+
 # ── The Go binary ────────────────────────────────────────────────────────────
 FROM golang:1.27 AS build
 WORKDIR /src
@@ -30,6 +42,7 @@ COPY go.mod go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod go mod download
 COPY cmd/ cmd/
 COPY internal/ internal/
+COPY --from=web /src/internal/web/dist/ internal/web/dist/
 ARG VERSION=dev
 RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o /out/clipmux ./cmd/clipmux

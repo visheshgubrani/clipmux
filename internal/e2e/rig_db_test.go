@@ -70,9 +70,15 @@ func freePort(t *testing.T) int {
 	return ln.Addr().(*net.TCPAddr).Port
 }
 
-// start boots serve on a fresh schema with the built-in worker. Extra env
-// entries override the defaults.
-func start(t *testing.T, extra ...string) *instance {
+// start boots serve on a fresh schema with the built-in worker, its public
+// URL pinned to where it listens.
+func start(t *testing.T) *instance { return boot(t, true) }
+
+// startUnpinned boots serve without CLIPMUX_PUBLIC_URL, as a fresh install
+// whose owner picks the URLs at first boot.
+func startUnpinned(t *testing.T) *instance { return boot(t, false) }
+
+func boot(t *testing.T, pinned bool) *instance {
 	t.Helper()
 	pool := dbtest.New(t)
 	var schema string
@@ -86,13 +92,15 @@ func start(t *testing.T, extra ...string) *instance {
 	}
 	port := freePort(t)
 	in := &instance{t: t, pool: pool, url: fmt.Sprintf("http://127.0.0.1:%d", port), dataDir: t.TempDir()}
-	in.env = append([]string{
+	in.env = []string{
 		"PATH=" + os.Getenv("PATH"),
 		"DATABASE_URL=" + dbURL + sep + "search_path=" + schema,
 		"CLIPMUX_DATA_DIR=" + in.dataDir,
 		fmt.Sprintf("CLIPMUX_LISTEN=127.0.0.1:%d", port),
-		"CLIPMUX_PUBLIC_URL=" + in.url,
-	}, extra...)
+	}
+	if pinned {
+		in.env = append(in.env, "CLIPMUX_PUBLIC_URL="+in.url)
+	}
 	if p := os.Getenv("CLIPMUX_PACKAGER"); p != "" {
 		in.env = append(in.env, "CLIPMUX_PACKAGER="+p)
 	}

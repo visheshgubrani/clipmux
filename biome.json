@@ -4,6 +4,7 @@
     "includes": [
       "packages/**",
       "e2e/web/**",
+      "dashboard/**",
       "!**/dist",
       "!**/node_modules",
       "!**/test-results",
