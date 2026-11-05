@@ -5,7 +5,14 @@ when you introduce or discover it; remove it when it is closed.
 
 ## Bootstrap (2026-11-05)
 
-- Phase 1 beyond T02: no queue, API, worker, delivery or dashboard yet.
+- Phase 1 beyond T03: no integration API, worker, sign/complete, delivery or
+  dashboard yet. The queue, `/worker/v1/{claim,heartbeat,fail}` and the
+  lost-lease sweeper run, but nothing enqueues jobs until T05 and no worker
+  process exists until T06. Claim payloads carry no source URL or content key
+  until T04/T08.
+- Sweepers assume one `serve` replica (no `pg_try_advisory_lock` leader yet).
+- Webhook events are written to the outbox (errored, reencode_failed) but not
+  delivered until T09; the event payload shape is provisional until then.
   `clipmux serve` connects to Postgres, applies migrations, serves `/healthz`,
   `/readyz` and a placeholder page, and prints a fresh setup token on every
   boot (no owner table until T10).

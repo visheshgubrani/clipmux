@@ -22,30 +22,39 @@ func get(t *testing.T, h http.Handler, path string) *httptest.ResponseRecorder {
 }
 
 func TestHealthz(t *testing.T) {
-	rec := get(t, Handler(fakeDB{err: errors.New("down")}), "/healthz")
+	rec := get(t, Handler(Deps{DB: fakeDB{err: errors.New("down")}}), "/healthz")
 	if rec.Code != http.StatusOK || rec.Body.String() != "ok\n" {
 		t.Fatalf("got %d %q", rec.Code, rec.Body.String())
 	}
 }
 
 func TestReadyzNeedsTheDatabase(t *testing.T) {
-	if rec := get(t, Handler(fakeDB{err: errors.New("down")}), "/readyz"); rec.Code != http.StatusServiceUnavailable {
+	if rec := get(t, Handler(Deps{DB: fakeDB{err: errors.New("down")}}), "/readyz"); rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("db down: got %d, want 503", rec.Code)
 	}
-	if rec := get(t, Handler(fakeDB{}), "/readyz"); rec.Code != http.StatusOK {
+	if rec := get(t, Handler(Deps{DB: fakeDB{}}), "/readyz"); rec.Code != http.StatusOK {
 		t.Fatalf("db up: got %d, want 200", rec.Code)
 	}
 }
 
 func TestReadyzAgainstRealPostgres(t *testing.T) {
 	pool := dbtest.New(t)
-	if rec := get(t, Handler(pool), "/readyz"); rec.Code != http.StatusOK {
+	if rec := get(t, Handler(Deps{DB: pool}), "/readyz"); rec.Code != http.StatusOK {
 		t.Fatalf("got %d", rec.Code)
 	}
 }
 
 func TestDashboardPlaceholder(t *testing.T) {
-	if rec := get(t, Handler(fakeDB{}), "/"); rec.Code != http.StatusOK {
+	if rec := get(t, Handler(Deps{DB: fakeDB{}}), "/"); rec.Code != http.StatusOK {
 		t.Fatalf("got %d", rec.Code)
+	}
+}
+
+func TestWorkerRoutesAreMounted(t *testing.T) {
+	worker := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusTeapot) })
+	rec := httptest.NewRecorder()
+	Handler(Deps{DB: fakeDB{}, Worker: worker}).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/worker/v1/claim", nil))
+	if rec.Code != http.StatusTeapot {
+		t.Fatalf("got %d, want the worker handler", rec.Code)
 	}
 }
