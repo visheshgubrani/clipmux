@@ -1,0 +1,21 @@
+# Development Postgres only. Production compose (app + Postgres + Caddy) lands in P1-T10.
+name: clipmux-dev
+services:
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: clipmux
+      POSTGRES_PASSWORD: clipmux
+      POSTGRES_DB: clipmux
+    ports:
+      - "5444:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql
+      - ./initdb:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U clipmux -d clipmux"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+volumes:
+  pgdata:
