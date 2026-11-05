@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/url"
 )
 
 // Config is the resolved process configuration.
@@ -16,12 +17,17 @@ type Config struct {
 	DatabaseURL string
 	// DataDir holds filesystem storage and local state (CLIPMUX_DATA_DIR).
 	DataDir string
+	// PublicURL is the origin browsers and workers reach the app at
+	// (CLIPMUX_PUBLIC_URL). Signed storage URLs are built on it, so a URL
+	// signed for an internal hostname would fail in a browser.
+	PublicURL string
 }
 
 // Defaults applied when a variable is unset.
 const (
 	DefaultListenAddr = ":8080"
 	DefaultDataDir    = "./data"
+	DefaultPublicURL  = "http://localhost:8080"
 )
 
 // FromEnv builds a Config from a getenv function (os.Getenv in production).
@@ -37,7 +43,28 @@ func FromEnv(getenv func(string) string) (Config, error) {
 	if _, _, err := net.SplitHostPort(cfg.ListenAddr); err != nil {
 		return Config{}, fmt.Errorf("CLIPMUX_LISTEN %q: %w", cfg.ListenAddr, err)
 	}
+	publicURL, err := origin(orDefault(getenv("CLIPMUX_PUBLIC_URL"), DefaultPublicURL))
+	if err != nil {
+		return Config{}, fmt.Errorf("CLIPMUX_PUBLIC_URL: %w", err)
+	}
+	cfg.PublicURL = publicURL
 	return cfg, nil
+}
+
+// origin accepts an http(s) URL with no path, query or fragment and returns
+// it without a trailing slash.
+func origin(raw string) (string, error) {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", err
+	}
+	if (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return "", fmt.Errorf("%q must be an http or https URL", raw)
+	}
+	if (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" || u.User != nil {
+		return "", fmt.Errorf("%q must be an origin with no path, query or credentials", raw)
+	}
+	return u.Scheme + "://" + u.Host, nil
 }
 
 func orDefault(v, def string) string {

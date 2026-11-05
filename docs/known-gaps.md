@@ -5,11 +5,18 @@ when you introduce or discover it; remove it when it is closed.
 
 ## Bootstrap (2026-11-05)
 
-- Phase 1 beyond T03: no integration API, worker, sign/complete, delivery or
-  dashboard yet. The queue, `/worker/v1/{claim,heartbeat,fail}` and the
+- Phase 1 beyond T04: no integration API, worker, sign/complete, delivery or
+  dashboard yet. Filesystem storage and its signed `/_storage/` URLs work, but
+  nothing hands out URLs until T05 (uploads) and T06 (worker sign). The queue, `/worker/v1/{claim,heartbeat,fail}` and the
   lost-lease sweeper run, but nothing enqueues jobs until T05 and no worker
   process exists until T06. Claim payloads carry no source URL or content key
   until T04/T08.
+- Filesystem storage preallocates uploads as sparse files, so disk space is
+  not reserved up front; a full disk fails the part write. Abandoned
+  multipart uploads are cleaned up by the upload sweeper (T05), and `tmp/`
+  leftovers from a crash are not swept yet.
+- Every asset uses the one filesystem store; `storage_configs` rows are not
+  read yet (per-asset storage arrives with R2 in Phase 2).
 - Sweepers assume one `serve` replica (no `pg_try_advisory_lock` leader yet).
 - Webhook events are written to the outbox (errored, reencode_failed) but not
   delivered until T09; the event payload shape is provisional until then.

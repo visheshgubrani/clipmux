@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/visheshgubrani/clipmux/internal/db/dbtest"
+	"github.com/visheshgubrani/clipmux/internal/storage"
 )
 
 type fakeDB struct{ err error }
@@ -63,15 +64,35 @@ func TestWorkerRoutesAreMounted(t *testing.T) {
 	}
 }
 
+func TestStorageRoutesAreMountedBesideTheDashboard(t *testing.T) {
+	store := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusTeapot) })
+	h := Handler(Deps{DB: fakeDB{}, Storage: store})
+	for _, method := range []string{http.MethodGet, http.MethodHead, http.MethodPut, http.MethodOptions} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(method, "/_storage/objects/uploads/a/source", nil))
+		if rec.Code != http.StatusTeapot {
+			t.Errorf("%s /_storage/: got %d, want the storage handler", method, rec.Code)
+		}
+	}
+	if rec := get(t, h, "/"); rec.Code != http.StatusOK {
+		t.Fatalf("dashboard: got %d", rec.Code)
+	}
+}
+
 func TestServeStopsCleanlyOnShutdown(t *testing.T) {
 	pool := dbtest.New(t)
+	store, err := storage.OpenFilesystem(t.TempDir(), storage.FilesystemOptions{BaseURL: "http://localhost"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- serve(ctx, ln, slog.New(slog.NewTextHandler(io.Discard, nil)), pool) }()
+	go func() { done <- serve(ctx, ln, slog.New(slog.NewTextHandler(io.Discard, nil)), pool, store) }()
 
 	url := "http://" + ln.Addr().String() + "/readyz"
 	for i := 0; ; i++ {

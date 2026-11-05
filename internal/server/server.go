@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/config"
 	"github.com/visheshgubrani/clipmux/internal/db"
 	"github.com/visheshgubrani/clipmux/internal/queue"
+	"github.com/visheshgubrani/clipmux/internal/storage"
 	"github.com/visheshgubrani/clipmux/internal/sweeper"
 	"github.com/visheshgubrani/clipmux/internal/web"
 	"github.com/visheshgubrani/clipmux/internal/workerapi"
@@ -36,6 +38,8 @@ type Deps struct {
 	DB Pinger
 	// Worker serves /worker/v1; nil leaves those routes unmounted.
 	Worker http.Handler
+	// Storage serves signed filesystem-storage URLs under /_storage/.
+	Storage http.Handler
 }
 
 // Handler returns the root HTTP handler. /healthz reports the process is up;
@@ -45,6 +49,11 @@ func Handler(d Deps) http.Handler {
 	if d.Worker != nil {
 		// Every worker call is a POST; the worker API routes within it.
 		mux.Handle("POST /worker/v1/", d.Worker)
+	}
+	if d.Storage != nil {
+		for _, method := range []string{"GET", "PUT", "OPTIONS"} {
+			mux.Handle(method+" /_storage/", d.Storage)
+		}
 	}
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		text(w, http.StatusOK, "ok")
@@ -68,8 +77,8 @@ func text(w http.ResponseWriter, status int, body string) {
 	_, _ = w.Write([]byte(body + "\n"))
 }
 
-// Run connects to Postgres, applies pending migrations and serves until ctx
-// is cancelled.
+// Run connects to Postgres, applies pending migrations, opens storage and
+// serves until ctx is cancelled.
 func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	pool, err := db.Open(ctx, cfg.DatabaseURL)
 	if err != nil {
@@ -80,16 +89,27 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		return err
 	}
 	logger.Info("database ready")
+
+	// v1 starts on filesystem storage; per-asset storage configs and the
+	// R2/S3 adapters arrive in Phase 2.
+	store, err := storage.OpenFilesystem(filepath.Join(cfg.DataDir, "storage"), storage.FilesystemOptions{BaseURL: cfg.PublicURL})
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	logger.Info("storage ready", "kind", "fs", "public_url", cfg.PublicURL)
+
 	ln, err := net.Listen("tcp", cfg.ListenAddr)
 	if err != nil {
 		return err
 	}
-	return serve(ctx, ln, logger, pool)
+	return serve(ctx, ln, logger, pool, store)
 }
 
 // serve runs the HTTP server and background loops. It returns only after
-// every goroutine it started has stopped, so the caller can close the pool.
-func serve(ctx context.Context, ln net.Listener, logger *slog.Logger, pool *pgxpool.Pool) error {
+// every goroutine it started has stopped, so the caller can close the pool
+// and storage.
+func serve(ctx context.Context, ln net.Listener, logger *slog.Logger, pool *pgxpool.Pool, store *storage.Filesystem) error {
 	// Until the owner table exists (P1-T10) every boot is a first boot.
 	logger.Info("first boot: create the owner account with this setup token", "setup_token", rand.Text())
 
@@ -110,7 +130,7 @@ func serve(ctx context.Context, ln net.Listener, logger *slog.Logger, pool *pgxp
 	})
 
 	srv := &http.Server{
-		Handler:           Handler(Deps{DB: pool, Worker: worker.Handler()}),
+		Handler:           Handler(Deps{DB: pool, Worker: worker.Handler(), Storage: store.Handler()}),
 		ReadHeaderTimeout: 10 * time.Second,
 		// Requests inherit ctx, so long-poll claims end at shutdown.
 		BaseContext: func(net.Listener) context.Context { return ctx },
