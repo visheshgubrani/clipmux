@@ -48,3 +48,15 @@ func TestFromEnvRejectsBadListenAddr(t *testing.T) {
 		t.Fatal("want error for listen address without a colon")
 	}
 }
+
+func TestMaxUploadBytes(t *testing.T) {
+	cfg, err := FromEnv(env(map[string]string{"DATABASE_URL": "postgres://x", "CLIPMUX_MAX_UPLOAD_BYTES": "26843545600"}))
+	if err != nil || cfg.MaxUploadBytes != 26843545600 {
+		t.Fatalf("got %d, %v", cfg.MaxUploadBytes, err)
+	}
+	for _, bad := range []string{"0", "-1", "25GiB"} {
+		if _, err := FromEnv(env(map[string]string{"DATABASE_URL": "postgres://x", "CLIPMUX_MAX_UPLOAD_BYTES": bad})); err == nil {
+			t.Errorf("CLIPMUX_MAX_UPLOAD_BYTES=%q: want an error", bad)
+		}
+	}
+}

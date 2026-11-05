@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"strconv"
 )
 
 // Config is the resolved process configuration.
@@ -21,6 +22,9 @@ type Config struct {
 	// (CLIPMUX_PUBLIC_URL). Signed storage URLs are built on it, so a URL
 	// signed for an internal hostname would fail in a browser.
 	PublicURL string
+	// MaxUploadBytes caps a declared upload size (CLIPMUX_MAX_UPLOAD_BYTES);
+	// 0 means the storage limit (32 MiB × 10,000 parts).
+	MaxUploadBytes int64
 }
 
 // Defaults applied when a variable is unset.
@@ -48,6 +52,13 @@ func FromEnv(getenv func(string) string) (Config, error) {
 		return Config{}, fmt.Errorf("CLIPMUX_PUBLIC_URL: %w", err)
 	}
 	cfg.PublicURL = publicURL
+	if v := getenv("CLIPMUX_MAX_UPLOAD_BYTES"); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n <= 0 {
+			return Config{}, fmt.Errorf("CLIPMUX_MAX_UPLOAD_BYTES %q must be a positive number of bytes", v)
+		}
+		cfg.MaxUploadBytes = n
+	}
 	return cfg, nil
 }
 

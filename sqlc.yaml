@@ -10,3 +10,6 @@ sql:
         sql_package: pgx/v5
         emit_json_tags: false
         emit_empty_slices: true
+        # Go initialisms (go.dev/wiki/CodeReviewComments#initialisms).
+        rename:
+          api_key: APIKey

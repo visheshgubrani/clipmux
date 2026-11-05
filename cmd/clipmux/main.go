@@ -47,7 +47,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 	case "help", "--help", "-h":
 		fmt.Fprint(stdout, usage)
 		return 0
-	case "worker", "push", "listen", "admin":
+	case "admin":
+		return admin(args[1:], os.Getenv, stdout, stderr)
+	case "worker", "push", "listen":
 		fmt.Fprintf(stderr, "clipmux %s: not implemented yet (see docs/plans/P1-core-product.md)\n", args[0])
 		return 1
 	default:

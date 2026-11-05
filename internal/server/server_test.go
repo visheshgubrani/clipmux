@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/visheshgubrani/clipmux/internal/config"
 	"github.com/visheshgubrani/clipmux/internal/db/dbtest"
 	"github.com/visheshgubrani/clipmux/internal/storage"
 )
@@ -92,7 +93,9 @@ func TestServeStopsCleanlyOnShutdown(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- serve(ctx, ln, slog.New(slog.NewTextHandler(io.Discard, nil)), pool, store) }()
+	go func() {
+		done <- serve(ctx, config.Config{}, ln, slog.New(slog.NewTextHandler(io.Discard, nil)), pool, store)
+	}()
 
 	url := "http://" + ln.Addr().String() + "/readyz"
 	for i := 0; ; i++ {

@@ -10,6 +10,18 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+type APIKey struct {
+	ID         string
+	ProjectID  string
+	AppID      string
+	Name       string
+	KeyHash    []byte
+	Scopes     []string
+	CreatedAt  pgtype.Timestamptz
+	LastUsedAt pgtype.Timestamptz
+	RevokedAt  pgtype.Timestamptz
+}
+
 type Agent struct {
 	ID           string
 	ProjectID    string
@@ -32,18 +44,6 @@ type AgentSource struct {
 	AgentID   string
 	Size      int64
 	CreatedAt pgtype.Timestamptz
-}
-
-type ApiKey struct {
-	ID         string
-	ProjectID  string
-	AppID      string
-	Name       string
-	KeyHash    []byte
-	Scopes     []string
-	CreatedAt  pgtype.Timestamptz
-	LastUsedAt pgtype.Timestamptz
-	RevokedAt  pgtype.Timestamptz
 }
 
 type App struct {
@@ -209,6 +209,7 @@ type Upload struct {
 	LastActivityAt pgtype.Timestamptz
 	CreatedAt      pgtype.Timestamptz
 	FinishedAt     pgtype.Timestamptz
+	PartsSeen      int32
 }
 
 type WebhookEndpoint struct {

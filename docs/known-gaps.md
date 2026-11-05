@@ -5,9 +5,18 @@ when you introduce or discover it; remove it when it is closed.
 
 ## Bootstrap (2026-11-05)
 
-- Phase 1 beyond T04: no integration API, worker, sign/complete, delivery or
-  dashboard yet. Filesystem storage and its signed `/_storage/` URLs work, but
-  nothing hands out URLs until T05 (uploads) and T06 (worker sign). The queue, `/worker/v1/{claim,heartbeat,fail}` and the
+- Phase 1 beyond T05: no worker, worker sign/complete, delivery or dashboard
+  yet. Uploads complete into `processing` and queue a transcode job that no
+  worker runs until T06. Asset responses carry no `base_url` until delivery
+  (T08), and `GET /v1/assets` only looks up by `passthrough` (full listing
+  comes with the dashboard).
+- Idempotency keys are kept forever; a cleanup window (e.g. 24 h) is not
+  enforced yet. A replayed create returns 201 even if the upload has since
+  completed, with a token that no longer works.
+- If the create transaction fails after storage started a multipart upload,
+  the abort is best effort; a failed abort leaves an orphaned staging
+  directory that nothing sweeps.
+- No rate limiting on the upload endpoints yet. The queue, `/worker/v1/{claim,heartbeat,fail}` and the
   lost-lease sweeper run, but nothing enqueues jobs until T05 and no worker
   process exists until T06. Claim payloads carry no source URL or content key
   until T04/T08.

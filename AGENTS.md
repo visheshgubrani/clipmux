@@ -12,8 +12,9 @@ anything decided since, and wins over the architecture doc where they differ.
 - Layout follows go.dev/doc/modules/layout for a server: commands in `cmd/`,
   everything else in `internal/`. Nothing is importable from outside.
 - Current packages: `config`, `db` (migrations, sqlc-generated queries and
-  models, `dbtest`), `ids`, `queue`, `workerapi`, `server`, `sweeper`,
-  `storage`, `web` (embedded dashboard build).
+  models, `dbtest`), `ids`, `apikeys`, `assets`, `uploads`, `queue`,
+  `workerapi`, `storage`, `outbox`, `httpjson`, `server`, `sweeper`, `web`
+  (embedded dashboard build).
 - Adapter boundaries (storage, executor, delivery) keep core logic from
   branching on a vendor; if it needs to, the interface is leaking.
 - The dashboard and CLI are API clients with no private path into the server.

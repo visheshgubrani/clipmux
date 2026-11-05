@@ -15,11 +15,13 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/visheshgubrani/clipmux/internal/assets"
 	"github.com/visheshgubrani/clipmux/internal/config"
 	"github.com/visheshgubrani/clipmux/internal/db"
 	"github.com/visheshgubrani/clipmux/internal/queue"
 	"github.com/visheshgubrani/clipmux/internal/storage"
 	"github.com/visheshgubrani/clipmux/internal/sweeper"
+	"github.com/visheshgubrani/clipmux/internal/uploads"
 	"github.com/visheshgubrani/clipmux/internal/web"
 	"github.com/visheshgubrani/clipmux/internal/workerapi"
 )
@@ -27,6 +29,14 @@ import (
 // LeaseSweepInterval is how often lost leases are swept. Leases last 90 s and
 // workers heartbeat every 15 s.
 const LeaseSweepInterval = 15 * time.Second
+
+// UploadSweepInterval is how often abandoned uploads are checked.
+const UploadSweepInterval = 5 * time.Minute
+
+// Registrar adds an API's routes to the root mux.
+type Registrar interface {
+	Register(mux *http.ServeMux)
+}
 
 // Pinger reports whether the database is reachable.
 type Pinger interface {
@@ -40,6 +50,8 @@ type Deps struct {
 	Worker http.Handler
 	// Storage serves signed filesystem-storage URLs under /_storage/.
 	Storage http.Handler
+	// APIs register the integration API routes (/v1/...).
+	APIs []Registrar
 }
 
 // Handler returns the root HTTP handler. /healthz reports the process is up;
@@ -54,6 +66,9 @@ func Handler(d Deps) http.Handler {
 		for _, method := range []string{"GET", "PUT", "OPTIONS"} {
 			mux.Handle(method+" /_storage/", d.Storage)
 		}
+	}
+	for _, api := range d.APIs {
+		api.Register(mux)
 	}
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		text(w, http.StatusOK, "ok")
@@ -103,13 +118,13 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	return serve(ctx, ln, logger, pool, store)
+	return serve(ctx, cfg, ln, logger, pool, store)
 }
 
 // serve runs the HTTP server and background loops. It returns only after
 // every goroutine it started has stopped, so the caller can close the pool
 // and storage.
-func serve(ctx context.Context, ln net.Listener, logger *slog.Logger, pool *pgxpool.Pool, store *storage.Filesystem) error {
+func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog.Logger, pool *pgxpool.Pool, store *storage.Filesystem) error {
 	// Until the owner table exists (P1-T10) every boot is a first boot.
 	logger.Info("first boot: create the owner account with this setup token", "setup_token", rand.Text())
 
@@ -118,6 +133,11 @@ func serve(ctx context.Context, ln net.Listener, logger *slog.Logger, pool *pgxp
 	// child worker (P1-T06); it is never logged or stored.
 	worker := workerapi.New(q, workerapi.BuiltinKey(rand.Text()))
 	worker.Logger = logger
+	upl := uploads.New(pool, store)
+	upl.Logger = logger
+	if cfg.MaxUploadBytes > 0 {
+		upl.MaxSize = cfg.MaxUploadBytes
+	}
 
 	ctx, stop := context.WithCancel(ctx)
 	defer stop()
@@ -128,9 +148,17 @@ func serve(ctx context.Context, ln net.Listener, logger *slog.Logger, pool *pgxp
 			return q.SweepLostLeases(ctx, 100)
 		}, logger)
 	})
+	wg.Go(func() {
+		sweeper.Every(ctx, UploadSweepInterval, "uploads", func(ctx context.Context) (int, error) {
+			return upl.Sweep(ctx, 500)
+		}, logger)
+	})
 
 	srv := &http.Server{
-		Handler:           Handler(Deps{DB: pool, Worker: worker.Handler(), Storage: store.Handler()}),
+		Handler: Handler(Deps{
+			DB: pool, Worker: worker.Handler(), Storage: store.Handler(),
+			APIs: []Registrar{upl, assets.New(pool)},
+		}),
 		ReadHeaderTimeout: 10 * time.Second,
 		// Requests inherit ctx, so long-poll claims end at shutdown.
 		BaseContext: func(net.Listener) context.Context { return ctx },

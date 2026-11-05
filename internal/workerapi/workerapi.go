@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/visheshgubrani/clipmux/internal/httpjson"
 	"github.com/visheshgubrani/clipmux/internal/queue"
 )
 
@@ -28,7 +29,6 @@ const (
 	maxWait           = 30 * time.Second
 	defaultWait       = 25 * time.Second
 	pollInterval      = time.Second
-	maxBody           = 64 << 10
 )
 
 // WorkerAuth decides who may claim work.
@@ -121,21 +121,21 @@ type claimResponse struct {
 }
 
 func (a *API) claim(w http.ResponseWriter, r *http.Request) {
-	worker, ok := a.Auth.AuthenticateWorker(r.Context(), bearer(r))
+	worker, ok := a.Auth.AuthenticateWorker(r.Context(), httpjson.Bearer(r))
 	if !ok {
-		writeError(w, http.StatusUnauthorized, "unauthorized", "a worker key is required")
+		httpjson.Error(w, http.StatusUnauthorized, "unauthorized", "a worker key is required")
 		return
 	}
 	var req claimRequest
-	if !decode(w, r, &req) {
+	if !httpjson.Decode(w, r, &req) {
 		return
 	}
 	if !slices.Contains(req.ContractVersions, ContractVersion) {
-		writeError(w, http.StatusConflict, "unsupported_contract", "this server needs contract version "+strconv.Itoa(ContractVersion))
+		httpjson.Error(w, http.StatusConflict, "unsupported_contract", "this server needs contract version "+strconv.Itoa(ContractVersion))
 		return
 	}
 	if v, ok := parseVersion(req.PackagerVersion); !ok || compareVersion(v, MinPackager) < 0 {
-		writeError(w, http.StatusConflict, "packager_too_old", "Shaka Packager 3.9.1 or later is required")
+		httpjson.Error(w, http.StatusConflict, "packager_too_old", "Shaka Packager 3.9.1 or later is required")
 		return
 	}
 	wait := defaultWait
@@ -186,7 +186,7 @@ func (a *API) claim(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	writeJSON(w, http.StatusOK, resp)
+	httpjson.Write(w, http.StatusOK, resp)
 }
 
 type verdictResponse struct {
@@ -197,22 +197,22 @@ type verdictResponse struct {
 
 func (a *API) verdict(w http.ResponseWriter, v queue.Verdict) {
 	if v.Stop {
-		writeJSON(w, http.StatusOK, verdictResponse{Action: "stop", Reason: v.Reason})
+		httpjson.Write(w, http.StatusOK, verdictResponse{Action: "stop", Reason: v.Reason})
 		return
 	}
-	writeJSON(w, http.StatusOK, verdictResponse{Action: "continue", LeaseSeconds: int(a.Queue.Lease / time.Second)})
+	httpjson.Write(w, http.StatusOK, verdictResponse{Action: "continue", LeaseSeconds: int(a.Queue.Lease / time.Second)})
 }
 
 // attemptToken checks the bearer is the token of the attempt in the path.
 func (a *API) attemptToken(w http.ResponseWriter, r *http.Request) (string, bool) {
-	token := bearer(r)
+	token := httpjson.Bearer(r)
 	if token == "" {
-		writeError(w, http.StatusUnauthorized, "unauthorized", "an attempt token is required")
+		httpjson.Error(w, http.StatusUnauthorized, "unauthorized", "an attempt token is required")
 		return "", false
 	}
 	att, err := a.Queue.Authenticate(r.Context(), token)
 	if errors.Is(err, queue.ErrUnknownToken) {
-		writeError(w, http.StatusUnauthorized, "unauthorized", "unknown attempt token")
+		httpjson.Error(w, http.StatusUnauthorized, "unauthorized", "unknown attempt token")
 		return "", false
 	}
 	if err != nil {
@@ -220,7 +220,7 @@ func (a *API) attemptToken(w http.ResponseWriter, r *http.Request) (string, bool
 		return "", false
 	}
 	if att.ID != r.PathValue("id") {
-		writeError(w, http.StatusForbidden, "attempt_mismatch", "the token belongs to another attempt")
+		httpjson.Error(w, http.StatusForbidden, "attempt_mismatch", "the token belongs to another attempt")
 		return "", false
 	}
 	return token, true
@@ -239,15 +239,15 @@ func (a *API) heartbeat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req heartbeatRequest
-	if !decode(w, r, &req) {
+	if !httpjson.Decode(w, r, &req) {
 		return
 	}
 	if req.Phase != "" && !phasePattern.MatchString(req.Phase) {
-		writeError(w, http.StatusBadRequest, "invalid_request", "phase must be snake_case")
+		httpjson.Error(w, http.StatusBadRequest, "invalid_request", "phase must be snake_case")
 		return
 	}
 	if req.Progress != nil && (*req.Progress < 0 || *req.Progress > 1) {
-		writeError(w, http.StatusBadRequest, "invalid_request", "progress must be between 0 and 1")
+		httpjson.Error(w, http.StatusBadRequest, "invalid_request", "progress must be between 0 and 1")
 		return
 	}
 	v, err := a.Queue.Heartbeat(r.Context(), token, queue.Progress{Phase: req.Phase, Progress: req.Progress})
@@ -270,7 +270,7 @@ func (a *API) fail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req failRequest
-	if !decode(w, r, &req) {
+	if !httpjson.Decode(w, r, &req) {
 		return
 	}
 	v, err := a.Queue.Fail(r.Context(), token, queue.Failure{Permanent: req.Permanent, Code: req.ErrorCode, Message: req.Message})
@@ -283,35 +283,7 @@ func (a *API) fail(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) internal(w http.ResponseWriter, op string, err error) {
 	a.Logger.Error("worker api", "op", op, "err", err)
-	writeError(w, http.StatusInternalServerError, "internal", "internal error")
-}
-
-func bearer(r *http.Request) string {
-	h := r.Header.Get("Authorization")
-	if t, ok := strings.CutPrefix(h, "Bearer "); ok {
-		return strings.TrimSpace(t)
-	}
-	return ""
-}
-
-func decode(w http.ResponseWriter, r *http.Request, v any) bool {
-	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBody))
-	if err := dec.Decode(v); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_request", "body must be a JSON object")
-		return false
-	}
-	return true
-}
-
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Cache-Control", "no-store")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(v)
-}
-
-func writeError(w http.ResponseWriter, status int, code, message string) {
-	writeJSON(w, status, map[string]any{"error": map[string]string{"code": code, "message": message}})
+	httpjson.Error(w, http.StatusInternalServerError, "internal", "internal error")
 }
 
 // parseVersion reads "v3.9.3", "3.9.3" or "v3.9.3-0a8ba4f-release".

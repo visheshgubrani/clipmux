@@ -16,6 +16,7 @@ import (
 
 	"github.com/visheshgubrani/clipmux/internal/db"
 	"github.com/visheshgubrani/clipmux/internal/ids"
+	"github.com/visheshgubrani/clipmux/internal/outbox"
 )
 
 // ErrUnknownToken means no attempt carries the presented token.
@@ -409,38 +410,18 @@ func (q *Queue) endJob(ctx context.Context, qs *db.Queries, job db.Job, code str
 	if err != nil {
 		return err
 	}
-	event, version := "video.asset.errored", asset.Version
+	event, version := outbox.AssetErrored, asset.Version
 	switch asset.Status {
 	case "deleted":
 		return nil
 	case "ready":
-		event = "video.asset.reencode_failed"
+		event = outbox.AssetReencodeFailed
 	default:
 		if version, err = qs.MarkAssetErrored(ctx, db.MarkAssetErroredParams{ID: asset.ID, ErrorCode: text(code)}); err != nil {
 			return err
 		}
 	}
-	return insertEvent(ctx, qs, asset, event, version, map[string]any{"job_id": job.ID, "error_code": code})
-}
-
-func insertEvent(ctx context.Context, qs *db.Queries, asset db.Asset, eventType string, version int64, extra map[string]any) error {
-	id := ids.New(ids.Event)
-	data := map[string]any{"asset_id": asset.ID, "version": version}
-	if asset.Passthrough.Valid {
-		data["passthrough"] = asset.Passthrough.String
-	}
-	for k, v := range extra {
-		data[k] = v
-	}
-	payload, err := json.Marshal(map[string]any{
-		"id": id, "type": eventType, "created_at": time.Now().UTC().Format(time.RFC3339), "data": data,
-	})
-	if err != nil {
-		return err
-	}
-	return qs.InsertOutbox(ctx, db.InsertOutboxParams{
-		ID: id, ProjectID: asset.ProjectID, Kind: "webhook", AppID: text(asset.AppID), AssetID: text(asset.ID), Payload: payload,
-	})
+	return outbox.AssetEvent(ctx, qs, asset, event, version, map[string]any{"job_id": job.ID, "error_code": code})
 }
 
 func hashToken(token string) []byte {

@@ -21,6 +21,13 @@ make lint         # gofmt, vet, staticcheck (all checks), govulncheck
 make run          # clipmux serve on :8080 (prints a setup token)
 ```
 
+Until the dashboard exists, create an app and API key on the host:
+
+```bash
+DATABASE_URL=postgres://clipmux:clipmux@localhost:5444/clipmux?sslmode=disable \
+  go run ./cmd/clipmux admin create-key --app MyApp
+```
+
 Media tools (needed from P1-T06): FFmpeg from the pinned recipe in
 [toolchain/](toolchain/) and Shaka Packager via `toolchain/install_packager.sh`.
 
