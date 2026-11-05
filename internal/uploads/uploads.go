@@ -56,6 +56,8 @@ const (
 type Service struct {
 	pool  *pgxpool.Pool
 	store storage.Storage
+	// Auth accepts API keys, and the dashboard session once serve sets it.
+	Auth *apikeys.Authenticator
 
 	// MaxSize is the largest declared size accepted.
 	MaxSize int64
@@ -70,7 +72,7 @@ type Service struct {
 // New returns a Service with the architecture's defaults.
 func New(pool *pgxpool.Pool, store storage.Storage) *Service {
 	return &Service{
-		pool: pool, store: store,
+		pool: pool, store: store, Auth: apikeys.NewAuthenticator(pool),
 		MaxSize:    storage.PartSize * storage.MaxParts,
 		PartURLTTL: time.Hour,
 		IdleExpiry: 24 * time.Hour,
@@ -542,13 +544,8 @@ func (s *Service) respond(w http.ResponseWriter, op string, status int, v any, e
 
 func (s *Service) handleCreate(w http.ResponseWriter, r *http.Request) {
 	cors(w)
-	key, err := apikeys.Authenticate(r.Context(), s.pool, httpjson.Bearer(r))
-	if err != nil {
-		httpjson.Error(w, http.StatusUnauthorized, "unauthorized", "a valid API key is required")
-		return
-	}
-	if !key.Can(apikeys.UploadsWrite) {
-		httpjson.Error(w, http.StatusForbidden, "insufficient_scope", "this key lacks uploads:write")
+	key, ok := s.Auth.Require(w, r, apikeys.UploadsWrite)
+	if !ok {
 		return
 	}
 	var req CreateRequest
@@ -638,13 +635,8 @@ func (s *Service) handleCancel(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else {
-		key, err := apikeys.Authenticate(r.Context(), s.pool, bearer)
-		if err != nil {
-			httpjson.Error(w, http.StatusUnauthorized, "unauthorized", "an upload token or API key is required")
-			return
-		}
-		if !key.Can(apikeys.UploadsWrite) {
-			httpjson.Error(w, http.StatusForbidden, "insufficient_scope", "this key lacks uploads:write")
+		key, ok := s.Auth.Require(w, r, apikeys.UploadsWrite)
+		if !ok {
 			return
 		}
 		up, err := q.GetUpload(r.Context(), id)

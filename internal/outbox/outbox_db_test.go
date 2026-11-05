@@ -62,7 +62,7 @@ func TestEventsCarryTheFullAssetAtTheirVersion(t *testing.T) {
 		events = append(events, ev)
 	}
 	asset := map[string]any{
-		"id": "ast_1", "status": "errored", "version": float64(2), "passthrough": "lesson-42",
+		"id": "ast_1", "app_id": "app_dashboard", "status": "errored", "version": float64(2), "passthrough": "lesson-42",
 		"error_code": "upload_cancelled", "base_url": "https://media.example",
 		"created_at": "2026-11-05T10:00:00Z", "updated_at": "2026-11-05T10:05:00Z",
 		"playback_ids": []any{map[string]any{"id": "pid_1", "policy": "signed", "playable": false, "status": "active"}},

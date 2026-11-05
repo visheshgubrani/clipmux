@@ -41,7 +41,12 @@ type Key struct {
 	ProjectID string
 	AppID     string
 	Scopes    []string
+	// Owner is set when the dashboard owner acts as AppID.
+	Owner bool
 }
+
+// AllScopes are every scope an integration key can carry.
+func AllScopes() []string { return slices.Clone(allScopes) }
 
 // Can reports whether the key carries scope.
 func (k Key) Can(scope string) bool { return slices.Contains(k.Scopes, scope) }
@@ -90,13 +95,37 @@ func hash(secret string) []byte {
 	return sum[:]
 }
 
-// Require authenticates the request's bearer key and checks that it carries
-// scope. Otherwise it writes 401 unauthorized or 403 insufficient_scope and
-// returns false.
-func Require(w http.ResponseWriter, r *http.Request, conn db.DBTX, scope string) (Key, bool) {
-	key, err := Authenticate(r.Context(), conn, httpjson.Bearer(r))
+// Authenticator decides which key a request acts with: its bearer API key,
+// or, when Session is set and the request has no bearer token, the dashboard
+// owner acting as one app. The dashboard has no private path; it calls the
+// same endpoints with its session.
+type Authenticator struct {
+	conn db.DBTX
+	// Session resolves a request without a bearer token; nil means only
+	// API keys are accepted.
+	Session func(r *http.Request) (Key, error)
+}
+
+// NewAuthenticator accepts API keys only, until Session is set.
+func NewAuthenticator(conn db.DBTX) *Authenticator { return &Authenticator{conn: conn} }
+
+// Authenticate resolves r to a key.
+func (a *Authenticator) Authenticate(r *http.Request) (Key, error) {
+	if bearer := httpjson.Bearer(r); bearer != "" || a.Session == nil {
+		return Authenticate(r.Context(), a.conn, bearer)
+	}
+	return a.Session(r)
+}
+
+// Require authenticates r and checks that its key carries scope. Otherwise
+// it writes 401 unauthorized (or the session's own refusal) or 403
+// insufficient_scope and returns false.
+func (a *Authenticator) Require(w http.ResponseWriter, r *http.Request, scope string) (Key, bool) {
+	key, err := a.Authenticate(r)
 	if err != nil {
-		httpjson.Error(w, http.StatusUnauthorized, "unauthorized", "a valid API key is required")
+		if errors.Is(err, ErrInvalid) || !httpjson.WriteProblem(w, err) {
+			httpjson.Error(w, http.StatusUnauthorized, "unauthorized", "a valid API key is required")
+		}
 		return Key{}, false
 	}
 	if !key.Can(scope) {

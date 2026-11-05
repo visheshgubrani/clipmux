@@ -14,6 +14,9 @@ import (
 // sealedTable is the table endpoint secrets are sealed for.
 const sealedTable = "webhook_endpoints"
 
+// ErrInvalidURL means an endpoint URL was refused.
+var ErrInvalidURL = errors.New("webhooks: the endpoint must be an absolute http or https URL of at most 2048 characters, with no credentials or fragment")
+
 // CreateEndpoint registers rawURL to receive an app's events. It returns the
 // endpoint and its signing secret, which is shown once and stored sealed.
 // Only the owner creates endpoints (the dashboard, `clipmux admin`), never an
@@ -38,12 +41,10 @@ func CreateEndpoint(ctx context.Context, q *db.Queries, box *secrets.Box, projec
 func checkURL(raw string) (string, error) {
 	u, err := url.Parse(raw)
 	switch {
-	case err != nil, len(raw) > 2048:
-		return "", errors.New("webhooks: the endpoint must be a URL of at most 2048 characters")
-	case u.Scheme != "http" && u.Scheme != "https", u.Host == "":
-		return "", errors.New("webhooks: the endpoint must be an http or https URL with a host")
-	case u.User != nil, u.Fragment != "" || u.RawFragment != "" || u.ForceQuery:
-		return "", errors.New("webhooks: the endpoint must not carry credentials or a fragment")
+	case err != nil, len(raw) > 2048,
+		u.Scheme != "http" && u.Scheme != "https", u.Host == "",
+		u.User != nil, u.Fragment != "" || u.RawFragment != "" || u.ForceQuery:
+		return "", ErrInvalidURL
 	}
 	return u.String(), nil
 }

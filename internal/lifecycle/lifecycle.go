@@ -50,6 +50,9 @@ type Service struct {
 	store  storage.Storage
 	routes *outputs.Committer
 
+	// Auth accepts API keys, and the dashboard session once serve sets it.
+	Auth *apikeys.Authenticator
+
 	Logger *slog.Logger
 	// Inline is how long DELETE runs the delete job itself before answering
 	// 202; 0 leaves the job to Run.
@@ -67,7 +70,7 @@ type Service struct {
 // New returns the lifecycle service. routes publishes route changes.
 func New(pool *pgxpool.Pool, store storage.Storage, routes *outputs.Committer) *Service {
 	return &Service{
-		pool: pool, store: store, routes: routes, Logger: slog.New(slog.DiscardHandler),
+		pool: pool, store: store, routes: routes, Auth: apikeys.NewAuthenticator(pool), Logger: slog.New(slog.DiscardHandler),
 		Inline: 10 * time.Second, Lease: 2 * time.Minute, RouteRetry: 15 * time.Second, LateWrites: 16 * time.Minute,
 	}
 }
@@ -84,7 +87,7 @@ func (s *Service) Register(mux *http.ServeMux) {
 // delete job is still running. Either way the asset reads deleted and no
 // longer plays.
 func (s *Service) handleDelete(w http.ResponseWriter, r *http.Request) {
-	key, ok := apikeys.Require(w, r, s.pool, apikeys.AssetsWrite)
+	key, ok := s.Auth.Require(w, r, apikeys.AssetsWrite)
 	if !ok {
 		return
 	}

@@ -29,8 +29,8 @@ when you introduce or discover it; remove it when it is closed.
   output unplayable. There is no command to rotate the content key secret.
 - Sign caps file count per attempt, not total bytes; a presigned filesystem
   PUT is capped at 5 GiB per object. `GET /v1/assets` looks up by
-  `passthrough` or lists changes `updated_since`; a general listing for the
-  dashboard comes with T10. Listing loads each asset's playback IDs with one
+  `passthrough` or lists changes `updated_since`; the owner's `GET
+  /v1/library` lists every app's assets. Listing loads each asset's playback IDs with one
   query per asset.
 - Idempotency keys are kept forever; a cleanup window (e.g. 24 h) is not
   enforced yet.
@@ -53,9 +53,8 @@ when you introduce or discover it; remove it when it is closed.
 - The owner can't turn on TOTP yet. The sign-in limiter and the setup token
   live in one serve's memory (one replica assumed); expired sessions are
   never pruned.
-- Webhooks: endpoints are created only with `clipmux admin create-webhook`;
-  there is no way to list, disable or rotate one until the dashboard (T10).
-  No per-endpoint circuit breaker, so a dead endpoint costs up to 10 s per
+- Webhooks: an endpoint's secret can't be rotated (create a new endpoint and
+  disable the old one). No per-endpoint circuit breaker, so a dead endpoint costs up to 10 s per
   delivery for a day. Outbox and delivery rows are never pruned. Owner-set
   endpoint URLs are not filtered for private addresses (D018). A failed
   re-encode is visible only through its webhook, not through catch-up.

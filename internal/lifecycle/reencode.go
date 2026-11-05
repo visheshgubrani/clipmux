@@ -109,7 +109,7 @@ func (s *Service) Reencode(ctx context.Context, key apikeys.Key, assetID string,
 }
 
 func (s *Service) handleReencode(w http.ResponseWriter, r *http.Request) {
-	key, ok := apikeys.Require(w, r, s.pool, apikeys.AssetsWrite)
+	key, ok := s.Auth.Require(w, r, apikeys.AssetsWrite)
 	if !ok {
 		return
 	}

@@ -141,7 +141,7 @@ func (s *Service) publish(ctx context.Context, assetID string) {
 }
 
 func (s *Service) handleAddPlaybackID(w http.ResponseWriter, r *http.Request) {
-	key, ok := apikeys.Require(w, r, s.pool, apikeys.AssetsWrite)
+	key, ok := s.Auth.Require(w, r, apikeys.AssetsWrite)
 	if !ok {
 		return
 	}
@@ -156,7 +156,7 @@ func (s *Service) handleAddPlaybackID(w http.ResponseWriter, r *http.Request) {
 // handleRevokePlaybackID answers 200 once the ID is unpublished, or 202 while
 // it reads revoking.
 func (s *Service) handleRevokePlaybackID(w http.ResponseWriter, r *http.Request) {
-	key, ok := apikeys.Require(w, r, s.pool, apikeys.AssetsWrite)
+	key, ok := s.Auth.Require(w, r, apikeys.AssetsWrite)
 	if !ok {
 		return
 	}

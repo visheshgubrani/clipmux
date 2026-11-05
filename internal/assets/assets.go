@@ -36,6 +36,7 @@ type PlaybackID struct {
 // View is an asset as the API returns it.
 type View struct {
 	ID          string `json:"id"`
+	AppID       string `json:"app_id"`
 	Status      string `json:"status"`
 	Version     int64  `json:"version"`
 	Passthrough string `json:"passthrough,omitempty"`
@@ -63,7 +64,7 @@ func Load(ctx context.Context, q *db.Queries, a db.Asset) (View, error) {
 	}
 	playable := a.CurrentOutputID.Valid && a.Status != "deleted"
 	v := View{
-		ID: a.ID, Status: a.Status, Version: a.Version, BaseURL: baseURL,
+		ID: a.ID, AppID: a.AppID, Status: a.Status, Version: a.Version, BaseURL: baseURL,
 		Passthrough: a.Passthrough.String, ErrorCode: a.ErrorCode.String,
 		PlaybackIDs: make([]PlaybackID, 0, len(pids)),
 		CreatedAt:   a.CreatedAt.Time.UTC(), UpdatedAt: a.UpdatedAt.Time.UTC(),
@@ -77,10 +78,12 @@ func Load(ctx context.Context, q *db.Queries, a db.Asset) (View, error) {
 // API serves GET /v1/assets and GET /v1/assets/{id}.
 type API struct {
 	pool *pgxpool.Pool
+	// Auth accepts API keys, and the dashboard session once serve sets it.
+	Auth *apikeys.Authenticator
 }
 
 // New returns the assets API.
-func New(pool *pgxpool.Pool) *API { return &API{pool: pool} }
+func New(pool *pgxpool.Pool) *API { return &API{pool: pool, Auth: apikeys.NewAuthenticator(pool)} }
 
 // Register adds the routes to mux.
 func (a *API) Register(mux *http.ServeMux) {
@@ -89,7 +92,7 @@ func (a *API) Register(mux *http.ServeMux) {
 }
 
 func (a *API) authorize(w http.ResponseWriter, r *http.Request) (apikeys.Key, bool) {
-	return apikeys.Require(w, r, a.pool, apikeys.AssetsRead)
+	return a.Auth.Require(w, r, apikeys.AssetsRead)
 }
 
 func (a *API) get(w http.ResponseWriter, r *http.Request) {
@@ -159,7 +162,7 @@ func (a *API) updatedSince(w http.ResponseWriter, r *http.Request, key apikeys.K
 	}
 	afterID := "" // every ID sorts after "", so updated_since is inclusive
 	if c := query.Get("cursor"); c != "" {
-		if after, afterID, err = decodeCursor(c); err != nil {
+		if after, afterID, err = DecodeCursor(c); err != nil {
 			httpjson.Error(w, http.StatusBadRequest, "invalid_cursor", "cursor is not one this API returned")
 			return
 		}
@@ -183,18 +186,24 @@ func (a *API) updatedSince(w http.ResponseWriter, r *http.Request, key apikeys.K
 	if len(rows) > limit {
 		rows = rows[:limit]
 		last := rows[limit-1]
-		next = encodeCursor(last.UpdatedAt.Time, last.ID)
+		next = EncodeCursor(last.UpdatedAt.Time, last.ID)
 	}
 	a.writeList(w, r, q, rows, next)
 }
 
 func (a *API) writeList(w http.ResponseWriter, r *http.Request, q *db.Queries, rows []db.Asset, next string) {
+	if err := WriteList(r.Context(), w, q, rows, next); err != nil {
+		httpjson.Error(w, http.StatusInternalServerError, "internal", "internal error")
+	}
+}
+
+// WriteList sends a page of asset views, {"data": [...], "next_cursor"?}.
+func WriteList(ctx context.Context, w http.ResponseWriter, q *db.Queries, rows []db.Asset, next string) error {
 	out := make([]View, 0, len(rows))
 	for _, asset := range rows {
-		v, err := Load(r.Context(), q, asset)
+		v, err := Load(ctx, q, asset)
 		if err != nil {
-			httpjson.Error(w, http.StatusInternalServerError, "internal", "internal error")
-			return
+			return err
 		}
 		out = append(out, v)
 	}
@@ -203,14 +212,16 @@ func (a *API) writeList(w http.ResponseWriter, r *http.Request, q *db.Queries, r
 		body["next_cursor"] = next
 	}
 	httpjson.Write(w, http.StatusOK, body)
+	return nil
 }
 
-// A cursor is the last row's (updated_at, id), opaque to clients.
-func encodeCursor(t time.Time, id string) string {
+// EncodeCursor makes an opaque page cursor from the last row's time and ID.
+func EncodeCursor(t time.Time, id string) string {
 	return base64.RawURLEncoding.EncodeToString([]byte(t.UTC().Format(time.RFC3339Nano) + "," + id))
 }
 
-func decodeCursor(c string) (time.Time, string, error) {
+// DecodeCursor reads a cursor EncodeCursor made.
+func DecodeCursor(c string) (time.Time, string, error) {
 	raw, err := base64.RawURLEncoding.DecodeString(c)
 	if err != nil {
 		return time.Time{}, "", err

@@ -16,12 +16,14 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/visheshgubrani/clipmux/internal/accounts"
+	"github.com/visheshgubrani/clipmux/internal/apikeys"
 	"github.com/visheshgubrani/clipmux/internal/assets"
 	"github.com/visheshgubrani/clipmux/internal/config"
 	"github.com/visheshgubrani/clipmux/internal/contentkey"
 	"github.com/visheshgubrani/clipmux/internal/db"
 	"github.com/visheshgubrani/clipmux/internal/delivery"
 	"github.com/visheshgubrani/clipmux/internal/lifecycle"
+	"github.com/visheshgubrani/clipmux/internal/manage"
 	"github.com/visheshgubrani/clipmux/internal/outputs"
 	"github.com/visheshgubrani/clipmux/internal/queue"
 	"github.com/visheshgubrani/clipmux/internal/secrets"
@@ -227,6 +229,14 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 	hooks.Logger = logger
 	life := lifecycle.New(pool, store, committer)
 	life.Logger = logger
+	mgmt := manage.New(pool, box, acct, b.urls)
+	mgmt.Logger = logger
+	assetsAPI := assets.New(pool)
+	// The dashboard calls the integration API with the owner's session,
+	// acting as one app; integration keys never reach the management API.
+	for _, auth := range []*apikeys.Authenticator{upl.Auth, life.Auth, assetsAPI.Auth} {
+		auth.Session = mgmt.ActAsApp
+	}
 
 	// Defers run last in, first out: stop cancels the loops before wg.Wait
 	// waits for them, whichever way serve returns.
@@ -266,7 +276,7 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 	srv := &http.Server{
 		Handler: Handler(Deps{
 			DB: pool, Worker: worker.Handler(), Storage: store.Handler(), ServesHost: b.urls.ServesHost,
-			APIs: []Registrar{acct, upl, assets.New(pool), life, playback},
+			APIs: []Registrar{acct, mgmt, upl, assetsAPI, life, playback},
 		}),
 		ReadHeaderTimeout: 10 * time.Second,
 		// Requests inherit ctx, so long-poll claims end at shutdown.
