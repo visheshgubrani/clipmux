@@ -10,6 +10,7 @@ export default defineConfig({
         hlsjs: resolve(import.meta.dirname, 'hlsjs.html'),
         player: resolve(import.meta.dirname, 'player.html'),
         uploader: resolve(import.meta.dirname, 'uploader.html'),
+        native: resolve(import.meta.dirname, 'native.html'),
       },
     },
   },

@@ -5,8 +5,11 @@ when you introduce or discover it; remove it when it is closed.
 
 ## Bootstrap (2026-11-05)
 
-- Phase 1 is feature-complete pending the exit test's Safari and ExoPlayer
-  runs (T12 CI jobs). The dashboard is minimal: no jobs or workers pages, no
+- Phase 1 is feature-complete. The exit test's Go and Chromium suites pass
+  locally; the Safari (`exit-safari.yml`) and ExoPlayer (`exit.yml`
+  android job) runs and the CI image job have not run yet, and Phase 1 exits
+  when they are green. iPhone and AirPlay are checked by hand only; Firefox
+  isn't in CI. The dashboard is minimal: no jobs or workers pages, no
   share links, no playback-ID management in the UI, and a sample preview
   that waits for Play rather than autoplaying.
 - Superseded and failed re-encodes leave their writing outputs and files in

@@ -1,0 +1,128 @@
+# The Phase 1 exit test (docs/plans/P1-T09-T12.md, T12): the real binary,
+# Chromium (hls.js, the Video.js player, the uploader, the dashboard) and
+# ExoPlayer on an Android emulator. Safari runs in exit-safari.yml.
+name: Exit test
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    - cron: "17 4 * * 1"
+  pull_request:
+    paths:
+      - "internal/**"
+      - "cmd/**"
+      - "packages/**"
+      - "dashboard/**"
+      - "e2e/**"
+      - "toolchain/**"
+      - "go.mod"
+      - "pnpm-lock.yaml"
+permissions:
+  contents: read
+concurrency:
+  group: exit-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+env:
+  TEST_DATABASE_URL: postgres://clipmux:clipmux@localhost:5432/clipmux_test?sslmode=disable
+  CLIPMUX_REQUIRE_MEDIA_TOOLS: "1"
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: clipmux
+          POSTGRES_PASSWORD: clipmux
+          POSTGRES_DB: clipmux_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U clipmux -d clipmux_test"
+          --health-interval 2s --health-timeout 3s --health-retries 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - name: Media tools
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+          mkdir -p "$RUNNER_TEMP/bin" && toolchain/install_packager.sh "$RUNNER_TEMP/bin"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - run: pnpm install --frozen-lockfile && pnpm -r run build
+      - name: Real binary (playback, a killed worker, the setup test)
+        run: CLIPMUX_E2E=1 go test ./internal/e2e -count=1 -timeout 30m -v
+      - name: Chromium suites
+        working-directory: e2e/web
+        run: |
+          pnpm exec playwright install --with-deps chromium
+          pnpm run test:browser
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright
+          path: e2e/web/test-results/
+
+  android:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: clipmux
+          POSTGRES_PASSWORD: clipmux
+          POSTGRES_DB: clipmux_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U clipmux -d clipmux_test"
+          --health-interval 2s --health-timeout 3s --health-retries 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.11.1"
+      - name: Media tools
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+          mkdir -p "$RUNNER_TEMP/bin" && toolchain/install_packager.sh "$RUNNER_TEMP/bin"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
+      - name: Start the fixture
+        run: |
+          CLIPMUX_E2E=1 CLIPMUX_E2E_FIXTURE=1 CLIPMUX_E2E_SERVE_PORT=18080 CLIPMUX_E2E_PAGES=/nonexistent \
+            go test ./internal/e2e -run TestPlayerFixture -count=1 -timeout 60m -v > fixture.log 2>&1 &
+          for i in $(seq 300); do curl -sf http://127.0.0.1:8099/config && exit 0; sleep 2; done
+          cat fixture.log; exit 1
+      - name: ExoPlayer on an emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          arch: x86_64
+          target: google_apis
+          disable-animations: true
+          working-directory: e2e/android
+          script: |
+            adb reverse tcp:8099 tcp:8099
+            adb reverse tcp:18080 tcp:18080
+            gradle connectedDebugAndroidTest --no-daemon
+      - name: Fixture logs
+        if: failure()
+        run: cat fixture.log

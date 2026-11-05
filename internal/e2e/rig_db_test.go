@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -91,6 +92,10 @@ func boot(t *testing.T, pinned bool) *instance {
 		sep = "&"
 	}
 	port := freePort(t)
+	// A device behind `adb reverse` needs to know the port in advance.
+	if p, err := strconv.Atoi(os.Getenv("CLIPMUX_E2E_SERVE_PORT")); err == nil && pinned {
+		port = p
+	}
 	in := &instance{t: t, pool: pool, url: fmt.Sprintf("http://127.0.0.1:%d", port), dataDir: t.TempDir()}
 	in.env = []string{
 		"PATH=" + os.Getenv("PATH"),
@@ -101,8 +106,10 @@ func boot(t *testing.T, pinned bool) *instance {
 	if pinned {
 		in.env = append(in.env, "CLIPMUX_PUBLIC_URL="+in.url)
 	}
-	if p := os.Getenv("CLIPMUX_PACKAGER"); p != "" {
-		in.env = append(in.env, "CLIPMUX_PACKAGER="+p)
+	for _, k := range []string{"CLIPMUX_PACKAGER", "CLIPMUX_UNSANDBOXED_WORKER"} {
+		if v := os.Getenv(k); v != "" {
+			in.env = append(in.env, k+"="+v)
+		}
 	}
 	in.cmd = exec.Command(bin, "serve")
 	in.cmd.Env = in.env

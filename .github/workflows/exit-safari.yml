@@ -1,0 +1,66 @@
+# The Phase 1 exit test in Safari (macOS minutes cost 10x on a private repo,
+# so this runs on main, weekly, by hand, and on PRs that touch playback).
+name: Exit test (Safari)
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    - cron: "37 4 * * 1"
+  pull_request:
+    paths:
+      - "internal/delivery/**"
+      - "internal/media/**"
+      - "internal/worker/**"
+      - "packages/player/**"
+      - "e2e/web/**"
+      - "e2e/safari/**"
+      - "toolchain/**"
+permissions:
+  contents: read
+concurrency:
+  group: exit-safari-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+jobs:
+  safari:
+    runs-on: macos-15
+    timeout-minutes: 30
+    env:
+      TEST_DATABASE_URL: postgres://clipmux@localhost:5432/clipmux_test?sslmode=disable
+      HOMEBREW_NO_AUTO_UPDATE: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - name: Postgres, ffmpeg and the pinned packager
+        run: |
+          brew install ffmpeg postgresql@17
+          PG=$(brew --prefix postgresql@17)/bin
+          $PG/initdb -D "$RUNNER_TEMP/pg" -U clipmux --auth=trust
+          $PG/pg_ctl -D "$RUNNER_TEMP/pg" -l "$RUNNER_TEMP/pg.log" start
+          $PG/createdb -U clipmux clipmux_test
+          mkdir -p "$RUNNER_TEMP/bin" && toolchain/install_packager.sh "$RUNNER_TEMP/bin"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - run: pnpm install --frozen-lockfile && pnpm -r run build
+      - name: Start the fixture
+        run: |
+          # macOS has no Linux sandbox; the built-in worker runs unconfined here.
+          CLIPMUX_UNSANDBOXED_WORKER=true CLIPMUX_E2E=1 CLIPMUX_E2E_FIXTURE=1 \
+            go test ./internal/e2e -run TestPlayerFixture -count=1 -timeout 60m -v > fixture.log 2>&1 &
+          for i in $(seq 300); do curl -sf http://127.0.0.1:8099/config && exit 0; sleep 2; done
+          cat fixture.log; exit 1
+      - name: Safari
+        run: |
+          sudo safaridriver --enable
+          safaridriver -p 4444 &
+          sleep 2
+          node e2e/safari/run.mjs
+      - name: Fixture logs
+        if: failure()
+        run: cat fixture.log
