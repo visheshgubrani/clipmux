@@ -19,6 +19,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/config"
 	"github.com/visheshgubrani/clipmux/internal/contentkey"
 	"github.com/visheshgubrani/clipmux/internal/db"
+	"github.com/visheshgubrani/clipmux/internal/outputs"
 	"github.com/visheshgubrani/clipmux/internal/queue"
 	"github.com/visheshgubrani/clipmux/internal/storage"
 	"github.com/visheshgubrani/clipmux/internal/sweeper"
@@ -33,6 +34,10 @@ const LeaseSweepInterval = 15 * time.Second
 
 // UploadSweepInterval is how often abandoned uploads are checked.
 const UploadSweepInterval = 5 * time.Minute
+
+// RouteSyncInterval is how often pending route publications are retried;
+// commits publish inline, so this only matters after a crash or an error.
+const RouteSyncInterval = 15 * time.Second
 
 // Registrar adds an API's routes to the root mux.
 type Registrar interface {
@@ -137,9 +142,12 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 
 	q := queue.New(pool)
 	q.KeyVersion = keys.Version
+	committer := outputs.New(pool, q, store)
+	committer.Logger = logger
 	// The built-in worker's key lives only in memory and is handed to the
-	// child worker (P1-T06); it is never logged or stored.
-	worker := workerapi.New(q, workerapi.BuiltinKey(rand.Text()), store, keys)
+	// child worker; it is never logged or stored.
+	workerKey := rand.Text()
+	worker := workerapi.New(q, workerapi.BuiltinKey(workerKey), store, keys, committer)
 	worker.Logger = logger
 	upl := uploads.New(pool, store)
 	upl.Logger = logger
@@ -161,6 +169,18 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 			return upl.Sweep(ctx, 500)
 		}, logger)
 	})
+	wg.Go(func() {
+		sweeper.Every(ctx, RouteSyncInterval, "routes", func(ctx context.Context) (int, error) {
+			return committer.SyncRoutes(ctx, 1000)
+		}, logger)
+	})
+	if cfg.BuiltinWorker {
+		bw := &builtinWorker{
+			server: loopbackURL(ln.Addr()), key: workerKey, workDir: workerDir(cfg.DataDir),
+			tools: cfg.Tools, logger: logger,
+		}
+		wg.Go(func() { bw.run(ctx) })
+	}
 
 	srv := &http.Server{
 		Handler: Handler(Deps{

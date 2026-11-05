@@ -161,7 +161,7 @@ func TestTranscodeEncryptsEveryRenditionAndDecryptsBack(t *testing.T) {
 
 	for dir, codec := range map[string]string{"480p": "h264", "360p": "h264", "audio": "aac"} {
 		pl, _ := os.ReadFile(filepath.Join(out, dir, "index.m3u8"))
-		if err := checkMediaPlaylist(string(pl), 1); err != nil {
+		if _, err := CheckMediaPlaylist(string(pl), 1); err != nil {
 			t.Fatalf("%s: %v\n%s", dir, err, pl)
 		}
 		durations := regexp.MustCompile(`#EXTINF:([0-9.]+)`).FindAllStringSubmatch(string(pl), -1)

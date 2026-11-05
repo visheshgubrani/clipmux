@@ -8,6 +8,8 @@ import (
 	"net"
 	"net/url"
 	"strconv"
+
+	"github.com/visheshgubrani/clipmux/internal/media"
 )
 
 // Config is the resolved process configuration.
@@ -25,6 +27,12 @@ type Config struct {
 	// MaxUploadBytes caps a declared upload size (CLIPMUX_MAX_UPLOAD_BYTES);
 	// 0 means the storage limit (32 MiB × 10,000 parts).
 	MaxUploadBytes int64
+	// BuiltinWorker starts `clipmux worker` as a child of serve
+	// (CLIPMUX_BUILTIN_WORKER, default true).
+	BuiltinWorker bool
+	// Tools are the media binaries (CLIPMUX_FFMPEG, CLIPMUX_FFPROBE,
+	// CLIPMUX_PACKAGER; default: found on PATH).
+	Tools media.Tools
 }
 
 // Defaults applied when a variable is unset.
@@ -59,6 +67,17 @@ func FromEnv(getenv func(string) string) (Config, error) {
 		}
 		cfg.MaxUploadBytes = n
 	}
+	switch v := getenv("CLIPMUX_BUILTIN_WORKER"); v {
+	case "", "true", "1":
+		cfg.BuiltinWorker = true
+	case "false", "0":
+	default:
+		return Config{}, fmt.Errorf("CLIPMUX_BUILTIN_WORKER %q must be true or false", v)
+	}
+	cfg.Tools = media.DefaultTools()
+	cfg.Tools.FFmpeg = orDefault(getenv("CLIPMUX_FFMPEG"), cfg.Tools.FFmpeg)
+	cfg.Tools.FFprobe = orDefault(getenv("CLIPMUX_FFPROBE"), cfg.Tools.FFprobe)
+	cfg.Tools.Packager = orDefault(getenv("CLIPMUX_PACKAGER"), cfg.Tools.Packager)
 	return cfg, nil
 }
 

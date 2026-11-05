@@ -60,3 +60,17 @@ func TestMaxUploadBytes(t *testing.T) {
 		}
 	}
 }
+
+func TestBuiltinWorkerAndTools(t *testing.T) {
+	cfg, err := FromEnv(env(map[string]string{"DATABASE_URL": "postgres://x"}))
+	if err != nil || !cfg.BuiltinWorker || cfg.Tools.Packager != "packager" {
+		t.Fatalf("defaults: %+v, %v", cfg, err)
+	}
+	cfg, err = FromEnv(env(map[string]string{"DATABASE_URL": "postgres://x", "CLIPMUX_BUILTIN_WORKER": "false", "CLIPMUX_PACKAGER": "/opt/shaka/packager"}))
+	if err != nil || cfg.BuiltinWorker || cfg.Tools.Packager != "/opt/shaka/packager" {
+		t.Fatalf("overrides: %+v, %v", cfg, err)
+	}
+	if _, err := FromEnv(env(map[string]string{"DATABASE_URL": "postgres://x", "CLIPMUX_BUILTIN_WORKER": "yes"})); err == nil {
+		t.Fatal("an unclear boolean must be refused")
+	}
+}

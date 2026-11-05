@@ -13,7 +13,7 @@ anything decided since, and wins over the architecture doc where they differ.
   everything else in `internal/`. Nothing is importable from outside.
 - Current packages: `config`, `db` (migrations, sqlc-generated queries and
   models, `dbtest`), `ids`, `apikeys`, `assets`, `uploads`, `queue`,
-  `workerapi`, `worker`, `media`, `contentkey`, `storage`, `outbox`,
+  `workerapi`, `worker`, `outputs`, `media`, `contentkey`, `storage`, `outbox`,
   `httpjson`, `server`, `sweeper`, `web` (embedded dashboard build).
 - Media tests need ffmpeg, ffprobe and Shaka Packager ≥ 3.9.1
   (`toolchain/install_packager.sh`); they skip without them, except in CI

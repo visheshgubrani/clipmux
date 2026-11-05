@@ -165,7 +165,7 @@ func Transcode(ctx context.Context, t Tools, input string, src Source, workDir, 
 		if err != nil {
 			return Manifest{}, err
 		}
-		if err := checkMediaPlaylist(string(text), key.Version); err != nil {
+		if _, err := CheckMediaPlaylist(string(text), key.Version); err != nil {
 			return Manifest{}, fmt.Errorf("%s: %w", d, err)
 		}
 	}

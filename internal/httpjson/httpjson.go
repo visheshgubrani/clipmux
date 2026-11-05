@@ -22,10 +22,16 @@ func Bearer(r *http.Request) string {
 	return ""
 }
 
-// Decode reads a JSON body into v. On failure it writes a 400 and returns
-// false. An empty body decodes as {}.
+// Decode reads a JSON body of at most MaxBody bytes into v. On failure it
+// writes a 400 and returns false. An empty body decodes as {}.
 func Decode(w http.ResponseWriter, r *http.Request, v any) bool {
-	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, MaxBody))
+	return DecodeLimit(w, r, v, MaxBody)
+}
+
+// DecodeLimit is Decode with a different size limit, for the few bodies that
+// are legitimately larger (an output manifest lists every segment).
+func DecodeLimit(w http.ResponseWriter, r *http.Request, v any, limit int64) bool {
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, limit))
 	if err := dec.Decode(v); err != nil && !errors.Is(err, io.EOF) {
 		Error(w, http.StatusBadRequest, "invalid_request", "body must be a JSON object")
 		return false

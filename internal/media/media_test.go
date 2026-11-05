@@ -153,7 +153,7 @@ func TestRepairInitDuplicatesTheSampleDescription(t *testing.T) {
 
 func TestCheckPlaylistsRequiresEncryptionAndRelativeURIs(t *testing.T) {
 	good := "#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"../key/1\",IV=0x00\n#EXT-X-MAP:URI=\"init.mp4\"\n#EXTINF:6,\nseg_00001.m4s\n"
-	if err := checkMediaPlaylist(good, 1); err != nil {
+	if _, err := CheckMediaPlaylist(good, 1); err != nil {
 		t.Fatalf("good playlist: %v", err)
 	}
 	for name, text := range map[string]string{
@@ -162,8 +162,34 @@ func TestCheckPlaylistsRequiresEncryptionAndRelativeURIs(t *testing.T) {
 		"absolute seg":  strings.Replace(good, "seg_00001.m4s", "https://cdn.example/seg_00001.m4s", 1),
 		"escaping seg":  strings.Replace(good, "seg_00001.m4s", "../../other/seg_00001.m4s", 1),
 		"wrong version": strings.Replace(good, "../key/1", "../key/2", 1),
+		"clear lead":    "#EXTM3U\n#EXT-X-MAP:URI=\"init.mp4\"\n#EXTINF:6,\nseg_00001.m4s\n#EXT-X-KEY:METHOD=AES-128,URI=\"../key/1\",IV=0x00\n#EXTINF:6,\nseg_00002.m4s\n",
+		"extra ref":     strings.Replace(good, "#EXTINF", "#EXT-X-PART:URI=\"../../x\"\n#EXTINF", 1),
 	} {
-		if err := checkMediaPlaylist(text, 1); err == nil {
+		if _, err := CheckMediaPlaylist(text, 1); err == nil {
+			t.Errorf("%s: want an error", name)
+		}
+	}
+}
+
+func TestCheckMasterAllowsOnlyTheOutputsOwnPlaylists(t *testing.T) {
+	// Shaka 3.9.3's master for one video rendition and an audio rendition.
+	good := `#EXTM3U
+#EXT-X-INDEPENDENT-SEGMENTS
+#EXT-X-MEDIA:TYPE=AUDIO,URI="audio/index.m3u8",GROUP-ID="default-audio-group",NAME="stream_0",DEFAULT=NO,AUTOSELECT=YES,CHANNELS="1"
+#EXT-X-STREAM-INF:BANDWIDTH=831390,CODECS="avc1.64001e,mp4a.40.2",RESOLUTION=640x360,AUDIO="default-audio-group"
+360p/index.m3u8
+`
+	dirs, err := CheckMaster(good)
+	if err != nil || !slices.Equal(dirs, []string{"360p", "audio"}) {
+		t.Fatalf("CheckMaster = %v, %v", dirs, err)
+	}
+	for name, text := range map[string]string{
+		"absolute variant": strings.Replace(good, "360p/index.m3u8\n", "https://evil.example/360p/index.m3u8\n", 1),
+		"escaping audio":   strings.Replace(good, `URI="audio/index.m3u8"`, `URI="../other/audio/index.m3u8"`, 1),
+		"session key":      good + "#EXT-X-SESSION-KEY:METHOD=AES-128,URI=\"k\"\n",
+		"audio only":       strings.Replace(good, "360p/index.m3u8\n", "", 1),
+	} {
+		if _, err := CheckMaster(text); err == nil {
 			t.Errorf("%s: want an error", name)
 		}
 	}

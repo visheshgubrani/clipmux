@@ -23,6 +23,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/contentkey"
 	"github.com/visheshgubrani/clipmux/internal/db/dbtest"
 	"github.com/visheshgubrani/clipmux/internal/media"
+	"github.com/visheshgubrani/clipmux/internal/outputs"
 	"github.com/visheshgubrani/clipmux/internal/queue"
 	"github.com/visheshgubrani/clipmux/internal/storage"
 	"github.com/visheshgubrani/clipmux/internal/workerapi"
@@ -67,7 +68,8 @@ func newRig(t *testing.T) *rig {
 	if err != nil {
 		t.Fatal(err)
 	}
-	api := workerapi.New(queue.New(pool), workerapi.BuiltinKey("k"), store, keys)
+	q := queue.New(pool)
+	api := workerapi.New(q, workerapi.BuiltinKey("k"), store, keys, outputs.New(pool, q, store))
 	mux.Handle("POST /worker/v1/", api.Handler())
 	for _, m := range []string{"GET", "PUT"} {
 		mux.Handle(m+" /_storage/", store.Handler())
@@ -219,5 +221,36 @@ func TestAnUnusableSourceFailsPermanently(t *testing.T) {
 	}
 	if job != "failed" || asset != "errored" || code != "unsupported_source" {
 		t.Fatalf("job %s, asset %s/%s; want failed, errored/unsupported_source with no retry", job, asset, code)
+	}
+}
+
+// The whole loop on one machine: claim, encode, encrypt, upload, commit,
+// publish, ready.
+func TestRunOnceTakesAnUploadedSourceToReady(t *testing.T) {
+	r := newRig(t)
+	r.uploaded(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	if _, err := r.pool.Exec(ctx, `INSERT INTO playback_ids (id, project_id, asset_id, policy) VALUES ('pid_1', 'prj_default', 'ast_1', 'signed')`); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := r.worker.RunOnce(ctx)
+	if err != nil || !got {
+		t.Fatalf("RunOnce = %v, %v", got, err)
+	}
+	var asset, output, job, event string
+	err = r.pool.QueryRow(ctx, `SELECT a.status, o.status, j.status, e.payload->>'type'
+		FROM assets a JOIN outputs o ON o.id = a.current_output_id JOIN jobs j ON j.asset_id = a.id
+		JOIN outbox e ON e.asset_id = a.id AND e.kind = 'webhook'`).Scan(&asset, &output, &job, &event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if asset != "ready" || output != "committed" || job != "succeeded" || event != "video.asset.ready" {
+		t.Fatalf("asset %s, output %s, job %s, event %s", asset, output, job, event)
+	}
+	entries, _ := os.ReadDir(r.worker.WorkDir)
+	if len(entries) != 0 {
+		t.Fatalf("work dir not cleaned: %d entries", len(entries))
 	}
 }

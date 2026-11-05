@@ -5,10 +5,13 @@ when you introduce or discover it; remove it when it is closed.
 
 ## Bootstrap (2026-11-05)
 
-- Phase 1 beyond T06: the worker encodes, encrypts and uploads outputs, but
-  `complete` (commit) arrives in T07 and `serve` does not yet start the
-  built-in worker, so uploaded videos stay in `processing`. No delivery or
-  dashboard yet.
+- Phase 1 beyond T07: uploads go all the way to `ready` (the built-in worker
+  encodes, encrypts and uploads; commit verifies and publishes), but nothing
+  serves playback until delivery (T08), and the `ready` webhook has no
+  `base_url` yet. Webhooks are written to the outbox but not sent until T09.
+  No dashboard yet.
+- Retired outputs and files from failed or lost attempts are not deleted yet
+  (the 7-day retire window and 30-minute cleanup from the architecture).
 - Worker sandbox is the M1 subset: empty environment, demuxer and protocol
   allowlists, wall-clock limits. No network namespace, rlimits or CPU cap
   yet, so the built-in worker can still compete with the API for CPU.

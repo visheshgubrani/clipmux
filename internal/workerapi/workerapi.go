@@ -18,6 +18,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/contentkey"
 	"github.com/visheshgubrani/clipmux/internal/httpjson"
 	"github.com/visheshgubrani/clipmux/internal/media"
+	"github.com/visheshgubrani/clipmux/internal/outputs"
 	"github.com/visheshgubrani/clipmux/internal/queue"
 	"github.com/visheshgubrani/clipmux/internal/storage"
 )
@@ -111,12 +112,13 @@ type API struct {
 	Auth   WorkerAuth
 	Store  storage.Storage
 	Keys   contentkey.Secret
+	Commit *outputs.Committer
 	Logger *slog.Logger
 }
 
 // New returns the worker API.
-func New(q *queue.Queue, auth WorkerAuth, store storage.Storage, keys contentkey.Secret) *API {
-	return &API{Queue: q, Auth: auth, Store: store, Keys: keys, Logger: slog.Default()}
+func New(q *queue.Queue, auth WorkerAuth, store storage.Storage, keys contentkey.Secret, commit *outputs.Committer) *API {
+	return &API{Queue: q, Auth: auth, Store: store, Keys: keys, Commit: commit, Logger: slog.Default()}
 }
 
 // Handler returns the /worker/v1 routes.
@@ -125,6 +127,7 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("POST /worker/v1/claim", a.claim)
 	mux.HandleFunc("POST /worker/v1/attempts/{id}/heartbeat", a.heartbeat)
 	mux.HandleFunc("POST /worker/v1/attempts/{id}/sign", a.sign)
+	mux.HandleFunc("POST /worker/v1/attempts/{id}/complete", a.complete)
 	mux.HandleFunc("POST /worker/v1/attempts/{id}/fail", a.fail)
 	return mux
 }
@@ -222,6 +225,37 @@ func (a *API) claim(w http.ResponseWriter, r *http.Request) {
 			Key: hex.EncodeToString(key[:]), KeyID: hex.EncodeToString(kid[:]),
 		},
 	})
+}
+
+// maxManifest bounds a complete body: a manifest lists every file.
+const maxManifest = 8 << 20
+
+// complete submits the manifest for commit. A rejected output is 409
+// output_invalid; the worker reports it as a transient failure, so the job
+// retries on a fresh attempt and output.
+func (a *API) complete(w http.ResponseWriter, r *http.Request) {
+	token, ok := a.attemptToken(w, r)
+	if !ok {
+		return
+	}
+	var req struct {
+		Manifest media.Manifest `json:"manifest"`
+	}
+	if !httpjson.DecodeLimit(w, r, &req, maxManifest) {
+		return
+	}
+	v, err := a.Commit.Commit(r.Context(), token, req.Manifest)
+	var inv *outputs.InvalidError
+	switch {
+	case errors.As(err, &inv):
+		httpjson.Error(w, http.StatusConflict, "output_invalid", inv.Reason)
+	case err != nil:
+		a.internal(w, "complete", err)
+	case v.Stop:
+		a.verdict(w, v)
+	default:
+		httpjson.Write(w, http.StatusOK, verdictResponse{Action: "done"})
+	}
 }
 
 type signRequest struct {

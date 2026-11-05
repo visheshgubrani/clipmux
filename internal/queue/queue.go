@@ -41,6 +41,22 @@ func (q *Queue) ReserveSigns(ctx context.Context, token string, n, budget int) (
 	return v, attempt, err
 }
 
+// CommitAttempt runs commit for a live attempt inside the locked liveness
+// transaction (job, then attempt, locked), then marks the attempt committed
+// and the job succeeded in the same transaction. A late completion from an
+// attempt that is no longer live gets a stop verdict and commits nothing.
+func (q *Queue) CommitAttempt(ctx context.Context, token string, commit func(qs *db.Queries, attempt db.Attempt, job db.Job) error) (Verdict, error) {
+	return q.withLiveAttempt(ctx, token, func(qs *db.Queries, l locked) (Verdict, error) {
+		if err := commit(qs, l.attempt, l.job); err != nil {
+			return Verdict{}, err
+		}
+		if err := qs.SetAttemptStatus(ctx, db.SetAttemptStatusParams{ID: l.attempt.ID, Status: "committed"}); err != nil {
+			return Verdict{}, err
+		}
+		return Verdict{}, qs.SucceedJob(ctx, l.job.ID)
+	})
+}
+
 // Error codes the queue itself assigns.
 const (
 	// CodeWorkerLost: the lost-lease budget was spent.

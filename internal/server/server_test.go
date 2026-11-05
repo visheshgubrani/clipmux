@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -121,5 +122,34 @@ func TestServeStopsCleanlyOnShutdown(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("serve did not return after shutdown")
+	}
+}
+
+func TestLoopbackURL(t *testing.T) {
+	cases := map[string]string{
+		"0.0.0.0:8080":     "http://127.0.0.1:8080",
+		"[::]:8080":        "http://127.0.0.1:8080",
+		"127.0.0.1:9000":   "http://127.0.0.1:9000",
+		"192.168.1.5:8080": "http://192.168.1.5:8080", // listening on one interface only
+	}
+	for in, want := range cases {
+		addr, err := net.ResolveTCPAddr("tcp", in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := loopbackURL(addr); got != want {
+			t.Errorf("loopbackURL(%s) = %s, want %s", in, got, want)
+		}
+	}
+}
+
+func TestBuiltinWorkerEnvironmentIsMinimal(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://secret")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "secret")
+	b := &builtinWorker{server: "http://127.0.0.1:8080", key: "k", tools: config.Config{}.Tools}
+	for _, kv := range b.childEnv() {
+		if strings.Contains(kv, "secret") {
+			t.Fatalf("the child inherited %q", kv)
+		}
 	}
 }

@@ -11,6 +11,7 @@ package media
 import (
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -123,38 +124,88 @@ var keyLine = regexp.MustCompile(`^#EXT-X-KEY:METHOD=([A-Z0-9-]+),URI="([^"]*)"`
 var mapLine = regexp.MustCompile(`^#EXT-X-MAP:URI="([^"]*)"`)
 var segmentName = regexp.MustCompile(`^seg_[0-9]{5,6}\.m4s$`)
 
-// checkMediaPlaylist rejects a media playlist that isn't fully encrypted
-// with the expected key URI, or that references anything outside its own
-// directory. The server repeats this check at commit.
-func checkMediaPlaylist(text string, keyVersion int32) error {
+// CheckMediaPlaylist rejects a media playlist that isn't encrypted from its
+// first segment with METHOD=AES-128 and the expected key URI, or that
+// references anything but init.mp4 and seg_NNNNN.m4s in its own directory.
+// It returns the segment names. Workers run it after packaging; the server
+// runs it again at commit, because worker output is untrusted.
+func CheckMediaPlaylist(text string, keyVersion int32) ([]string, error) {
 	wantURI := Key{Version: keyVersion}.KeyURI()
-	keys, segments := 0, 0
+	keyed := false
+	var segments []string
 	for line := range strings.Lines(text) {
 		line = strings.TrimSpace(line)
 		switch {
 		case strings.HasPrefix(line, "#EXT-X-KEY:"):
 			m := keyLine.FindStringSubmatch(line)
 			if m == nil || m[1] != "AES-128" || m[2] != wantURI {
-				return fmt.Errorf("media playlist key %q, want METHOD=AES-128 with URI %q", line, wantURI)
+				return nil, fmt.Errorf("media playlist key %q, want METHOD=AES-128 with URI %q", line, wantURI)
 			}
-			keys++
+			keyed = true
 		case strings.HasPrefix(line, "#EXT-X-MAP:"):
 			if m := mapLine.FindStringSubmatch(line); m == nil || m[1] != "init.mp4" {
-				return fmt.Errorf("media playlist init %q, want init.mp4", line)
+				return nil, fmt.Errorf("media playlist init %q, want init.mp4", line)
 			}
+		case strings.Contains(line, "URI="):
+			return nil, fmt.Errorf("media playlist has an unexpected reference: %q", line)
 		case line == "" || strings.HasPrefix(line, "#"):
 		default:
 			if !segmentName.MatchString(line) {
-				return fmt.Errorf("media playlist references %q", line)
+				return nil, fmt.Errorf("media playlist references %q", line)
 			}
-			segments++
+			if !keyed {
+				return nil, fmt.Errorf("segment %s comes before any encryption key", line)
+			}
+			segments = append(segments, line)
 		}
 	}
-	if keys == 0 {
-		return fmt.Errorf("media playlist is not encrypted")
+	if !keyed {
+		return nil, fmt.Errorf("media playlist is not encrypted")
 	}
-	if segments == 0 {
-		return fmt.Errorf("media playlist has no segments")
+	if len(segments) == 0 {
+		return nil, fmt.Errorf("media playlist has no segments")
 	}
-	return nil
+	return segments, nil
+}
+
+var uriAttr = regexp.MustCompile(`URI="([^"]*)"`)
+var variantPath = regexp.MustCompile(`^([1-9][0-9]{1,3}p|audio)/index\.m3u8$`)
+
+// CheckMaster rejects a master playlist that references anything but the
+// output's own media playlists, or that carries a key. It returns the
+// rendition directories it references, e.g. ["360p", "audio"].
+func CheckMaster(text string) ([]string, error) {
+	var dirs []string
+	add := func(ref string) error {
+		m := variantPath.FindStringSubmatch(ref)
+		if m == nil {
+			return fmt.Errorf("master playlist references %q", ref)
+		}
+		if !slices.Contains(dirs, m[1]) {
+			dirs = append(dirs, m[1])
+		}
+		return nil
+	}
+	for line := range strings.Lines(text) {
+		line = strings.TrimSpace(line)
+		switch {
+		case strings.Contains(line, "KEY:"):
+			return nil, fmt.Errorf("master playlist carries a key: %q", line)
+		case strings.HasPrefix(line, "#"):
+			for _, m := range uriAttr.FindAllStringSubmatch(line, -1) {
+				if err := add(m[1]); err != nil {
+					return nil, err
+				}
+			}
+		case line != "":
+			if err := add(line); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if !slices.ContainsFunc(dirs, func(d string) bool { return d != "audio" }) {
+		return nil, fmt.Errorf("master playlist has no video rendition")
+	}
+	slices.Sort(dirs)
+	return dirs, nil
 }
