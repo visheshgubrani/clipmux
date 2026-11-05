@@ -1,6 +1,8 @@
 // Package lifecycle changes assets from the control plane
-// (docs/architecture.md, "One mutating job per asset"). Deleting an asset
-// always wins over its other work and runs in this order:
+// (docs/architecture.md, "One mutating job per asset" and "Integration
+// API"): re-encoding an asset, adding and revoking its playback IDs, and
+// deleting it. Deleting an asset always wins over its other work and runs in
+// this order:
 //
 //  1. In the request's transaction: cancel the asset's active upload and job
 //     (which fences their attempts), mark the asset deleted, mark its
@@ -42,7 +44,7 @@ var (
 	errChanged = errors.New("lifecycle: the asset's active job changed")
 )
 
-// Service deletes assets and runs the control-plane jobs that do it.
+// Service changes assets and runs the control-plane jobs that delete them.
 type Service struct {
 	pool   *pgxpool.Pool
 	store  storage.Storage
@@ -72,9 +74,12 @@ func New(pool *pgxpool.Pool, store storage.Storage, routes *outputs.Committer) *
 	}
 }
 
-// Register adds DELETE /v1/assets/{id}.
+// Register adds the asset lifecycle routes.
 func (s *Service) Register(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /v1/assets/{id}", s.handleDelete)
+	mux.HandleFunc("POST /v1/assets/{id}/reencode", s.handleReencode)
+	mux.HandleFunc("POST /v1/assets/{id}/playback-ids", s.handleAddPlaybackID)
+	mux.HandleFunc("DELETE /v1/assets/{id}/playback-ids/{pid}", s.handleRevokePlaybackID)
 }
 
 // handleDelete answers 200 once the asset's files are gone, or 202 while the

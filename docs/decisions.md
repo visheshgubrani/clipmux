@@ -150,5 +150,12 @@ Decisions within the architecture's rules, made in P1-T09:
 - Every change to what the view shows bumps `version` and `updated_at`. `updated_at` is the transaction's start time, so a change can commit slightly after a later one; clients should overlap their window by a few minutes and keep the highest `version` per asset.
 - A failed re-encode changes nothing in the view, so it is visible only as its `video.asset.reencode_failed` webhook (known gap).
 
+## D021 Re-encode and playback-ID endpoints — accepted (2026-11-05)
+Decisions within the architecture's rules, made in P1-T09b:
+- `POST /v1/assets/{id}/reencode` (`assets:write`) queues a `reencode` job and answers 202 `{id, kind, status}`. Another active job gives 409 `{"error":{"code":"job_active","job_id":…}}`; `{"supersede": true}` cancels it first (its worker is told to stop). A ready asset keeps playing until the new output commits (`video.asset.updated`, or `reencode_failed`); an errored asset returns to `processing` with its error cleared. It needs a kept, stored source (409 `source_missing`), not `waiting_upload` (409 `asset_not_ready`) and not deleted (409 `asset_deleted`).
+- `POST /v1/assets/{id}/playback-ids` adds a `signed` (default) or `public` ID, at most 1000 live per asset, answering 201. Its route is published from the outbox; once it is live the app gets `video.asset.updated`. `DELETE /v1/assets/{id}/playback-ids/{pid}` marks the ID `revoking` (delivery refuses it at once) and answers 200 `revoked` once the unpublish is confirmed, or 202 `revoking` before; the confirmation bumps the version and sends `video.asset.updated`. Revoking twice is harmless.
+- Every POST takes `Idempotency-Key` through `internal/idempotency`. A key belongs to the app and to one request: the hash covers the route, the asset and the canonical body, so reusing a key on another endpoint or asset is 422 `idempotency_key_reused`. Upload keys stored before this change no longer replay.
+- Request validation errors carry details beside code and message (`httpjson.Problem`).
+
 ## D007 Shaka Packager 3.9.3 — accepted (2026-11-05)
 Decision: pin v3.9.3 (`toolchain/versions.env`), the version clipmux-lms runs with AES-128 in production, which needs the init-segment workaround for Shaka issue 1616. Move to a release that fixes 1616 when one exists, re-running the Phase 1 player tests.

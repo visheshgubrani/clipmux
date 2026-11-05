@@ -46,3 +46,22 @@ FROM jobs WHERE asset_id = sqlc.arg(asset_id) AND kind <> 'delete';
 
 -- name: MarkAssetFilesDeleted :execrows
 UPDATE assets SET deleted_at = now() WHERE id = $1 AND deleted_at IS NULL;
+
+-- name: MarkAssetReprocessing :one
+-- A re-encode of an errored asset whose source was kept.
+UPDATE assets SET status = 'processing', error_code = NULL, version = version + 1, updated_at = now()
+WHERE id = $1
+RETURNING *;
+
+-- name: BumpAssetVersion :one
+UPDATE assets SET version = version + 1, updated_at = now() WHERE id = $1
+RETURNING *;
+
+-- name: GetPlaybackIDOfAsset :one
+SELECT * FROM playback_ids WHERE id = $1 AND asset_id = $2;
+
+-- name: MarkPlaybackIDRevoking :execrows
+UPDATE playback_ids SET status = 'revoking' WHERE id = $1 AND status = 'active';
+
+-- name: CountLivePlaybackIDs :one
+SELECT count(*) FROM playback_ids WHERE asset_id = $1 AND status <> 'revoked';

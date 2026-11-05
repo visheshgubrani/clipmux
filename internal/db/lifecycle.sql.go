@@ -11,6 +11,35 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const bumpAssetVersion = `-- name: BumpAssetVersion :one
+UPDATE assets SET version = version + 1, updated_at = now() WHERE id = $1
+RETURNING id, project_id, app_id, status, error_code, version, storage_id, source_uri, agent_source_id, source_kept, current_output_id, passthrough, duration_seconds, created_at, updated_at, deleted_at
+`
+
+func (q *Queries) BumpAssetVersion(ctx context.Context, id string) (Asset, error) {
+	row := q.db.QueryRow(ctx, bumpAssetVersion, id)
+	var i Asset
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.AppID,
+		&i.Status,
+		&i.ErrorCode,
+		&i.Version,
+		&i.StorageID,
+		&i.SourceUri,
+		&i.AgentSourceID,
+		&i.SourceKept,
+		&i.CurrentOutputID,
+		&i.Passthrough,
+		&i.DurationSeconds,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DeletedAt,
+	)
+	return i, err
+}
+
 const claimControlJob = `-- name: ClaimControlJob :one
 UPDATE jobs SET status = 'running', started_at = coalesce(started_at, now()),
     available_at = now() + make_interval(secs => $1::double precision)
@@ -58,6 +87,17 @@ func (q *Queries) ClaimControlJob(ctx context.Context, arg ClaimControlJobParams
 	return i, err
 }
 
+const countLivePlaybackIDs = `-- name: CountLivePlaybackIDs :one
+SELECT count(*) FROM playback_ids WHERE asset_id = $1 AND status <> 'revoked'
+`
+
+func (q *Queries) CountLivePlaybackIDs(ctx context.Context, assetID string) (int64, error) {
+	row := q.db.QueryRow(ctx, countLivePlaybackIDs, assetID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const deferJob = `-- name: DeferJob :exec
 UPDATE jobs SET available_at = now() + make_interval(secs => $1::double precision)
 WHERE id = $2
@@ -100,6 +140,30 @@ func (q *Queries) GetActiveJobForAsset(ctx context.Context, assetID string) (Job
 		&i.CreatedAt,
 		&i.StartedAt,
 		&i.FinishedAt,
+	)
+	return i, err
+}
+
+const getPlaybackIDOfAsset = `-- name: GetPlaybackIDOfAsset :one
+SELECT id, project_id, asset_id, policy, status, created_at, revoked_at FROM playback_ids WHERE id = $1 AND asset_id = $2
+`
+
+type GetPlaybackIDOfAssetParams struct {
+	ID      string
+	AssetID string
+}
+
+func (q *Queries) GetPlaybackIDOfAsset(ctx context.Context, arg GetPlaybackIDOfAssetParams) (PlaybackID, error) {
+	row := q.db.QueryRow(ctx, getPlaybackIDOfAsset, arg.ID, arg.AssetID)
+	var i PlaybackID
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.AssetID,
+		&i.Policy,
+		&i.Status,
+		&i.CreatedAt,
+		&i.RevokedAt,
 	)
 	return i, err
 }
@@ -222,6 +286,49 @@ UPDATE assets SET deleted_at = now() WHERE id = $1 AND deleted_at IS NULL
 
 func (q *Queries) MarkAssetFilesDeleted(ctx context.Context, id string) (int64, error) {
 	result, err := q.db.Exec(ctx, markAssetFilesDeleted, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const markAssetReprocessing = `-- name: MarkAssetReprocessing :one
+UPDATE assets SET status = 'processing', error_code = NULL, version = version + 1, updated_at = now()
+WHERE id = $1
+RETURNING id, project_id, app_id, status, error_code, version, storage_id, source_uri, agent_source_id, source_kept, current_output_id, passthrough, duration_seconds, created_at, updated_at, deleted_at
+`
+
+// A re-encode of an errored asset whose source was kept.
+func (q *Queries) MarkAssetReprocessing(ctx context.Context, id string) (Asset, error) {
+	row := q.db.QueryRow(ctx, markAssetReprocessing, id)
+	var i Asset
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.AppID,
+		&i.Status,
+		&i.ErrorCode,
+		&i.Version,
+		&i.StorageID,
+		&i.SourceUri,
+		&i.AgentSourceID,
+		&i.SourceKept,
+		&i.CurrentOutputID,
+		&i.Passthrough,
+		&i.DurationSeconds,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DeletedAt,
+	)
+	return i, err
+}
+
+const markPlaybackIDRevoking = `-- name: MarkPlaybackIDRevoking :execrows
+UPDATE playback_ids SET status = 'revoking' WHERE id = $1 AND status = 'active'
+`
+
+func (q *Queries) MarkPlaybackIDRevoking(ctx context.Context, id string) (int64, error) {
+	result, err := q.db.Exec(ctx, markPlaybackIDRevoking, id)
 	if err != nil {
 		return 0, err
 	}

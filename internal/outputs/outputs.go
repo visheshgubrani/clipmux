@@ -317,6 +317,7 @@ func (c *Committer) SyncRoutes(ctx context.Context, limit int) (int, error) {
 		}
 		type key struct{ asset, output string }
 		touched := map[key]bool{}
+		revokedFrom := map[string]bool{}
 		for _, row := range rows {
 			var r route
 			if err := json.Unmarshal(row.Payload, &r); err != nil {
@@ -333,8 +334,12 @@ func (c *Committer) SyncRoutes(ctx context.Context, limit int) (int, error) {
 			}
 			published++
 			if r.Op == opUnpublish {
-				if err := qs.RevokePlaybackID(ctx, r.PlaybackID); err != nil {
+				n, err := qs.RevokePlaybackID(ctx, r.PlaybackID)
+				if err != nil {
 					return err
+				}
+				if n == 1 {
+					revokedFrom[r.AssetID] = true
 				}
 				continue
 			}
@@ -345,9 +350,28 @@ func (c *Committer) SyncRoutes(ctx context.Context, limit int) (int, error) {
 				return err
 			}
 		}
+		for assetID := range revokedFrom {
+			if err := finishRevocation(ctx, qs, assetID, c.BaseURL); err != nil {
+				return err
+			}
+		}
 		return nil
 	})
 	return published, err
+}
+
+// finishRevocation tells the app once a revoked playback ID has stopped
+// working: the asset's view no longer lists it. A deleted asset says so with
+// its own event instead.
+func finishRevocation(ctx context.Context, qs *db.Queries, assetID, baseURL string) error {
+	asset, err := qs.LockAsset(ctx, assetID)
+	if err != nil || asset.Status == "deleted" {
+		return err
+	}
+	if _, err := qs.BumpAssetVersion(ctx, assetID); err != nil {
+		return err
+	}
+	return outbox.AssetEvent(ctx, qs, assetID, outbox.AssetUpdated, baseURL, nil)
 }
 
 // finishPublication is step 4. It locks the asset before counting pending

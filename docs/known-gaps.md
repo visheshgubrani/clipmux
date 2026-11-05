@@ -5,10 +5,12 @@ when you introduce or discover it; remove it when it is closed.
 
 ## Bootstrap (2026-11-05)
 
-- Phase 1 beyond T09 (M1 done): upload → encode → encrypt → commit → signed
-  playback works end to end, with signed webhooks, asset delete and catch-up.
-  No re-encode or playback-ID endpoints until T09b; no dashboard, first-boot
-  setup or player package yet.
+- Phase 1 beyond T09b (M1 done): upload → encode → encrypt → commit → signed
+  playback works end to end, with signed webhooks, asset delete, catch-up,
+  re-encode and playback-ID management. No dashboard, first-boot setup or
+  player package yet.
+- Superseded and failed re-encodes leave their writing outputs and files in
+  place, like lost attempts (cleanup is the 7-day / 30-minute gap below).
 - Delivery reads Postgres on every request (route, output, signing key);
   there is no route cache yet, so revocation is immediate but every segment
   costs a few queries. The server's internal signing key (dashboard preview,

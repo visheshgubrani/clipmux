@@ -51,3 +51,34 @@ func Write(w http.ResponseWriter, status int, v any) {
 func Error(w http.ResponseWriter, status int, code, message string) {
 	Write(w, status, map[string]any{"error": map[string]string{"code": code, "message": message}})
 }
+
+// Problem is an API error with its status and stable code. Details add
+// fields beside code and message, such as the job_id of a conflicting job.
+type Problem struct {
+	Status        int
+	Code, Message string
+	Details       map[string]string
+}
+
+func (p *Problem) Error() string { return p.Code + ": " + p.Message }
+
+// Fail returns a Problem.
+func Fail(status int, code, message string) *Problem {
+	return &Problem{Status: status, Code: code, Message: message}
+}
+
+// WriteProblem sends err if it is a Problem and reports whether it was.
+func WriteProblem(w http.ResponseWriter, err error) bool {
+	var p *Problem
+	if !errors.As(err, &p) {
+		return false
+	}
+	body := map[string]string{"code": p.Code, "message": p.Message}
+	for k, v := range p.Details {
+		if k != "code" && k != "message" {
+			body[k] = v
+		}
+	}
+	Write(w, p.Status, map[string]any{"error": body})
+	return true
+}

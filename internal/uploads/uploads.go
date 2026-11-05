@@ -15,7 +15,6 @@
 package uploads
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -35,6 +34,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/assets"
 	"github.com/visheshgubrani/clipmux/internal/db"
 	"github.com/visheshgubrani/clipmux/internal/httpjson"
+	"github.com/visheshgubrani/clipmux/internal/idempotency"
 	"github.com/visheshgubrani/clipmux/internal/ids"
 	"github.com/visheshgubrani/clipmux/internal/outbox"
 	"github.com/visheshgubrani/clipmux/internal/queue"
@@ -50,7 +50,6 @@ const (
 const (
 	maxPartsPerSign = 100
 	maxPassthrough  = 255
-	maxIdemKey      = 255
 )
 
 // Service runs uploads against one storage backend.
@@ -81,17 +80,8 @@ func New(pool *pgxpool.Pool, store storage.Storage) *Service {
 	}
 }
 
-// apiError is an expected failure with a stable code.
-type apiError struct {
-	status        int
-	code, message string
-}
-
-func (e *apiError) Error() string { return e.code + ": " + e.message }
-
-func fail(status int, code, message string) error {
-	return &apiError{status: status, code: code, message: message}
-}
+// fail is an expected failure with a stable code.
+func fail(status int, code, message string) error { return httpjson.Fail(status, code, message) }
 
 var errNotActive = fail(http.StatusConflict, "upload_not_active", "the upload is no longer active")
 
@@ -140,27 +130,20 @@ func (s *Service) Create(ctx context.Context, key apikeys.Key, req CreateRequest
 		return Created{}, fail(http.StatusBadRequest, "invalid_request", `playback_policy must be "signed" or "public"`)
 	case len(req.Passthrough) > maxPassthrough:
 		return Created{}, fail(http.StatusBadRequest, "invalid_request", "passthrough is limited to 255 bytes")
-	case len(idemKey) > maxIdemKey:
-		return Created{}, fail(http.StatusBadRequest, "invalid_request", "Idempotency-Key is limited to 255 bytes")
 	}
 	canonical, _ := json.Marshal(req)
-	reqHash := sha256.Sum256(canonical)
 
 	var out Created
 	var started *storage.Multipart
 	var startedKey string
 	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 		q := db.New(tx)
-		if idemKey != "" {
-			_, err := q.ClaimIdempotencyKey(ctx, db.ClaimIdempotencyKeyParams{
-				ProjectID: key.ProjectID, AppID: key.AppID, Key: idemKey, RequestHash: reqHash[:],
-			})
-			if errors.Is(err, pgx.ErrNoRows) {
-				return s.replay(ctx, q, key, idemKey, reqHash[:], &out)
-			}
-			if err != nil {
-				return err
-			}
+		claim, err := idempotency.Begin(ctx, q, key.ProjectID, key.AppID, idemKey, "POST /v1/uploads", canonical)
+		if err != nil {
+			return idempotency.Problem(err)
+		}
+		if claim != nil && claim.Replay != nil {
+			return s.replay(ctx, q, claim.Replay, &out)
 		}
 		st, err := q.GetDefaultStorage(ctx, key.ProjectID)
 		if err != nil {
@@ -196,13 +179,9 @@ func (s *Service) Create(ctx context.Context, key apikeys.Key, req CreateRequest
 			UploadID: up.ID, AssetID: asset.ID, PartSize: up.PartSize, PartCount: partCount(up),
 			PlaybackIDs: []assets.PlaybackID{{ID: pid.ID, Policy: pid.Policy}},
 		}
-		if idemKey != "" {
-			stored, _ := json.Marshal(out) // without the token
-			if err := q.SaveIdempotentResponse(ctx, db.SaveIdempotentResponseParams{
-				AppID: key.AppID, Key: idemKey, ResponseStatus: pgtype.Int4{Int32: http.StatusCreated, Valid: true}, ResponseBody: stored,
-			}); err != nil {
-				return err
-			}
+		stored, _ := json.Marshal(out) // without the token
+		if err := claim.Save(ctx, http.StatusCreated, stored); err != nil {
+			return err
 		}
 		out.UploadToken = token
 		return nil
@@ -217,19 +196,9 @@ func (s *Service) Create(ctx context.Context, key apikeys.Key, req CreateRequest
 	return out, nil
 }
 
-// replay answers a repeated Idempotency-Key.
-func (s *Service) replay(ctx context.Context, q *db.Queries, key apikeys.Key, idemKey string, reqHash []byte, out *Created) error {
-	prev, err := q.GetIdempotencyKey(ctx, db.GetIdempotencyKeyParams{AppID: key.AppID, Key: idemKey})
-	if err != nil {
-		return err
-	}
-	if !bytes.Equal(prev.RequestHash, reqHash) {
-		return fail(http.StatusUnprocessableEntity, "idempotency_key_reused", "this Idempotency-Key was used with a different request")
-	}
-	if len(prev.ResponseBody) == 0 {
-		return fail(http.StatusConflict, "idempotency_in_progress", "a request with this Idempotency-Key is still running")
-	}
-	if err := json.Unmarshal(prev.ResponseBody, out); err != nil {
+// replay answers a repeated Idempotency-Key from the stored response.
+func (s *Service) replay(ctx context.Context, q *db.Queries, stored []byte, out *Created) error {
+	if err := json.Unmarshal(stored, out); err != nil {
 		return err
 	}
 	token := rand.Text()
@@ -561,12 +530,10 @@ func (s *Service) Register(mux *http.ServeMux) {
 func cors(w http.ResponseWriter) { w.Header().Set("Access-Control-Allow-Origin", "*") }
 
 func (s *Service) respond(w http.ResponseWriter, op string, status int, v any, err error) {
-	var ae *apiError
 	switch {
 	case err == nil:
 		httpjson.Write(w, status, v)
-	case errors.As(err, &ae):
-		httpjson.Error(w, ae.status, ae.code, ae.message)
+	case httpjson.WriteProblem(w, err):
 	case errors.Is(err, storage.ErrTooLarge):
 		httpjson.Error(w, http.StatusRequestEntityTooLarge, "too_large", "the upload is too large for this storage")
 	default:

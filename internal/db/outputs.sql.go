@@ -208,14 +208,17 @@ func (q *Queries) RetryOutbox(ctx context.Context, arg RetryOutboxParams) error 
 	return err
 }
 
-const revokePlaybackID = `-- name: RevokePlaybackID :exec
+const revokePlaybackID = `-- name: RevokePlaybackID :execrows
 UPDATE playback_ids SET status = 'revoked', revoked_at = now() WHERE id = $1 AND status = 'revoking'
 `
 
 // A revoked ID reads revoked only once its unpublish is confirmed.
-func (q *Queries) RevokePlaybackID(ctx context.Context, id string) error {
-	_, err := q.db.Exec(ctx, revokePlaybackID, id)
-	return err
+func (q *Queries) RevokePlaybackID(ctx context.Context, id string) (int64, error) {
+	result, err := q.db.Exec(ctx, revokePlaybackID, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const succeedJob = `-- name: SucceedJob :exec

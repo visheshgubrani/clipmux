@@ -35,14 +35,15 @@ const master = `#EXTM3U
 `
 
 type rig struct {
-	t     *testing.T
-	pool  *pgxpool.Pool
-	store *storage.Filesystem
-	q     *queue.Queue
-	svc   *lifecycle.Service
-	upl   *uploads.Service
-	url   string
-	key   string // assets:read, assets:write, uploads:write for app_dashboard
+	t      *testing.T
+	pool   *pgxpool.Pool
+	store  *storage.Filesystem
+	q      *queue.Queue
+	svc    *lifecycle.Service
+	routes *outputs.Committer
+	upl    *uploads.Service
+	url    string
+	key    string // assets:read, assets:write, uploads:write for app_dashboard
 }
 
 func newRig(t *testing.T) *rig {
@@ -73,7 +74,7 @@ func newRig(t *testing.T) *rig {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &rig{t: t, pool: pool, store: store, q: q, svc: svc, upl: uploads.New(pool, store), url: srv.URL, key: key}
+	return &rig{t: t, pool: pool, store: store, q: q, svc: svc, routes: committer, upl: uploads.New(pool, store), url: srv.URL, key: key}
 }
 
 func (r *rig) exec(sql string, args ...any) {
@@ -113,9 +114,23 @@ func (r *rig) ready() {
 
 func (r *rig) call(method, path, bearer string) (int, map[string]any) {
 	r.t.Helper()
-	req, _ := http.NewRequest(method, r.url+path, nil)
+	return r.send(method, path, bearer, nil, "")
+}
+
+// send makes a request with an optional JSON body and Idempotency-Key.
+func (r *rig) send(method, path, bearer string, body any, idemKey string) (int, map[string]any) {
+	r.t.Helper()
+	var rd io.Reader
+	if body != nil {
+		raw, _ := json.Marshal(body)
+		rd = strings.NewReader(string(raw))
+	}
+	req, _ := http.NewRequest(method, r.url+path, rd)
 	if bearer != "" {
 		req.Header.Set("Authorization", "Bearer "+bearer)
+	}
+	if idemKey != "" {
+		req.Header.Set("Idempotency-Key", idemKey)
 	}
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -123,9 +138,9 @@ func (r *rig) call(method, path, bearer string) (int, map[string]any) {
 	}
 	defer res.Body.Close()
 	raw, _ := io.ReadAll(res.Body)
-	var body map[string]any
-	_ = json.Unmarshal(raw, &body)
-	return res.StatusCode, body
+	var out map[string]any
+	_ = json.Unmarshal(raw, &out)
+	return res.StatusCode, out
 }
 
 func (r *rig) events() []string {
