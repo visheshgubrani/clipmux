@@ -1,7 +1,6 @@
 package storage
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -13,6 +12,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/feature/s3/transfermanager"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/smithy-go"
@@ -42,6 +42,7 @@ type S3 struct {
 	bucket  string
 	client  *s3.Client
 	presign *s3.PresignClient
+	uploads *transfermanager.Client
 }
 
 // listPageS3 is the page size of List; S3 caps it at 1000.
@@ -78,10 +79,17 @@ func OpenS3(opts S3Options) (*S3, error) {
 			o.UsePathStyle = true
 		})
 	}
+	client := clientFor(opts.Endpoint)
 	return &S3{
 		bucket:  opts.Bucket,
-		client:  clientFor(opts.Endpoint),
+		client:  client,
 		presign: s3.NewPresignClient(clientFor(opts.PublicEndpoint)),
+		uploads: transfermanager.New(client, func(o *transfermanager.Options) {
+			o.PartSizeBytes = PartSize
+			o.MultipartUploadThreshold = PartSize
+			o.Concurrency = 4
+			o.RequestChecksumCalculation = aws.RequestChecksumCalculationWhenRequired
+		}),
 	}, nil
 }
 
@@ -131,21 +139,13 @@ func (s *S3) ApplyCORS(ctx context.Context) error {
 	return s.wrap("put bucket cors", s.bucket, err)
 }
 
+// Put streams body into key, in PartSize parts when it is large, so a move
+// or an import of a source of any size needs no spooling.
 func (s *S3) Put(ctx context.Context, key string, body io.Reader) error {
 	if !ValidKey(key) {
 		return ErrInvalidKey
 	}
-	// The SDK needs a seekable body to sign it; buffer small writes (route
-	// records, manifests, the sample) rather than stream them.
-	rs, ok := body.(io.ReadSeeker)
-	if !ok {
-		b, err := io.ReadAll(body)
-		if err != nil {
-			return fmt.Errorf("put %s: %w", key, err)
-		}
-		rs = bytes.NewReader(b)
-	}
-	_, err := s.client.PutObject(ctx, &s3.PutObjectInput{Bucket: &s.bucket, Key: &key, Body: rs})
+	_, err := s.uploads.UploadObject(ctx, &transfermanager.UploadObjectInput{Bucket: &s.bucket, Key: &key, Body: body})
 	return s.wrap("put", key, err)
 }
 

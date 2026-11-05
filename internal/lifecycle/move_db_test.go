@@ -64,9 +64,7 @@ func newMoveRig(t *testing.T) *moveRig {
 	r.exec(`INSERT INTO outputs (id, project_id, asset_id, key_version) VALUES ('out_lost', 'prj_default', 'ast_1', 1)`)
 	r.exec(`UPDATE assets SET status = 'ready', current_output_id = 'out_new' WHERE id = 'ast_1'`)
 	r.exec(`INSERT INTO playback_ids (id, project_id, asset_id, policy) VALUES ('pid_1', 'prj_default', 'ast_1', 'signed')`)
-	// A source over the single-PUT limit goes up in parts.
-	singlePutLimit = 1 << 10
-	t.Cleanup(func() { singlePutLimit = 5 << 30 })
+	// A source over one part goes up in parts.
 	r.source = make([]byte, storage.PartSize+10)
 	_, _ = rand.Read(r.source)
 	r.put("uploads/ast_1/source", r.source)
@@ -144,7 +142,7 @@ func TestMovingAnAssetCopiesItSwitchesItsRoutesThenCleansUp(t *testing.T) {
 	}
 	r.run()
 
-	// Copied: the source (in parts) and both outputs a viewer may be pinned
+	// Copied: the source (in two parts) and both outputs a viewer may be pinned
 	// to, but not the lost attempt's files.
 	if got, ok := r.read(r.r2, "uploads/ast_1/source"); !ok || got != string(r.source) {
 		t.Fatalf("source on R2: %d bytes, want %d", len(got), len(r.source))

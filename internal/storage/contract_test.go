@@ -141,6 +141,22 @@ func TestContractListIsOrderedPrefixedAndResumable(t *testing.T) {
 	})
 }
 
+// A move or an import streams a source of any size into Put.
+func TestContractPutStreamsABodyLargerThanAPart(t *testing.T) {
+	eachStore(t, func(t *testing.T, s contractStore) {
+		ctx := context.Background()
+		size := s.partSize + 5
+		body := io.MultiReader(io.LimitReader(rand.Reader, size-5), strings.NewReader("tail!"))
+		if err := s.Put(ctx, "uploads/big/source", body); err != nil {
+			t.Fatal(err)
+		}
+		obj, err := s.Head(ctx, "uploads/big/source")
+		if err != nil || obj.Size != size {
+			t.Fatalf("Head = %+v, %v; want %d bytes", obj, err, size)
+		}
+	})
+}
+
 // Unpublishing a route deletes exactly _routes/{pid}.json.
 func TestContractDeleteRemovesOneObject(t *testing.T) {
 	eachStore(t, func(t *testing.T, s contractStore) {

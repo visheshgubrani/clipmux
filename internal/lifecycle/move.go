@@ -4,10 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
-	"net/http"
-	"os"
-	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -30,10 +26,6 @@ import (
 // moveCleanupDelay outlasts the Worker's 60 s route cache, so no edge still
 // sends viewers to the old store when its files go.
 const moveCleanupDelay = 2 * time.Minute
-
-// singlePutLimit is the largest object copied with one PUT (S3's limit);
-// larger ones go up in parts. Tests lower it.
-var singlePutLimit int64 = 5 << 30
 
 // QueueMove queues a move of one asset to the target store. It fails with
 // the unique-index violation when the asset already has an active job.
@@ -201,7 +193,7 @@ func listAll(ctx context.Context, st storage.Storage, prefixes []string) (map[st
 }
 
 // copyObject copies one object unless the target already holds it at the
-// same size (a resumed pass).
+// same size (a resumed pass). Put streams it, in parts when it is large.
 func copyObject(ctx context.Context, src, dst storage.Storage, key string, size int64) error {
 	if obj, err := dst.Head(ctx, key); err == nil && obj.Size == size {
 		return nil
@@ -213,74 +205,5 @@ func copyObject(ctx context.Context, src, dst storage.Storage, key string, size 
 		return err
 	}
 	defer rc.Close()
-	// Adapters sign uploads over a seekable body; spool a stream to disk.
-	body, ok := rc.(interface {
-		io.ReadSeeker
-		io.ReaderAt
-	})
-	if !ok {
-		f, err := os.CreateTemp("", "clipmux-move-*")
-		if err != nil {
-			return err
-		}
-		defer os.Remove(f.Name())
-		defer f.Close()
-		if _, err := io.Copy(f, rc); err != nil {
-			return err
-		}
-		body = f
-	}
-	if size <= singlePutLimit {
-		if _, err := body.Seek(0, io.SeekStart); err != nil {
-			return err
-		}
-		return dst.Put(ctx, key, body)
-	}
-	return putParts(ctx, dst, key, size, body)
-}
-
-// putParts uploads a large object through the store's multipart upload.
-func putParts(ctx context.Context, dst storage.Storage, key string, size int64, body io.ReaderAt) error {
-	mp, err := dst.CreateMultipart(ctx, key, size)
-	if err != nil {
-		return err
-	}
-	var parts []storage.Part
-	for n, off := 1, int64(0); off < size; n, off = n+1, off+mp.PartSize {
-		length := min(mp.PartSize, size-off)
-		url, err := dst.PresignPart(ctx, key, mp.UploadID, n, 15*time.Minute)
-		if err == nil {
-			var etag string
-			etag, err = putPart(ctx, url, io.NewSectionReader(body, off, length), length)
-			parts = append(parts, storage.Part{Number: n, ETag: etag, Size: length})
-		}
-		if err != nil {
-			_ = dst.AbortMultipart(context.WithoutCancel(ctx), key, mp.UploadID)
-			return err
-		}
-	}
-	return dst.CompleteMultipart(ctx, key, mp.UploadID, parts)
-}
-
-func putPart(ctx context.Context, url string, body io.Reader, length int64) (string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPut, url, body)
-	if err != nil {
-		return "", err
-	}
-	req.ContentLength = length
-	res, err := http.DefaultClient.Do(req)
-	if err != nil {
-		// The URL is a credential; the error names only the failure.
-		var ue interface{ Unwrap() error }
-		if errors.As(err, &ue) {
-			return "", fmt.Errorf("put part: %w", ue.Unwrap())
-		}
-		return "", errors.New("put part failed")
-	}
-	defer res.Body.Close()
-	_, _ = io.Copy(io.Discard, res.Body)
-	if res.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("put part: HTTP %d", res.StatusCode)
-	}
-	return strings.Trim(res.Header.Get("ETag"), `"`), nil
+	return dst.Put(ctx, key, rc)
 }
