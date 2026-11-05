@@ -14,6 +14,10 @@ import (
 //go:embed migrations/*.sql
 var migrationFiles embed.FS
 
+// DefaultProjectID is the hidden project the first migration seeds; it owns
+// every object until a multi-tenant edition adds more.
+const DefaultProjectID = "prj_default"
+
 // Open connects to Postgres and checks the connection.
 func Open(ctx context.Context, url string) (*pgxpool.Pool, error) {
 	pool, err := pgxpool.New(ctx, url)

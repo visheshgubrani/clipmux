@@ -174,6 +174,7 @@ type Project struct {
 	MediaHostname           pgtype.Text
 	MaxTokenLifetimeSeconds int32
 	CreatedAt               pgtype.Timestamptz
+	SecretsCheck            []byte
 }
 
 type SigningKey struct {
@@ -212,6 +213,21 @@ type Upload struct {
 	FinishedAt     pgtype.Timestamptz
 	PartsSeen      int32
 	LastSweptAt    pgtype.Timestamptz
+}
+
+type WebhookDelivery struct {
+	ID            string
+	ProjectID     string
+	EventID       string
+	EndpointID    string
+	Status        string
+	Attempts      int32
+	NextAttemptAt pgtype.Timestamptz
+	GiveUpAt      pgtype.Timestamptz
+	LastStatus    pgtype.Int4
+	LastError     pgtype.Text
+	CreatedAt     pgtype.Timestamptz
+	FinishedAt    pgtype.Timestamptz
 }
 
 type WebhookEndpoint struct {

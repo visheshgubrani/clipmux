@@ -429,11 +429,10 @@ func (s *Service) end(ctx context.Context, q *db.Queries, up db.Upload, status, 
 	if asset.Status != "waiting_upload" {
 		return nil
 	}
-	version, err := q.MarkAssetErrored(ctx, db.MarkAssetErroredParams{ID: asset.ID, ErrorCode: pgtype.Text{String: code, Valid: true}})
-	if err != nil {
+	if _, err := q.MarkAssetErrored(ctx, db.MarkAssetErroredParams{ID: asset.ID, ErrorCode: pgtype.Text{String: code, Valid: true}}); err != nil {
 		return err
 	}
-	return outbox.AssetEvent(ctx, q, asset, outbox.AssetErrored, version, map[string]any{"error_code": code})
+	return outbox.AssetEvent(ctx, q, asset.ID, outbox.AssetErrored, s.BaseURL, nil)
 }
 
 func (s *Service) assetView(ctx context.Context, q *db.Queries, assetID string) (assets.View, error) {

@@ -9,6 +9,7 @@ import (
 
 	"github.com/visheshgubrani/clipmux/internal/apikeys"
 	"github.com/visheshgubrani/clipmux/internal/db/dbtest"
+	"github.com/visheshgubrani/clipmux/internal/secrets"
 	"github.com/visheshgubrani/clipmux/internal/tokens"
 )
 
@@ -73,5 +74,43 @@ func TestCreateSigningKeyStoresOnlyThePublicKey(t *testing.T) {
 	tok, _ := tokens.Sign(priv, kid, tokens.Claims{Sub: "pid_1", Aud: "v", Iat: 1, Exp: 2})
 	if p, err := tokens.Parse(tok); err != nil || p.Verify(pub) != nil {
 		t.Fatal("a token signed with the printed key must verify with the stored key")
+	}
+}
+
+func TestCreateWebhookPrintsTheSecretOnceAndStoresItSealed(t *testing.T) {
+	ctx := context.Background()
+	pool := dbtest.New(t)
+	box, err := secrets.NewBox(1, make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := createWebhook(ctx, pool, box, "LMS", "https://lms.example.com/api/v1/callback/clipmux", &out); err != nil {
+		t.Fatal(err)
+	}
+	secret := regexp.MustCompile(`secret:\s+(whsec_\S+)`).FindStringSubmatch(out.String())
+	id := regexp.MustCompile(`endpoint:\s+(whk_\S+)`).FindStringSubmatch(out.String())
+	if secret == nil || id == nil {
+		t.Fatalf("no endpoint or secret in output:\n%s", out.String())
+	}
+	var url string
+	var sealed []byte
+	if err := pool.QueryRow(ctx, `SELECT url, secret_encrypted FROM webhook_endpoints WHERE id = $1`, id[1]).Scan(&url, &sealed); err != nil {
+		t.Fatal(err)
+	}
+	if url != "https://lms.example.com/api/v1/callback/clipmux" {
+		t.Errorf("url = %q", url)
+	}
+	if bytes.Contains(sealed, []byte(secret[1])) {
+		t.Fatal("the secret must be stored sealed, never in the clear")
+	}
+	if plain, err := box.Open("webhook_endpoints", id[1], sealed); err != nil || string(plain) != secret[1] {
+		t.Fatalf("stored secret opens to %q, %v; want the printed one", plain, err)
+	}
+
+	for _, bad := range []string{"ftp://lms.example.com/hook", "https://user:pw@lms.example.com/hook", "lms.example.com/hook", "https:///hook", "https://lms.example.com/hook#frag"} {
+		if err := createWebhook(ctx, pool, box, "LMS", bad, &bytes.Buffer{}); err == nil {
+			t.Errorf("createWebhook(%q) succeeded, want a URL error", bad)
+		}
 	}
 }

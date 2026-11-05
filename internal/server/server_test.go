@@ -14,11 +14,24 @@ import (
 
 	"github.com/visheshgubrani/clipmux/internal/config"
 	"github.com/visheshgubrani/clipmux/internal/contentkey"
+	"github.com/visheshgubrani/clipmux/internal/db"
 	"github.com/visheshgubrani/clipmux/internal/db/dbtest"
+	"github.com/visheshgubrani/clipmux/internal/outbox"
+	"github.com/visheshgubrani/clipmux/internal/secrets"
 	"github.com/visheshgubrani/clipmux/internal/storage"
+	"github.com/visheshgubrani/clipmux/internal/webhooks"
 )
 
 type fakeDB struct{ err error }
+
+func testBox(t *testing.T) *secrets.Box {
+	t.Helper()
+	b, err := secrets.NewBox(1, make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
 
 func (f fakeDB) Ping(context.Context) error { return f.err }
 
@@ -96,7 +109,7 @@ func TestServeStopsCleanlyOnShutdown(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		done <- serve(ctx, config.Config{}, ln, slog.New(slog.NewTextHandler(io.Discard, nil)), pool, store, contentkey.Secret{Version: 1})
+		done <- serve(ctx, config.Config{}, ln, slog.New(slog.NewTextHandler(io.Discard, nil)), pool, store, contentkey.Secret{Version: 1}, testBox(t))
 	}()
 
 	url := "http://" + ln.Addr().String() + "/readyz"
@@ -122,6 +135,81 @@ func TestServeStopsCleanlyOnShutdown(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("serve did not return after shutdown")
+	}
+}
+
+func TestServeReturnsWhenTheListenerFails(t *testing.T) {
+	pool := dbtest.New(t)
+	store, err := storage.OpenFilesystem(t.TempDir(), storage.FilesystemOptions{BaseURL: "http://localhost"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln.Close() // Serve fails at once; the background loops must still stop.
+	done := make(chan error, 1)
+	go func() {
+		done <- serve(context.Background(), config.Config{}, ln, slog.New(slog.NewTextHandler(io.Discard, nil)), pool, store, contentkey.Secret{Version: 1}, testBox(t))
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("serve returned nil, want the listener's error")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("serve hung after its listener failed")
+	}
+}
+
+func TestServeDeliversWebhooks(t *testing.T) {
+	pool := dbtest.New(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	box := testBox(t)
+	got := make(chan string, 1)
+	receiver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case got <- r.Header.Get("X-Webhook-Event"):
+		default:
+		}
+	}))
+	defer receiver.Close()
+	if _, _, err := webhooks.CreateEndpoint(ctx, db.New(pool), box, "prj_default", "app_dashboard", receiver.URL); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO assets (id, project_id, app_id, status, storage_id) VALUES ('ast_1', 'prj_default', 'app_dashboard', 'processing', 'sto_default')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := outbox.AssetEvent(ctx, db.New(pool), "ast_1", outbox.AssetReady, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	store, err := storage.OpenFilesystem(t.TempDir(), storage.FilesystemOptions{BaseURL: "http://localhost"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- serve(ctx, config.Config{}, ln, slog.New(slog.NewTextHandler(io.Discard, nil)), pool, store, contentkey.Secret{Version: 1}, box)
+	}()
+	select {
+	case event := <-got:
+		if event != "video.asset.ready" {
+			t.Fatalf("delivered %q, want video.asset.ready", event)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("serve never delivered the queued event")
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
 	}
 }
 

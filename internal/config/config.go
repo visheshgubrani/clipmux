@@ -34,6 +34,10 @@ type Config struct {
 	// BuiltinWorker starts `clipmux worker` as a child of serve
 	// (CLIPMUX_BUILTIN_WORKER, default true).
 	BuiltinWorker bool
+	// SecretsKey seals the secrets kept in Postgres (CLIPMUX_SECRETS_KEY,
+	// "v1:" and 64 hex digits). Unset, serve keeps it in
+	// {DataDir}/secrets.key, created on first boot. Never log it.
+	SecretsKey string
 	// Tools are the media binaries (CLIPMUX_FFMPEG, CLIPMUX_FFPROBE,
 	// CLIPMUX_PACKAGER; default: found on PATH).
 	Tools media.Tools
@@ -52,6 +56,7 @@ func FromEnv(getenv func(string) string) (Config, error) {
 		ListenAddr:  orDefault(getenv("CLIPMUX_LISTEN"), DefaultListenAddr),
 		DatabaseURL: getenv("DATABASE_URL"),
 		DataDir:     orDefault(getenv("CLIPMUX_DATA_DIR"), DefaultDataDir),
+		SecretsKey:  getenv("CLIPMUX_SECRETS_KEY"),
 	}
 	if cfg.DatabaseURL == "" {
 		return Config{}, errors.New("DATABASE_URL is required")

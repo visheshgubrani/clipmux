@@ -22,10 +22,12 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/delivery"
 	"github.com/visheshgubrani/clipmux/internal/outputs"
 	"github.com/visheshgubrani/clipmux/internal/queue"
+	"github.com/visheshgubrani/clipmux/internal/secrets"
 	"github.com/visheshgubrani/clipmux/internal/storage"
 	"github.com/visheshgubrani/clipmux/internal/sweeper"
 	"github.com/visheshgubrani/clipmux/internal/uploads"
 	"github.com/visheshgubrani/clipmux/internal/web"
+	"github.com/visheshgubrani/clipmux/internal/webhooks"
 	"github.com/visheshgubrani/clipmux/internal/workerapi"
 )
 
@@ -39,6 +41,10 @@ const UploadSweepInterval = 5 * time.Minute
 // RouteSyncInterval is how often pending route publications are retried;
 // commits publish inline, so this only matters after a crash or an error.
 const RouteSyncInterval = 15 * time.Second
+
+// WebhookInterval is how often new events fan out and due deliveries are
+// sent; an event reaches its endpoints within about this long.
+const WebhookInterval = 5 * time.Second
 
 // Registrar adds an API's routes to the root mux.
 type Registrar interface {
@@ -112,6 +118,13 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	}
 	logger.Info("database ready")
 
+	// The key that seals secrets in Postgres; serve refuses to start with one
+	// that can't open what the database already holds.
+	box, err := secrets.LoadOrCreate(ctx, db.New(pool), db.DefaultProjectID, cfg.DataDir, cfg.SecretsKey)
+	if err != nil {
+		return err
+	}
+
 	// v1 starts on filesystem storage; per-asset storage configs and the
 	// R2/S3 adapters arrive in Phase 2.
 	store, err := storage.OpenFilesystem(filepath.Join(cfg.DataDir, "storage"), storage.FilesystemOptions{BaseURL: cfg.PublicURL})
@@ -131,18 +144,19 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	return serve(ctx, cfg, ln, logger, pool, store, keys)
+	return serve(ctx, cfg, ln, logger, pool, store, keys, box)
 }
 
 // serve runs the HTTP server and background loops. It returns only after
 // every goroutine it started has stopped, so the caller can close the pool
 // and storage.
-func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog.Logger, pool *pgxpool.Pool, store *storage.Filesystem, keys contentkey.Secret) error {
+func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog.Logger, pool *pgxpool.Pool, store *storage.Filesystem, keys contentkey.Secret, box *secrets.Box) error {
 	// Until the owner table exists (P1-T10) every boot is a first boot.
 	logger.Info("first boot: create the owner account with this setup token", "setup_token", rand.Text())
 
 	q := queue.New(pool)
 	q.KeyVersion = keys.Version
+	q.BaseURL = cfg.MediaURL
 	committer := outputs.New(pool, q, store)
 	committer.Logger = logger
 	committer.BaseURL = cfg.MediaURL
@@ -159,11 +173,15 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 	if cfg.MaxUploadBytes > 0 {
 		upl.MaxSize = cfg.MaxUploadBytes
 	}
+	hooks := webhooks.New(pool, box)
+	hooks.Logger = logger
 
-	ctx, stop := context.WithCancel(ctx)
-	defer stop()
+	// Defers run last in, first out: stop cancels the loops before wg.Wait
+	// waits for them, whichever way serve returns.
 	var wg sync.WaitGroup
 	defer wg.Wait()
+	ctx, stop := context.WithCancel(ctx)
+	defer stop()
 	wg.Go(func() {
 		sweeper.Every(ctx, LeaseSweepInterval, "lost_leases", func(ctx context.Context) (int, error) {
 			return q.SweepLostLeases(ctx, 100)
@@ -178,6 +196,9 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 		sweeper.Every(ctx, RouteSyncInterval, "routes", func(ctx context.Context) (int, error) {
 			return committer.SyncRoutes(ctx, 1000)
 		}, logger)
+	})
+	wg.Go(func() {
+		sweeper.Every(ctx, WebhookInterval, "webhooks", hooks.Run, logger)
 	})
 	if cfg.BuiltinWorker {
 		bw := &builtinWorker{
@@ -202,7 +223,7 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 	go func() { errCh <- srv.Serve(ln) }()
 	select {
 	case err := <-errCh:
-		return err // stop and wg.Wait run via defer
+		return err // the deferred stop ends the loops, then wg.Wait waits for them
 	case <-ctx.Done():
 	}
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

@@ -13,26 +13,32 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/visheshgubrani/clipmux/internal/apikeys"
+	"github.com/visheshgubrani/clipmux/internal/config"
 	"github.com/visheshgubrani/clipmux/internal/db"
 	"github.com/visheshgubrani/clipmux/internal/ids"
+	"github.com/visheshgubrani/clipmux/internal/secrets"
 	"github.com/visheshgubrani/clipmux/internal/tokens"
+	"github.com/visheshgubrani/clipmux/internal/webhooks"
 )
 
 const adminUsage = `Usage:
   clipmux admin create-key --app NAME [--name KEY_NAME] [--scopes uploads:write,assets:read]
   clipmux admin create-signing-key --app NAME
+  clipmux admin create-webhook --app NAME --url URL
 
-Host-side administration until the dashboard exists. Reads DATABASE_URL.
-Both commands create the app if it does not exist and print the secret once:
-create-key an API key, create-signing-key the private key your backend signs
-playback tokens with (only the public key is stored).
+Host-side administration until the dashboard exists. Reads DATABASE_URL, and
+for create-webhook CLIPMUX_DATA_DIR or CLIPMUX_SECRETS_KEY (the same key serve
+uses). Each command creates the app if it does not exist and prints a secret
+once: create-key an API key, create-signing-key the private key your backend
+signs playback tokens with (only the public key is stored), create-webhook
+the secret that signs the endpoint's deliveries.
 `
 
-const project = "prj_default"
+const project = db.DefaultProjectID
 
 // admin runs host-side administration commands against the database.
 func admin(args []string, getenv func(string) string, stdout, stderr io.Writer) int {
-	if len(args) == 0 || (args[0] != "create-key" && args[0] != "create-signing-key") {
+	if len(args) == 0 || (args[0] != "create-key" && args[0] != "create-signing-key" && args[0] != "create-webhook") {
 		fmt.Fprint(stderr, adminUsage)
 		return 2
 	}
@@ -42,11 +48,12 @@ func admin(args []string, getenv func(string) string, stdout, stderr io.Writer) 
 	app := fs.String("app", "", "app name (created if missing)")
 	name := fs.String("name", "default", "key name (create-key)")
 	scopes := fs.String("scopes", apikeys.UploadsWrite+","+apikeys.AssetsRead, "comma-separated scopes (create-key)")
+	endpoint := fs.String("url", "", "endpoint URL (create-webhook)")
 	if err := fs.Parse(args[1:]); err != nil {
 		return 2
 	}
-	if *app == "" {
-		fmt.Fprintf(stderr, "clipmux admin %s: --app is required\n\n%s", cmd, adminUsage)
+	if *app == "" || (cmd == "create-webhook" && *endpoint == "") {
+		fmt.Fprintf(stderr, "clipmux admin %s: --app is required (and --url for create-webhook)\n\n%s", cmd, adminUsage)
 		return 2
 	}
 
@@ -61,10 +68,16 @@ func admin(args []string, getenv func(string) string, stdout, stderr io.Writer) 
 		fmt.Fprintf(stderr, "clipmux admin: %v\n", err)
 		return 1
 	}
-	if cmd == "create-key" {
+	switch cmd {
+	case "create-key":
 		err = createKey(ctx, pool, *app, *name, strings.Split(*scopes, ","), stdout)
-	} else {
+	case "create-signing-key":
 		err = createSigningKey(ctx, pool, *app, stdout)
+	case "create-webhook":
+		var box *secrets.Box
+		if box, err = secrets.Load(orDefault(getenv("CLIPMUX_DATA_DIR"), config.DefaultDataDir), getenv("CLIPMUX_SECRETS_KEY")); err == nil {
+			err = createWebhook(ctx, pool, box, *app, *endpoint, stdout)
+		}
 	}
 	if err != nil {
 		fmt.Fprintf(stderr, "clipmux admin %s: %v\n", cmd, err)
@@ -127,4 +140,34 @@ func createSigningKey(ctx context.Context, pool *pgxpool.Pool, appName string, o
 	fmt.Fprintf(out, "app: %s (%s)\nkid: %s\n\n%s\nSign playback tokens with this private key (ES256, kid %s).\nIt is shown once and not stored by ClipMux.\n",
 		appName, app, kid, privatePEM, kid)
 	return nil
+}
+
+// createWebhook finds or creates the app and registers an endpoint for its
+// events, printing the signing secret once.
+func createWebhook(ctx context.Context, pool *pgxpool.Pool, box *secrets.Box, appName, url string, out io.Writer) error {
+	var ep db.WebhookEndpoint
+	var secret string
+	err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		q := db.New(tx)
+		app, err := appID(ctx, q, appName)
+		if err != nil {
+			return err
+		}
+		ep, secret, err = webhooks.CreateEndpoint(ctx, q, box, project, app, url)
+		return err
+	})
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "app:      %s (%s)\nendpoint: %s\nurl:      %s\nsecret:   %s\n\n"+
+		"Verify X-Webhook-Signature (sha256= hex HMAC-SHA256 of \"{X-Webhook-Timestamp}.{raw body}\")\n"+
+		"with this secret. It is shown once.\n", appName, ep.AppID, ep.ID, ep.Url, secret)
+	return nil
+}
+
+func orDefault(v, def string) string {
+	if v == "" {
+		return def
+	}
+	return v
 }

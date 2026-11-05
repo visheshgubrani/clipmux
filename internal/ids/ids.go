@@ -23,6 +23,7 @@ const (
 	Source     = "src"
 	Event      = "evt"
 	Webhook    = "whk"
+	Delivery   = "whd"
 	Storage    = "sto"
 	SigningKey = "kid"
 )

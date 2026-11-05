@@ -334,24 +334,14 @@ func finishPublication(ctx context.Context, qs *db.Queries, assetID, outputID, b
 	if err != nil || pending > 0 {
 		return err
 	}
-	pids, err := activePlaybackIDs(ctx, qs, assetID)
-	if err != nil {
-		return err
-	}
-	list := make([]map[string]string, 0, len(pids))
-	for _, p := range pids {
-		list = append(list, map[string]string{"id": p.ID, "policy": p.Policy})
-	}
-	extra := map[string]any{"output_id": outputID, "playback_ids": list, "base_url": baseURL}
 	switch asset.Status {
 	case "processing":
-		version, err := qs.MarkAssetReady(ctx, assetID)
-		if err != nil {
+		if _, err := qs.MarkAssetReady(ctx, assetID); err != nil {
 			return err
 		}
-		return outbox.AssetEvent(ctx, qs, asset, outbox.AssetReady, version, extra)
+		return outbox.AssetEvent(ctx, qs, assetID, outbox.AssetReady, baseURL, nil)
 	case "ready":
-		return outbox.AssetEvent(ctx, qs, asset, outbox.AssetUpdated, asset.Version, extra)
+		return outbox.AssetEvent(ctx, qs, assetID, outbox.AssetUpdated, baseURL, nil)
 	}
 	return nil
 }

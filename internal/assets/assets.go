@@ -25,6 +25,8 @@ type PlaybackID struct {
 	Policy string `json:"policy"`
 	// Playable is false until the asset has an output to serve.
 	Playable bool `json:"playable"`
+	// Status is active, revoking (unpublish not yet confirmed) or revoked.
+	Status string `json:"status"`
 }
 
 // View is an asset as the API returns it.
@@ -40,6 +42,8 @@ type View struct {
 	BaseURL     string       `json:"base_url"`
 	PlaybackIDs []PlaybackID `json:"playback_ids"`
 	CreatedAt   time.Time    `json:"created_at"`
+	// UpdatedAt moves with Version; GET /v1/assets?updated_since= pages on it.
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // Load builds the view of an asset.
@@ -52,10 +56,11 @@ func Load(ctx context.Context, q *db.Queries, a db.Asset, baseURL string) (View,
 	v := View{
 		ID: a.ID, Status: a.Status, Version: a.Version, BaseURL: baseURL,
 		Passthrough: a.Passthrough.String, ErrorCode: a.ErrorCode.String,
-		PlaybackIDs: make([]PlaybackID, 0, len(pids)), CreatedAt: a.CreatedAt.Time,
+		PlaybackIDs: make([]PlaybackID, 0, len(pids)),
+		CreatedAt:   a.CreatedAt.Time.UTC(), UpdatedAt: a.UpdatedAt.Time.UTC(),
 	}
 	for _, p := range pids {
-		v.PlaybackIDs = append(v.PlaybackIDs, PlaybackID{ID: p.ID, Policy: p.Policy, Playable: playable})
+		v.PlaybackIDs = append(v.PlaybackIDs, PlaybackID{ID: p.ID, Policy: p.Policy, Playable: playable && p.Status == "active", Status: p.Status})
 	}
 	return v, nil
 }
