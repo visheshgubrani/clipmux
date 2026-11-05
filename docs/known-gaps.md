@@ -5,29 +5,37 @@ when you introduce or discover it; remove it when it is closed.
 
 ## Bootstrap (2026-11-05)
 
-- Phase 1 beyond T08 (M1 done): upload → encode → encrypt → commit → signed
-  playback works end to end. Webhooks are written to the outbox but not sent
-  until T09; no dashboard, first-boot setup or player package yet.
+- Phase 1 is feature-complete. The exit test's Go and Chromium suites pass
+  locally; the Safari (`exit-safari.yml`) and ExoPlayer (`exit.yml`
+  android job) runs and the CI image job have not run yet, and Phase 1 exits
+  when they are green. iPhone and AirPlay are checked by hand only; Firefox
+  isn't in CI. The dashboard is minimal: no jobs or workers pages, no
+  share links, no playback-ID management in the UI, and a sample preview
+  that waits for Play rather than autoplaying.
+- Superseded and failed re-encodes leave their writing outputs and files in
+  place, like lost attempts (cleanup is the 7-day / 30-minute gap below).
 - Delivery reads Postgres on every request (route, output, signing key);
   there is no route cache yet, so revocation is immediate but every segment
-  costs a few queries. The server's internal signing key (dashboard preview,
-  share links) arrives with T10.
+  costs a few queries.
 - Serving playback from the same origin as the API and dashboard is the
   default; set `CLIPMUX_MEDIA_URL` to a separate registrable domain in
   production so a hostile stored file can't reach dashboard cookies.
 - Retired outputs and files from failed or lost attempts are not deleted yet
   (the 7-day retire window and 30-minute cleanup from the architecture).
-- Worker sandbox is the M1 subset: empty environment, demuxer and protocol
-  allowlists, wall-clock limits. No network namespace, rlimits or CPU cap
-  yet, so the built-in worker can still compete with the API for CPU.
+- The media tool sandbox (D027) gives the CPU a priority, not a quota:
+  `SCHED_IDLE` yields to the API, and only compose `cpus:` caps it. Landlock
+  is best effort: on kernels before 5.13 (or with it disabled) the tools can
+  read any file the worker's user can. Agents off Linux have no sandbox.
 - Workers report no free disk space at claim, and the server doesn't check
   it; a full disk fails the attempt (transient).
-- The content key secret is a file in the data directory, not yet encrypted
-  in Postgres (T10). Back it up: losing it makes every output unplayable.
+- Content key secrets live in Postgres sealed with the secrets key (D022).
+  Back up Postgres and the secrets key together: losing either makes every
+  output unplayable. There is no command to rotate the content key secret.
 - Sign caps file count per attempt, not total bytes; a presigned filesystem
-  PUT is capped at 5 GiB per object. Asset responses carry no `base_url` until delivery
-  (T08), and `GET /v1/assets` only looks up by `passthrough` (full listing
-  comes with the dashboard).
+  PUT is capped at 5 GiB per object. `GET /v1/assets` looks up by
+  `passthrough` or lists changes `updated_since`; the owner's `GET
+  /v1/library` lists every app's assets. Listing loads each asset's playback IDs with one
+  query per asset.
 - Idempotency keys are kept forever; a cleanup window (e.g. 24 h) is not
   enforced yet.
 - If the create transaction fails after storage started a multipart upload,
@@ -44,18 +52,23 @@ when you introduce or discover it; remove it when it is closed.
 - Every asset uses the one filesystem store; `storage_configs` rows are not
   read yet (per-asset storage arrives with R2 in Phase 2).
 - Sweepers assume one `serve` replica (no `pg_try_advisory_lock` leader yet).
-- Webhook events are written to the outbox (errored, reencode_failed) but not
-  delivered until T09; the event payload shape is provisional until then.
-  `clipmux serve` connects to Postgres, applies migrations, serves `/healthz`,
-  `/readyz` and a placeholder page, and prints a fresh setup token on every
-  boot (no owner table until T10).
-- The schema has no owner/session tables (T10) and no per-endpoint webhook
-  delivery tracking; the `outbox` table holds events only (T09 extends it).
-- Content-key and adapter-secret encryption columns exist, but nothing writes
-  or reads them yet; the external encryption key arrives with T08/T10.
-- `clipmux worker|push|listen|admin` print "not implemented".
-- No Dockerfile or production compose yet (P1-T10). The FFmpeg recipe in
-  `toolchain/` is lifted from the archived repo and has not been built here.
+  Saving new URLs updates the storage signer of the serve that saved them
+  only; another replica keeps the old public URL until it restarts.
+- The owner can't turn on TOTP yet. The sign-in limiter and the setup token
+  live in one serve's memory (one replica assumed); expired sessions are
+  never pruned.
+- Webhooks: an endpoint's secret can't be rotated (create a new endpoint and
+  disable the old one). No per-endpoint circuit breaker, so a dead endpoint costs up to 10 s per
+  delivery for a day. Outbox and delivery rows are never pruned. Owner-set
+  endpoint URLs are not filtered for private addresses (D018). A failed
+  re-encode is visible only through its webhook, not through catch-up.
+- The secrets key (D017) can't be rotated yet. Webhook secrets, the internal
+  signing key and the content key secrets are sealed with it; adapter
+  secrets join them with R2/S3 in Phase 2.
+- `clipmux push|listen` print "not implemented"; `clipmux admin` has
+  create-key, create-signing-key and create-webhook.
+- The image is ~575 MB and built from source on a cache miss (~20 min); it
+  isn't published, so every install builds it until launch.
 - No captions, chapters or transcripts. The LMS depends on them, so they gate
   the LMS migration (plans/lms-migration.md); OSS-V2 leaves them as an open
   roadmap decision.

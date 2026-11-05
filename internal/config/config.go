@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"net/url"
 	"strconv"
+	"strings"
 
 	"github.com/visheshgubrani/clipmux/internal/media"
 )
@@ -28,12 +30,33 @@ type Config struct {
 	// returned to apps as base_url. Defaults to PublicURL; ideally a
 	// different registrable domain from the dashboard.
 	MediaURL string
+	// URLsPinned is set when CLIPMUX_PUBLIC_URL is: the environment then
+	// decides both URLs and the first-boot URL step is read-only. Unset,
+	// the URLs saved at first boot apply (internal/settings).
+	URLsPinned bool
 	// MaxUploadBytes caps a declared upload size (CLIPMUX_MAX_UPLOAD_BYTES);
 	// 0 means the storage limit (32 MiB × 10,000 parts).
 	MaxUploadBytes int64
 	// BuiltinWorker starts `clipmux worker` as a child of serve
 	// (CLIPMUX_BUILTIN_WORKER, default true).
 	BuiltinWorker bool
+	// SecretsKey seals the secrets kept in Postgres (CLIPMUX_SECRETS_KEY,
+	// "v1:" and 64 hex digits). Unset, serve keeps it in
+	// {DataDir}/secrets.key, created on first boot. Never log it.
+	SecretsKey string
+	// TrustedProxies are the addresses (e.g. Caddy's) whose X-Forwarded-For
+	// is believed when limiting sign-ins (CLIPMUX_TRUSTED_PROXIES, comma-
+	// separated addresses or CIDR ranges).
+	TrustedProxies []netip.Prefix
+	// UnsandboxedWorker runs the built-in worker even where the sandbox
+	// doesn't hold (CLIPMUX_UNSANDBOXED_WORKER). Only for hosts that isolate
+	// the worker another way: its tools parse hostile uploads.
+	UnsandboxedWorker bool
+	// SelfDial, when set (a host, or host:port), is where the setup test
+	// connects for every URL it checks, keeping the URL's hostname for TLS
+	// and routing (CLIPMUX_SELF_DIAL, e.g. caddy): a container can't always
+	// reach its own public hostname. A bare host keeps each URL's port.
+	SelfDial string
 	// Tools are the media binaries (CLIPMUX_FFMPEG, CLIPMUX_FFPROBE,
 	// CLIPMUX_PACKAGER; default: found on PATH).
 	Tools media.Tools
@@ -52,6 +75,8 @@ func FromEnv(getenv func(string) string) (Config, error) {
 		ListenAddr:  orDefault(getenv("CLIPMUX_LISTEN"), DefaultListenAddr),
 		DatabaseURL: getenv("DATABASE_URL"),
 		DataDir:     orDefault(getenv("CLIPMUX_DATA_DIR"), DefaultDataDir),
+		SecretsKey:  getenv("CLIPMUX_SECRETS_KEY"),
+		SelfDial:    getenv("CLIPMUX_SELF_DIAL"),
 	}
 	if cfg.DatabaseURL == "" {
 		return Config{}, errors.New("DATABASE_URL is required")
@@ -59,12 +84,16 @@ func FromEnv(getenv func(string) string) (Config, error) {
 	if _, _, err := net.SplitHostPort(cfg.ListenAddr); err != nil {
 		return Config{}, fmt.Errorf("CLIPMUX_LISTEN %q: %w", cfg.ListenAddr, err)
 	}
-	publicURL, err := origin(orDefault(getenv("CLIPMUX_PUBLIC_URL"), DefaultPublicURL))
+	publicURL, err := Origin(orDefault(getenv("CLIPMUX_PUBLIC_URL"), DefaultPublicURL))
 	if err != nil {
 		return Config{}, fmt.Errorf("CLIPMUX_PUBLIC_URL: %w", err)
 	}
 	cfg.PublicURL = publicURL
-	if cfg.MediaURL, err = origin(orDefault(getenv("CLIPMUX_MEDIA_URL"), publicURL)); err != nil {
+	cfg.URLsPinned = getenv("CLIPMUX_PUBLIC_URL") != ""
+	if !cfg.URLsPinned && getenv("CLIPMUX_MEDIA_URL") != "" {
+		return Config{}, errors.New("CLIPMUX_MEDIA_URL needs CLIPMUX_PUBLIC_URL; set both, or neither and choose them at first boot")
+	}
+	if cfg.MediaURL, err = Origin(orDefault(getenv("CLIPMUX_MEDIA_URL"), publicURL)); err != nil {
 		return Config{}, fmt.Errorf("CLIPMUX_MEDIA_URL: %w", err)
 	}
 	if v := getenv("CLIPMUX_MAX_UPLOAD_BYTES"); v != "" {
@@ -81,6 +110,27 @@ func FromEnv(getenv func(string) string) (Config, error) {
 	default:
 		return Config{}, fmt.Errorf("CLIPMUX_BUILTIN_WORKER %q must be true or false", v)
 	}
+	for _, p := range strings.FieldsFunc(getenv("CLIPMUX_TRUSTED_PROXIES"), func(r rune) bool { return r == ',' || r == ' ' }) {
+		prefix, err := netip.ParsePrefix(p)
+		if err != nil {
+			addr, aerr := netip.ParseAddr(p)
+			if aerr != nil {
+				return Config{}, fmt.Errorf("CLIPMUX_TRUSTED_PROXIES: %q is not an address or CIDR range", p)
+			}
+			prefix = netip.PrefixFrom(addr, addr.BitLen())
+		}
+		cfg.TrustedProxies = append(cfg.TrustedProxies, prefix.Masked())
+	}
+	if cfg.SelfDial != "" && strings.ContainsAny(cfg.SelfDial, "/ ") {
+		return Config{}, fmt.Errorf("CLIPMUX_SELF_DIAL %q must be a host or host:port", cfg.SelfDial)
+	}
+	switch v := getenv("CLIPMUX_UNSANDBOXED_WORKER"); v {
+	case "", "false", "0":
+	case "true", "1":
+		cfg.UnsandboxedWorker = true
+	default:
+		return Config{}, fmt.Errorf("CLIPMUX_UNSANDBOXED_WORKER %q must be true or false", v)
+	}
 	cfg.Tools = media.DefaultTools()
 	cfg.Tools.FFmpeg = orDefault(getenv("CLIPMUX_FFMPEG"), cfg.Tools.FFmpeg)
 	cfg.Tools.FFprobe = orDefault(getenv("CLIPMUX_FFPROBE"), cfg.Tools.FFprobe)
@@ -88,9 +138,9 @@ func FromEnv(getenv func(string) string) (Config, error) {
 	return cfg, nil
 }
 
-// origin accepts an http(s) URL with no path, query or fragment and returns
+// Origin accepts an http(s) URL with no path, query or fragment and returns
 // it without a trailing slash.
-func origin(raw string) (string, error) {
+func Origin(raw string) (string, error) {
 	u, err := url.Parse(raw)
 	if err != nil {
 		return "", err

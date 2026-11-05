@@ -56,9 +56,11 @@ func newEnv(t *testing.T) *env {
 	}
 	svc := uploads.New(pool, store)
 	svc.MaxSize = 1000
-	svc.BaseURL = "https://media.example"
 	svc.Register(mux)
-	assets.New(pool, "https://media.example").Register(mux)
+	assets.New(pool).Register(mux)
+	if _, err := pool.Exec(ctx, `UPDATE projects SET media_url = 'https://media.example'`); err != nil {
+		t.Fatal(err)
+	}
 
 	e := &env{t: t, pool: pool, store: store, svc: svc, url: srv.URL, storeDir: storeDir}
 	for _, app := range []string{"app_lms", "app_site"} {

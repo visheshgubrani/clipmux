@@ -122,5 +122,114 @@ Context: two independent code reviews (correctness and security/spec) and a func
 - Playback IDs carry `playable` (false until the asset has an output). A replayed create for a finished upload returns no token instead of one that can never work.
 - The upload sweeper visits uploads least-recently-swept first, so one that keeps failing can't starve the rest.
 
+## D017 Secrets at rest — accepted (2026-11-05)
+Decisions within the architecture's rules, made in P1-T09:
+- `internal/secrets` seals every secret kept in Postgres with AES-256-GCM. A sealed value is `0x01 | key version (uint32 BE) | 12-byte nonce | ciphertext+tag`, and the associated data is `clipmux-secret-v1\n{table}\n{row_id}`, so a ciphertext copied to another row or table won't open.
+- The key is `CLIPMUX_SECRETS_KEY` (`v1:` + 64 hex digits) or, unset, `{data_dir}/secrets.key` (mode 0600). Only `serve` creates the file, and only on a database that holds no sealed secrets yet; `clipmux admin` only loads it, so an admin run with the wrong data directory can't seal secrets under a key serve doesn't have.
+- `projects.secrets_check` holds a value sealed on first boot; serve refuses to start with a key that can't open it. Key rotation is deferred (known gap).
+
+## D018 Webhook delivery — accepted (2026-11-05)
+Decisions within the architecture's rules, made in P1-T09:
+- An outbox webhook row is the event. A publisher pass (every 5 s in serve) fans it out to one `webhook_deliveries` row per enabled endpoint of the event's app, then sends due deliveries. An event for an app with no endpoints is done; apps catch up with `GET /v1/assets?updated_since=`.
+- Bodies are `{"id","type","created_at","data":<the asset as GET /v1/assets/{id} returns it>,"job"?:{"id","kind","error_code"}}`, built inside the state change's transaction, so `data.version` is the version the event describes. The bytes sent are the stored jsonb as Postgres renders it, identical on every try: receivers must verify the raw body.
+- Signing is the scheme the LMS already verifies: `X-Webhook-Signature: sha256=<hex HMAC-SHA256(secret, "{timestamp}.{body}")>` with `X-Webhook-Timestamp` in Unix seconds, fresh on every try, and the secret is the `whsec_…` string's bytes. Headers also carry `X-Webhook-Event`, `X-Webhook-Id` (the event ID to dedupe on) and `User-Agent: ClipMux-Webhooks/1.0`.
+- Any 2xx is success. Redirects are failures and never followed; a request has 10 s; at most 4 KiB of the response is read and none is kept. Failures are stored as codes (`http_500`, `timeout`, `connection_failed`, `endpoint_disabled`, `app_disabled`), never response text.
+- Retries wait 30 s, 2 min, 10 min, 30 min, 1 h, 2 h, 4 h, then 8 h, and stop 24 h after fan-out (the last try is moved to exactly 24 h): 11 tries in all. A claimed delivery is leased for 60 s and results are fenced on the attempt count, so a crashed sender only delays a resend.
+- Only the owner creates endpoints (`clipmux admin create-webhook` until the dashboard), so their URLs (http or https, no credentials or fragment) are not filtered for private addresses: a self-hosted receiver often sits on the same private network.
+
+## D019 Deleting an asset — accepted (2026-11-05)
+Decisions within the architecture's rules, made in P1-T09:
+- `DELETE /v1/assets/{id}` (`assets:write`) commits one transaction: lock the active upload, then the active job, then the asset (the order every writer uses); cancel the upload and the job, which fences their attempts; mark the asset `deleted` (version +1, `error_code` cleared); mark its playback IDs `revoking` with an unpublish `route_sync` row each; queue a `delete` job. Playback stops at that commit, because delivery refuses deleted assets.
+- The delete job runs in serve (`internal/lifecycle`), never on a worker. Each pass is safe to repeat: wait until every unpublish is confirmed, abort any multipart upload (its staging lives outside the asset's prefixes), delete `uploads/{id}/` and `media/{id}/`, then in one transaction set `deleted_at` and write `video.asset.deleted` only the first time. If a job of the asset ended less than 16 minutes ago, a second pass runs then, because PUT URLs signed before the cancel last 15 minutes.
+- The request runs the job inline for up to 10 s and answers 200 when the files are gone, or 202 while the job continues; both bodies are the asset view with `status: "deleted"`. Deleting a deleted asset changes nothing. `GET /v1/assets/{id}` keeps answering for a deleted asset, so a late webhook receiver can confirm it.
+- Revoked playback IDs read `revoked` only once their unpublish is confirmed; until then they read `revoking`.
+
+## D020 Catching up on missed events — accepted (2026-11-05)
+Decisions within the architecture's rules, made in P1-T09:
+- `GET /v1/assets?updated_since={RFC 3339}` lists every asset of the app whose `updated_at` is at or after the time, oldest first, ordered by `(updated_at, id)`, deleted assets included, at most 100 per page (`limit`), with an opaque `next_cursor` when there is more. It can't be combined with `passthrough`.
+- Every change to what the view shows bumps `version` and `updated_at`. `updated_at` is the transaction's start time, so a change can commit slightly after a later one; clients should overlap their window by a few minutes and keep the highest `version` per asset.
+- A failed re-encode changes nothing in the view, so it is visible only as its `video.asset.reencode_failed` webhook (known gap).
+
+## D021 Re-encode and playback-ID endpoints — accepted (2026-11-05)
+Decisions within the architecture's rules, made in P1-T09b:
+- `POST /v1/assets/{id}/reencode` (`assets:write`) queues a `reencode` job and answers 202 `{id, kind, status}`. Another active job gives 409 `{"error":{"code":"job_active","job_id":…}}`; `{"supersede": true}` cancels it first (its worker is told to stop). A ready asset keeps playing until the new output commits (`video.asset.updated`, or `reencode_failed`); an errored asset returns to `processing` with its error cleared. It needs a kept, stored source (409 `source_missing`), not `waiting_upload` (409 `asset_not_ready`) and not deleted (409 `asset_deleted`).
+- `POST /v1/assets/{id}/playback-ids` adds a `signed` (default) or `public` ID, at most 1000 live per asset, answering 201. Its route is published from the outbox; once it is live the app gets `video.asset.updated`. `DELETE /v1/assets/{id}/playback-ids/{pid}` marks the ID `revoking` (delivery refuses it at once) and answers 200 `revoked` once the unpublish is confirmed, or 202 `revoking` before; the confirmation bumps the version and sends `video.asset.updated`. Revoking twice is harmless.
+- Every POST takes `Idempotency-Key` through `internal/idempotency`. A key belongs to the app and to one request: the hash covers the route, the asset and the canonical body, so reusing a key on another endpoint or asset is 422 `idempotency_key_reused`. Upload keys stored before this change no longer replay.
+- Request validation errors carry details beside code and message (`httpjson.Problem`).
+
+## D022 Server keys live in Postgres, sealed — accepted (2026-11-05)
+Decisions within the architecture's rules, made in P1-T10:
+- Content key secrets are rows of `content_key_secrets` (one per version), sealed with the secrets key (D017, associated data `content_key_secrets` / `{project}/v{n}`). On first boot serve imports `{data_dir}/content.key` if an older install left one, otherwise creates version 1, and removes the file once the database holds the same secret; a file that disagrees with the database stops the boot.
+- Delivery and the worker API hold a ring of every version: new outputs use the newest, and an output's key is derived with the version it records, so rotating the secret never strands a viewer mid-session. Serve refuses to start if any output uses a version the ring lacks. (Rotation itself has no command yet.)
+- The server's internal ES256 key (`signing_keys` with no app) is created at boot, with its private key sealed; a partial unique index allows one active per project. App keys still keep only their public half (`internal/signingkeys`).
+- The filesystem storage URL-signing key stays in `{data_dir}/storage/signing.key`: it guards only the files in that same directory, so sealing it in Postgres would protect nothing a copy of the disk doesn't already expose.
+
+## D023 Public and media URLs are project settings — accepted (2026-11-05)
+Decisions within the architecture's rules, made in P1-T10:
+- `projects.public_url` and `projects.media_url` (an origin, renamed from `media_hostname` so dev keeps scheme and port) are the source of truth. `base_url` in asset views and webhook events is read from the project in the same transaction, so no component keeps a copy. Only filesystem storage signs with the public URL in memory; `internal/settings` updates it the moment the owner saves new URLs.
+- `CLIPMUX_PUBLIC_URL` (and optionally `CLIPMUX_MEDIA_URL`) pins both URLs: they are written to the project at boot and the first-boot URL step is read-only. Unset, a fresh install stores `http://localhost:8080` unconfirmed and the owner chooses real URLs at first boot. `CLIPMUX_MEDIA_URL` alone is refused.
+- No API key while the public URL is loopback (localhost, `*.localhost`, 127.0.0.0/8, ::1, 0.0.0.0): signed upload URLs and `base_url` would point at the owner's machine. LAN addresses count as reachable. `clipmux admin create-key --allow-loopback` is the development escape hatch.
+- Caddy obtains certificates on demand and asks `GET /_tls/ask?domain=` first; it answers 200 only for the public and media hostnames, never for IPs or loopback names, so the Caddyfile names no hosts.
+- The built-in worker runs with `--storage-via-server`: signed `/_storage/` URLs go to serve over loopback rather than back through the public hostname, which may not route from inside the host (the signature covers method, path and expiry, not the host).
+
+## D024 Owner account and dashboard sessions — accepted (2026-11-05)
+Decisions within the architecture's rules, made in P1-T10:
+- `POST /v1/setup/owner` takes the setup token (fresh each boot, held in memory, compared in constant time, printed only while no owner exists) with an email and a password. `owners.project_id` is unique, so registration closes atomically: a second one is 409 `registration_closed` however many race.
+- Passwords are PBKDF2-HMAC-SHA256 from the standard library, 600,000 iterations, 16-byte salt, stored as `pbkdf2-sha256$iterations$salt$hash`, 12 to 1024 characters, rehashed on sign-in when below today's count. Argon2id would need `x/crypto`; one throttled account doesn't justify it.
+- Sessions are a random cookie whose SHA-256 is stored, ending after 30 days or 7 days idle. The cookie is HttpOnly, SameSite=Strict, Path=/ with no Domain, and on an https public URL it is `__Host-clipmux_session` and Secure (`clipmux_session` on plain http). State-changing cookie requests from another site are refused with `http.CrossOriginProtection`.
+- Sign-ins are limited before any hashing: 5 failures per address and 20 overall per 15 minutes answer 429 with `Retry-After`; an unknown email costs the same hash. The address is the connection's, or the forwarding chain's first untrusted hop when the connection comes from `CLIPMUX_TRUSTED_PROXIES`.
+- `clipmux admin reset-password` reads the new password from stdin and ends every session. TOTP is deferred (known gap).
+
+## D025 Management API and the owner acting as an app — accepted (2026-11-05)
+Decisions within the architecture's rules, made in P1-T10:
+- The dashboard's routes (`internal/manage`, listed in docs/api.md) are public `/v1` routes that need the owner's session; an API key gets 401 on every one. They cover the URL step, apps (create, disable, enable; the Dashboard app can't be disabled), API keys, signing keys and webhook endpoints (each secret only in its create response), the library across apps, and preview tokens.
+- The integration routes take an `apikeys.Authenticator`: a bearer API key, or, without one, the owner's session acting as the app named by `ClipMux-App` (the Dashboard app by default) with every scope. So a dashboard upload is an ordinary `POST /v1/uploads`, with no private path.
+- API keys are refused with 409 `public_url_required` while the public URL is loopback (D023). A key created in the dashboard defaults to `uploads:write`, `assets:read` and `assets:write`.
+- Preview tokens are signed with the internal key, last one hour, and pick the asset's first active signed playback ID (a public one otherwise).
+- Asset views gain `app_id`, so the library can say which app owns each asset.
+
+## D026 Setup test — accepted (2026-11-05)
+Decisions within the architecture's rules, made in P1-T10:
+- The sample is embedded in the binary (`internal/setuptest/sample.mp4`, 8 s, 854×480 so the ladder makes two rungs plus audio, about 480 KB), produced by `toolchain/make_sample.sh`, so the control plane never runs ffmpeg.
+- A run creates the upload in-process as the Dashboard app's backend, then does what a browser and a player do, over HTTP to the configured URLs: sign parts and PUT them on the public URL, complete, wait for `ready`, then play through the media URL with internal-key tokens. Ten checks, in order: `upload`, `encode`, `play_master`, `play_key` (16 bytes), `play_segment_decrypts` (AES-128-CBC with the delivered key and the playlist's IV gives an fMP4 fragment), `thumbnail_token_refused_segment`, `thumbnail_token_refused_key`, `thumbnail_token_poster`, `no_token_refused`, `stored_segment_encrypted` (the stored bytes don't parse as a fragment). A failed check skips the ones that depend on it. Details never carry a URL or a token.
+- One test at a time per project (a partial unique index); asking again returns the queued one. Triggers: first boot (when the built-in worker is on and no test ever ran), saving the URLs, `POST /v1/setup-test`, and `clipmux admin setup-test --wait`, which exits non-zero unless every check passes. A new run deletes earlier samples, so the latest stays playable in the dashboard.
+- `CLIPMUX_SELF_DIAL=host:port` makes every check connect there (Caddy, in compose) while keeping the URL's hostname for TLS and routing, because a container often can't reach its own public hostname.
+
+## D027 Media tool sandbox — accepted (2026-11-05)
+Decisions within the architecture's rules, made in P1-T10:
+- Every ffmpeg, ffprobe and packager run goes through a hidden `clipmux sandbox-exec`, which confines itself on a locked thread and then execs the tool, so the tool starts confined: address space (8 GiB, `CLIPMUX_TOOL_MEMORY_MB`), CPU (6 h), file size (64 GiB), 1024 files and no core dumps; nice 19 and `SCHED_IDLE`; `no_new_privs`; a seccomp filter where `socket()` fails with EACCES (no network) and ptrace, bpf, io_uring, userfaultfd, perf, mount and keyring calls with EPERM, killing foreign-architecture and x32 calls; and Landlock where the kernel has it: system paths and the tool's own directory read-only, its own `/proc` entry only (other processes' environments can hold secrets), one writable directory (the attempt's), no TCP on ABI 4+, and no signals or abstract sockets outside on ABI 6+. The tool's environment is only `TMPDIR`, pointing at that directory. Standard library only (`syscall`).
+- Network namespaces and cgroups aren't available to an unprivileged process in Docker's default runtime, so the sandbox doesn't use them: seccomp stands in for "no network", and `SCHED_IDLE` is the CPU cap (compose `cpus:` is the hard one).
+- Limits, `no_new_privs` and seccomp are required. `serve` probes (`sandbox-exec --probe`) before starting the built-in worker and leaves it off with one clear error where they don't hold, unless `CLIPMUX_UNSANDBOXED_WORKER=true` says the host isolates it another way. Landlock is reported, not required. The worker reports what holds in its claim (`worker_info.sandbox`).
+
+## D028 Packaging — accepted (2026-11-05)
+Decisions within the architecture's rules, made in P1-T10:
+- One image (`Dockerfile`): a toolchain stage builds FFmpeg from source with `toolchain/build_ffmpeg.sh` (BuildKit cache) and installs the pinned packager; Go builds `CGO_ENABLED=0 -trimpath`; the runtime is Ubuntu 24.04 with the runtime package list, `verify_toolchain.sh` run on the final image, uid 10001, tini, and a `clipmux healthcheck` command instead of curl. It is not published (D005, D006).
+- `deploy/compose.yml` runs the app (`read_only`, tmpfs `/tmp`, `cap_drop: ALL`, `no-new-privileges`, port 8080 on 127.0.0.1 only), `postgres:18-alpine` and `caddy:2`. The Caddyfile names no host: on-demand TLS asks `/_tls/ask`, which is blocked from outside; plain HTTP serves first boot. The app trusts Docker's private ranges as proxies and self-dials `caddy` for the setup test.
+- CI's image job builds with the GHA cache, starts the stack, requires the sandbox probe and a refused socket inside the container, passes `clipmux admin setup-test --wait` through Caddy, and checks health through Caddy. Locally all of that holds under Docker's default seccomp profile, including Landlock.
+
+## D029 Video.js 10 with a refresh loader — accepted (2026-11-05)
+Amends D014. Made in P1-T11/T12:
+- Video.js 10 went stable on 1 October 2026, so `@clipmux/player` uses it: `@videojs/html` 10.2.0 (`<video-player>`, `<video-skin>`) around `<hlsjs-video>` (`@videojs/hlsjs-video` 10.2.0, hls.js 1.6.19), preferring MSE. Versions are pinned exactly and are at least two weeks old when taken.
+- Refresh is an hls.js `loader` wrapping hls.js's own: hls.js loads playlists, segments and AES-128 keys through it, and never retries a 4xx. Every request carries the session's current token (`/v/{token}/{playback_id}/` on the media origin only); a 401 calls `getToken()` once for every waiting request and retries through a fresh inner loader, so hls.js never sees the error and the position holds. A second 401 on one request, a 403, or `null` from `getToken` stops playback (`clipmux-denied`). There are no timers: VOD fetches ahead, so the first 401 arrives while seconds are still buffered.
+- `<clipmux-player base-url playback-id>` fetches its first token through `getToken` when none is set, and reloads only when what plays changes.
+- The spike passed in Chromium (the exit suites below: AES-128, separate audio, an 8 s token refreshed mid-playback with one continuous played range). iOS 17.1+ plays through hls.js on ManagedMediaSource and refreshes; native HLS (older iOS, AirPlay, Chromecast) can't and relies on the token lifetime. Safari's run is the macOS CI job; if it fails there, the fallback recorded in docs/plans/P1-T09-T12.md (Video.js 8 + VHS) applies.
+
+## D030 TypeScript workspace — accepted (2026-11-05)
+- A pnpm workspace at the root (pnpm 12.11.2, Node 24): `packages/uploader`, `packages/player`, `e2e/web`, and the dashboard. TypeScript 7 builds the packages with `tsc` (ESM and declarations); tests run on Node's built-in runner with type stripping; Biome lints and formats. Packages are `0.3.0` and private until launch (D006).
+
+## D031 Uploader resume and retries — accepted (2026-11-05)
+- Storage is the source of truth: the uploader keeps only `upload_id`, `upload_token`, `part_size` and `part_count` (`rememberUpload(localStorage)`), and each start lists stored parts and sends the rest; a part URL is signed in windows of 100 and again within 5 minutes of expiry or after a storage 403. Network errors, 5xx, 408 and 429 retry `min(30 s, 1 s·2ⁿ)` plus up to 1 s of jitter, 6 tries, honouring Retry-After and waiting while offline. A fatal error stops the other parts and never cancels the server upload, which stays resumable for 24 h. `pause()` stops between parts, `cancel()` ends the upload.
+
+## D032 Dashboard — accepted (2026-11-05)
+Made in P1-T10:
+- `dashboard/` is a Vite + React 19 SPA with React Router, Tailwind 4 and a few shadcn-style components (button, input, card, table, a Radix dialog). It uses `@clipmux/uploader` and `@clipmux/player`, and calls only the public API with the owner's session (D025): first-boot wizard (setup token → owner → URLs → setup test → the sample plays), sign-in, library, upload, asset detail with a preview, and apps with their API keys, signing keys and webhook endpoints (each secret shown once).
+- `make web` builds it into `internal/web/dist`, which is gitignored and embedded with `go:embed`; a binary built without it serves a placeholder page. The image builds it in its own stage. The SPA handler serves real files (hashed `assets/*` immutable for a year), sends every other path `index.html` uncached so deep links work, and answers a JSON 404 under the server's own prefixes (`/v1/`, `/v/`, `/p/`, `/_storage/`, `/worker/`, `/_tls/`, `/healthz`, `/readyz`).
+
+## D033 Exit-test harness — accepted (2026-11-05)
+Made in P1-T12:
+- `internal/e2e` (`CLIPMUX_E2E=1`) builds the real binary and boots `serve` with its sandboxed built-in worker on a fresh schema. Go exit tests: a signed, encrypted upload plays (ffmpeg as the HLS client); SIGKILLing the worker mid-encode recovers on a new attempt and output under the real 90 s lease (about two minutes; no lease knob, so the shipped defaults are what's proven); a fresh install passes its setup test.
+- `TestPlayerFixture` serves the browser suites: an encoded three-rung video on one serve, a fresh unpinned install on another, and pages, tokens and uploads on a third origin. Playwright runs them in Chromium (hls.js, `<clipmux-player>`, the uploader, the dashboard's first boot). WebKit on Linux isn't Safari and isn't run.
+- Safari (`exit-safari.yml`, macOS runner, safaridriver driven by a dependency-free WebDriver script) checks native HLS with its separate audio and `<clipmux-player>` refresh. ExoPlayer (`exit.yml`, an API 35 emulator) runs a Media3 instrumented test that reaches the fixture through `adb reverse`. Both run on main, weekly, by hand, and on PRs touching playback; macOS runs unsandboxed because the sandbox is Linux only.
+
 ## D007 Shaka Packager 3.9.3 — accepted (2026-11-05)
 Decision: pin v3.9.3 (`toolchain/versions.env`), the version clipmux-lms runs with AES-128 in production, which needs the init-segment workaround for Shaka issue 1616. Move to a release that fixes 1616 when one exists, re-running the Phase 1 player tests.

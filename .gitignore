@@ -6,3 +6,9 @@
 *.test
 *.out
 node_modules/
+packages/*/dist/
+e2e/web/dist/
+e2e/web/test-results/
+e2e/web/playwright-report/
+internal/web/dist/*
+!internal/web/dist/.gitkeep

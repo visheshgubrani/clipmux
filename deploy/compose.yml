@@ -1,0 +1,79 @@
+# ClipMux: the app, Postgres and Caddy (TLS for the public and media URLs).
+#
+#   cp deploy/compose.env.example deploy/.env   # then fill it in
+#   docker compose -f deploy/compose.yml up -d --build
+#   docker compose -f deploy/compose.yml logs app | grep setup_token
+#
+# Open the public URL (http://<this host> on first boot), create the owner with
+# the setup token, then set the public URL and the media URL; Caddy obtains a
+# certificate for each hostname on its first request.
+name: clipmux
+
+services:
+  app:
+    build:
+      context: ..
+    image: clipmux:local
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://clipmux:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in deploy/.env}@postgres:5432/clipmux?sslmode=disable
+      # Seals the secrets kept in Postgres; back it up with the database.
+      CLIPMUX_SECRETS_KEY: ${CLIPMUX_SECRETS_KEY:?set CLIPMUX_SECRETS_KEY in deploy/.env}
+      # Empty: chosen at first boot in the dashboard. Set: pinned.
+      CLIPMUX_PUBLIC_URL: ${CLIPMUX_PUBLIC_URL:-}
+      CLIPMUX_MEDIA_URL: ${CLIPMUX_MEDIA_URL:-}
+      # Caddy forwards the client's address; believe it only from Docker's networks.
+      CLIPMUX_TRUSTED_PROXIES: 172.16.0.0/12,192.168.0.0/16,10.0.0.0/8
+      # The setup test reaches the public hostnames through Caddy.
+      CLIPMUX_SELF_DIAL: caddy
+    volumes:
+      - data:/var/lib/clipmux/data
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    # Encoding runs at idle priority; this is the hard cap if you want one.
+    # cpus: 4
+    ports:
+      # For `clipmux admin` and debugging on the host only; the world goes through Caddy.
+      - 127.0.0.1:8080:8080
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: clipmux
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in deploy/.env}
+      POSTGRES_DB: clipmux
+    volumes:
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U clipmux -d clipmux"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - 80:80
+      - 443:443
+      - 443:443/udp
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - app
+
+volumes:
+  data:
+  pgdata:
+  caddy-data:
+  caddy-config:

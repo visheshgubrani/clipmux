@@ -1,0 +1,19 @@
+# Only what the image builds from.
+*
+!go.mod
+!go.sum
+!cmd/
+!internal/
+!toolchain/
+!package.json
+!pnpm-lock.yaml
+!pnpm-workspace.yaml
+!tsconfig.base.json
+!packages/
+!dashboard/
+!e2e/web/package.json
+**/node_modules
+**/dist
+internal/web/dist/node_modules
+**/*_test.go
+**/testdata/

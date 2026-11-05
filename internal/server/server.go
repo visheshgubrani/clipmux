@@ -15,17 +15,26 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/visheshgubrani/clipmux/internal/accounts"
+	"github.com/visheshgubrani/clipmux/internal/apikeys"
 	"github.com/visheshgubrani/clipmux/internal/assets"
 	"github.com/visheshgubrani/clipmux/internal/config"
 	"github.com/visheshgubrani/clipmux/internal/contentkey"
 	"github.com/visheshgubrani/clipmux/internal/db"
 	"github.com/visheshgubrani/clipmux/internal/delivery"
+	"github.com/visheshgubrani/clipmux/internal/lifecycle"
+	"github.com/visheshgubrani/clipmux/internal/manage"
 	"github.com/visheshgubrani/clipmux/internal/outputs"
 	"github.com/visheshgubrani/clipmux/internal/queue"
+	"github.com/visheshgubrani/clipmux/internal/secrets"
+	"github.com/visheshgubrani/clipmux/internal/settings"
+	"github.com/visheshgubrani/clipmux/internal/setuptest"
+	"github.com/visheshgubrani/clipmux/internal/signingkeys"
 	"github.com/visheshgubrani/clipmux/internal/storage"
 	"github.com/visheshgubrani/clipmux/internal/sweeper"
 	"github.com/visheshgubrani/clipmux/internal/uploads"
 	"github.com/visheshgubrani/clipmux/internal/web"
+	"github.com/visheshgubrani/clipmux/internal/webhooks"
 	"github.com/visheshgubrani/clipmux/internal/workerapi"
 )
 
@@ -39,6 +48,18 @@ const UploadSweepInterval = 5 * time.Minute
 // RouteSyncInterval is how often pending route publications are retried;
 // commits publish inline, so this only matters after a crash or an error.
 const RouteSyncInterval = 15 * time.Second
+
+// WebhookInterval is how often new events fan out and due deliveries are
+// sent; an event reaches its endpoints within about this long.
+const WebhookInterval = 5 * time.Second
+
+// ControlJobInterval is how often control-plane jobs (asset deletes) are
+// run; DELETE runs its job inline, so this mostly covers crashes, pending
+// unpublishes and second passes.
+const ControlJobInterval = 15 * time.Second
+
+// SetupTestInterval is how often a queued setup test is picked up.
+const SetupTestInterval = 5 * time.Second
 
 // Registrar adds an API's routes to the root mux.
 type Registrar interface {
@@ -59,6 +80,9 @@ type Deps struct {
 	Storage http.Handler
 	// APIs register the integration API routes (/v1/...).
 	APIs []Registrar
+	// ServesHost answers Caddy's on-demand TLS check (/_tls/ask): whether
+	// a certificate may be obtained for a hostname. nil refuses every name.
+	ServesHost func(host string) bool
 }
 
 // Handler returns the root HTTP handler. /healthz reports the process is up;
@@ -89,7 +113,16 @@ func Handler(d Deps) http.Handler {
 		}
 		text(w, http.StatusOK, "ok")
 	})
-	mux.Handle("GET /", http.FileServerFS(web.Dist()))
+	// Caddy asks before obtaining a certificate, so the Caddyfile needs no
+	// hostnames: only the configured public and media hostnames get one.
+	mux.HandleFunc("GET /_tls/ask", func(w http.ResponseWriter, r *http.Request) {
+		if d.ServesHost == nil || !d.ServesHost(r.URL.Query().Get("domain")) {
+			text(w, http.StatusNotFound, "not a configured hostname")
+			return
+		}
+		text(w, http.StatusOK, "ok")
+	})
+	mux.Handle("GET /", web.Handler(web.Dist()))
 	return mux
 }
 
@@ -112,18 +145,38 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	}
 	logger.Info("database ready")
 
+	// The key that seals secrets in Postgres; serve refuses to start with one
+	// that can't open what the database already holds.
+	box, err := secrets.LoadOrCreate(ctx, db.New(pool), db.DefaultProjectID, cfg.DataDir, cfg.SecretsKey)
+	if err != nil {
+		return err
+	}
+
+	// The public and media URLs: pinned by the environment, or chosen by the
+	// owner at first boot.
+	urls, err := settings.Load(ctx, pool, db.DefaultProjectID, cfg)
+	if err != nil {
+		return err
+	}
+
 	// v1 starts on filesystem storage; per-asset storage configs and the
 	// R2/S3 adapters arrive in Phase 2.
-	store, err := storage.OpenFilesystem(filepath.Join(cfg.DataDir, "storage"), storage.FilesystemOptions{BaseURL: cfg.PublicURL})
+	store, err := storage.OpenFilesystem(filepath.Join(cfg.DataDir, "storage"), storage.FilesystemOptions{BaseURL: urls.PublicURL()})
 	if err != nil {
 		return err
 	}
 	defer store.Close()
-	logger.Info("storage ready", "kind", "fs", "public_url", cfg.PublicURL)
+	urls.OnChange(func(u settings.URLs) { store.SetBaseURL(u.Public) })
+	logger.Info("storage ready", "kind", "fs", "public_url", urls.PublicURL(), "media_url", urls.MediaURL(), "pinned", urls.URLs().Pinned)
 
-	// The content key secret; losing it makes every output unplayable.
-	keys, err := contentkey.LoadOrCreate(cfg.DataDir)
+	// The content key secrets, sealed in Postgres; losing them makes every
+	// output unplayable.
+	keys, err := contentkey.Load(ctx, pool, box, db.DefaultProjectID, cfg.DataDir)
 	if err != nil {
+		return err
+	}
+	// The server's own token-signing key (dashboard preview, setup tests).
+	if err := signingkeys.EnsureInternal(ctx, pool, box, db.DefaultProjectID); err != nil {
 		return err
 	}
 
@@ -131,21 +184,39 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	return serve(ctx, cfg, ln, logger, pool, store, keys)
+	return serve(ctx, cfg, ln, logger, boot{pool: pool, store: store, keys: keys, box: box, urls: urls})
+}
+
+// boot is what Run opens before serving.
+type boot struct {
+	pool  *pgxpool.Pool
+	store *storage.Filesystem
+	keys  contentkey.Ring
+	box   *secrets.Box
+	urls  *settings.Store
 }
 
 // serve runs the HTTP server and background loops. It returns only after
 // every goroutine it started has stopped, so the caller can close the pool
 // and storage.
-func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog.Logger, pool *pgxpool.Pool, store *storage.Filesystem, keys contentkey.Secret) error {
-	// Until the owner table exists (P1-T10) every boot is a first boot.
-	logger.Info("first boot: create the owner account with this setup token", "setup_token", rand.Text())
+func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog.Logger, b boot) error {
+	pool, store, keys, box := b.pool, b.store, b.keys, b.box
+	acct := accounts.New(pool, db.DefaultProjectID, b.urls.PublicURL)
+	acct.TrustedProxies = cfg.TrustedProxies
+	acct.Logger = logger
+	// Until the owner registers, every boot prints a fresh setup token; the
+	// first visitor needs it to create the owner account.
+	if token, open, err := acct.SetupToken(ctx); err != nil {
+		return err
+	} else if open {
+		logger.Info("first boot: open the dashboard and create the owner account with this setup token",
+			"url", b.urls.PublicURL(), "setup_token", token)
+	}
 
 	q := queue.New(pool)
-	q.KeyVersion = keys.Version
+	q.KeyVersion = keys.Current().Version
 	committer := outputs.New(pool, q, store)
 	committer.Logger = logger
-	committer.BaseURL = cfg.MediaURL
 	// The built-in worker's key lives only in memory and is handed to the
 	// child worker; it is never logged or stored.
 	workerKey := rand.Text()
@@ -153,17 +224,33 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 	worker.Logger = logger
 	upl := uploads.New(pool, store)
 	upl.Logger = logger
-	upl.BaseURL = cfg.MediaURL
 	playback := delivery.New(pool, store, keys)
 	playback.Logger = logger
 	if cfg.MaxUploadBytes > 0 {
 		upl.MaxSize = cfg.MaxUploadBytes
 	}
+	hooks := webhooks.New(pool, box)
+	hooks.Logger = logger
+	life := lifecycle.New(pool, store, committer)
+	life.Logger = logger
+	mgmt := manage.New(pool, box, acct, b.urls)
+	mgmt.Logger = logger
+	tests := setuptest.New(pool, store, box, b.urls, upl, life, cfg.SelfDial)
+	tests.Logger = logger
+	mgmt.Tests = tests
+	assetsAPI := assets.New(pool)
+	// The dashboard calls the integration API with the owner's session,
+	// acting as one app; integration keys never reach the management API.
+	for _, auth := range []*apikeys.Authenticator{upl.Auth, life.Auth, assetsAPI.Auth} {
+		auth.Session = mgmt.ActAsApp
+	}
 
-	ctx, stop := context.WithCancel(ctx)
-	defer stop()
+	// Defers run last in, first out: stop cancels the loops before wg.Wait
+	// waits for them, whichever way serve returns.
 	var wg sync.WaitGroup
 	defer wg.Wait()
+	ctx, stop := context.WithCancel(ctx)
+	defer stop()
 	wg.Go(func() {
 		sweeper.Every(ctx, LeaseSweepInterval, "lost_leases", func(ctx context.Context) (int, error) {
 			return q.SweepLostLeases(ctx, 100)
@@ -179,18 +266,41 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 			return committer.SyncRoutes(ctx, 1000)
 		}, logger)
 	})
+	wg.Go(func() {
+		sweeper.Every(ctx, WebhookInterval, "webhooks", hooks.Run, logger)
+	})
+	wg.Go(func() {
+		sweeper.Every(ctx, ControlJobInterval, "control_jobs", life.Run, logger)
+	})
+	wg.Go(func() {
+		sweeper.Every(ctx, SetupTestInterval, "setup_tests", tests.Run, logger)
+	})
+	// Saving the URLs re-runs the setup test: a wrong hostname should fail
+	// here, not in an app.
+	mgmt.URLsSaved = func(settings.URLs) {
+		if _, err := tests.Queue(ctx, "urls_saved"); err != nil {
+			logger.Error("queue setup test", "err", err)
+		}
+	}
+	// With the built-in worker the sample can encode right away, so a fresh
+	// install proves its path on first boot.
+	if cfg.BuiltinWorker {
+		if err := tests.QueueFirst(ctx); err != nil {
+			return err
+		}
+	}
 	if cfg.BuiltinWorker {
 		bw := &builtinWorker{
 			server: loopbackURL(ln.Addr()), key: workerKey, workDir: workerDir(cfg.DataDir),
-			tools: cfg.Tools, logger: logger,
+			tools: cfg.Tools, logger: logger, unsandboxed: cfg.UnsandboxedWorker,
 		}
 		wg.Go(func() { bw.run(ctx) })
 	}
 
 	srv := &http.Server{
 		Handler: Handler(Deps{
-			DB: pool, Worker: worker.Handler(), Storage: store.Handler(),
-			APIs: []Registrar{upl, assets.New(pool, cfg.MediaURL), playback},
+			DB: pool, Worker: worker.Handler(), Storage: store.Handler(), ServesHost: b.urls.ServesHost,
+			APIs: []Registrar{acct, mgmt, upl, assetsAPI, life, playback},
 		}),
 		ReadHeaderTimeout: 10 * time.Second,
 		// Requests inherit ctx, so long-poll claims end at shutdown.
@@ -202,7 +312,7 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 	go func() { errCh <- srv.Serve(ln) }()
 	select {
 	case err := <-errCh:
-		return err // stop and wg.Wait run via defer
+		return err // the deferred stop ends the loops, then wg.Wait waits for them
 	case <-ctx.Done():
 	}
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

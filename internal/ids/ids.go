@@ -23,8 +23,11 @@ const (
 	Source     = "src"
 	Event      = "evt"
 	Webhook    = "whk"
+	Delivery   = "whd"
 	Storage    = "sto"
 	SigningKey = "kid"
+	Owner      = "own"
+	SetupTest  = "stt"
 )
 
 const alphabet = "0123456789abcdefghjkmnpqrstvwxyz" // Crockford, lowercase

@@ -457,3 +457,20 @@ func TestCompleteRecoversFromACrashBetweenRenameAndCleanup(t *testing.T) {
 		t.Fatalf("staging must be cleaned up: %v", err)
 	}
 }
+
+// The owner sets the public URL at first boot; signed URLs must use it from
+// then on without a restart.
+func TestSetBaseURLMovesSignedURLs(t *testing.T) {
+	f, err := OpenFilesystem(t.TempDir(), FilesystemOptions{BaseURL: "http://localhost:8080"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	ctx := context.Background()
+	before, _ := f.PresignGet(ctx, "uploads/ast_1/source", time.Minute)
+	f.SetBaseURL("https://video.example.com/")
+	after, _ := f.PresignGet(ctx, "uploads/ast_1/source", time.Minute)
+	if !strings.HasPrefix(before, "http://localhost:8080/_storage/objects/") || !strings.HasPrefix(after, "https://video.example.com/_storage/objects/uploads/ast_1/source?") {
+		t.Fatalf("before %s\nafter  %s", before, after)
+	}
+}

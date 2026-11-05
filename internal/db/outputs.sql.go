@@ -29,6 +29,17 @@ func (q *Queries) CommitOutput(ctx context.Context, arg CommitOutputParams) (int
 	return result.RowsAffected(), nil
 }
 
+const countPendingRoutesForAsset = `-- name: CountPendingRoutesForAsset :one
+SELECT count(*) FROM outbox WHERE kind = 'route_sync' AND done_at IS NULL AND asset_id = $1
+`
+
+func (q *Queries) CountPendingRoutesForAsset(ctx context.Context, assetID pgtype.Text) (int64, error) {
+	row := q.db.QueryRow(ctx, countPendingRoutesForAsset, assetID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countPendingRoutesForOutput = `-- name: CountPendingRoutesForOutput :one
 SELECT count(*) FROM outbox
 WHERE kind = 'route_sync' AND done_at IS NULL AND asset_id = $1
@@ -195,6 +206,19 @@ type RetryOutboxParams struct {
 func (q *Queries) RetryOutbox(ctx context.Context, arg RetryOutboxParams) error {
 	_, err := q.db.Exec(ctx, retryOutbox, arg.LastError, arg.DelaySeconds, arg.ID)
 	return err
+}
+
+const revokePlaybackID = `-- name: RevokePlaybackID :execrows
+UPDATE playback_ids SET status = 'revoked', revoked_at = now() WHERE id = $1 AND status = 'revoking'
+`
+
+// A revoked ID reads revoked only once its unpublish is confirmed.
+func (q *Queries) RevokePlaybackID(ctx context.Context, id string) (int64, error) {
+	result, err := q.db.Exec(ctx, revokePlaybackID, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const succeedJob = `-- name: SucceedJob :exec

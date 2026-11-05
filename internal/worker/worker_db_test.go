@@ -67,17 +67,17 @@ func newRig(t *testing.T) *rig {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { store.Close() })
-	keys, err := contentkey.LoadOrCreate(t.TempDir())
+	keys, err := contentkey.FromHex(1, "0f0e0d0c0b0a090807060504030201000f0e0d0c0b0a09080706050403020100")
 	if err != nil {
 		t.Fatal(err)
 	}
 	q := queue.New(pool)
-	api := workerapi.New(q, workerapi.BuiltinKey("k"), store, keys, outputs.New(pool, q, store))
+	api := workerapi.New(q, workerapi.BuiltinKey("k"), store, contentkey.NewRing(keys), outputs.New(pool, q, store))
 	mux.Handle("POST /worker/v1/", api.Handler())
 	for _, m := range []string{"GET", "PUT"} {
 		mux.Handle(m+" /_storage/", store.Handler())
 	}
-	delivery.New(pool, store, keys).Register(mux)
+	delivery.New(pool, store, contentkey.NewRing(keys)).Register(mux)
 	return &rig{pool: pool, store: store, media: srv.URL, worker: &Worker{
 		Server: srv.URL, Key: "k", WorkDir: t.TempDir(), Tools: tl, HTTP: http.DefaultClient,
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Wait: time.Millisecond,

@@ -44,3 +44,10 @@ WHERE kind = 'route_sync' AND done_at IS NULL AND asset_id = sqlc.arg(asset_id)
 UPDATE assets SET status = 'ready', version = version + 1, updated_at = now()
 WHERE id = $1 AND status = 'processing'
 RETURNING version;
+
+-- name: RevokePlaybackID :execrows
+-- A revoked ID reads revoked only once its unpublish is confirmed.
+UPDATE playback_ids SET status = 'revoked', revoked_at = now() WHERE id = $1 AND status = 'revoking';
+
+-- name: CountPendingRoutesForAsset :one
+SELECT count(*) FROM outbox WHERE kind = 'route_sync' AND done_at IS NULL AND asset_id = $1;

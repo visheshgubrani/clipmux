@@ -111,7 +111,7 @@ type Queue struct {
 func New(pool *pgxpool.Pool) *Queue {
 	return &Queue{
 		pool:         pool,
-		ProjectID:    "prj_default",
+		ProjectID:    db.DefaultProjectID,
 		Lease:        90 * time.Second,
 		LostBudget:   5,
 		FailedBudget: 3,
@@ -462,18 +462,18 @@ func (q *Queue) endJob(ctx context.Context, qs *db.Queries, job db.Job, code str
 	if err != nil {
 		return err
 	}
-	event, version := outbox.AssetErrored, asset.Version
+	event := outbox.AssetErrored
 	switch asset.Status {
 	case "deleted":
 		return nil
 	case "ready":
 		event = outbox.AssetReencodeFailed
 	default:
-		if version, err = qs.MarkAssetErrored(ctx, db.MarkAssetErroredParams{ID: asset.ID, ErrorCode: text(code)}); err != nil {
+		if _, err = qs.MarkAssetErrored(ctx, db.MarkAssetErroredParams{ID: asset.ID, ErrorCode: text(code)}); err != nil {
 			return err
 		}
 	}
-	return outbox.AssetEvent(ctx, qs, asset, event, version, map[string]any{"job_id": job.ID, "error_code": code})
+	return outbox.AssetEvent(ctx, qs, asset.ID, event, &outbox.Job{ID: job.ID, Kind: job.Kind, ErrorCode: code})
 }
 
 func hashToken(token string) []byte {

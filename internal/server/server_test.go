@@ -9,16 +9,51 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/visheshgubrani/clipmux/internal/config"
 	"github.com/visheshgubrani/clipmux/internal/contentkey"
+	"github.com/visheshgubrani/clipmux/internal/db"
 	"github.com/visheshgubrani/clipmux/internal/db/dbtest"
+	"github.com/visheshgubrani/clipmux/internal/outbox"
+	"github.com/visheshgubrani/clipmux/internal/secrets"
+	"github.com/visheshgubrani/clipmux/internal/settings"
 	"github.com/visheshgubrani/clipmux/internal/storage"
+	"github.com/visheshgubrani/clipmux/internal/webhooks"
 )
 
 type fakeDB struct{ err error }
+
+func testRing(t *testing.T) contentkey.Ring {
+	t.Helper()
+	s, err := contentkey.FromHex(1, strings.Repeat("00", 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return contentkey.NewRing(s)
+}
+
+func testBoot(t *testing.T, pool *pgxpool.Pool, store *storage.Filesystem, box *secrets.Box) boot {
+	t.Helper()
+	urls, err := settings.Load(context.Background(), pool, "prj_default", config.Config{PublicURL: config.DefaultPublicURL, MediaURL: config.DefaultPublicURL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return boot{pool: pool, store: store, keys: testRing(t), box: box, urls: urls}
+}
+
+func testBox(t *testing.T) *secrets.Box {
+	t.Helper()
+	b, err := secrets.NewBox(1, make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
 
 func (f fakeDB) Ping(context.Context) error { return f.err }
 
@@ -96,7 +131,7 @@ func TestServeStopsCleanlyOnShutdown(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		done <- serve(ctx, config.Config{}, ln, slog.New(slog.NewTextHandler(io.Discard, nil)), pool, store, contentkey.Secret{Version: 1})
+		done <- serve(ctx, config.Config{}, ln, slog.New(slog.NewTextHandler(io.Discard, nil)), testBoot(t, pool, store, testBox(t)))
 	}()
 
 	url := "http://" + ln.Addr().String() + "/readyz"
@@ -122,6 +157,81 @@ func TestServeStopsCleanlyOnShutdown(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("serve did not return after shutdown")
+	}
+}
+
+func TestServeReturnsWhenTheListenerFails(t *testing.T) {
+	pool := dbtest.New(t)
+	store, err := storage.OpenFilesystem(t.TempDir(), storage.FilesystemOptions{BaseURL: "http://localhost"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln.Close() // Serve fails at once; the background loops must still stop.
+	done := make(chan error, 1)
+	go func() {
+		done <- serve(context.Background(), config.Config{}, ln, slog.New(slog.NewTextHandler(io.Discard, nil)), testBoot(t, pool, store, testBox(t)))
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("serve returned nil, want the listener's error")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("serve hung after its listener failed")
+	}
+}
+
+func TestServeDeliversWebhooks(t *testing.T) {
+	pool := dbtest.New(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	box := testBox(t)
+	got := make(chan string, 1)
+	receiver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case got <- r.Header.Get("X-Webhook-Event"):
+		default:
+		}
+	}))
+	defer receiver.Close()
+	if _, _, err := webhooks.CreateEndpoint(ctx, db.New(pool), box, "prj_default", "app_dashboard", receiver.URL); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO assets (id, project_id, app_id, status, storage_id) VALUES ('ast_1', 'prj_default', 'app_dashboard', 'processing', 'sto_default')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := outbox.AssetEvent(ctx, db.New(pool), "ast_1", outbox.AssetReady, nil); err != nil {
+		t.Fatal(err)
+	}
+	store, err := storage.OpenFilesystem(t.TempDir(), storage.FilesystemOptions{BaseURL: "http://localhost"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- serve(ctx, config.Config{}, ln, slog.New(slog.NewTextHandler(io.Discard, nil)), testBoot(t, pool, store, box))
+	}()
+	select {
+	case event := <-got:
+		if event != "video.asset.ready" {
+			t.Fatalf("delivered %q, want video.asset.ready", event)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("serve never delivered the queued event")
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -152,4 +262,84 @@ func TestBuiltinWorkerEnvironmentIsMinimal(t *testing.T) {
 			t.Fatalf("the child inherited %q", kv)
 		}
 	}
+	if args := strings.Join(b.args(), " "); !strings.Contains(args, "--storage-via-server") || !strings.Contains(args, "--sandbox") {
+		t.Fatalf("child args %q: the built-in worker must reach storage over loopback and confine its tools", args)
+	}
+	b.unsandboxed = true
+	if args := strings.Join(b.args(), " "); strings.Contains(args, "--sandbox") {
+		t.Fatalf("child args %q with CLIPMUX_UNSANDBOXED_WORKER: no --sandbox", args)
+	}
 }
+
+func TestCaddyAskAllowsOnlyConfiguredHostnames(t *testing.T) {
+	h := Handler(Deps{DB: fakeDB{}, ServesHost: func(host string) bool { return host == "video.example.com" }})
+	for path, want := range map[string]int{
+		"/_tls/ask?domain=video.example.com": http.StatusOK,
+		"/_tls/ask?domain=evil.example.com":  http.StatusNotFound,
+		"/_tls/ask":                          http.StatusNotFound,
+	} {
+		if rec := get(t, h, path); rec.Code != want {
+			t.Errorf("GET %s = %d, want %d", path, rec.Code, want)
+		}
+	}
+	if rec := get(t, Handler(Deps{DB: fakeDB{}}), "/_tls/ask?domain=video.example.com"); rec.Code != http.StatusNotFound {
+		t.Errorf("with no settings every name is refused, got %d", rec.Code)
+	}
+}
+
+// Until the owner exists every boot prints a setup token; after that, none.
+func TestSetupTokenIsPrintedOnlyWhileNoOwnerExists(t *testing.T) {
+	pool := dbtest.New(t)
+	boot := func() string {
+		t.Helper()
+		store, err := storage.OpenFilesystem(t.TempDir(), storage.FilesystemOptions{BaseURL: "http://localhost"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer store.Close()
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var logs strings.Builder
+		var mu sync.Mutex
+		logger := slog.New(slog.NewTextHandler(writerFunc(func(p []byte) (int, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			return logs.Write(p)
+		}), nil))
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan error, 1)
+		go func() { done <- serve(ctx, config.Config{}, ln, logger, testBoot(t, pool, store, testBox(t))) }()
+		for i := 0; ; i++ {
+			if res, err := http.Get("http://" + ln.Addr().String() + "/healthz"); err == nil {
+				res.Body.Close()
+				break
+			}
+			if i == 100 {
+				t.Fatal("serve never answered")
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		cancel()
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		return logs.String()
+	}
+	if logs := boot(); !strings.Contains(logs, "setup_token=") {
+		t.Fatalf("a fresh install must print its setup token:\n%s", logs)
+	}
+	if _, err := pool.Exec(context.Background(), `INSERT INTO owners (id, project_id, email, password_hash) VALUES ('own_1', 'prj_default', 'o@example.com', 'x')`); err != nil {
+		t.Fatal(err)
+	}
+	if logs := boot(); strings.Contains(logs, "setup_token") {
+		t.Fatalf("with an owner, no setup token may be printed:\n%s", logs)
+	}
+}
+
+type writerFunc func([]byte) (int, error)
+
+func (f writerFunc) Write(p []byte) (int, error) { return f(p) }

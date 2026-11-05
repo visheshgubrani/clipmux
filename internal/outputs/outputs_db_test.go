@@ -12,8 +12,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/visheshgubrani/clipmux/internal/db"
 	"github.com/visheshgubrani/clipmux/internal/db/dbtest"
 	"github.com/visheshgubrani/clipmux/internal/media"
 	"github.com/visheshgubrani/clipmux/internal/queue"
@@ -54,8 +56,9 @@ func newFx(t *testing.T) *fx {
 	t.Cleanup(func() { store.Close() })
 	q := queue.New(pool)
 	c := New(pool, q, store)
-	c.BaseURL = "https://media.example"
-	return &fx{t: t, pool: pool, store: store, q: q, c: c}
+	f := &fx{t: t, pool: pool, store: store, q: q, c: c}
+	f.exec(`UPDATE projects SET media_url = 'https://media.example'`)
+	return f
 }
 
 func (f *fx) exec(sql string, args ...any) {
@@ -332,5 +335,47 @@ func TestPendingRoutesFinishAfterACrash(t *testing.T) {
 	}
 	if n, _ := f.c.SyncRoutes(context.Background(), 100); n != 0 {
 		t.Fatalf("a second sweep published %d routes again", n)
+	}
+}
+
+// Revoking a playback ID unpublishes its route through the same outbox, so a
+// failed write is retried rather than lost; the ID reads revoked only once
+// the unpublish is confirmed.
+func TestUnpublishRowsRevokeTheirPlaybackIDOnConfirmation(t *testing.T) {
+	f := newFx(t)
+	f.asset("ready", 2, "reencode")
+	ctx := context.Background()
+	f.exec(`UPDATE playback_ids SET status = 'revoking' WHERE id = 'pid_1'`)
+	if err := pgx.BeginFunc(ctx, f.pool, func(tx pgx.Tx) error {
+		qs := db.New(tx)
+		asset, err := qs.LockAsset(ctx, "ast_1")
+		if err != nil {
+			return err
+		}
+		return QueueUnpublish(ctx, qs, asset, "pid_1")
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.scalar(`SELECT payload->>'op' FROM outbox WHERE kind = 'route_sync'`); got != "unpublish" {
+		t.Fatalf("route_sync op = %v, want unpublish", got)
+	}
+	if got := f.scalar(`SELECT status FROM playback_ids WHERE id = 'pid_1'`); got != "revoking" {
+		t.Fatalf("before publication pid_1 = %v, want revoking", got)
+	}
+	if n, err := f.c.SyncRoutes(ctx, 100); err != nil || n != 1 {
+		t.Fatalf("SyncRoutes = %d, %v", n, err)
+	}
+	got := map[string]any{
+		"pid_0":   f.scalar(`SELECT status FROM playback_ids WHERE id = 'pid_0'`),
+		"pid_1":   f.scalar(`SELECT status FROM playback_ids WHERE id = 'pid_1'`),
+		"revoked": f.scalar(`SELECT revoked_at IS NOT NULL FROM playback_ids WHERE id = 'pid_1'`),
+		"pending": f.scalar(`SELECT count(*) FROM outbox WHERE kind = 'route_sync' AND done_at IS NULL`),
+		"status":  f.scalar(`SELECT status FROM assets`),
+	}
+	want := map[string]any{"pid_0": "active", "pid_1": "revoked", "revoked": true, "pending": int64(0), "status": "ready"}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("%s = %v, want %v", k, got[k], v)
+		}
 	}
 }

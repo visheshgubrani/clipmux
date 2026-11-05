@@ -9,9 +9,11 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"syscall"
 
 	"github.com/visheshgubrani/clipmux/internal/media"
+	"github.com/visheshgubrani/clipmux/internal/sandbox"
 	"github.com/visheshgubrani/clipmux/internal/worker"
 )
 
@@ -31,6 +33,8 @@ func runWorker(args []string, getenv func(string) string, stderr io.Writer) int 
 	server := fs.String("server", orEnv(getenv("CLIPMUX_SERVER"), "http://127.0.0.1:8080"), "ClipMux server URL")
 	workDir := fs.String("work-dir", filepath.Join(os.TempDir(), "clipmux-worker"), "scratch directory for attempts")
 	once := fs.Bool("once", false, "run at most one job, then exit (serverless)")
+	viaServer := fs.Bool("storage-via-server", false, "fetch and upload signed storage URLs through --server (the built-in worker)")
+	confine := fs.Bool("sandbox", false, "confine ffmpeg and the packager (Linux; required unless the worker is isolated otherwise)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -51,10 +55,26 @@ func runWorker(args []string, getenv func(string) string, stderr io.Writer) int 
 	}
 	w := &worker.Worker{
 		Server: *server, Key: key, WorkDir: *workDir, Tools: tools, Logger: logger,
-		HTTP: worker.DefaultHTTPClient(),
+		HTTP: worker.DefaultHTTPClient(), StorageViaServer: *viaServer,
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if *confine {
+		self, err := os.Executable()
+		if err != nil {
+			logger.Error("sandbox", "err", err)
+			return 1
+		}
+		st, err := sandbox.ProbeExec(ctx, self)
+		if err != nil {
+			logger.Error("the sandbox doesn't hold here; refusing to run hostile media unconfined", "err", err)
+			return 1
+		}
+		mem, _ := strconv.ParseUint(getenv("CLIPMUX_TOOL_MEMORY_MB"), 10, 64)
+		w.Tools.Sandbox = &media.Sandbox{Exec: self, MemoryMB: mem}
+		w.Sandbox = st.String()
+		logger.Info("media tools are sandboxed", "sandbox", w.Sandbox)
+	}
 	if _, err := tools.Versions(ctx); err != nil {
 		logger.Error("media tools are missing", "err", err)
 		return 1

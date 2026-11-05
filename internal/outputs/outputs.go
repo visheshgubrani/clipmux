@@ -56,8 +56,6 @@ type Committer struct {
 	queue  *queue.Queue
 	store  storage.Storage
 	Logger *slog.Logger
-	// BaseURL is the media origin, sent with ready and updated events.
-	BaseURL string
 
 	// publishInline publishes routes right after the commit; tests turn it
 	// off to stand in for a crash between the two steps.
@@ -83,7 +81,7 @@ func (c *Committer) Commit(ctx context.Context, token string, m media.Manifest) 
 		return queue.Verdict{}, err
 	}
 	v, err := c.queue.CommitAttempt(ctx, token, func(qs *db.Queries, a db.Attempt, _ db.Job) error {
-		return commit(ctx, qs, a, raw, c.BaseURL)
+		return commit(ctx, qs, a, raw)
 	})
 	if err != nil || v.Stop {
 		return v, err
@@ -215,19 +213,52 @@ func (c *Committer) read(ctx context.Context, key string) (string, error) {
 }
 
 // route is a route_sync row's payload: the record that makes a playback ID
-// servable (docs/architecture.md, "Route records").
+// servable (docs/architecture.md, "Route records"), or with Op "unpublish"
+// the instruction to remove it.
 type route struct {
 	V          int    `json:"v"`
+	Op         string `json:"op,omitempty"`
 	PlaybackID string `json:"playback_id"`
 	AppID      string `json:"app_id"`
 	AssetID    string `json:"asset_id"`
-	OutputID   string `json:"output_id"`
-	Policy     string `json:"policy"`
-	Backend    string `json:"backend"`
+	OutputID   string `json:"output_id,omitempty"`
+	Policy     string `json:"policy,omitempty"`
+	Backend    string `json:"backend,omitempty"`
+}
+
+const opUnpublish = "unpublish"
+
+func queueRouteSync(ctx context.Context, qs *db.Queries, asset db.Asset, r route) error {
+	payload, err := json.Marshal(r)
+	if err != nil {
+		return err
+	}
+	return qs.InsertOutbox(ctx, db.InsertOutboxParams{
+		ID: ids.New(ids.Event), ProjectID: asset.ProjectID, Kind: "route_sync",
+		AppID: pgtype.Text{String: asset.AppID, Valid: true}, AssetID: pgtype.Text{String: asset.ID, Valid: true},
+		Payload: payload,
+	})
+}
+
+// QueueRoute writes the route_sync row that publishes playback ID p of asset
+// at its output outputID. Call it in the transaction that changes either.
+func QueueRoute(ctx context.Context, qs *db.Queries, asset db.Asset, p db.PlaybackID, outputID string) error {
+	return queueRouteSync(ctx, qs, asset, route{
+		V: 1, PlaybackID: p.ID, AppID: asset.AppID, AssetID: asset.ID, OutputID: outputID, Policy: p.Policy,
+		// The built-in handler serves every asset from origin storage;
+		// "r2" arrives with the Cloudflare Worker in Phase 2.
+		Backend: "origin",
+	})
+}
+
+// QueueUnpublish writes the route_sync row that removes a revoking playback
+// ID's route; SyncRoutes marks the ID revoked once that is confirmed.
+func QueueUnpublish(ctx context.Context, qs *db.Queries, asset db.Asset, playbackID string) error {
+	return queueRouteSync(ctx, qs, asset, route{V: 1, Op: opUnpublish, PlaybackID: playbackID, AppID: asset.AppID, AssetID: asset.ID})
 }
 
 // commit is step 2, inside the liveness transaction.
-func commit(ctx context.Context, qs *db.Queries, a db.Attempt, manifest []byte, baseURL string) error {
+func commit(ctx context.Context, qs *db.Queries, a db.Attempt, manifest []byte) error {
 	asset, err := qs.LockAsset(ctx, a.AssetID)
 	if err != nil {
 		return err
@@ -256,22 +287,12 @@ func commit(ctx context.Context, qs *db.Queries, a db.Attempt, manifest []byte, 
 		return err
 	}
 	for _, p := range pids {
-		payload, _ := json.Marshal(route{
-			V: 1, PlaybackID: p.ID, AppID: asset.AppID, AssetID: asset.ID, OutputID: a.OutputID, Policy: p.Policy,
-			// The built-in handler serves every asset from origin storage;
-			// "r2" arrives with the Cloudflare Worker in Phase 2.
-			Backend: "origin",
-		})
-		if err := qs.InsertOutbox(ctx, db.InsertOutboxParams{
-			ID: ids.New(ids.Event), ProjectID: asset.ProjectID, Kind: "route_sync",
-			AppID: pgtype.Text{String: asset.AppID, Valid: true}, AssetID: pgtype.Text{String: asset.ID, Valid: true},
-			Payload: payload,
-		}); err != nil {
+		if err := QueueRoute(ctx, qs, asset, p, a.OutputID); err != nil {
 			return err
 		}
 	}
 	if len(pids) == 0 {
-		return finishPublication(ctx, qs, asset.ID, a.OutputID, baseURL)
+		return finishPublication(ctx, qs, asset.ID, a.OutputID)
 	}
 	return nil
 }
@@ -294,6 +315,7 @@ func (c *Committer) SyncRoutes(ctx context.Context, limit int) (int, error) {
 		}
 		type key struct{ asset, output string }
 		touched := map[key]bool{}
+		revokedFrom := map[string]bool{}
 		for _, row := range rows {
 			var r route
 			if err := json.Unmarshal(row.Payload, &r); err != nil {
@@ -301,16 +323,33 @@ func (c *Committer) SyncRoutes(ctx context.Context, limit int) (int, error) {
 			}
 			// The built-in delivery handler reads routes straight from
 			// Postgres, so confirming the row is the whole publication. The
-			// Phase 2 Worker adapter writes _routes/{playback_id}.json here,
-			// and a failed write is retried through RetryOutbox.
+			// Phase 2 Worker adapter writes (or deletes)
+			// _routes/{playback_id}.json here, from the current state in
+			// Postgres since rows may be confirmed out of order, and a failed
+			// write is retried through RetryOutbox.
 			if err := qs.MarkOutboxDone(ctx, row.ID); err != nil {
 				return err
 			}
-			touched[key{r.AssetID, r.OutputID}] = true
 			published++
+			if r.Op == opUnpublish {
+				n, err := qs.RevokePlaybackID(ctx, r.PlaybackID)
+				if err != nil {
+					return err
+				}
+				if n == 1 {
+					revokedFrom[r.AssetID] = true
+				}
+				continue
+			}
+			touched[key{r.AssetID, r.OutputID}] = true
 		}
 		for k := range touched {
-			if err := finishPublication(ctx, qs, k.asset, k.output, c.BaseURL); err != nil {
+			if err := finishPublication(ctx, qs, k.asset, k.output); err != nil {
+				return err
+			}
+		}
+		for assetID := range revokedFrom {
+			if err := finishRevocation(ctx, qs, assetID); err != nil {
 				return err
 			}
 		}
@@ -319,10 +358,24 @@ func (c *Committer) SyncRoutes(ctx context.Context, limit int) (int, error) {
 	return published, err
 }
 
+// finishRevocation tells the app once a revoked playback ID has stopped
+// working: the asset's view no longer lists it. A deleted asset says so with
+// its own event instead.
+func finishRevocation(ctx context.Context, qs *db.Queries, assetID string) error {
+	asset, err := qs.LockAsset(ctx, assetID)
+	if err != nil || asset.Status == "deleted" {
+		return err
+	}
+	if _, err := qs.BumpAssetVersion(ctx, assetID); err != nil {
+		return err
+	}
+	return outbox.AssetEvent(ctx, qs, assetID, outbox.AssetUpdated, nil)
+}
+
 // finishPublication is step 4. It locks the asset before counting pending
 // routes, so of two concurrent publishers the second sees the first's work
 // and exactly one of them finishes.
-func finishPublication(ctx context.Context, qs *db.Queries, assetID, outputID, baseURL string) error {
+func finishPublication(ctx context.Context, qs *db.Queries, assetID, outputID string) error {
 	asset, err := qs.LockAsset(ctx, assetID)
 	if err != nil {
 		return err
@@ -334,24 +387,14 @@ func finishPublication(ctx context.Context, qs *db.Queries, assetID, outputID, b
 	if err != nil || pending > 0 {
 		return err
 	}
-	pids, err := activePlaybackIDs(ctx, qs, assetID)
-	if err != nil {
-		return err
-	}
-	list := make([]map[string]string, 0, len(pids))
-	for _, p := range pids {
-		list = append(list, map[string]string{"id": p.ID, "policy": p.Policy})
-	}
-	extra := map[string]any{"output_id": outputID, "playback_ids": list, "base_url": baseURL}
 	switch asset.Status {
 	case "processing":
-		version, err := qs.MarkAssetReady(ctx, assetID)
-		if err != nil {
+		if _, err := qs.MarkAssetReady(ctx, assetID); err != nil {
 			return err
 		}
-		return outbox.AssetEvent(ctx, qs, asset, outbox.AssetReady, version, extra)
+		return outbox.AssetEvent(ctx, qs, assetID, outbox.AssetReady, nil)
 	case "ready":
-		return outbox.AssetEvent(ctx, qs, asset, outbox.AssetUpdated, asset.Version, extra)
+		return outbox.AssetEvent(ctx, qs, assetID, outbox.AssetUpdated, nil)
 	}
 	return nil
 }

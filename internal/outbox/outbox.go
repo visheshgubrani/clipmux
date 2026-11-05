@@ -1,7 +1,7 @@
 // Package outbox writes side effects as rows in the same transaction as the
 // state change that causes them (docs/architecture.md, "Webhooks"), so a
-// crash can't lose one. Delivery of webhook rows lands in P1-T09 and of
-// route_sync rows in P1-T07.
+// crash can't lose one. internal/webhooks delivers the webhook rows and
+// internal/outputs publishes the route_sync rows.
 package outbox
 
 import (
@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/visheshgubrani/clipmux/internal/assets"
 	"github.com/visheshgubrani/clipmux/internal/db"
 	"github.com/visheshgubrani/clipmux/internal/ids"
 )
@@ -24,19 +25,38 @@ const (
 	AssetDeleted        = "video.asset.deleted"
 )
 
-// AssetEvent queues a webhook event about asset for its app. version is the
-// asset version the event describes; extra adds fields to data.
-func AssetEvent(ctx context.Context, q *db.Queries, asset db.Asset, eventType string, version int64, extra map[string]any) error {
+// Job names the job behind an event and why it ended.
+type Job struct {
+	ID        string `json:"id"`
+	Kind      string `json:"kind"`
+	ErrorCode string `json:"error_code,omitempty"`
+}
+
+// event is a webhook body. Data is the asset exactly as GET
+// /v1/assets/{id} returns it, at the version the event describes.
+type event struct {
+	ID        string      `json:"id"`
+	Type      string      `json:"type"`
+	CreatedAt string      `json:"created_at"`
+	Data      assets.View `json:"data"`
+	Job       *Job        `json:"job,omitempty"`
+}
+
+// AssetEvent queues a webhook event about an asset for its app. It reads the
+// asset inside the caller's transaction, so call it after the state change
+// the event reports. job is set for events a job caused.
+func AssetEvent(ctx context.Context, q *db.Queries, assetID, eventType string, job *Job) error {
+	asset, err := q.GetAssetByID(ctx, assetID)
+	if err != nil {
+		return err
+	}
+	view, err := assets.Load(ctx, q, asset)
+	if err != nil {
+		return err
+	}
 	id := ids.New(ids.Event)
-	data := map[string]any{"asset_id": asset.ID, "version": version}
-	if asset.Passthrough.Valid {
-		data["passthrough"] = asset.Passthrough.String
-	}
-	for k, v := range extra {
-		data[k] = v
-	}
-	payload, err := json.Marshal(map[string]any{
-		"id": id, "type": eventType, "created_at": time.Now().UTC().Format(time.RFC3339), "data": data,
+	payload, err := json.Marshal(event{
+		ID: id, Type: eventType, CreatedAt: time.Now().UTC().Format(time.RFC3339), Data: view, Job: job,
 	})
 	if err != nil {
 		return err

@@ -15,7 +15,6 @@
 package uploads
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -35,6 +34,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/assets"
 	"github.com/visheshgubrani/clipmux/internal/db"
 	"github.com/visheshgubrani/clipmux/internal/httpjson"
+	"github.com/visheshgubrani/clipmux/internal/idempotency"
 	"github.com/visheshgubrani/clipmux/internal/ids"
 	"github.com/visheshgubrani/clipmux/internal/outbox"
 	"github.com/visheshgubrani/clipmux/internal/queue"
@@ -50,13 +50,14 @@ const (
 const (
 	maxPartsPerSign = 100
 	maxPassthrough  = 255
-	maxIdemKey      = 255
 )
 
 // Service runs uploads against one storage backend.
 type Service struct {
 	pool  *pgxpool.Pool
 	store storage.Storage
+	// Auth accepts API keys, and the dashboard session once serve sets it.
+	Auth *apikeys.Authenticator
 
 	// MaxSize is the largest declared size accepted.
 	MaxSize int64
@@ -65,15 +66,13 @@ type Service struct {
 	PartURLTTL time.Duration
 	// IdleExpiry is how long an upload may go without activity.
 	IdleExpiry time.Duration
-	// BaseURL is the media origin returned with assets.
-	BaseURL string
-	Logger  *slog.Logger
+	Logger     *slog.Logger
 }
 
 // New returns a Service with the architecture's defaults.
 func New(pool *pgxpool.Pool, store storage.Storage) *Service {
 	return &Service{
-		pool: pool, store: store,
+		pool: pool, store: store, Auth: apikeys.NewAuthenticator(pool),
 		MaxSize:    storage.PartSize * storage.MaxParts,
 		PartURLTTL: time.Hour,
 		IdleExpiry: 24 * time.Hour,
@@ -81,17 +80,8 @@ func New(pool *pgxpool.Pool, store storage.Storage) *Service {
 	}
 }
 
-// apiError is an expected failure with a stable code.
-type apiError struct {
-	status        int
-	code, message string
-}
-
-func (e *apiError) Error() string { return e.code + ": " + e.message }
-
-func fail(status int, code, message string) error {
-	return &apiError{status: status, code: code, message: message}
-}
+// fail is an expected failure with a stable code.
+func fail(status int, code, message string) error { return httpjson.Fail(status, code, message) }
 
 var errNotActive = fail(http.StatusConflict, "upload_not_active", "the upload is no longer active")
 
@@ -140,27 +130,20 @@ func (s *Service) Create(ctx context.Context, key apikeys.Key, req CreateRequest
 		return Created{}, fail(http.StatusBadRequest, "invalid_request", `playback_policy must be "signed" or "public"`)
 	case len(req.Passthrough) > maxPassthrough:
 		return Created{}, fail(http.StatusBadRequest, "invalid_request", "passthrough is limited to 255 bytes")
-	case len(idemKey) > maxIdemKey:
-		return Created{}, fail(http.StatusBadRequest, "invalid_request", "Idempotency-Key is limited to 255 bytes")
 	}
 	canonical, _ := json.Marshal(req)
-	reqHash := sha256.Sum256(canonical)
 
 	var out Created
 	var started *storage.Multipart
 	var startedKey string
 	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 		q := db.New(tx)
-		if idemKey != "" {
-			_, err := q.ClaimIdempotencyKey(ctx, db.ClaimIdempotencyKeyParams{
-				ProjectID: key.ProjectID, AppID: key.AppID, Key: idemKey, RequestHash: reqHash[:],
-			})
-			if errors.Is(err, pgx.ErrNoRows) {
-				return s.replay(ctx, q, key, idemKey, reqHash[:], &out)
-			}
-			if err != nil {
-				return err
-			}
+		claim, err := idempotency.Begin(ctx, q, key.ProjectID, key.AppID, idemKey, "POST /v1/uploads", canonical)
+		if err != nil {
+			return idempotency.Problem(err)
+		}
+		if claim != nil && claim.Replay != nil {
+			return s.replay(ctx, q, claim.Replay, &out)
 		}
 		st, err := q.GetDefaultStorage(ctx, key.ProjectID)
 		if err != nil {
@@ -196,13 +179,9 @@ func (s *Service) Create(ctx context.Context, key apikeys.Key, req CreateRequest
 			UploadID: up.ID, AssetID: asset.ID, PartSize: up.PartSize, PartCount: partCount(up),
 			PlaybackIDs: []assets.PlaybackID{{ID: pid.ID, Policy: pid.Policy}},
 		}
-		if idemKey != "" {
-			stored, _ := json.Marshal(out) // without the token
-			if err := q.SaveIdempotentResponse(ctx, db.SaveIdempotentResponseParams{
-				AppID: key.AppID, Key: idemKey, ResponseStatus: pgtype.Int4{Int32: http.StatusCreated, Valid: true}, ResponseBody: stored,
-			}); err != nil {
-				return err
-			}
+		stored, _ := json.Marshal(out) // without the token
+		if err := claim.Save(ctx, http.StatusCreated, stored); err != nil {
+			return err
 		}
 		out.UploadToken = token
 		return nil
@@ -217,19 +196,9 @@ func (s *Service) Create(ctx context.Context, key apikeys.Key, req CreateRequest
 	return out, nil
 }
 
-// replay answers a repeated Idempotency-Key.
-func (s *Service) replay(ctx context.Context, q *db.Queries, key apikeys.Key, idemKey string, reqHash []byte, out *Created) error {
-	prev, err := q.GetIdempotencyKey(ctx, db.GetIdempotencyKeyParams{AppID: key.AppID, Key: idemKey})
-	if err != nil {
-		return err
-	}
-	if !bytes.Equal(prev.RequestHash, reqHash) {
-		return fail(http.StatusUnprocessableEntity, "idempotency_key_reused", "this Idempotency-Key was used with a different request")
-	}
-	if len(prev.ResponseBody) == 0 {
-		return fail(http.StatusConflict, "idempotency_in_progress", "a request with this Idempotency-Key is still running")
-	}
-	if err := json.Unmarshal(prev.ResponseBody, out); err != nil {
+// replay answers a repeated Idempotency-Key from the stored response.
+func (s *Service) replay(ctx context.Context, q *db.Queries, stored []byte, out *Created) error {
+	if err := json.Unmarshal(stored, out); err != nil {
 		return err
 	}
 	token := rand.Text()
@@ -386,7 +355,7 @@ func (s *Service) markCompleted(ctx context.Context, tx pgx.Tx, up db.Upload) (a
 	if _, err := queue.Enqueue(ctx, tx, queue.Job{ProjectID: asset.ProjectID, AssetID: asset.ID, Kind: "transcode"}); err != nil {
 		return assets.View{}, err
 	}
-	return assets.Load(ctx, q, asset, s.BaseURL)
+	return assets.Load(ctx, q, asset)
 }
 
 // Cancel stops an active upload: storage is aborted and the asset errors
@@ -429,11 +398,10 @@ func (s *Service) end(ctx context.Context, q *db.Queries, up db.Upload, status, 
 	if asset.Status != "waiting_upload" {
 		return nil
 	}
-	version, err := q.MarkAssetErrored(ctx, db.MarkAssetErroredParams{ID: asset.ID, ErrorCode: pgtype.Text{String: code, Valid: true}})
-	if err != nil {
+	if _, err := q.MarkAssetErrored(ctx, db.MarkAssetErroredParams{ID: asset.ID, ErrorCode: pgtype.Text{String: code, Valid: true}}); err != nil {
 		return err
 	}
-	return outbox.AssetEvent(ctx, q, asset, outbox.AssetErrored, version, map[string]any{"error_code": code})
+	return outbox.AssetEvent(ctx, q, asset.ID, outbox.AssetErrored, nil)
 }
 
 func (s *Service) assetView(ctx context.Context, q *db.Queries, assetID string) (assets.View, error) {
@@ -441,7 +409,7 @@ func (s *Service) assetView(ctx context.Context, q *db.Queries, assetID string) 
 	if err != nil {
 		return assets.View{}, err
 	}
-	return assets.Load(ctx, q, a, s.BaseURL)
+	return assets.Load(ctx, q, a)
 }
 
 // --- sweeper ---
@@ -562,12 +530,10 @@ func (s *Service) Register(mux *http.ServeMux) {
 func cors(w http.ResponseWriter) { w.Header().Set("Access-Control-Allow-Origin", "*") }
 
 func (s *Service) respond(w http.ResponseWriter, op string, status int, v any, err error) {
-	var ae *apiError
 	switch {
 	case err == nil:
 		httpjson.Write(w, status, v)
-	case errors.As(err, &ae):
-		httpjson.Error(w, ae.status, ae.code, ae.message)
+	case httpjson.WriteProblem(w, err):
 	case errors.Is(err, storage.ErrTooLarge):
 		httpjson.Error(w, http.StatusRequestEntityTooLarge, "too_large", "the upload is too large for this storage")
 	default:
@@ -578,13 +544,8 @@ func (s *Service) respond(w http.ResponseWriter, op string, status int, v any, e
 
 func (s *Service) handleCreate(w http.ResponseWriter, r *http.Request) {
 	cors(w)
-	key, err := apikeys.Authenticate(r.Context(), s.pool, httpjson.Bearer(r))
-	if err != nil {
-		httpjson.Error(w, http.StatusUnauthorized, "unauthorized", "a valid API key is required")
-		return
-	}
-	if !key.Can(apikeys.UploadsWrite) {
-		httpjson.Error(w, http.StatusForbidden, "insufficient_scope", "this key lacks uploads:write")
+	key, ok := s.Auth.Require(w, r, apikeys.UploadsWrite)
+	if !ok {
 		return
 	}
 	var req CreateRequest
@@ -674,13 +635,8 @@ func (s *Service) handleCancel(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else {
-		key, err := apikeys.Authenticate(r.Context(), s.pool, bearer)
-		if err != nil {
-			httpjson.Error(w, http.StatusUnauthorized, "unauthorized", "an upload token or API key is required")
-			return
-		}
-		if !key.Can(apikeys.UploadsWrite) {
-			httpjson.Error(w, http.StatusForbidden, "insufficient_scope", "this key lacks uploads:write")
+		key, ok := s.Auth.Require(w, r, apikeys.UploadsWrite)
+		if !ok {
 			return
 		}
 		up, err := q.GetUpload(r.Context(), id)

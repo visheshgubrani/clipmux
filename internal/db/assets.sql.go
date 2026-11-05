@@ -197,3 +197,62 @@ func (q *Queries) ListAssetsByPassthrough(ctx context.Context, arg ListAssetsByP
 	}
 	return items, nil
 }
+
+const listAssetsUpdatedSince = `-- name: ListAssetsUpdatedSince :many
+SELECT id, project_id, app_id, status, error_code, version, storage_id, source_uri, agent_source_id, source_kept, current_output_id, passthrough, duration_seconds, created_at, updated_at, deleted_at FROM assets
+WHERE app_id = $1
+  AND (updated_at, id) > ($2::timestamptz, $3::text)
+ORDER BY updated_at, id
+LIMIT $4
+`
+
+type ListAssetsUpdatedSinceParams struct {
+	AppID     string
+	AfterTime pgtype.Timestamptz
+	AfterID   string
+	MaxAssets int32
+}
+
+// Catch-up for apps that missed webhooks: oldest change first, deleted
+// assets included, keyset-paged on (updated_at, id).
+func (q *Queries) ListAssetsUpdatedSince(ctx context.Context, arg ListAssetsUpdatedSinceParams) ([]Asset, error) {
+	rows, err := q.db.Query(ctx, listAssetsUpdatedSince,
+		arg.AppID,
+		arg.AfterTime,
+		arg.AfterID,
+		arg.MaxAssets,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Asset{}
+	for rows.Next() {
+		var i Asset
+		if err := rows.Scan(
+			&i.ID,
+			&i.ProjectID,
+			&i.AppID,
+			&i.Status,
+			&i.ErrorCode,
+			&i.Version,
+			&i.StorageID,
+			&i.SourceUri,
+			&i.AgentSourceID,
+			&i.SourceKept,
+			&i.CurrentOutputID,
+			&i.Passthrough,
+			&i.DurationSeconds,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.DeletedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}

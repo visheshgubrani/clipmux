@@ -18,6 +18,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -97,10 +98,27 @@ func probeStream(t *testing.T, init, segment []byte) (codec string, packets int)
 }
 
 func TestTranscodeEncryptsEveryRenditionAndDecryptsBack(t *testing.T) {
+	transcodeAndCheck(t, false)
+}
+
+// The same pipeline with every tool confined as the built-in worker runs it:
+// no network, writes only in the attempt directory, limits, idle priority.
+func TestGoldenTranscodePassesUnderTheSandbox(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the sandbox is Linux only")
+	}
+	transcodeAndCheck(t, true)
+}
+
+func transcodeAndCheck(t *testing.T, sandboxed bool) {
 	tools := testTools(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	dir := t.TempDir()
+	if sandboxed {
+		tools.Sandbox = &Sandbox{Exec: os.Args[0]}
+		tools = tools.In(dir)
+	}
 	source := filepath.Join(dir, "source.mp4")
 	ffmpeg(t, "-f", "lavfi", "-i", "testsrc2=size=854x480:rate=25", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100",
 		"-t", "13", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", source)

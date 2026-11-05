@@ -50,6 +50,34 @@ type Worker struct {
 	// IdleTimeout fails a transfer that moves no bytes for this long
 	// (default 60 s), so a half-open connection can't hang the attempt.
 	IdleTimeout time.Duration
+	// Sandbox describes what confines the tools, reported at claim
+	// ("none" when nothing does).
+	Sandbox string
+	// StorageViaServer sends signed filesystem-storage URLs (/_storage/…)
+	// to Server instead of the public URL they name: the built-in worker
+	// reaches serve over loopback. The signature doesn't cover the host.
+	StorageViaServer bool
+}
+
+func orNone(s string) string {
+	if s == "" {
+		return "none"
+	}
+	return s
+}
+
+// storageURL applies StorageViaServer to a signed URL.
+func (w *Worker) storageURL(raw string) string {
+	if !w.StorageViaServer {
+		return raw
+	}
+	u, err := neturl.Parse(raw)
+	s, serr := neturl.Parse(w.Server)
+	if err != nil || serr != nil || !strings.HasPrefix(u.Path, "/_storage/") {
+		return raw
+	}
+	u.Scheme, u.Host = s.Scheme, s.Host
+	return u.String()
 }
 
 var errStopped = errors.New("worker: the server told this attempt to stop")
@@ -111,6 +139,7 @@ func (w *Worker) claim(ctx context.Context) (*workerapi.Job, error) {
 		"packager_version":  versions.Packager,
 		"encoders":          []string{"libx264"},
 		"wait_seconds":      wait.Seconds(),
+		"sandbox":           orNone(w.Sandbox),
 	}, &job)
 	switch {
 	case err != nil:
@@ -212,7 +241,8 @@ func (w *Worker) process(ctx context.Context, job *workerapi.Job, dir string, re
 	if err := w.download(ctx, job, source); err != nil {
 		return media.Manifest{}, codeDownload, err
 	}
-	src, err := media.Probe(ctx, w.Tools, source)
+	tools := w.Tools.In(dir) // confined to this attempt's directory
+	src, err := media.Probe(ctx, tools, source)
 	if errors.Is(err, media.ErrUnsupportedSource) {
 		return media.Manifest{}, codeUnsupportedSource, err
 	}
@@ -220,7 +250,7 @@ func (w *Worker) process(ctx context.Context, job *workerapi.Job, dir string, re
 		return media.Manifest{}, codeTranscode, err
 	}
 	out := filepath.Join(dir, "out")
-	m, err := media.Transcode(ctx, w.Tools, source, src, filepath.Join(dir, "work"), out, key, report)
+	m, err := media.Transcode(ctx, tools, source, src, filepath.Join(dir, "work"), out, key, report)
 	if err != nil {
 		return media.Manifest{}, codeTranscode, err
 	}
@@ -265,7 +295,7 @@ func (w *Worker) download(ctx context.Context, job *workerapi.Job, dst string) e
 			}
 		}
 		reqCtx, watch := idle(ctx, w.idleTimeout())
-		req, _ := http.NewRequestWithContext(reqCtx, http.MethodGet, url, nil)
+		req, _ := http.NewRequestWithContext(reqCtx, http.MethodGet, w.storageURL(url), nil)
 		if offset > 0 {
 			req.Header.Set("Range", fmt.Sprintf("bytes=%d-", offset))
 		}
@@ -408,7 +438,7 @@ func (w *Worker) putFile(ctx context.Context, url, path string) error {
 	}
 	reqCtx, watch := idle(ctx, w.idleTimeout())
 	defer watch.stop()
-	req, _ := http.NewRequestWithContext(reqCtx, http.MethodPut, url, watch.reader(f))
+	req, _ := http.NewRequestWithContext(reqCtx, http.MethodPut, w.storageURL(url), watch.reader(f))
 	req.ContentLength = info.Size()
 	res, err := w.httpClient().Do(req)
 	if err != nil {

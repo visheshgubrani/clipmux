@@ -52,12 +52,12 @@ func newEnv(t *testing.T) *env {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { store.Close() })
-	keys, err := contentkey.LoadOrCreate(t.TempDir())
+	keys, err := contentkey.FromHex(1, "0f0e0d0c0b0a090807060504030201000f0e0d0c0b0a09080706050403020100")
 	if err != nil {
 		t.Fatal(err)
 	}
 	q := queue.New(pool)
-	api := workerapi.New(q, workerapi.BuiltinKey(workerKey), store, keys, outputs.New(pool, q, store))
+	api := workerapi.New(q, workerapi.BuiltinKey(workerKey), store, contentkey.NewRing(keys), outputs.New(pool, q, store))
 	mux.Handle("POST /worker/v1/", api.Handler())
 	for _, m := range []string{"GET", "PUT"} {
 		mux.Handle(m+" /_storage/", store.Handler())
