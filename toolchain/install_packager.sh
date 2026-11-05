@@ -18,7 +18,7 @@ esac
 
 tmp=$(mktemp)
 trap 'rm -f "$tmp"' EXIT
-curl -fsSL --retry 3 -o "$tmp" "$SHAKA_RELEASE_URL/$asset"
+curl -fsSL --retry 5 --retry-delay 10 --retry-all-errors -o "$tmp" "$SHAKA_RELEASE_URL/$asset"
 if command -v sha256sum >/dev/null; then got=$(sha256sum "$tmp" | cut -d' ' -f1); else got=$(shasum -a 256 "$tmp" | cut -d' ' -f1); fi
 if [ "$got" != "$sha" ]; then
   echo "install_packager: $asset failed SHA-256 verification (got $got, want $sha)" >&2
