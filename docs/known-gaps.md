@@ -13,8 +13,7 @@ when you introduce or discover it; remove it when it is closed.
   place, like lost attempts (cleanup is the 7-day / 30-minute gap below).
 - Delivery reads Postgres on every request (route, output, signing key);
   there is no route cache yet, so revocation is immediate but every segment
-  costs a few queries. The server's internal signing key (dashboard preview,
-  share links) arrives with T10.
+  costs a few queries.
 - Serving playback from the same origin as the API and dashboard is the
   default; set `CLIPMUX_MEDIA_URL` to a separate registrable domain in
   production so a hostile stored file can't reach dashboard cookies.
@@ -25,8 +24,9 @@ when you introduce or discover it; remove it when it is closed.
   yet, so the built-in worker can still compete with the API for CPU.
 - Workers report no free disk space at claim, and the server doesn't check
   it; a full disk fails the attempt (transient).
-- The content key secret is a file in the data directory, not yet encrypted
-  in Postgres (T10). Back it up: losing it makes every output unplayable.
+- Content key secrets live in Postgres sealed with the secrets key (D022).
+  Back up Postgres and the secrets key together: losing either makes every
+  output unplayable. There is no command to rotate the content key secret.
 - Sign caps file count per attempt, not total bytes; a presigned filesystem
   PUT is capped at 5 GiB per object. `GET /v1/assets` looks up by
   `passthrough` or lists changes `updated_since`; a general listing for the
@@ -56,9 +56,9 @@ when you introduce or discover it; remove it when it is closed.
   delivery for a day. Outbox and delivery rows are never pruned. Owner-set
   endpoint URLs are not filtered for private addresses (D018). A failed
   re-encode is visible only through its webhook, not through catch-up.
-- The secrets key (D017) can't be rotated yet. Webhook secrets are sealed with
-  it; adapter secrets, the internal signing key and the content key secret
-  move under it in T10.
+- The secrets key (D017) can't be rotated yet. Webhook secrets, the internal
+  signing key and the content key secrets are sealed with it; adapter
+  secrets join them with R2/S3 in Phase 2.
 - `clipmux push|listen` print "not implemented"; `clipmux admin` has
   create-key, create-signing-key and create-webhook.
 - No Dockerfile or production compose yet (P1-T10). The FFmpeg recipe in

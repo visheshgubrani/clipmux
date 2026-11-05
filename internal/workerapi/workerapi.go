@@ -111,13 +111,13 @@ type API struct {
 	Queue  *queue.Queue
 	Auth   WorkerAuth
 	Store  storage.Storage
-	Keys   contentkey.Secret
+	Keys   contentkey.Ring
 	Commit *outputs.Committer
 	Logger *slog.Logger
 }
 
 // New returns the worker API.
-func New(q *queue.Queue, auth WorkerAuth, store storage.Storage, keys contentkey.Secret, commit *outputs.Committer) *API {
+func New(q *queue.Queue, auth WorkerAuth, store storage.Storage, keys contentkey.Ring, commit *outputs.Committer) *API {
 	return &API{Queue: q, Auth: auth, Store: store, Keys: keys, Commit: commit, Logger: slog.Default()}
 }
 
@@ -213,7 +213,13 @@ func (a *API) claim(w http.ResponseWriter, r *http.Request) {
 		a.internal(w, "claim source", err)
 		return
 	}
-	key, kid := a.Keys.Derive(c.Job.AssetID, c.Output.ID), contentkey.KeyID(c.Output.ID)
+	secret, ok := a.Keys.Get(c.Output.KeyVersion)
+	if !ok {
+		a.release(r.Context(), c.Token)
+		a.internal(w, "claim key", fmt.Errorf("no content key secret version %d", c.Output.KeyVersion))
+		return
+	}
+	key, kid := secret.Derive(c.Job.AssetID, c.Output.ID), contentkey.KeyID(c.Output.ID)
 	httpjson.Write(w, http.StatusOK, Job{
 		ContractVersion:  ContractVersion,
 		AttemptID:        c.Attempt.ID,

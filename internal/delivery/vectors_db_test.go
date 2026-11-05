@@ -256,7 +256,7 @@ func TestVectors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := New(pool, store, secret)
+	h := New(pool, store, contentkey.NewRing(secret))
 	h.Now = func() time.Time { return time.Unix(v.Now, 0) }
 	mux := http.NewServeMux()
 	h.Register(mux)

@@ -50,13 +50,13 @@ var contentTypes = map[string]string{
 type Handler struct {
 	pool   *pgxpool.Pool
 	store  storage.Storage
-	keys   contentkey.Secret
+	keys   contentkey.Ring
 	Now    func() time.Time
 	Logger *slog.Logger
 }
 
 // New returns the built-in delivery handler.
-func New(pool *pgxpool.Pool, store storage.Storage, keys contentkey.Secret) *Handler {
+func New(pool *pgxpool.Pool, store storage.Storage, keys contentkey.Ring) *Handler {
 	return &Handler{pool: pool, store: store, keys: keys, Now: time.Now, Logger: slog.Default()}
 }
 
@@ -246,11 +246,12 @@ func RewriteMaster(master, outputID string) string {
 // key serves an output's content key: 16 bytes, derived, never stored or cached.
 func (h *Handler) key(w http.ResponseWriter, assetID string, out db.Output, version string) {
 	v, err := strconv.ParseInt(version, 10, 32)
-	if err != nil || int32(v) != out.KeyVersion || out.KeyVersion != h.keys.Version {
+	secret, ok := h.keys.Get(out.KeyVersion)
+	if err != nil || int32(v) != out.KeyVersion || !ok {
 		notFound(w)
 		return
 	}
-	k := h.keys.Derive(assetID, out.ID)
+	k := secret.Derive(assetID, out.ID)
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Cache-Control", "no-store")
 	_, _ = w.Write(k[:])

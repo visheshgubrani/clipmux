@@ -24,6 +24,15 @@ import (
 
 type fakeDB struct{ err error }
 
+func testRing(t *testing.T) contentkey.Ring {
+	t.Helper()
+	s, err := contentkey.FromHex(1, strings.Repeat("00", 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return contentkey.NewRing(s)
+}
+
 func testBox(t *testing.T) *secrets.Box {
 	t.Helper()
 	b, err := secrets.NewBox(1, make([]byte, 32))
@@ -109,7 +118,7 @@ func TestServeStopsCleanlyOnShutdown(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		done <- serve(ctx, config.Config{}, ln, slog.New(slog.NewTextHandler(io.Discard, nil)), pool, store, contentkey.Secret{Version: 1}, testBox(t))
+		done <- serve(ctx, config.Config{}, ln, slog.New(slog.NewTextHandler(io.Discard, nil)), pool, store, testRing(t), testBox(t))
 	}()
 
 	url := "http://" + ln.Addr().String() + "/readyz"
@@ -152,7 +161,7 @@ func TestServeReturnsWhenTheListenerFails(t *testing.T) {
 	ln.Close() // Serve fails at once; the background loops must still stop.
 	done := make(chan error, 1)
 	go func() {
-		done <- serve(context.Background(), config.Config{}, ln, slog.New(slog.NewTextHandler(io.Discard, nil)), pool, store, contentkey.Secret{Version: 1}, testBox(t))
+		done <- serve(context.Background(), config.Config{}, ln, slog.New(slog.NewTextHandler(io.Discard, nil)), pool, store, testRing(t), testBox(t))
 	}()
 	select {
 	case err := <-done:
@@ -197,7 +206,7 @@ func TestServeDeliversWebhooks(t *testing.T) {
 	}
 	done := make(chan error, 1)
 	go func() {
-		done <- serve(ctx, config.Config{}, ln, slog.New(slog.NewTextHandler(io.Discard, nil)), pool, store, contentkey.Secret{Version: 1}, box)
+		done <- serve(ctx, config.Config{}, ln, slog.New(slog.NewTextHandler(io.Discard, nil)), pool, store, testRing(t), box)
 	}()
 	select {
 	case event := <-got:

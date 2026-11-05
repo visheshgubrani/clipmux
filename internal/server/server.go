@@ -24,6 +24,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/outputs"
 	"github.com/visheshgubrani/clipmux/internal/queue"
 	"github.com/visheshgubrani/clipmux/internal/secrets"
+	"github.com/visheshgubrani/clipmux/internal/signingkeys"
 	"github.com/visheshgubrani/clipmux/internal/storage"
 	"github.com/visheshgubrani/clipmux/internal/sweeper"
 	"github.com/visheshgubrani/clipmux/internal/uploads"
@@ -140,9 +141,14 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	defer store.Close()
 	logger.Info("storage ready", "kind", "fs", "public_url", cfg.PublicURL)
 
-	// The content key secret; losing it makes every output unplayable.
-	keys, err := contentkey.LoadOrCreate(cfg.DataDir)
+	// The content key secrets, sealed in Postgres; losing them makes every
+	// output unplayable.
+	keys, err := contentkey.Load(ctx, pool, box, db.DefaultProjectID, cfg.DataDir)
 	if err != nil {
+		return err
+	}
+	// The server's own token-signing key (dashboard preview, setup tests).
+	if err := signingkeys.EnsureInternal(ctx, pool, box, db.DefaultProjectID); err != nil {
 		return err
 	}
 
@@ -156,12 +162,12 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 // serve runs the HTTP server and background loops. It returns only after
 // every goroutine it started has stopped, so the caller can close the pool
 // and storage.
-func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog.Logger, pool *pgxpool.Pool, store *storage.Filesystem, keys contentkey.Secret, box *secrets.Box) error {
+func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog.Logger, pool *pgxpool.Pool, store *storage.Filesystem, keys contentkey.Ring, box *secrets.Box) error {
 	// Until the owner table exists (P1-T10) every boot is a first boot.
 	logger.Info("first boot: create the owner account with this setup token", "setup_token", rand.Text())
 
 	q := queue.New(pool)
-	q.KeyVersion = keys.Version
+	q.KeyVersion = keys.Current().Version
 	q.BaseURL = cfg.MediaURL
 	committer := outputs.New(pool, q, store)
 	committer.Logger = logger

@@ -157,5 +157,12 @@ Decisions within the architecture's rules, made in P1-T09b:
 - Every POST takes `Idempotency-Key` through `internal/idempotency`. A key belongs to the app and to one request: the hash covers the route, the asset and the canonical body, so reusing a key on another endpoint or asset is 422 `idempotency_key_reused`. Upload keys stored before this change no longer replay.
 - Request validation errors carry details beside code and message (`httpjson.Problem`).
 
+## D022 Server keys live in Postgres, sealed — accepted (2026-11-05)
+Decisions within the architecture's rules, made in P1-T10:
+- Content key secrets are rows of `content_key_secrets` (one per version), sealed with the secrets key (D017, associated data `content_key_secrets` / `{project}/v{n}`). On first boot serve imports `{data_dir}/content.key` if an older install left one, otherwise creates version 1, and removes the file once the database holds the same secret; a file that disagrees with the database stops the boot.
+- Delivery and the worker API hold a ring of every version: new outputs use the newest, and an output's key is derived with the version it records, so rotating the secret never strands a viewer mid-session. Serve refuses to start if any output uses a version the ring lacks. (Rotation itself has no command yet.)
+- The server's internal ES256 key (`signing_keys` with no app) is created at boot, with its private key sealed; a partial unique index allows one active per project. App keys still keep only their public half (`internal/signingkeys`).
+- The filesystem storage URL-signing key stays in `{data_dir}/storage/signing.key`: it guards only the files in that same directory, so sealing it in Postgres would protect nothing a copy of the disk doesn't already expose.
+
 ## D007 Shaka Packager 3.9.3 — accepted (2026-11-05)
 Decision: pin v3.9.3 (`toolchain/versions.env`), the version clipmux-lms runs with AES-128 in production, which needs the init-segment workaround for Shaka issue 1616. Move to a release that fixes 1616 when one exists, re-running the Phase 1 player tests.

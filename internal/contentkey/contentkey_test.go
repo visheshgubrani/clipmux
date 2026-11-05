@@ -2,8 +2,6 @@ package contentkey
 
 import (
 	"encoding/hex"
-	"os"
-	"path/filepath"
 	"testing"
 )
 
@@ -27,24 +25,17 @@ func TestDerivationVectors(t *testing.T) {
 	}
 }
 
-func TestLoadOrCreatePersistsAPrivateSecret(t *testing.T) {
-	dir := t.TempDir()
-	a, err := LoadOrCreate(dir)
-	if err != nil {
-		t.Fatal(err)
+func TestRingServesEveryVersionAndUsesTheNewestForNewOutputs(t *testing.T) {
+	v1, _ := FromHex(1, "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f")
+	v2, _ := FromHex(2, "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f")
+	r := NewRing(v2, v1)
+	if r.Current().Version != 2 {
+		t.Fatalf("current = v%d, want v2", r.Current().Version)
 	}
-	b, err := LoadOrCreate(dir)
-	if err != nil || a.Derive("x", "y") != b.Derive("x", "y") || a.Version != 1 {
-		t.Fatalf("reload: %v", err)
+	if s, ok := r.Get(1); !ok || s.Derive("ast_1", "out_1") != v1.Derive("ast_1", "out_1") {
+		t.Fatal("v1 must stay derivable")
 	}
-	info, _ := os.Stat(filepath.Join(dir, "content.key"))
-	if info.Mode().Perm() != 0o600 {
-		t.Fatalf("content.key mode = %v, want 0600", info.Mode().Perm())
-	}
-	if err := os.WriteFile(filepath.Join(dir, "content.key"), []byte("v1:abcd"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := LoadOrCreate(dir); err == nil {
-		t.Fatal("a short secret must be refused, not used")
+	if _, ok := r.Get(3); ok {
+		t.Fatal("an unknown version must not resolve")
 	}
 }

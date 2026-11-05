@@ -97,6 +97,13 @@ type Attempt struct {
 	SignedPaths     int32
 }
 
+type ContentKeySecret struct {
+	ProjectID       string
+	Version         int32
+	SecretEncrypted []byte
+	CreatedAt       pgtype.Timestamptz
+}
+
 type IdempotencyKey struct {
 	ProjectID      string
 	AppID          string

@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/visheshgubrani/clipmux/internal/apikeys"
@@ -17,7 +16,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/db"
 	"github.com/visheshgubrani/clipmux/internal/ids"
 	"github.com/visheshgubrani/clipmux/internal/secrets"
-	"github.com/visheshgubrani/clipmux/internal/tokens"
+	"github.com/visheshgubrani/clipmux/internal/signingkeys"
 	"github.com/visheshgubrani/clipmux/internal/webhooks"
 )
 
@@ -117,21 +116,13 @@ func createKey(ctx context.Context, pool *pgxpool.Pool, appName, keyName string,
 // createSigningKey generates an ES256 key pair for an app, stores only the
 // public key and prints the private key once.
 func createSigningKey(ctx context.Context, pool *pgxpool.Pool, appName string, out io.Writer) error {
-	privatePEM, publicPEM, err := tokens.GenerateKey()
-	if err != nil {
-		return err
-	}
-	kid := ids.New(ids.SigningKey)
-	var app string
-	err = pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
-		q := db.New(tx)
+	var app, kid, privatePEM string
+	err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
 		var err error
-		if app, err = appID(ctx, q, appName); err != nil {
+		if app, err = appID(ctx, db.New(tx), appName); err != nil {
 			return err
 		}
-		_, err = q.CreateSigningKey(ctx, db.CreateSigningKeyParams{
-			ID: kid, ProjectID: project, AppID: pgtype.Text{String: app, Valid: true}, PublicKeyPem: publicPEM,
-		})
+		kid, privatePEM, err = signingkeys.CreateForApp(ctx, tx, project, app)
 		return err
 	})
 	if err != nil {
