@@ -31,6 +31,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/setuptest"
 	"github.com/visheshgubrani/clipmux/internal/signingkeys"
 	"github.com/visheshgubrani/clipmux/internal/storage"
+	"github.com/visheshgubrani/clipmux/internal/stores"
 	"github.com/visheshgubrani/clipmux/internal/sweeper"
 	"github.com/visheshgubrani/clipmux/internal/uploads"
 	"github.com/visheshgubrani/clipmux/internal/web"
@@ -201,6 +202,8 @@ type boot struct {
 // and storage.
 func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog.Logger, b boot) error {
 	pool, store, keys, box := b.pool, b.store, b.keys, b.box
+	// Each asset's store: the filesystem, or an R2/S3 config (P2-T01).
+	set := stores.New(pool, box, store)
 	acct := accounts.New(pool, db.DefaultProjectID, b.urls.PublicURL)
 	acct.TrustedProxies = cfg.TrustedProxies
 	acct.Logger = logger
@@ -215,27 +218,27 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 
 	q := queue.New(pool)
 	q.KeyVersion = keys.Current().Version
-	committer := outputs.New(pool, q, store)
+	committer := outputs.New(pool, q, set)
 	committer.Logger = logger
 	// The built-in worker's key lives only in memory and is handed to the
 	// child worker; it is never logged or stored.
 	workerKey := rand.Text()
-	worker := workerapi.New(q, workerapi.BuiltinKey(workerKey), store, keys, committer)
+	worker := workerapi.New(q, workerapi.BuiltinKey(workerKey), set, keys, committer)
 	worker.Logger = logger
-	upl := uploads.New(pool, store)
+	upl := uploads.New(pool, set)
 	upl.Logger = logger
-	playback := delivery.New(pool, store, keys)
+	playback := delivery.New(pool, set, keys)
 	playback.Logger = logger
 	if cfg.MaxUploadBytes > 0 {
 		upl.MaxSize = cfg.MaxUploadBytes
 	}
 	hooks := webhooks.New(pool, box)
 	hooks.Logger = logger
-	life := lifecycle.New(pool, store, committer)
+	life := lifecycle.New(pool, set, committer)
 	life.Logger = logger
 	mgmt := manage.New(pool, box, acct, b.urls)
 	mgmt.Logger = logger
-	tests := setuptest.New(pool, store, box, b.urls, upl, life, cfg.SelfDial)
+	tests := setuptest.New(pool, set, box, b.urls, upl, life, cfg.SelfDial)
 	tests.Logger = logger
 	mgmt.Tests = tests
 	assetsAPI := assets.New(pool)

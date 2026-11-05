@@ -231,5 +231,16 @@ Made in P1-T12:
 - `TestPlayerFixture` serves the browser suites: an encoded three-rung video on one serve, a fresh unpinned install on another, and pages, tokens and uploads on a third origin. Playwright runs them in Chromium (hls.js, `<clipmux-player>`, the uploader, the dashboard's first boot). WebKit on Linux isn't Safari and isn't run.
 - Safari (`exit-safari.yml`, macOS runner, safaridriver driven by a dependency-free WebDriver script) checks native HLS with its separate audio and `<clipmux-player>` refresh. ExoPlayer (`exit.yml`, an API 35 emulator) runs a Media3 instrumented test that reaches the fixture through `adb reverse`. Both run on main, weekly, by hand, and on PRs touching playback; macOS runs unsandboxed because the sandbox is Linux only.
 
+## D034 S3-compatible storage and per-asset stores — accepted (2026-11-05)
+Decisions within the architecture's rules, made in P2-T01:
+- `storage.S3` is the one adapter for R2, AWS S3 and S3-compatible stores, on `aws-sdk-go-v2`, path-style. Serve's requests go to `endpoint`; presigned URLs name `public_endpoint` (default `endpoint`), which browsers and workers must reach. The SDK's default request checksums are off except where S3 requires them, because R2 and other stores refuse them on some calls. Connecting is bounded at 10 s and response headers at 60 s.
+- Parts are always 32 MiB and the declared size is ignored (D010). Complete applies the filesystem's rules to what storage holds: numbered 1..n, ETags matching with or without quotes, every part but the last exactly 32 MiB.
+- Create-once PUTs sign `If-None-Match: *` into the URL. Every worker PUT now sends that header, and the filesystem store ignores it. A 412 still means "already written" (D016).
+- `List` cursors are the last key returned (`StartAfter`), on both adapters, so a listing resumes across adapters and restarts.
+- `internal/stores` resolves `storage_id` to an adapter: `fs` rows share the install's filesystem store, while `r2` and `s3` rows hold their config in `config` and their credentials sealed in `secrets_encrypted` (D017, associated data `storage_configs`/`{id}`). Adapters are opened once and kept. Adding a config first proves list, write, read and delete in the bucket and applies CORS (any origin, GET/HEAD/PUT, exposing `ETag`), then stores it. Setting the default changes only where new uploads go.
+- Uploads, the worker API, commit, delivery, delete, reencode and the setup test all use the asset's own store. Delivery reads `storage_id` in its route query, so a segment costs no extra query.
+- The local S3 store for tests is SeaweedFS 4.48, pinned by digest in `deploy/compose.dev.yml`. Of the P21 candidates it needs only an S3 identity file (no admin CLI), and it passes the whole contract suite including create-once and CORS. `internal/storage/s3test` gives each test its own bucket, and CI sets `CLIPMUX_REQUIRE_S3=1` so the S3 half never skips.
+- `Capabilities()` is still deferred: nothing reads it until the dashboard offers storage choices (T04), per D009.
+
 ## D007 Shaka Packager 3.9.3 — accepted (2026-11-05)
 Decision: pin v3.9.3 (`toolchain/versions.env`), the version clipmux-lms runs with AES-128 in production, which needs the init-segment workaround for Shaka issue 1616. Move to a release that fixes 1616 when one exists, re-running the Phase 1 player tests.

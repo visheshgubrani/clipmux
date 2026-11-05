@@ -39,6 +39,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/outbox"
 	"github.com/visheshgubrani/clipmux/internal/queue"
 	"github.com/visheshgubrani/clipmux/internal/storage"
+	"github.com/visheshgubrani/clipmux/internal/stores"
 )
 
 // Error codes the upload API returns or records on assets.
@@ -52,10 +53,10 @@ const (
 	maxPassthrough  = 255
 )
 
-// Service runs uploads against one storage backend.
+// Service runs uploads against each asset's store.
 type Service struct {
-	pool  *pgxpool.Pool
-	store storage.Storage
+	pool   *pgxpool.Pool
+	stores *stores.Set
 	// Auth accepts API keys, and the dashboard session once serve sets it.
 	Auth *apikeys.Authenticator
 
@@ -70,9 +71,9 @@ type Service struct {
 }
 
 // New returns a Service with the architecture's defaults.
-func New(pool *pgxpool.Pool, store storage.Storage) *Service {
+func New(pool *pgxpool.Pool, set *stores.Set) *Service {
 	return &Service{
-		pool: pool, store: store, Auth: apikeys.NewAuthenticator(pool),
+		pool: pool, stores: set, Auth: apikeys.NewAuthenticator(pool),
 		MaxSize:    storage.PartSize * storage.MaxParts,
 		PartURLTTL: time.Hour,
 		IdleExpiry: 24 * time.Hour,
@@ -136,6 +137,7 @@ func (s *Service) Create(ctx context.Context, key apikeys.Key, req CreateRequest
 	var out Created
 	var started *storage.Multipart
 	var startedKey string
+	var startedStore storage.Storage
 	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 		q := db.New(tx)
 		claim, err := idempotency.Begin(ctx, q, key.ProjectID, key.AppID, idemKey, "POST /v1/uploads", canonical)
@@ -162,11 +164,15 @@ func (s *Service) Create(ctx context.Context, key apikeys.Key, req CreateRequest
 		if err != nil {
 			return err
 		}
-		mp, err := s.store.CreateMultipart(ctx, sourceKey(asset.ID), req.Size)
+		store, err := s.stores.Get(ctx, st.ID)
 		if err != nil {
 			return err
 		}
-		started, startedKey = &mp, sourceKey(asset.ID)
+		mp, err := store.CreateMultipart(ctx, sourceKey(asset.ID), req.Size)
+		if err != nil {
+			return err
+		}
+		started, startedKey, startedStore = &mp, sourceKey(asset.ID), store
 		token := rand.Text()
 		up, err := q.CreateUpload(ctx, db.CreateUploadParams{
 			ID: ids.New(ids.Upload), ProjectID: key.ProjectID, AssetID: asset.ID, MultipartID: mp.UploadID,
@@ -188,7 +194,7 @@ func (s *Service) Create(ctx context.Context, key apikeys.Key, req CreateRequest
 	})
 	if err != nil && started != nil {
 		// The transaction rolled back after storage started an upload.
-		_ = s.store.AbortMultipart(context.WithoutCancel(ctx), startedKey, started.UploadID)
+		_ = startedStore.AbortMultipart(context.WithoutCancel(ctx), startedKey, started.UploadID)
 	}
 	if err != nil {
 		return Created{}, err
@@ -244,9 +250,13 @@ func (s *Service) SignParts(ctx context.Context, up db.Upload, numbers []int) (S
 	if err := db.New(s.pool).TouchUpload(ctx, up.ID); err != nil {
 		return Signed{}, err
 	}
+	store, err := s.stores.ForAsset(ctx, up.AssetID)
+	if err != nil {
+		return Signed{}, err
+	}
 	out := Signed{Parts: make([]SignedPart, 0, len(numbers)), ExpiresAt: time.Now().Add(s.PartURLTTL).UTC()}
 	for _, p := range slices.Compact(slices.Sorted(slices.Values(numbers))) {
-		url, err := s.store.PresignPart(ctx, sourceKey(up.AssetID), up.MultipartID, p, s.PartURLTTL)
+		url, err := store.PresignPart(ctx, sourceKey(up.AssetID), up.MultipartID, p, s.PartURLTTL)
 		if err != nil {
 			return Signed{}, err
 		}
@@ -267,7 +277,11 @@ func (s *Service) ListParts(ctx context.Context, up db.Upload) ([]StoredPart, er
 	if up.Status != "active" {
 		return nil, errNotActive
 	}
-	parts, err := s.store.ListParts(ctx, sourceKey(up.AssetID), up.MultipartID)
+	store, err := s.stores.ForAsset(ctx, up.AssetID)
+	if err != nil {
+		return nil, err
+	}
+	parts, err := store.ListParts(ctx, sourceKey(up.AssetID), up.MultipartID)
 	if err != nil {
 		return nil, err
 	}
@@ -312,7 +326,11 @@ func (s *Service) Complete(ctx context.Context, uploadID string, parts []storage
 // attempt already did, and checks the stored size.
 func (s *Service) finishStorage(ctx context.Context, up db.Upload, parts []storage.Part) error {
 	key := sourceKey(up.AssetID)
-	err := s.store.CompleteMultipart(ctx, key, up.MultipartID, parts)
+	store, err := s.stores.ForAsset(ctx, up.AssetID)
+	if err != nil {
+		return err
+	}
+	err = store.CompleteMultipart(ctx, key, up.MultipartID, parts)
 	switch {
 	case errors.Is(err, storage.ErrInvalidParts):
 		return fail(http.StatusBadRequest, "invalid_parts", "some parts are missing or their ETags do not match; list the stored parts and upload the rest")
@@ -321,7 +339,7 @@ func (s *Service) finishStorage(ctx context.Context, up db.Upload, parts []stora
 	}
 	// ErrNotFound: storage already completed it (a crash before our commit),
 	// or lost it. The source object tells which.
-	obj, err := s.store.Head(ctx, key)
+	obj, err := store.Head(ctx, key)
 	if errors.Is(err, storage.ErrNotFound) {
 		return fail(http.StatusConflict, "upload_missing", "storage no longer has this upload")
 	}
@@ -385,7 +403,11 @@ func (s *Service) Cancel(ctx context.Context, uploadID string) (assets.View, err
 
 // end aborts the storage upload and errors the asset, with an event.
 func (s *Service) end(ctx context.Context, q *db.Queries, up db.Upload, status, code string) error {
-	if err := s.store.AbortMultipart(ctx, sourceKey(up.AssetID), up.MultipartID); err != nil && !errors.Is(err, storage.ErrNotFound) {
+	store, err := s.stores.ForAsset(ctx, up.AssetID)
+	if err != nil {
+		return err
+	}
+	if err := store.AbortMultipart(ctx, sourceKey(up.AssetID), up.MultipartID); err != nil && !errors.Is(err, storage.ErrNotFound) {
 		return err
 	}
 	if err := q.FinishUpload(ctx, db.FinishUploadParams{ID: up.ID, Status: status}); err != nil {
@@ -458,7 +480,11 @@ func (s *Service) sweepOne(ctx context.Context, id string) (bool, error) {
 		if err != nil || up.Status != "active" {
 			return err // cancelled, expired or completed since listing: never touch it
 		}
-		parts, err := s.store.ListParts(ctx, sourceKey(up.AssetID), up.MultipartID)
+		store, err := s.stores.ForAsset(ctx, up.AssetID)
+		if err != nil {
+			return err
+		}
+		parts, err := store.ListParts(ctx, sourceKey(up.AssetID), up.MultipartID)
 		switch {
 		case errors.Is(err, storage.ErrNotFound):
 			// Storage finished it before a crash, or lost it.

@@ -22,6 +22,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/assets"
 	"github.com/visheshgubrani/clipmux/internal/db/dbtest"
 	"github.com/visheshgubrani/clipmux/internal/storage"
+	"github.com/visheshgubrani/clipmux/internal/stores"
 	"github.com/visheshgubrani/clipmux/internal/uploads"
 )
 
@@ -54,7 +55,7 @@ func newEnv(t *testing.T) *env {
 	for _, m := range []string{"GET", "PUT", "OPTIONS"} {
 		mux.Handle(m+" /_storage/", store.Handler())
 	}
-	svc := uploads.New(pool, store)
+	svc := uploads.New(pool, stores.Fixed(store))
 	svc.MaxSize = 1000
 	svc.Register(mux)
 	assets.New(pool).Register(mux)

@@ -22,6 +22,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/contentkey"
 	"github.com/visheshgubrani/clipmux/internal/db/dbtest"
 	"github.com/visheshgubrani/clipmux/internal/storage"
+	"github.com/visheshgubrani/clipmux/internal/stores"
 	"github.com/visheshgubrani/clipmux/internal/tokens"
 )
 
@@ -256,7 +257,7 @@ func TestVectors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := New(pool, store, contentkey.NewRing(secret))
+	h := New(pool, stores.Fixed(store), contentkey.NewRing(secret))
 	h.Now = func() time.Time { return time.Unix(v.Now, 0) }
 	mux := http.NewServeMux()
 	h.Register(mux)

@@ -35,6 +35,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/outputs"
 	"github.com/visheshgubrani/clipmux/internal/queue"
 	"github.com/visheshgubrani/clipmux/internal/storage"
+	"github.com/visheshgubrani/clipmux/internal/stores"
 )
 
 var (
@@ -47,7 +48,7 @@ var (
 // Service changes assets and runs the control-plane jobs that delete them.
 type Service struct {
 	pool   *pgxpool.Pool
-	store  storage.Storage
+	stores *stores.Set
 	routes *outputs.Committer
 
 	// Auth accepts API keys, and the dashboard session once serve sets it.
@@ -68,9 +69,9 @@ type Service struct {
 }
 
 // New returns the lifecycle service. routes publishes route changes.
-func New(pool *pgxpool.Pool, store storage.Storage, routes *outputs.Committer) *Service {
+func New(pool *pgxpool.Pool, set *stores.Set, routes *outputs.Committer) *Service {
 	return &Service{
-		pool: pool, store: store, routes: routes, Auth: apikeys.NewAuthenticator(pool), Logger: slog.New(slog.DiscardHandler),
+		pool: pool, stores: set, routes: routes, Auth: apikeys.NewAuthenticator(pool), Logger: slog.New(slog.DiscardHandler),
 		Inline: 10 * time.Second, Lease: 2 * time.Minute, RouteRetry: 15 * time.Second, LateWrites: 16 * time.Minute,
 	}
 }
@@ -274,14 +275,18 @@ func (s *Service) runDelete(ctx context.Context, job db.Job) error {
 	if err != nil {
 		return err
 	}
+	store, err := s.stores.ForAsset(ctx, job.AssetID)
+	if err != nil {
+		return err
+	}
 	for _, up := range ups {
 		// Multipart staging lives outside the asset's prefixes.
-		if err := s.store.AbortMultipart(ctx, sourceKey(job.AssetID), up.MultipartID); err != nil && !errors.Is(err, storage.ErrNotFound) {
+		if err := store.AbortMultipart(ctx, sourceKey(job.AssetID), up.MultipartID); err != nil && !errors.Is(err, storage.ErrNotFound) {
 			return err
 		}
 	}
 	for _, prefix := range []string{"uploads/" + job.AssetID + "/", "media/" + job.AssetID + "/"} {
-		if err := s.store.DeletePrefix(ctx, prefix); err != nil {
+		if err := store.DeletePrefix(ctx, prefix); err != nil {
 			return err
 		}
 	}

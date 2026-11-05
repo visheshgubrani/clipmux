@@ -27,13 +27,15 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/outputs"
 	"github.com/visheshgubrani/clipmux/internal/queue"
 	"github.com/visheshgubrani/clipmux/internal/storage"
+	"github.com/visheshgubrani/clipmux/internal/storage/s3test"
+	"github.com/visheshgubrani/clipmux/internal/stores"
 	"github.com/visheshgubrani/clipmux/internal/tokens"
 	"github.com/visheshgubrani/clipmux/internal/workerapi"
 )
 
 type rig struct {
 	pool   *pgxpool.Pool
-	store  *storage.Filesystem
+	store  storage.Storage
 	media  string // base URL serving delivery
 	worker *Worker
 }
@@ -57,27 +59,49 @@ func tools(t *testing.T) media.Tools {
 
 func newRig(t *testing.T) *rig {
 	t.Helper()
+	return newRigOn(t, func(base string, mux *http.ServeMux) storage.Storage {
+		fs, err := storage.OpenFilesystem(t.TempDir(), storage.FilesystemOptions{BaseURL: base})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { fs.Close() })
+		for _, m := range []string{"GET", "PUT"} {
+			mux.Handle(m+" /_storage/", fs.Handler())
+		}
+		return fs
+	})
+}
+
+// newS3Rig runs the same pipeline on an S3-compatible bucket: the worker
+// downloads and uploads through presigned S3 URLs, never through serve.
+func newS3Rig(t *testing.T) *rig {
+	t.Helper()
+	b := s3test.New(t)
+	return newRigOn(t, func(string, *http.ServeMux) storage.Storage {
+		st, err := storage.OpenS3(storage.S3Options{Endpoint: b.Endpoint, Bucket: b.Name, AccessKeyID: b.AccessKeyID, SecretAccessKey: b.SecretAccessKey})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return st
+	})
+}
+
+func newRigOn(t *testing.T, open func(base string, mux *http.ServeMux) storage.Storage) *rig {
+	t.Helper()
 	tl := tools(t)
 	pool := dbtest.New(t)
 	mux := http.NewServeMux()
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
-	store, err := storage.OpenFilesystem(t.TempDir(), storage.FilesystemOptions{BaseURL: srv.URL})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { store.Close() })
+	store := open(srv.URL, mux)
 	keys, err := contentkey.FromHex(1, "0f0e0d0c0b0a090807060504030201000f0e0d0c0b0a09080706050403020100")
 	if err != nil {
 		t.Fatal(err)
 	}
 	q := queue.New(pool)
-	api := workerapi.New(q, workerapi.BuiltinKey("k"), store, contentkey.NewRing(keys), outputs.New(pool, q, store))
+	api := workerapi.New(q, workerapi.BuiltinKey("k"), stores.Fixed(store), contentkey.NewRing(keys), outputs.New(pool, q, stores.Fixed(store)))
 	mux.Handle("POST /worker/v1/", api.Handler())
-	for _, m := range []string{"GET", "PUT"} {
-		mux.Handle(m+" /_storage/", store.Handler())
-	}
-	delivery.New(pool, store, contentkey.NewRing(keys)).Register(mux)
+	delivery.New(pool, stores.Fixed(store), contentkey.NewRing(keys)).Register(mux)
 	return &rig{pool: pool, store: store, media: srv.URL, worker: &Worker{
 		Server: srv.URL, Key: "k", WorkDir: t.TempDir(), Tools: tl, HTTP: http.DefaultClient,
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Wait: time.Millisecond,
@@ -265,7 +289,16 @@ func TestRunOnceTakesAnUploadedSourceToReady(t *testing.T) {
 // encrypted segments, and decodes frames. ffmpeg is the client here; the
 // browser players are the Phase 1 exit test.
 func TestM1SignedEncryptedPlaybackOverHTTP(t *testing.T) {
-	r := newRig(t)
+	m1(t, newRig(t))
+}
+
+// P2-T01: the walking skeleton holds on S3-compatible storage too.
+func TestM1SignedEncryptedPlaybackOnS3(t *testing.T) {
+	m1(t, newS3Rig(t))
+}
+
+func m1(t *testing.T, r *rig) {
+	t.Helper()
 	r.uploaded(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()

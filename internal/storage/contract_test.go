@@ -7,15 +7,12 @@ import (
 	"errors"
 	"io"
 	"net/http"
-	"os"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/credentials"
-	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/visheshgubrani/clipmux/internal/storage/s3test"
 )
 
 // The contract every adapter keeps (docs/architecture.md, "Adapters"): one
@@ -33,38 +30,14 @@ func filesystemStore(t *testing.T) contractStore {
 }
 
 // s3Store returns an S3 adapter on a fresh bucket of the test store, or
-// skips. CLIPMUX_TEST_S3_ENDPOINT, _ACCESS_KEY and _SECRET_KEY configure it.
+// skips (see s3test).
 func s3Store(t *testing.T) contractStore {
 	t.Helper()
-	endpoint := os.Getenv("CLIPMUX_TEST_S3_ENDPOINT")
-	if endpoint == "" {
-		if os.Getenv("CLIPMUX_REQUIRE_S3") == "1" {
-			t.Fatal("CLIPMUX_TEST_S3_ENDPOINT is required in CI")
-		}
-		t.Skip("CLIPMUX_TEST_S3_ENDPOINT not set")
-	}
-	opts := S3Options{
-		Endpoint:        endpoint,
-		Bucket:          "cmx-" + strings.ToLower(rand.Text()[:12]),
-		AccessKeyID:     os.Getenv("CLIPMUX_TEST_S3_ACCESS_KEY"),
-		SecretAccessKey: os.Getenv("CLIPMUX_TEST_S3_SECRET_KEY"),
-	}
-	admin := s3.New(s3.Options{
-		BaseEndpoint: aws.String(endpoint), UsePathStyle: true, Region: "us-east-1",
-		Credentials: credentials.NewStaticCredentialsProvider(opts.AccessKeyID, opts.SecretAccessKey, ""),
-	})
-	ctx := context.Background()
-	if _, err := admin.CreateBucket(ctx, &s3.CreateBucketInput{Bucket: &opts.Bucket}); err != nil {
-		t.Fatalf("create bucket: %v", err)
-	}
-	store, err := OpenS3(opts)
+	b := s3test.New(t)
+	store, err := OpenS3(S3Options{Endpoint: b.Endpoint, Bucket: b.Name, AccessKeyID: b.AccessKeyID, SecretAccessKey: b.SecretAccessKey})
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() {
-		_ = store.DeletePrefix(ctx, "")
-		_, _ = admin.DeleteBucket(ctx, &s3.DeleteBucketInput{Bucket: &opts.Bucket})
-	})
 	return contractStore{store, PartSize}
 }
 

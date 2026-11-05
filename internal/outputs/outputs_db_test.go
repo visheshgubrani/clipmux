@@ -20,6 +20,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/media"
 	"github.com/visheshgubrani/clipmux/internal/queue"
 	"github.com/visheshgubrani/clipmux/internal/storage"
+	"github.com/visheshgubrani/clipmux/internal/stores"
 )
 
 const master = `#EXTM3U
@@ -55,7 +56,7 @@ func newFx(t *testing.T) *fx {
 	}
 	t.Cleanup(func() { store.Close() })
 	q := queue.New(pool)
-	c := New(pool, q, store)
+	c := New(pool, q, stores.Fixed(store))
 	f := &fx{t: t, pool: pool, store: store, q: q, c: c}
 	f.exec(`UPDATE projects SET media_url = 'https://media.example'`)
 	return f

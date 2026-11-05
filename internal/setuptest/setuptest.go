@@ -43,7 +43,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/secrets"
 	"github.com/visheshgubrani/clipmux/internal/settings"
 	"github.com/visheshgubrani/clipmux/internal/signingkeys"
-	"github.com/visheshgubrani/clipmux/internal/storage"
+	"github.com/visheshgubrani/clipmux/internal/stores"
 	"github.com/visheshgubrani/clipmux/internal/tokens"
 	"github.com/visheshgubrani/clipmux/internal/uploads"
 )
@@ -87,7 +87,7 @@ func view(t db.SetupTest) Test {
 // Runner queues and runs setup tests, one at a time.
 type Runner struct {
 	pool      *pgxpool.Pool
-	store     storage.Storage
+	stores    *stores.Set
 	box       *secrets.Box
 	urls      *settings.Store
 	uploads   *uploads.Service
@@ -104,7 +104,7 @@ type Runner struct {
 // New returns a runner. selfDial, when set (a host, or host:port), is where
 // every request connects, whatever host its URL names; a bare host keeps
 // the URL's port.
-func New(pool *pgxpool.Pool, store storage.Storage, box *secrets.Box, urls *settings.Store, upl *uploads.Service, life *lifecycle.Service, selfDial string) *Runner {
+func New(pool *pgxpool.Pool, set *stores.Set, box *secrets.Box, urls *settings.Store, upl *uploads.Service, life *lifecycle.Service, selfDial string) *Runner {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.Proxy = nil
 	if selfDial != "" {
@@ -119,7 +119,7 @@ func New(pool *pgxpool.Pool, store storage.Storage, box *secrets.Box, urls *sett
 		}
 	}
 	return &Runner{
-		pool: pool, store: store, box: box, urls: urls, uploads: upl, life: life, projectID: db.DefaultProjectID,
+		pool: pool, stores: set, box: box, urls: urls, uploads: upl, life: life, projectID: db.DefaultProjectID,
 		client: &http.Client{
 			Transport: transport, Timeout: 30 * time.Second,
 			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
@@ -610,7 +610,11 @@ func isFragment(b []byte) bool {
 // plain MP4 fragment.
 func (r *Runner) storedEncrypted(ctx context.Context, assetID, segRel string) error {
 	// segRel is {output_id}/{rendition}/seg_…; storage keeps it under the asset.
-	rc, err := r.store.Get(ctx, "media/"+assetID+"/"+segRel)
+	store, err := r.stores.ForAsset(ctx, assetID)
+	if err != nil {
+		return err
+	}
+	rc, err := store.Get(ctx, "media/"+assetID+"/"+segRel)
 	if err != nil {
 		return fmt.Errorf("read the stored segment: %w", err)
 	}

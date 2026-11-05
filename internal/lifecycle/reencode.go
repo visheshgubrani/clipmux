@@ -50,7 +50,11 @@ func (s *Service) Reencode(ctx context.Context, key apikeys.Key, assetID string,
 	// disappears after this.
 	sourceKept := asset.SourceUri.Valid && asset.SourceKept
 	if sourceKept {
-		if _, err := s.store.Head(ctx, asset.SourceUri.String); errors.Is(err, storage.ErrNotFound) {
+		store, err := s.stores.Get(ctx, asset.StorageID)
+		if err != nil {
+			return JobView{}, err
+		}
+		if _, err := store.Head(ctx, asset.SourceUri.String); errors.Is(err, storage.ErrNotFound) {
 			sourceKept = false
 		} else if err != nil {
 			return JobView{}, err

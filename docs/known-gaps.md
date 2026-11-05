@@ -49,8 +49,10 @@ when you introduce or discover it; remove it when it is closed.
   not reserved up front; a full disk fails the part write. Abandoned
   multipart uploads are cleaned up by the upload sweeper (T05), and `tmp/`
   leftovers from a crash are not swept yet.
-- Every asset uses the one filesystem store; `storage_configs` rows are not
-  read yet (per-asset storage arrives with R2 in Phase 2).
+- Storage configs other than the filesystem can be added only from code
+  (`stores.AddS3`) until Connect Cloudflare (P2-T04); there is no API or
+  dashboard form for a generic S3 bucket, and no way to remove a config or
+  rotate its credentials.
 - Sweepers assume one `serve` replica (no `pg_try_advisory_lock` leader yet).
   Saving new URLs updates the storage signer of the serve that saved them
   only; another replica keeps the old public URL until it restarts.

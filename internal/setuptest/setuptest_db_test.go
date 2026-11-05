@@ -21,6 +21,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/settings"
 	"github.com/visheshgubrani/clipmux/internal/signingkeys"
 	"github.com/visheshgubrani/clipmux/internal/storage"
+	"github.com/visheshgubrani/clipmux/internal/stores"
 )
 
 const master = `#EXTM3U
@@ -67,7 +68,7 @@ func newRig(t *testing.T, mediaURL string, encrypted bool) *rig {
 	secret, _ := contentkey.FromHex(1, strings.Repeat("ab", 32))
 	ring := contentkey.NewRing(secret)
 	mux := http.NewServeMux()
-	delivery.New(pool, store, ring).Register(mux)
+	delivery.New(pool, stores.Fixed(store), ring).Register(mux)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	if mediaURL == "" {
@@ -103,7 +104,7 @@ func newRig(t *testing.T, mediaURL string, encrypted bool) *rig {
 			t.Fatal(err)
 		}
 	}
-	return &rig{t: t, pool: pool, store: store, ring: ring, runner: New(pool, store, box, urls, nil, nil, "")}
+	return &rig{t: t, pool: pool, store: store, ring: ring, runner: New(pool, stores.Fixed(store), box, urls, nil, nil, "")}
 }
 
 func names(checks []Check) []string {

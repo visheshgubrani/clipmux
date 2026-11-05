@@ -37,6 +37,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/outbox"
 	"github.com/visheshgubrani/clipmux/internal/queue"
 	"github.com/visheshgubrani/clipmux/internal/storage"
+	"github.com/visheshgubrani/clipmux/internal/stores"
 )
 
 // InvalidError means the output failed verification and was not committed.
@@ -54,7 +55,7 @@ const maxPlaylistBytes = 1 << 20
 type Committer struct {
 	pool   *pgxpool.Pool
 	queue  *queue.Queue
-	store  storage.Storage
+	stores *stores.Set
 	Logger *slog.Logger
 
 	// publishInline publishes routes right after the commit; tests turn it
@@ -63,8 +64,8 @@ type Committer struct {
 }
 
 // New returns a Committer.
-func New(pool *pgxpool.Pool, q *queue.Queue, store storage.Storage) *Committer {
-	return &Committer{pool: pool, queue: q, store: store, Logger: slog.Default(), publishInline: true}
+func New(pool *pgxpool.Pool, q *queue.Queue, set *stores.Set) *Committer {
+	return &Committer{pool: pool, queue: q, stores: set, Logger: slog.Default(), publishInline: true}
 }
 
 // Commit verifies and commits the output of the attempt holding token.
@@ -120,10 +121,14 @@ func (c *Committer) verify(ctx context.Context, att db.Attempt, m media.Manifest
 		want[f.Path] = f.Size
 	}
 
+	store, err := c.stores.ForAsset(ctx, att.AssetID)
+	if err != nil {
+		return err
+	}
 	prefix := "media/" + att.AssetID + "/" + att.OutputID + "/"
 	stored := map[string]int64{}
 	for cursor := ""; ; {
-		objs, next, err := c.store.List(ctx, prefix, cursor)
+		objs, next, err := store.List(ctx, prefix, cursor)
 		if err != nil {
 			return err
 		}
@@ -153,7 +158,7 @@ func (c *Committer) verify(ctx context.Context, att db.Attempt, m media.Manifest
 		}
 	}
 
-	text, err := c.read(ctx, prefix+"master.m3u8")
+	text, err := c.read(ctx, store, prefix+"master.m3u8")
 	if err != nil {
 		return err
 	}
@@ -165,7 +170,7 @@ func (c *Committer) verify(ctx context.Context, att db.Attempt, m media.Manifest
 		return invalid("master references %v, the output holds %v", dirs, got)
 	}
 	for _, d := range dirs {
-		text, err := c.read(ctx, prefix+d+"/index.m3u8")
+		text, err := c.read(ctx, store, prefix+d+"/index.m3u8")
 		if err != nil {
 			return err
 		}
@@ -193,8 +198,8 @@ func renditionDirs(files map[string]int64) []string {
 	return slices.Sorted(maps.Keys(set))
 }
 
-func (c *Committer) read(ctx context.Context, key string) (string, error) {
-	rc, err := c.store.Get(ctx, key)
+func (c *Committer) read(ctx context.Context, store storage.Storage, key string) (string, error) {
+	rc, err := store.Get(ctx, key)
 	if errors.Is(err, storage.ErrNotFound) {
 		return "", invalid("%s is missing", key)
 	}
