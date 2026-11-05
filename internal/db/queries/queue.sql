@@ -7,13 +7,13 @@ VALUES ($1, $2, $3, $4, $5)
 RETURNING *;
 
 -- name: LockNextClaimableJob :one
--- Media work only: move and delete run in the control plane. Pinned jobs go
+-- Media work only: import, move and delete run in the control plane. Pinned jobs go
 -- only to their agent, and local-scoped agents take only pinned jobs.
 SELECT * FROM jobs
 WHERE project_id = sqlc.arg(project_id)
   AND status = 'queued'
   AND available_at <= now()
-  AND kind IN ('import', 'transcode', 'reencode')
+  AND kind IN ('transcode', 'reencode')
   AND (pinned_agent_id IS NULL OR pinned_agent_id = sqlc.narg(agent_id))
   AND (NOT sqlc.arg(local_only)::boolean OR pinned_agent_id = sqlc.narg(agent_id))
 ORDER BY available_at, id

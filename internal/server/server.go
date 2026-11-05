@@ -282,6 +282,7 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 	})
 	loop(WebhookInterval, "webhooks", hooks.Run)
 	loop(ControlJobInterval, "control_jobs", life.Run)
+	loop(ControlJobInterval, "imports", life.RunImports)
 	loop(SetupTestInterval, "setup_tests", tests.Run)
 	// Saving the URLs re-runs the setup test: a wrong hostname should fail
 	// here, not in an app.

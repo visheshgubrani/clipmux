@@ -150,6 +150,7 @@ type Job struct {
 	FinishedAt      pgtype.Timestamptz
 	SourceStorageID pgtype.Text
 	TargetStorageID pgtype.Text
+	ImportUrl       pgtype.Text
 }
 
 type Outbox struct {

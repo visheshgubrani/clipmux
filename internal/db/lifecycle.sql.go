@@ -50,7 +50,7 @@ WHERE id = (
     ORDER BY c.available_at, c.id
     LIMIT 1
     FOR UPDATE SKIP LOCKED)
-RETURNING id, project_id, asset_id, kind, status, phase, progress, profile_id, profile_version, pinned_agent_id, lost_count, failed_count, error_code, routed_to, route_reason, available_at, created_at, started_at, finished_at, source_storage_id, target_storage_id
+RETURNING id, project_id, asset_id, kind, status, phase, progress, profile_id, profile_version, pinned_agent_id, lost_count, failed_count, error_code, routed_to, route_reason, available_at, created_at, started_at, finished_at, source_storage_id, target_storage_id, import_url
 `
 
 type ClaimControlJobParams struct {
@@ -85,6 +85,7 @@ func (q *Queries) ClaimControlJob(ctx context.Context, arg ClaimControlJobParams
 		&i.FinishedAt,
 		&i.SourceStorageID,
 		&i.TargetStorageID,
+		&i.ImportUrl,
 	)
 	return i, err
 }
@@ -144,7 +145,7 @@ func (q *Queries) DeferJob(ctx context.Context, arg DeferJobParams) error {
 }
 
 const getActiveJobForAsset = `-- name: GetActiveJobForAsset :one
-SELECT id, project_id, asset_id, kind, status, phase, progress, profile_id, profile_version, pinned_agent_id, lost_count, failed_count, error_code, routed_to, route_reason, available_at, created_at, started_at, finished_at, source_storage_id, target_storage_id FROM jobs WHERE asset_id = $1 AND status IN ('queued', 'running')
+SELECT id, project_id, asset_id, kind, status, phase, progress, profile_id, profile_version, pinned_agent_id, lost_count, failed_count, error_code, routed_to, route_reason, available_at, created_at, started_at, finished_at, source_storage_id, target_storage_id, import_url FROM jobs WHERE asset_id = $1 AND status IN ('queued', 'running')
 `
 
 func (q *Queries) GetActiveJobForAsset(ctx context.Context, assetID string) (Job, error) {
@@ -172,6 +173,7 @@ func (q *Queries) GetActiveJobForAsset(ctx context.Context, assetID string) (Job
 		&i.FinishedAt,
 		&i.SourceStorageID,
 		&i.TargetStorageID,
+		&i.ImportUrl,
 	)
 	return i, err
 }
@@ -497,7 +499,7 @@ func (q *Queries) MoveProgress(ctx context.Context, projectID string) (MoveProgr
 const queueMoveJob = `-- name: QueueMoveJob :one
 INSERT INTO jobs (id, project_id, asset_id, kind, source_storage_id, target_storage_id)
 VALUES ($1, $2, $3, 'move', $4, $5)
-RETURNING id, project_id, asset_id, kind, status, phase, progress, profile_id, profile_version, pinned_agent_id, lost_count, failed_count, error_code, routed_to, route_reason, available_at, created_at, started_at, finished_at, source_storage_id, target_storage_id
+RETURNING id, project_id, asset_id, kind, status, phase, progress, profile_id, profile_version, pinned_agent_id, lost_count, failed_count, error_code, routed_to, route_reason, available_at, created_at, started_at, finished_at, source_storage_id, target_storage_id, import_url
 `
 
 type QueueMoveJobParams struct {
@@ -540,6 +542,7 @@ func (q *Queries) QueueMoveJob(ctx context.Context, arg QueueMoveJobParams) (Job
 		&i.FinishedAt,
 		&i.SourceStorageID,
 		&i.TargetStorageID,
+		&i.ImportUrl,
 	)
 	return i, err
 }

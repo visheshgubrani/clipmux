@@ -33,6 +33,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/httpjson"
 	"github.com/visheshgubrani/clipmux/internal/outbox"
 	"github.com/visheshgubrani/clipmux/internal/outputs"
+	"github.com/visheshgubrani/clipmux/internal/publicnet"
 	"github.com/visheshgubrani/clipmux/internal/queue"
 	"github.com/visheshgubrani/clipmux/internal/storage"
 	"github.com/visheshgubrani/clipmux/internal/stores"
@@ -66,6 +67,13 @@ type Service struct {
 	// LateWrites is how long after a job ends its PUT URLs may still write
 	// (15 min, plus a margin).
 	LateWrites time.Duration
+
+	// Fetch is the client imports use: public addresses only (publicnet).
+	Fetch *http.Client
+	// MaxImportSize caps an imported source, like a declared upload size.
+	MaxImportSize int64
+	// ImportTimeout bounds one fetch; ImportLease outlasts it.
+	ImportTimeout, ImportLease time.Duration
 }
 
 // New returns the lifecycle service. routes publishes route changes.
@@ -73,11 +81,14 @@ func New(pool *pgxpool.Pool, set *stores.Set, routes *outputs.Committer) *Servic
 	return &Service{
 		pool: pool, stores: set, routes: routes, Auth: apikeys.NewAuthenticator(pool), Logger: slog.New(slog.DiscardHandler),
 		Inline: 10 * time.Second, Lease: 2 * time.Minute, RouteRetry: 15 * time.Second, LateWrites: 16 * time.Minute,
+		Fetch: publicnet.Client(publicnet.Options{}), MaxImportSize: storage.PartSize * storage.MaxParts,
+		ImportTimeout: 6 * time.Hour, ImportLease: 6*time.Hour + 10*time.Minute,
 	}
 }
 
 // Register adds the asset lifecycle routes.
 func (s *Service) Register(mux *http.ServeMux) {
+	mux.HandleFunc("POST /v1/assets", s.handleImport)
 	mux.HandleFunc("DELETE /v1/assets/{id}", s.handleDelete)
 	mux.HandleFunc("POST /v1/assets/{id}/reencode", s.handleReencode)
 	mux.HandleFunc("POST /v1/assets/{id}/playback-ids", s.handleAddPlaybackID)

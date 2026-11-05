@@ -107,7 +107,7 @@ const createJob = `-- name: CreateJob :one
 
 INSERT INTO jobs (id, project_id, asset_id, kind, pinned_agent_id)
 VALUES ($1, $2, $3, $4, $5)
-RETURNING id, project_id, asset_id, kind, status, phase, progress, profile_id, profile_version, pinned_agent_id, lost_count, failed_count, error_code, routed_to, route_reason, available_at, created_at, started_at, finished_at, source_storage_id, target_storage_id
+RETURNING id, project_id, asset_id, kind, status, phase, progress, profile_id, profile_version, pinned_agent_id, lost_count, failed_count, error_code, routed_to, route_reason, available_at, created_at, started_at, finished_at, source_storage_id, target_storage_id, import_url
 `
 
 type CreateJobParams struct {
@@ -151,6 +151,7 @@ func (q *Queries) CreateJob(ctx context.Context, arg CreateJobParams) (Job, erro
 		&i.FinishedAt,
 		&i.SourceStorageID,
 		&i.TargetStorageID,
+		&i.ImportUrl,
 	)
 	return i, err
 }
@@ -289,7 +290,7 @@ func (q *Queries) GetAttemptByTokenHash(ctx context.Context, tokenHash []byte) (
 }
 
 const getJob = `-- name: GetJob :one
-SELECT id, project_id, asset_id, kind, status, phase, progress, profile_id, profile_version, pinned_agent_id, lost_count, failed_count, error_code, routed_to, route_reason, available_at, created_at, started_at, finished_at, source_storage_id, target_storage_id FROM jobs WHERE id = $1
+SELECT id, project_id, asset_id, kind, status, phase, progress, profile_id, profile_version, pinned_agent_id, lost_count, failed_count, error_code, routed_to, route_reason, available_at, created_at, started_at, finished_at, source_storage_id, target_storage_id, import_url FROM jobs WHERE id = $1
 `
 
 func (q *Queries) GetJob(ctx context.Context, id string) (Job, error) {
@@ -317,6 +318,7 @@ func (q *Queries) GetJob(ctx context.Context, id string) (Job, error) {
 		&i.FinishedAt,
 		&i.SourceStorageID,
 		&i.TargetStorageID,
+		&i.ImportUrl,
 	)
 	return i, err
 }
@@ -453,7 +455,7 @@ func (q *Queries) LockAttempt(ctx context.Context, id string) (LockAttemptRow, e
 }
 
 const lockJob = `-- name: LockJob :one
-SELECT id, project_id, asset_id, kind, status, phase, progress, profile_id, profile_version, pinned_agent_id, lost_count, failed_count, error_code, routed_to, route_reason, available_at, created_at, started_at, finished_at, source_storage_id, target_storage_id FROM jobs WHERE id = $1 FOR UPDATE
+SELECT id, project_id, asset_id, kind, status, phase, progress, profile_id, profile_version, pinned_agent_id, lost_count, failed_count, error_code, routed_to, route_reason, available_at, created_at, started_at, finished_at, source_storage_id, target_storage_id, import_url FROM jobs WHERE id = $1 FOR UPDATE
 `
 
 func (q *Queries) LockJob(ctx context.Context, id string) (Job, error) {
@@ -481,16 +483,17 @@ func (q *Queries) LockJob(ctx context.Context, id string) (Job, error) {
 		&i.FinishedAt,
 		&i.SourceStorageID,
 		&i.TargetStorageID,
+		&i.ImportUrl,
 	)
 	return i, err
 }
 
 const lockNextClaimableJob = `-- name: LockNextClaimableJob :one
-SELECT id, project_id, asset_id, kind, status, phase, progress, profile_id, profile_version, pinned_agent_id, lost_count, failed_count, error_code, routed_to, route_reason, available_at, created_at, started_at, finished_at, source_storage_id, target_storage_id FROM jobs
+SELECT id, project_id, asset_id, kind, status, phase, progress, profile_id, profile_version, pinned_agent_id, lost_count, failed_count, error_code, routed_to, route_reason, available_at, created_at, started_at, finished_at, source_storage_id, target_storage_id, import_url FROM jobs
 WHERE project_id = $1
   AND status = 'queued'
   AND available_at <= now()
-  AND kind IN ('import', 'transcode', 'reencode')
+  AND kind IN ('transcode', 'reencode')
   AND (pinned_agent_id IS NULL OR pinned_agent_id = $2)
   AND (NOT $3::boolean OR pinned_agent_id = $2)
 ORDER BY available_at, id
@@ -504,7 +507,7 @@ type LockNextClaimableJobParams struct {
 	LocalOnly bool
 }
 
-// Media work only: move and delete run in the control plane. Pinned jobs go
+// Media work only: import, move and delete run in the control plane. Pinned jobs go
 // only to their agent, and local-scoped agents take only pinned jobs.
 func (q *Queries) LockNextClaimableJob(ctx context.Context, arg LockNextClaimableJobParams) (Job, error) {
 	row := q.db.QueryRow(ctx, lockNextClaimableJob, arg.ProjectID, arg.AgentID, arg.LocalOnly)
@@ -531,6 +534,7 @@ func (q *Queries) LockNextClaimableJob(ctx context.Context, arg LockNextClaimabl
 		&i.FinishedAt,
 		&i.SourceStorageID,
 		&i.TargetStorageID,
+		&i.ImportUrl,
 	)
 	return i, err
 }
