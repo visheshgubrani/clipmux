@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/visheshgubrani/clipmux/internal/apikeys"
 	"github.com/visheshgubrani/clipmux/internal/db/dbtest"
@@ -160,5 +161,33 @@ func TestResetPasswordReadsTheNewPasswordFromStdin(t *testing.T) {
 	}
 	if err := resetPassword(ctx, pool, strings.NewReader("short\n"), &out); err == nil {
 		t.Fatal("a short password must be refused")
+	}
+}
+
+// admin setup-test --wait queues a test for serve to run and exits non-zero
+// unless it passes, so compose and CI can gate on it.
+func TestAdminSetupTestWaitExitsNonZeroOnFailure(t *testing.T) {
+	ctx := context.Background()
+	pool := dbtest.New(t)
+	finish := func(status string) {
+		for {
+			var id string
+			if err := pool.QueryRow(ctx, `SELECT id FROM setup_tests WHERE status = 'queued'`).Scan(&id); err == nil {
+				_, _ = pool.Exec(ctx, `UPDATE setup_tests SET status = $2, finished_at = now(),
+					checks = '[{"name":"upload","ok":true},{"name":"encode","ok":false,"detail":"not ready after 15m0s; is a worker running?"}]' WHERE id = $1`, id, status)
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	var out bytes.Buffer
+	go finish("failed")
+	if err := setupTest(ctx, pool, true, time.Minute, 10*time.Millisecond, &out); err == nil || !strings.Contains(out.String(), "encode") {
+		t.Fatalf("a failed test: err %v, output:\n%s", err, out.String())
+	}
+	out.Reset()
+	go finish("passed")
+	if err := setupTest(ctx, pool, true, time.Minute, 10*time.Millisecond, &out); err != nil {
+		t.Fatalf("a passed test: %v\n%s", err, out.String())
 	}
 }

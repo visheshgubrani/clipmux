@@ -203,6 +203,18 @@ type Project struct {
 	UrlsConfirmedAt         pgtype.Timestamptz
 }
 
+type SetupTest struct {
+	ID         string
+	ProjectID  string
+	Status     string
+	Trigger    string
+	AssetID    pgtype.Text
+	Checks     []byte
+	CreatedAt  pgtype.Timestamptz
+	StartedAt  pgtype.Timestamptz
+	FinishedAt pgtype.Timestamptz
+}
+
 type SigningKey struct {
 	ID                  string
 	ProjectID           string

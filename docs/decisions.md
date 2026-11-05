@@ -188,5 +188,12 @@ Decisions within the architecture's rules, made in P1-T10:
 - Preview tokens are signed with the internal key, last one hour, and pick the asset's first active signed playback ID (a public one otherwise).
 - Asset views gain `app_id`, so the library can say which app owns each asset.
 
+## D026 Setup test — accepted (2026-11-05)
+Decisions within the architecture's rules, made in P1-T10:
+- The sample is embedded in the binary (`internal/setuptest/sample.mp4`, 8 s, 854×480 so the ladder makes two rungs plus audio, about 480 KB), produced by `toolchain/make_sample.sh`, so the control plane never runs ffmpeg.
+- A run creates the upload in-process as the Dashboard app's backend, then does what a browser and a player do, over HTTP to the configured URLs: sign parts and PUT them on the public URL, complete, wait for `ready`, then play through the media URL with internal-key tokens. Ten checks, in order: `upload`, `encode`, `play_master`, `play_key` (16 bytes), `play_segment_decrypts` (AES-128-CBC with the delivered key and the playlist's IV gives an fMP4 fragment), `thumbnail_token_refused_segment`, `thumbnail_token_refused_key`, `thumbnail_token_poster`, `no_token_refused`, `stored_segment_encrypted` (the stored bytes don't parse as a fragment). A failed check skips the ones that depend on it. Details never carry a URL or a token.
+- One test at a time per project (a partial unique index); asking again returns the queued one. Triggers: first boot (when the built-in worker is on and no test ever ran), saving the URLs, `POST /v1/setup-test`, and `clipmux admin setup-test --wait`, which exits non-zero unless every check passes. A new run deletes earlier samples, so the latest stays playable in the dashboard.
+- `CLIPMUX_SELF_DIAL=host:port` makes every check connect there (Caddy, in compose) while keeping the URL's hostname for TLS and routing, because a container often can't reach its own public hostname.
+
 ## D007 Shaka Packager 3.9.3 — accepted (2026-11-05)
 Decision: pin v3.9.3 (`toolchain/versions.env`), the version clipmux-lms runs with AES-128 in production, which needs the init-segment workaround for Shaka issue 1616. Move to a release that fixes 1616 when one exists, re-running the Phase 1 player tests.

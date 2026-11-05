@@ -27,6 +27,7 @@ const (
 	Storage    = "sto"
 	SigningKey = "kid"
 	Owner      = "own"
+	SetupTest  = "stt"
 )
 
 const alphabet = "0123456789abcdefghjkmnpqrstvwxyz" // Crockford, lowercase

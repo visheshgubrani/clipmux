@@ -28,6 +28,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/queue"
 	"github.com/visheshgubrani/clipmux/internal/secrets"
 	"github.com/visheshgubrani/clipmux/internal/settings"
+	"github.com/visheshgubrani/clipmux/internal/setuptest"
 	"github.com/visheshgubrani/clipmux/internal/signingkeys"
 	"github.com/visheshgubrani/clipmux/internal/storage"
 	"github.com/visheshgubrani/clipmux/internal/sweeper"
@@ -56,6 +57,9 @@ const WebhookInterval = 5 * time.Second
 // run; DELETE runs its job inline, so this mostly covers crashes, pending
 // unpublishes and second passes.
 const ControlJobInterval = 15 * time.Second
+
+// SetupTestInterval is how often a queued setup test is picked up.
+const SetupTestInterval = 5 * time.Second
 
 // Registrar adds an API's routes to the root mux.
 type Registrar interface {
@@ -231,6 +235,9 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 	life.Logger = logger
 	mgmt := manage.New(pool, box, acct, b.urls)
 	mgmt.Logger = logger
+	tests := setuptest.New(pool, store, box, b.urls, upl, life, cfg.SelfDial)
+	tests.Logger = logger
+	mgmt.Tests = tests
 	assetsAPI := assets.New(pool)
 	// The dashboard calls the integration API with the owner's session,
 	// acting as one app; integration keys never reach the management API.
@@ -265,6 +272,23 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 	wg.Go(func() {
 		sweeper.Every(ctx, ControlJobInterval, "control_jobs", life.Run, logger)
 	})
+	wg.Go(func() {
+		sweeper.Every(ctx, SetupTestInterval, "setup_tests", tests.Run, logger)
+	})
+	// Saving the URLs re-runs the setup test: a wrong hostname should fail
+	// here, not in an app.
+	mgmt.URLsSaved = func(settings.URLs) {
+		if _, err := tests.Queue(ctx, "urls_saved"); err != nil {
+			logger.Error("queue setup test", "err", err)
+		}
+	}
+	// With the built-in worker the sample can encode right away, so a fresh
+	// install proves its path on first boot.
+	if cfg.BuiltinWorker {
+		if err := tests.QueueFirst(ctx); err != nil {
+			return err
+		}
+	}
 	if cfg.BuiltinWorker {
 		bw := &builtinWorker{
 			server: loopbackURL(ln.Addr()), key: workerKey, workDir: workerDir(cfg.DataDir),

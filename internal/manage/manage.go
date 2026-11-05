@@ -28,6 +28,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/ids"
 	"github.com/visheshgubrani/clipmux/internal/secrets"
 	"github.com/visheshgubrani/clipmux/internal/settings"
+	"github.com/visheshgubrani/clipmux/internal/setuptest"
 	"github.com/visheshgubrani/clipmux/internal/signingkeys"
 	"github.com/visheshgubrani/clipmux/internal/tokens"
 	"github.com/visheshgubrani/clipmux/internal/webhooks"
@@ -48,8 +49,10 @@ type API struct {
 
 	// URLsSaved runs after the owner saves new URLs (the setup test).
 	URLsSaved func(settings.URLs)
-	Now       func() time.Time
-	Logger    *slog.Logger
+	// Tests runs setup tests; nil leaves their routes answering 404.
+	Tests  *setuptest.Runner
+	Now    func() time.Time
+	Logger *slog.Logger
 }
 
 // New returns the management API.
@@ -100,6 +103,36 @@ func (m *API) Register(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /v1/webhook-endpoints/{id}", m.owned(m.disableEndpoint))
 	mux.HandleFunc("GET /v1/library", m.owned(m.library))
 	mux.HandleFunc("POST /v1/assets/{id}/preview-token", m.owned(m.previewToken))
+	mux.HandleFunc("POST /v1/setup-test", m.owned(m.startSetupTest))
+	mux.HandleFunc("GET /v1/setup-test/latest", m.owned(m.latestSetupTest))
+}
+
+// startSetupTest queues a setup test (or returns the one already queued).
+func (m *API) startSetupTest(w http.ResponseWriter, r *http.Request, _ accounts.Owner) error {
+	if m.Tests == nil {
+		return errNotFound
+	}
+	t, err := m.Tests.Queue(r.Context(), "manual")
+	if err != nil {
+		return err
+	}
+	httpjson.Write(w, http.StatusAccepted, t)
+	return nil
+}
+
+func (m *API) latestSetupTest(w http.ResponseWriter, r *http.Request, _ accounts.Owner) error {
+	if m.Tests == nil {
+		return errNotFound
+	}
+	t, ok, err := m.Tests.Latest(r.Context())
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return errNotFound
+	}
+	httpjson.Write(w, http.StatusOK, t)
+	return nil
 }
 
 type ownedHandler func(w http.ResponseWriter, r *http.Request, owner accounts.Owner) error
@@ -139,9 +172,13 @@ func (m *API) setup(w http.ResponseWriter, r *http.Request) {
 		httpjson.Error(w, http.StatusInternalServerError, "internal", "internal error")
 		return
 	}
-	httpjson.Write(w, http.StatusOK, map[string]any{
-		"owner_exists": exists, "urls": m.urls.URLs(), "keys_allowed": m.urls.KeysAllowed(),
-	})
+	body := map[string]any{"owner_exists": exists, "urls": m.urls.URLs(), "keys_allowed": m.urls.KeysAllowed(), "setup_test": nil}
+	if m.Tests != nil {
+		if t, ok, err := m.Tests.Latest(r.Context()); err == nil && ok {
+			body["setup_test"] = map[string]any{"id": t.ID, "status": t.Status} // details need the session
+		}
+	}
+	httpjson.Write(w, http.StatusOK, body)
 }
 
 func (m *API) urlsProject() string { return db.DefaultProjectID }

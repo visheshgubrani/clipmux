@@ -9,6 +9,7 @@ import (
 	"io"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -20,6 +21,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/ids"
 	"github.com/visheshgubrani/clipmux/internal/secrets"
 	"github.com/visheshgubrani/clipmux/internal/settings"
+	"github.com/visheshgubrani/clipmux/internal/setuptest"
 	"github.com/visheshgubrani/clipmux/internal/signingkeys"
 	"github.com/visheshgubrani/clipmux/internal/webhooks"
 )
@@ -29,6 +31,7 @@ const adminUsage = `Usage:
   clipmux admin create-signing-key --app NAME
   clipmux admin create-webhook --app NAME --url URL
   clipmux admin reset-password < new-password.txt
+  clipmux admin setup-test [--wait] [--timeout 20m]
 
 Host-side administration until the dashboard exists. Reads DATABASE_URL, and
 for create-webhook CLIPMUX_DATA_DIR or CLIPMUX_SECRETS_KEY (the same key serve
@@ -44,13 +47,16 @@ local development.
 
 reset-password reads the owner's new password from stdin (one line) and ends
 every dashboard session.
+
+setup-test asks the running serve to put the sample through the configured
+path; with --wait it prints the checks and exits 1 unless they all pass.
 `
 
 const project = db.DefaultProjectID
 
 // admin runs host-side administration commands against the database.
 func admin(args []string, getenv func(string) string, stdin io.Reader, stdout, stderr io.Writer) int {
-	if len(args) == 0 || !slices.Contains([]string{"create-key", "create-signing-key", "create-webhook", "reset-password"}, args[0]) {
+	if len(args) == 0 || !slices.Contains([]string{"create-key", "create-signing-key", "create-webhook", "reset-password", "setup-test"}, args[0]) {
 		fmt.Fprint(stderr, adminUsage)
 		return 2
 	}
@@ -62,10 +68,12 @@ func admin(args []string, getenv func(string) string, stdin io.Reader, stdout, s
 	scopes := fs.String("scopes", apikeys.UploadsWrite+","+apikeys.AssetsRead, "comma-separated scopes (create-key)")
 	endpoint := fs.String("url", "", "endpoint URL (create-webhook)")
 	allowLoopback := fs.Bool("allow-loopback", false, "issue a key while the public URL is loopback (create-key, development only)")
+	wait := fs.Bool("wait", false, "wait for the result (setup-test)")
+	timeout := fs.Duration("timeout", 20*time.Minute, "how long to wait (setup-test)")
 	if err := fs.Parse(args[1:]); err != nil {
 		return 2
 	}
-	if (*app == "" && cmd != "reset-password") || (cmd == "create-webhook" && *endpoint == "") {
+	if (*app == "" && cmd != "reset-password" && cmd != "setup-test") || (cmd == "create-webhook" && *endpoint == "") {
 		fmt.Fprintf(stderr, "clipmux admin %s: --app is required (and --url for create-webhook)\n\n%s", cmd, adminUsage)
 		return 2
 	}
@@ -90,6 +98,8 @@ func admin(args []string, getenv func(string) string, stdin io.Reader, stdout, s
 		err = createSigningKey(ctx, pool, *app, stdout)
 	case "reset-password":
 		err = resetPassword(ctx, pool, stdin, stdout)
+	case "setup-test":
+		err = setupTest(ctx, pool, *wait, *timeout, time.Second, stdout)
 	case "create-webhook":
 		var box *secrets.Box
 		if box, err = secrets.Load(orDefault(getenv("CLIPMUX_DATA_DIR"), config.DefaultDataDir), getenv("CLIPMUX_SECRETS_KEY")); err == nil {
@@ -168,6 +178,43 @@ func createSigningKey(ctx context.Context, pool *pgxpool.Pool, appName string, o
 	}
 	fmt.Fprintf(out, "app: %s (%s)\nkid: %s\n\n%s\nSign playback tokens with this private key (ES256, kid %s).\nIt is shown once and not stored by ClipMux.\n",
 		appName, app, kid, privatePEM, kid)
+	return nil
+}
+
+// setupTest queues a setup test for serve to run and, with wait, reports it.
+func setupTest(ctx context.Context, pool *pgxpool.Pool, wait bool, timeout, poll time.Duration, out io.Writer) error {
+	runner := setuptest.New(pool, nil, nil, nil, nil, nil, "")
+	t, err := runner.Queue(ctx, "cli")
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "setup test %s queued; serve runs it\n", t.ID)
+	if !wait {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	for t.Status == "queued" || t.Status == "running" {
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("setup test %s still %s after %s; is serve running?", t.ID, t.Status, timeout)
+		case <-time.After(poll):
+		}
+		if t, err = runner.Get(ctx, t.ID); err != nil {
+			return err
+		}
+	}
+	for _, c := range t.Checks {
+		mark := "ok  "
+		if !c.OK {
+			mark = "FAIL"
+		}
+		fmt.Fprintf(out, "  %s %s %s\n", mark, c.Name, c.Detail)
+	}
+	if t.Status != "passed" {
+		return fmt.Errorf("setup test %s failed", t.ID)
+	}
+	fmt.Fprintf(out, "setup test %s passed\n", t.ID)
 	return nil
 }
 

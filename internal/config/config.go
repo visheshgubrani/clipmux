@@ -48,6 +48,11 @@ type Config struct {
 	// is believed when limiting sign-ins (CLIPMUX_TRUSTED_PROXIES, comma-
 	// separated addresses or CIDR ranges).
 	TrustedProxies []netip.Prefix
+	// SelfDial, when set (host:port, e.g. caddy:443), is where the setup
+	// test connects for every URL it checks, keeping the URL's hostname for
+	// TLS and routing (CLIPMUX_SELF_DIAL): a container can't always reach its
+	// own public hostname.
+	SelfDial string
 	// Tools are the media binaries (CLIPMUX_FFMPEG, CLIPMUX_FFPROBE,
 	// CLIPMUX_PACKAGER; default: found on PATH).
 	Tools media.Tools
@@ -67,6 +72,7 @@ func FromEnv(getenv func(string) string) (Config, error) {
 		DatabaseURL: getenv("DATABASE_URL"),
 		DataDir:     orDefault(getenv("CLIPMUX_DATA_DIR"), DefaultDataDir),
 		SecretsKey:  getenv("CLIPMUX_SECRETS_KEY"),
+		SelfDial:    getenv("CLIPMUX_SELF_DIAL"),
 	}
 	if cfg.DatabaseURL == "" {
 		return Config{}, errors.New("DATABASE_URL is required")
@@ -110,6 +116,11 @@ func FromEnv(getenv func(string) string) (Config, error) {
 			prefix = netip.PrefixFrom(addr, addr.BitLen())
 		}
 		cfg.TrustedProxies = append(cfg.TrustedProxies, prefix.Masked())
+	}
+	if cfg.SelfDial != "" {
+		if _, _, err := net.SplitHostPort(cfg.SelfDial); err != nil {
+			return Config{}, fmt.Errorf("CLIPMUX_SELF_DIAL %q must be host:port: %w", cfg.SelfDial, err)
+		}
 	}
 	cfg.Tools = media.DefaultTools()
 	cfg.Tools.FFmpeg = orDefault(getenv("CLIPMUX_FFMPEG"), cfg.Tools.FFmpeg)
