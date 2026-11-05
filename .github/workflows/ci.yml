@@ -23,8 +23,18 @@ jobs:
       TEST_DATABASE_URL: postgres://clipmux:clipmux@localhost:5432/clipmux_test?sslmode=disable
       # A missing ffmpeg or packager fails the media tests instead of skipping them.
       CLIPMUX_REQUIRE_MEDIA_TOOLS: "1"
+      # The storage contract suite runs against SeaweedFS too, never skipping.
+      CLIPMUX_REQUIRE_S3: "1"
+      CLIPMUX_TEST_S3_ENDPOINT: http://127.0.0.1:8333
+      CLIPMUX_TEST_S3_ACCESS_KEY: clipmuxdev
+      CLIPMUX_TEST_S3_SECRET_KEY: clipmuxdevsecret0123456789
     steps:
       - uses: actions/checkout@v4
+      - name: S3-compatible store (SeaweedFS, pinned in deploy/compose.dev.yml)
+        # Services can't take a command, so start it here.
+        run: |
+          docker compose -f deploy/compose.dev.yml up -d seaweedfs
+          for i in $(seq 60); do curl -s -o /dev/null http://127.0.0.1:8333/ && exit 0; sleep 1; done; exit 1
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod

@@ -1,0 +1,9 @@
+{
+  "identities": [
+    {
+      "name": "clipmux-dev",
+      "credentials": [{ "accessKey": "clipmuxdev", "secretKey": "clipmuxdevsecret0123456789" }],
+      "actions": ["Admin", "Read", "Write", "List", "Tagging"]
+    }
+  ]
+}

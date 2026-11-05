@@ -440,6 +440,9 @@ func (w *Worker) putFile(ctx context.Context, url, path string) error {
 	defer watch.stop()
 	req, _ := http.NewRequestWithContext(reqCtx, http.MethodPut, w.storageURL(url), watch.reader(f))
 	req.ContentLength = info.Size()
+	// Output URLs are create-once (D016). On R2/S3 this header is signed
+	// into the URL, so it must be sent; the filesystem store needs nothing.
+	req.Header.Set("If-None-Match", "*")
 	res, err := w.httpClient().Do(req)
 	if err != nil {
 		return redact(err)
