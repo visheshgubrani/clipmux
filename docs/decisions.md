@@ -292,5 +292,8 @@ Decisions within the architecture's rules, made in P2-T06:
 - Failures: a refused address is permanent (`import_url_refused`). Another 4xx, an empty body, or more than the limit (`import_too_large`) is permanent. A 5xx, 408, 429, network error or short body is retried after 30 s, then 60 s, and after 3 tries becomes `import_failed`. Permanent failures error the asset with `video.asset.errored` (`job: {kind: "import", error_code}`).
 - Agent sources (`agent_source_id`) wait for Phase 3.
 
+## D040 Phase 1 exit — accepted (2026-11-05)
+The Phase 1 exit test passed in CI at `14586f5` (visheshgubrani/clipmux#2): CI run 42072842722 (Go, TypeScript, lint, sqlc, toolchain, and the image under compose with the setup test through Caddy), Exit test run 42072842708 (the real binary: signed encrypted playback, a SIGKILLed worker recovering on a new attempt and output, the setup test; the Chromium suites; ExoPlayer on an Android emulator) and Exit test (Safari) run 42072842730 (native HLS with separate audio, and `<clipmux-player>` refresh). Getting there took four CI fixes: building the packages before type-checking, freeing disk for the emulator, the kill-worker test waiting out the first-boot setup test, and the packager in its own image layer, plus bounded install steps. Phase 2 started on its branch before this exit, but nothing of it merged before it. `docs/plans/launch.md` is now unblocked (D005); the owner put Phase 2 first.
+
 ## D007 Shaka Packager 3.9.3 — accepted (2026-11-05)
 Decision: pin v3.9.3 (`toolchain/versions.env`), the version clipmux-lms runs with AES-128 in production, which needs the init-segment workaround for Shaka issue 1616. Move to a release that fixes 1616 when one exists, re-running the Phase 1 player tests.
