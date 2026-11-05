@@ -1,0 +1,10 @@
+# Only what the image builds from.
+*
+!go.mod
+!go.sum
+!cmd/
+!internal/
+!toolchain/
+internal/web/dist/node_modules
+**/*_test.go
+**/testdata/

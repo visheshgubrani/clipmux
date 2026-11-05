@@ -201,5 +201,11 @@ Decisions within the architecture's rules, made in P1-T10:
 - Network namespaces and cgroups aren't available to an unprivileged process in Docker's default runtime, so the sandbox doesn't use them: seccomp stands in for "no network", and `SCHED_IDLE` is the CPU cap (compose `cpus:` is the hard one).
 - Limits, `no_new_privs` and seccomp are required. `serve` probes (`sandbox-exec --probe`) before starting the built-in worker and leaves it off with one clear error where they don't hold, unless `CLIPMUX_UNSANDBOXED_WORKER=true` says the host isolates it another way. Landlock is reported, not required. The worker reports what holds in its claim (`worker_info.sandbox`).
 
+## D028 Packaging — accepted (2026-11-05)
+Decisions within the architecture's rules, made in P1-T10:
+- One image (`Dockerfile`): a toolchain stage builds FFmpeg from source with `toolchain/build_ffmpeg.sh` (BuildKit cache) and installs the pinned packager; Go builds `CGO_ENABLED=0 -trimpath`; the runtime is Ubuntu 24.04 with the runtime package list, `verify_toolchain.sh` run on the final image, uid 10001, tini, and a `clipmux healthcheck` command instead of curl. It is not published (D005, D006).
+- `deploy/compose.yml` runs the app (`read_only`, tmpfs `/tmp`, `cap_drop: ALL`, `no-new-privileges`, port 8080 on 127.0.0.1 only), `postgres:18-alpine` and `caddy:2`. The Caddyfile names no host: on-demand TLS asks `/_tls/ask`, which is blocked from outside; plain HTTP serves first boot. The app trusts Docker's private ranges as proxies and self-dials `caddy` for the setup test.
+- CI's image job builds with the GHA cache, starts the stack, requires the sandbox probe and a refused socket inside the container, passes `clipmux admin setup-test --wait` through Caddy, and checks health through Caddy. Locally all of that holds under Docker's default seccomp profile, including Landlock.
+
 ## D007 Shaka Packager 3.9.3 — accepted (2026-11-05)
 Decision: pin v3.9.3 (`toolchain/versions.env`), the version clipmux-lms runs with AES-128 in production, which needs the init-segment workaround for Shaka issue 1616. Move to a release that fixes 1616 when one exists, re-running the Phase 1 player tests.

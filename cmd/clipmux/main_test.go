@@ -2,6 +2,10 @@ package main
 
 import (
 	"bytes"
+	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 )
 
@@ -29,5 +33,29 @@ func TestRunVersion(t *testing.T) {
 	}
 	if out.String() != "dev\n" {
 		t.Fatalf("version = %q, want %q", out.String(), "dev\n")
+	}
+}
+
+func TestHealthcheckAsksTheLocalServe(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/healthz" {
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+	_, port, _ := net.SplitHostPort(srv.Listener.Addr().String())
+	env := func(listen string) func(string) string {
+		return func(k string) string {
+			if k == "CLIPMUX_LISTEN" {
+				return listen
+			}
+			return ""
+		}
+	}
+	if code := healthcheck(env(":"+port), io.Discard); code != 0 {
+		t.Fatalf("healthy serve: exit %d", code)
+	}
+	if code := healthcheck(env("127.0.0.1:1"), io.Discard); code != 1 {
+		t.Fatalf("no serve: exit %d, want 1", code)
 	}
 }

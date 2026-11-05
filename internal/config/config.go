@@ -52,10 +52,10 @@ type Config struct {
 	// doesn't hold (CLIPMUX_UNSANDBOXED_WORKER). Only for hosts that isolate
 	// the worker another way: its tools parse hostile uploads.
 	UnsandboxedWorker bool
-	// SelfDial, when set (host:port, e.g. caddy:443), is where the setup
-	// test connects for every URL it checks, keeping the URL's hostname for
-	// TLS and routing (CLIPMUX_SELF_DIAL): a container can't always reach its
-	// own public hostname.
+	// SelfDial, when set (a host, or host:port), is where the setup test
+	// connects for every URL it checks, keeping the URL's hostname for TLS
+	// and routing (CLIPMUX_SELF_DIAL, e.g. caddy): a container can't always
+	// reach its own public hostname. A bare host keeps each URL's port.
 	SelfDial string
 	// Tools are the media binaries (CLIPMUX_FFMPEG, CLIPMUX_FFPROBE,
 	// CLIPMUX_PACKAGER; default: found on PATH).
@@ -121,10 +121,8 @@ func FromEnv(getenv func(string) string) (Config, error) {
 		}
 		cfg.TrustedProxies = append(cfg.TrustedProxies, prefix.Masked())
 	}
-	if cfg.SelfDial != "" {
-		if _, _, err := net.SplitHostPort(cfg.SelfDial); err != nil {
-			return Config{}, fmt.Errorf("CLIPMUX_SELF_DIAL %q must be host:port: %w", cfg.SelfDial, err)
-		}
+	if cfg.SelfDial != "" && strings.ContainsAny(cfg.SelfDial, "/ ") {
+		return Config{}, fmt.Errorf("CLIPMUX_SELF_DIAL %q must be a host or host:port", cfg.SelfDial)
 	}
 	switch v := getenv("CLIPMUX_UNSANDBOXED_WORKER"); v {
 	case "", "false", "0":

@@ -64,8 +64,8 @@ when you introduce or discover it; remove it when it is closed.
   secrets join them with R2/S3 in Phase 2.
 - `clipmux push|listen` print "not implemented"; `clipmux admin` has
   create-key, create-signing-key and create-webhook.
-- No Dockerfile or production compose yet (P1-T10). The FFmpeg recipe in
-  `toolchain/` is lifted from the archived repo and has not been built here.
+- The image is ~575 MB and built from source on a cache miss (~20 min); it
+  isn't published, so every install builds it until launch.
 - No captions, chapters or transcripts. The LMS depends on them, so they gate
   the LMS migration (plans/lms-migration.md); OSS-V2 leaves them as an open
   roadmap decision.

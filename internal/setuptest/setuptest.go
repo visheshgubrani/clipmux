@@ -101,15 +101,21 @@ type Runner struct {
 	Logger        *slog.Logger
 }
 
-// New returns a runner. selfDial, when set (host:port), is where every
-// request connects, whatever host its URL names.
+// New returns a runner. selfDial, when set (a host, or host:port), is where
+// every request connects, whatever host its URL names; a bare host keeps
+// the URL's port.
 func New(pool *pgxpool.Pool, store storage.Storage, box *secrets.Box, urls *settings.Store, upl *uploads.Service, life *lifecycle.Service, selfDial string) *Runner {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.Proxy = nil
 	if selfDial != "" {
 		dialer := &net.Dialer{Timeout: 10 * time.Second}
-		transport.DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
-			return dialer.DialContext(ctx, network, selfDial)
+		transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+			target := selfDial
+			if _, _, err := net.SplitHostPort(selfDial); err != nil {
+				_, port, _ := net.SplitHostPort(addr)
+				target = net.JoinHostPort(selfDial, port)
+			}
+			return dialer.DialContext(ctx, network, target)
 		}
 	}
 	return &Runner{
