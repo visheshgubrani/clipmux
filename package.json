@@ -1,0 +1,21 @@
+{
+  "name": "clipmux-workspace",
+  "private": true,
+  "description": "TypeScript in ClipMux: the dashboard, @clipmux/player and @clipmux/uploader (D002). The Go module is the product.",
+  "type": "module",
+  "packageManager": "pnpm@12.11.2",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "build": "pnpm -r --if-present run build",
+    "typecheck": "pnpm -r --if-present run typecheck",
+    "test": "pnpm -r --if-present run test",
+    "lint": "biome ci ."
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.6.3",
+    "@types/node": "24.19.2",
+    "typescript": "7.0.2"
+  }
+}

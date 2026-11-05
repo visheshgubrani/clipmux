@@ -52,6 +52,21 @@ jobs:
       - uses: actions/checkout@v4
       - name: Generated queries are current
         run: make sqlc-check
+  ts:
+    # The dashboard and the @clipmux packages (D002).
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm build
   toolchain:
     runs-on: ubuntu-24.04
     steps:
