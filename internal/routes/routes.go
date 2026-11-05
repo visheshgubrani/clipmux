@@ -48,6 +48,9 @@ type Record struct {
 	// Outputs maps each output pinned paths may name (committed or retired)
 	// to its key version; anything else is 404.
 	Outputs map[string]int32 `json:"outputs"`
+	// Denied is set while the ID's app is disabled: delivery answers 403
+	// rather than 404, as the built-in handler does (D016).
+	Denied bool `json:"denied,omitempty"`
 }
 
 // Backends.
@@ -151,8 +154,9 @@ func ForProject(ctx context.Context, q *db.Queries, set *stores.Set, projectID s
 }
 
 // Desired builds the record for a playback ID, or nil when the built-in
-// handler would refuse it (unknown, revoking, revoked, deleted, not yet
-// playable, or its app disabled). bucketID is the Worker's storage config.
+// handler would answer 404 (unknown, revoking, revoked, deleted or not yet
+// playable). A disabled app's ID keeps a record marked Denied, for its 403.
+// bucketID is the Worker's storage config.
 func Desired(ctx context.Context, q *db.Queries, playbackID, bucketID string) (*Record, error) {
 	rt, err := q.GetRoute(ctx, playbackID)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -161,7 +165,7 @@ func Desired(ctx context.Context, q *db.Queries, playbackID, bucketID string) (*
 	if err != nil {
 		return nil, err
 	}
-	if rt.PlaybackStatus != "active" || rt.AssetStatus == "deleted" || !rt.CurrentOutputID.Valid || rt.AppDisabled {
+	if rt.PlaybackStatus != "active" || rt.AssetStatus == "deleted" || !rt.CurrentOutputID.Valid {
 		return nil, nil
 	}
 	outs, err := q.ListServableOutputs(ctx, rt.AssetID)
@@ -170,7 +174,7 @@ func Desired(ctx context.Context, q *db.Queries, playbackID, bucketID string) (*
 	}
 	r := &Record{
 		V: 1, AppID: rt.AppID, AssetID: rt.AssetID, OutputID: rt.CurrentOutputID.String, Policy: rt.Policy,
-		Backend: backend(rt.StorageID, bucketID), Outputs: make(map[string]int32, len(outs)),
+		Backend: backend(rt.StorageID, bucketID), Outputs: make(map[string]int32, len(outs)), Denied: rt.AppDisabled,
 	}
 	for _, o := range outs {
 		r.Outputs[o.ID] = o.KeyVersion
@@ -325,7 +329,7 @@ func desiredAll(ctx context.Context, q *db.Queries, projectID, bucketID string) 
 		}
 		want[rt.PlaybackID] = encode(Record{
 			V: 1, AppID: rt.AppID, AssetID: rt.AssetID, OutputID: rt.CurrentOutputID.String, Policy: rt.Policy,
-			Backend: backend(rt.StorageID, bucketID), Outputs: outputs,
+			Backend: backend(rt.StorageID, bucketID), Outputs: outputs, Denied: rt.AppDisabled,
 		})
 	}
 	return want, nil

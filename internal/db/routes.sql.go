@@ -179,12 +179,13 @@ func (q *Queries) ListServableOutputsForProject(ctx context.Context, projectID s
 }
 
 const listServableRoutes = `-- name: ListServableRoutes :many
-SELECT p.id AS playback_id, p.policy, a.id AS asset_id, a.app_id, a.current_output_id, a.storage_id
+SELECT p.id AS playback_id, p.policy, a.id AS asset_id, a.app_id, a.current_output_id, a.storage_id,
+       (ap.disabled_at IS NOT NULL)::boolean AS app_disabled
 FROM playback_ids p
 JOIN assets a ON a.id = p.asset_id
 JOIN apps ap ON ap.id = a.app_id
 WHERE p.project_id = $1 AND p.status = 'active' AND a.status <> 'deleted'
-  AND a.current_output_id IS NOT NULL AND ap.disabled_at IS NULL
+  AND a.current_output_id IS NOT NULL
 ORDER BY p.id
 `
 
@@ -195,6 +196,7 @@ type ListServableRoutesRow struct {
 	AppID           string
 	CurrentOutputID pgtype.Text
 	StorageID       string
+	AppDisabled     bool
 }
 
 // Every playback ID the built-in handler would serve, for the reconciler.
@@ -214,6 +216,7 @@ func (q *Queries) ListServableRoutes(ctx context.Context, projectID string) ([]L
 			&i.AppID,
 			&i.CurrentOutputID,
 			&i.StorageID,
+			&i.AppDisabled,
 		); err != nil {
 			return nil, err
 		}

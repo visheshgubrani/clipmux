@@ -24,9 +24,8 @@ func QueueKeys(ctx context.Context, q *db.Queries, projectID string) error {
 	})
 }
 
-// QueueAppRefresh refreshes every live route of an app, after its disabled
-// state changes: a disabled app's IDs are unpublished, an enabled app's
-// republished.
+// QueueAppRefresh refreshes every live route of an app after its disabled
+// state changes, so the Worker denies (or again serves) its IDs.
 func QueueAppRefresh(ctx context.Context, q *db.Queries, projectID, appID string) error {
 	pids, err := q.ListActivePlaybackIDsForApp(ctx, appID)
 	if err != nil {

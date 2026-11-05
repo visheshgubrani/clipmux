@@ -188,7 +188,7 @@ func TestRevocationIsConfirmedOnlyAfterTheDeleteLands(t *testing.T) {
 	}
 }
 
-func TestDisablingAnAppUnpublishesItsRoutesWithoutEvents(t *testing.T) {
+func TestDisablingAnAppDeniesItsRoutesWithoutEvents(t *testing.T) {
 	r := newRig(t)
 	r.queueRoute("ast_r2")
 	r.sync()
@@ -200,14 +200,14 @@ func TestDisablingAnAppUnpublishesItsRoutesWithoutEvents(t *testing.T) {
 	r.exec(`UPDATE apps SET disabled_at = now() WHERE id = 'app_lms'`)
 	r.tx(func(q *db.Queries) error { return routes.QueueAppRefresh(ctx, q, db.DefaultProjectID, "app_lms") })
 	r.sync()
-	if _, ok := r.object("_routes/pid_ast_r2.json"); ok {
-		t.Fatal("a disabled app's route is still published")
+	if got, _ := r.object("_routes/pid_ast_r2.json"); !strings.Contains(got, `"denied":true`) {
+		t.Fatalf("a disabled app's route = %s, want it marked denied (403, not 404)", got)
 	}
 	r.exec(`UPDATE apps SET disabled_at = NULL WHERE id = 'app_lms'`)
 	r.tx(func(q *db.Queries) error { return routes.QueueAppRefresh(ctx, q, db.DefaultProjectID, "app_lms") })
 	r.sync()
-	if _, ok := r.object("_routes/pid_ast_r2.json"); !ok {
-		t.Fatal("re-enabling the app didn't republish its route")
+	if got, ok := r.object("_routes/pid_ast_r2.json"); !ok || strings.Contains(got, "denied") {
+		t.Fatalf("after re-enabling the route = %s, want it served again", got)
 	}
 	var after int
 	_ = r.pool.QueryRow(ctx, `SELECT count(*) FROM outbox WHERE kind = 'webhook'`).Scan(&after)
