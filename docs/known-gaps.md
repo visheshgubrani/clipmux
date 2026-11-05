@@ -50,8 +50,9 @@ when you introduce or discover it; remove it when it is closed.
 - Sweepers assume one `serve` replica (no `pg_try_advisory_lock` leader yet).
   Saving new URLs updates the storage signer of the serve that saved them
   only; another replica keeps the old public URL until it restarts.
-- `clipmux serve` prints a fresh setup token on every boot (no owner table
-  until T10). The schema has no owner/session tables yet.
+- The owner can't turn on TOTP yet. The sign-in limiter and the setup token
+  live in one serve's memory (one replica assumed); expired sessions are
+  never pruned.
 - Webhooks: endpoints are created only with `clipmux admin create-webhook`;
   there is no way to list, disable or rotate one until the dashboard (T10).
   No per-endpoint circuit breaker, so a dead endpoint costs up to 10 s per

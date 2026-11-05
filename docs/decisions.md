@@ -172,5 +172,13 @@ Decisions within the architecture's rules, made in P1-T10:
 - Caddy obtains certificates on demand and asks `GET /_tls/ask?domain=` first; it answers 200 only for the public and media hostnames, never for IPs or loopback names, so the Caddyfile names no hosts.
 - The built-in worker runs with `--storage-via-server`: signed `/_storage/` URLs go to serve over loopback rather than back through the public hostname, which may not route from inside the host (the signature covers method, path and expiry, not the host).
 
+## D024 Owner account and dashboard sessions — accepted (2026-11-05)
+Decisions within the architecture's rules, made in P1-T10:
+- `POST /v1/setup/owner` takes the setup token (fresh each boot, held in memory, compared in constant time, printed only while no owner exists) with an email and a password. `owners.project_id` is unique, so registration closes atomically: a second one is 409 `registration_closed` however many race.
+- Passwords are PBKDF2-HMAC-SHA256 from the standard library, 600,000 iterations, 16-byte salt, stored as `pbkdf2-sha256$iterations$salt$hash`, 12 to 1024 characters, rehashed on sign-in when below today's count. Argon2id would need `x/crypto`; one throttled account doesn't justify it.
+- Sessions are a random cookie whose SHA-256 is stored, ending after 30 days or 7 days idle. The cookie is HttpOnly, SameSite=Strict, Path=/ with no Domain, and on an https public URL it is `__Host-clipmux_session` and Secure (`clipmux_session` on plain http). State-changing cookie requests from another site are refused with `http.CrossOriginProtection`.
+- Sign-ins are limited before any hashing: 5 failures per address and 20 overall per 15 minutes answer 429 with `Retry-After`; an unknown email costs the same hash. The address is the connection's, or the forwarding chain's first untrusted hop when the connection comes from `CLIPMUX_TRUSTED_PROXIES`.
+- `clipmux admin reset-password` reads the new password from stdin and ends every session. TOTP is deferred (known gap).
+
 ## D007 Shaka Packager 3.9.3 — accepted (2026-11-05)
 Decision: pin v3.9.3 (`toolchain/versions.env`), the version clipmux-lms runs with AES-128 in production, which needs the init-segment workaround for Shaka issue 1616. Move to a release that fixes 1616 when one exists, re-running the Phase 1 player tests.

@@ -26,6 +26,7 @@ const (
 	Delivery   = "whd"
 	Storage    = "sto"
 	SigningKey = "kid"
+	Owner      = "own"
 )
 
 const alphabet = "0123456789abcdefghjkmnpqrstvwxyz" // Crockford, lowercase

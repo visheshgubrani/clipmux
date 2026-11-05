@@ -164,6 +164,24 @@ type Output struct {
 	RetiredAt    pgtype.Timestamptz
 }
 
+type Owner struct {
+	ID                string
+	ProjectID         string
+	Email             string
+	PasswordHash      string
+	CreatedAt         pgtype.Timestamptz
+	PasswordChangedAt pgtype.Timestamptz
+}
+
+type OwnerSession struct {
+	TokenHash  []byte
+	ProjectID  string
+	OwnerID    string
+	CreatedAt  pgtype.Timestamptz
+	LastSeenAt pgtype.Timestamptz
+	ExpiresAt  pgtype.Timestamptz
+}
+
 type PlaybackID struct {
 	ID        string
 	ProjectID string

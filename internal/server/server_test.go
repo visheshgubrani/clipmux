@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -281,3 +282,60 @@ func TestCaddyAskAllowsOnlyConfiguredHostnames(t *testing.T) {
 		t.Errorf("with no settings every name is refused, got %d", rec.Code)
 	}
 }
+
+// Until the owner exists every boot prints a setup token; after that, none.
+func TestSetupTokenIsPrintedOnlyWhileNoOwnerExists(t *testing.T) {
+	pool := dbtest.New(t)
+	boot := func() string {
+		t.Helper()
+		store, err := storage.OpenFilesystem(t.TempDir(), storage.FilesystemOptions{BaseURL: "http://localhost"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer store.Close()
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var logs strings.Builder
+		var mu sync.Mutex
+		logger := slog.New(slog.NewTextHandler(writerFunc(func(p []byte) (int, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			return logs.Write(p)
+		}), nil))
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan error, 1)
+		go func() { done <- serve(ctx, config.Config{}, ln, logger, testBoot(t, pool, store, testBox(t))) }()
+		for i := 0; ; i++ {
+			if res, err := http.Get("http://" + ln.Addr().String() + "/healthz"); err == nil {
+				res.Body.Close()
+				break
+			}
+			if i == 100 {
+				t.Fatal("serve never answered")
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		cancel()
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		return logs.String()
+	}
+	if logs := boot(); !strings.Contains(logs, "setup_token=") {
+		t.Fatalf("a fresh install must print its setup token:\n%s", logs)
+	}
+	if _, err := pool.Exec(context.Background(), `INSERT INTO owners (id, project_id, email, password_hash) VALUES ('own_1', 'prj_default', 'o@example.com', 'x')`); err != nil {
+		t.Fatal(err)
+	}
+	if logs := boot(); strings.Contains(logs, "setup_token") {
+		t.Fatalf("with an owner, no setup token may be printed:\n%s", logs)
+	}
+}
+
+type writerFunc func([]byte) (int, error)
+
+func (f writerFunc) Write(p []byte) (int, error) { return f(p) }

@@ -1,16 +1,19 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/visheshgubrani/clipmux/internal/accounts"
 	"github.com/visheshgubrani/clipmux/internal/apikeys"
 	"github.com/visheshgubrani/clipmux/internal/config"
 	"github.com/visheshgubrani/clipmux/internal/db"
@@ -25,6 +28,7 @@ const adminUsage = `Usage:
   clipmux admin create-key --app NAME [--name KEY_NAME] [--scopes uploads:write,assets:read] [--allow-loopback]
   clipmux admin create-signing-key --app NAME
   clipmux admin create-webhook --app NAME --url URL
+  clipmux admin reset-password < new-password.txt
 
 Host-side administration until the dashboard exists. Reads DATABASE_URL, and
 for create-webhook CLIPMUX_DATA_DIR or CLIPMUX_SECRETS_KEY (the same key serve
@@ -37,13 +41,16 @@ create-key refuses while the public URL is loopback (localhost), because
 signed upload URLs and base_url would point at this machine; set the public
 URL at first boot or with CLIPMUX_PUBLIC_URL, or pass --allow-loopback for
 local development.
+
+reset-password reads the owner's new password from stdin (one line) and ends
+every dashboard session.
 `
 
 const project = db.DefaultProjectID
 
 // admin runs host-side administration commands against the database.
-func admin(args []string, getenv func(string) string, stdout, stderr io.Writer) int {
-	if len(args) == 0 || (args[0] != "create-key" && args[0] != "create-signing-key" && args[0] != "create-webhook") {
+func admin(args []string, getenv func(string) string, stdin io.Reader, stdout, stderr io.Writer) int {
+	if len(args) == 0 || !slices.Contains([]string{"create-key", "create-signing-key", "create-webhook", "reset-password"}, args[0]) {
 		fmt.Fprint(stderr, adminUsage)
 		return 2
 	}
@@ -58,7 +65,7 @@ func admin(args []string, getenv func(string) string, stdout, stderr io.Writer) 
 	if err := fs.Parse(args[1:]); err != nil {
 		return 2
 	}
-	if *app == "" || (cmd == "create-webhook" && *endpoint == "") {
+	if (*app == "" && cmd != "reset-password") || (cmd == "create-webhook" && *endpoint == "") {
 		fmt.Fprintf(stderr, "clipmux admin %s: --app is required (and --url for create-webhook)\n\n%s", cmd, adminUsage)
 		return 2
 	}
@@ -81,6 +88,8 @@ func admin(args []string, getenv func(string) string, stdout, stderr io.Writer) 
 		}
 	case "create-signing-key":
 		err = createSigningKey(ctx, pool, *app, stdout)
+	case "reset-password":
+		err = resetPassword(ctx, pool, stdin, stdout)
 	case "create-webhook":
 		var box *secrets.Box
 		if box, err = secrets.Load(orDefault(getenv("CLIPMUX_DATA_DIR"), config.DefaultDataDir), getenv("CLIPMUX_SECRETS_KEY")); err == nil {
@@ -159,6 +168,20 @@ func createSigningKey(ctx context.Context, pool *pgxpool.Pool, appName string, o
 	}
 	fmt.Fprintf(out, "app: %s (%s)\nkid: %s\n\n%s\nSign playback tokens with this private key (ES256, kid %s).\nIt is shown once and not stored by ClipMux.\n",
 		appName, app, kid, privatePEM, kid)
+	return nil
+}
+
+// resetPassword sets the owner's password from the first line of in and
+// ends every dashboard session.
+func resetPassword(ctx context.Context, pool *pgxpool.Pool, in io.Reader, out io.Writer) error {
+	line, err := bufio.NewReader(in).ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return err
+	}
+	if err := accounts.ResetPassword(ctx, pool, project, strings.TrimRight(line, "\r\n")); err != nil {
+		return err
+	}
+	fmt.Fprintln(out, "The owner's password is changed and every dashboard session has ended.")
 	return nil
 }
 

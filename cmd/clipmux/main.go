@@ -25,7 +25,7 @@ Usage:
   clipmux worker    run a worker (agent mode; --once for serverless)
   clipmux push      upload files through the API
   clipmux listen    forward webhooks to a local URL
-  clipmux admin     host-side administration (e.g. reset-password)
+  clipmux admin     host-side administration (keys, webhooks, reset-password)
   clipmux version   print the version
 `
 
@@ -48,7 +48,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprint(stdout, usage)
 		return 0
 	case "admin":
-		return admin(args[1:], os.Getenv, stdout, stderr)
+		return admin(args[1:], os.Getenv, os.Stdin, stdout, stderr)
 	case "worker":
 		return runWorker(args[1:], os.Getenv, stderr)
 	case "push", "listen":

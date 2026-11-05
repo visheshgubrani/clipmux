@@ -104,3 +104,13 @@ func TestURLsArePinnedOnlyWhenSetInTheEnvironment(t *testing.T) {
 		t.Fatal("CLIPMUX_MEDIA_URL without CLIPMUX_PUBLIC_URL must be refused")
 	}
 }
+
+func TestTrustedProxiesAreAddressRanges(t *testing.T) {
+	cfg, err := FromEnv(env(map[string]string{"DATABASE_URL": "postgres://x", "CLIPMUX_TRUSTED_PROXIES": "172.16.0.0/12, 10.0.0.5"}))
+	if err != nil || len(cfg.TrustedProxies) != 2 || cfg.TrustedProxies[0].String() != "172.16.0.0/12" || cfg.TrustedProxies[1].String() != "10.0.0.5/32" {
+		t.Fatalf("got %v, %v", cfg.TrustedProxies, err)
+	}
+	if _, err := FromEnv(env(map[string]string{"DATABASE_URL": "postgres://x", "CLIPMUX_TRUSTED_PROXIES": "caddy"})); err == nil {
+		t.Fatal("a hostname is not an address range")
+	}
+}

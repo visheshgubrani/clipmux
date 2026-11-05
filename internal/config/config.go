@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"net/url"
 	"strconv"
+	"strings"
 
 	"github.com/visheshgubrani/clipmux/internal/media"
 )
@@ -42,6 +44,10 @@ type Config struct {
 	// "v1:" and 64 hex digits). Unset, serve keeps it in
 	// {DataDir}/secrets.key, created on first boot. Never log it.
 	SecretsKey string
+	// TrustedProxies are the addresses (e.g. Caddy's) whose X-Forwarded-For
+	// is believed when limiting sign-ins (CLIPMUX_TRUSTED_PROXIES, comma-
+	// separated addresses or CIDR ranges).
+	TrustedProxies []netip.Prefix
 	// Tools are the media binaries (CLIPMUX_FFMPEG, CLIPMUX_FFPROBE,
 	// CLIPMUX_PACKAGER; default: found on PATH).
 	Tools media.Tools
@@ -93,6 +99,17 @@ func FromEnv(getenv func(string) string) (Config, error) {
 	case "false", "0":
 	default:
 		return Config{}, fmt.Errorf("CLIPMUX_BUILTIN_WORKER %q must be true or false", v)
+	}
+	for _, p := range strings.FieldsFunc(getenv("CLIPMUX_TRUSTED_PROXIES"), func(r rune) bool { return r == ',' || r == ' ' }) {
+		prefix, err := netip.ParsePrefix(p)
+		if err != nil {
+			addr, aerr := netip.ParseAddr(p)
+			if aerr != nil {
+				return Config{}, fmt.Errorf("CLIPMUX_TRUSTED_PROXIES: %q is not an address or CIDR range", p)
+			}
+			prefix = netip.PrefixFrom(addr, addr.BitLen())
+		}
+		cfg.TrustedProxies = append(cfg.TrustedProxies, prefix.Masked())
 	}
 	cfg.Tools = media.DefaultTools()
 	cfg.Tools.FFmpeg = orDefault(getenv("CLIPMUX_FFMPEG"), cfg.Tools.FFmpeg)

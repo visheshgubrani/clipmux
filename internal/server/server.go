@@ -15,6 +15,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/visheshgubrani/clipmux/internal/accounts"
 	"github.com/visheshgubrani/clipmux/internal/assets"
 	"github.com/visheshgubrani/clipmux/internal/config"
 	"github.com/visheshgubrani/clipmux/internal/contentkey"
@@ -194,8 +195,17 @@ type boot struct {
 // and storage.
 func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog.Logger, b boot) error {
 	pool, store, keys, box := b.pool, b.store, b.keys, b.box
-	// Until the owner table exists (P1-T10) every boot is a first boot.
-	logger.Info("first boot: create the owner account with this setup token", "setup_token", rand.Text())
+	acct := accounts.New(pool, db.DefaultProjectID, b.urls.PublicURL)
+	acct.TrustedProxies = cfg.TrustedProxies
+	acct.Logger = logger
+	// Until the owner registers, every boot prints a fresh setup token; the
+	// first visitor needs it to create the owner account.
+	if token, open, err := acct.SetupToken(ctx); err != nil {
+		return err
+	} else if open {
+		logger.Info("first boot: open the dashboard and create the owner account with this setup token",
+			"url", b.urls.PublicURL(), "setup_token", token)
+	}
 
 	q := queue.New(pool)
 	q.KeyVersion = keys.Current().Version
@@ -256,7 +266,7 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 	srv := &http.Server{
 		Handler: Handler(Deps{
 			DB: pool, Worker: worker.Handler(), Storage: store.Handler(), ServesHost: b.urls.ServesHost,
-			APIs: []Registrar{upl, assets.New(pool), life, playback},
+			APIs: []Registrar{acct, upl, assets.New(pool), life, playback},
 		}),
 		ReadHeaderTimeout: 10 * time.Second,
 		// Requests inherit ctx, so long-poll claims end at shutdown.
