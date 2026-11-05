@@ -242,5 +242,16 @@ Decisions within the architecture's rules, made in P2-T01:
 - The local S3 store for tests is SeaweedFS 4.48, pinned by digest in `deploy/compose.dev.yml`. Of the P21 candidates it needs only an S3 identity file (no admin CLI), and it passes the whole contract suite including create-once and CORS. `internal/storage/s3test` gives each test its own bucket, and CI sets `CLIPMUX_REQUIRE_S3=1` so the S3 half never skips.
 - `Capabilities()` is still deferred: nothing reads it until the dashboard offers storage choices (T04), per D009.
 
+## D035 Route records, _keys.json and the reconciler — accepted (2026-11-05)
+Decisions within the architecture's rules, made in P2-T02:
+- `projects.delivery` is `builtin` or `worker`; `worker` names `delivery_storage_id`, the bucket the Worker reads through its R2 binding. `internal/routes` holds the `Delivery` interface: `Builtin` only confirms (it reads Postgres), and `Worker` writes into that bucket. Assets on that bucket get `backend: "r2"`; every other store is `origin`.
+- A record exists exactly when the built-in handler would serve the ID: active, asset not deleted, playable, app enabled. It is `{"v":1,"app_id","asset_id","output_id","policy","backend","outputs"}`, where `outputs` maps each committed or retired output to its key version. Pinned paths and keys naming anything else get 404, which is how the Worker keeps the handler's "never a writing output" and key-version checks without Postgres.
+- Records are rebuilt from current state when a `route_sync` row is confirmed, never taken from the payload, so out-of-order rows can't publish something stale. A failed write keeps the row pending with `last_error = publish_failed` and backs off (15 s doubling to 10 min). A revoking ID becomes `revoked` only after its delete lands, which keeps D021's 200/202 contract.
+- `_keys.json` is `{"v":1,"max_token_lifetime_seconds","keys":[{"kid","app_id"|null,"jwk":{EC P-256},"not_after"|null}]}`. It lists keys not revoked and not past `retired_at`, and `not_after` lets the Worker stop a retiring key on time between rewrites. A new outbox kind, `keys_sync`, is written in the transaction that creates or revokes a key. Pending rows are coalesced into one write per project.
+- Disabling or enabling an app queues a `refresh` `route_sync` for each of its live IDs, which unpublishes or republishes them without asset events.
+- `Storage` gains `Delete` (one object; a missing one is fine) for unpublishing.
+- The reconciler runs every 15 minutes. It lists `_routes/`, deletes records for IDs that shouldn't be served, rewrites any whose MD5 ETag differs from the bytes Postgres implies, writes missing ones, and rewrites `_keys.json`. A clean pass writes nothing.
+- One serve replica runs every background loop, holding the session advisory lock `0x636c69706d757831` on its own connection, re-checked every 10 s. Serve waits up to 2 s for the election at boot. Every loop was already safe to run twice, so a handover costs duplicate work only.
+
 ## D007 Shaka Packager 3.9.3 — accepted (2026-11-05)
 Decision: pin v3.9.3 (`toolchain/versions.env`), the version clipmux-lms runs with AES-128 in production, which needs the init-segment workaround for Shaka issue 1616. Move to a release that fixes 1616 when one exists, re-running the Phase 1 player tests.

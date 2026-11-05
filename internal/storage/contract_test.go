@@ -141,6 +141,33 @@ func TestContractListIsOrderedPrefixedAndResumable(t *testing.T) {
 	})
 }
 
+// Unpublishing a route deletes exactly _routes/{pid}.json.
+func TestContractDeleteRemovesOneObject(t *testing.T) {
+	eachStore(t, func(t *testing.T, s contractStore) {
+		ctx := context.Background()
+		for _, k := range []string{"_routes/pid_1.json", "_routes/pid_10.json"} {
+			if err := s.Put(ctx, k, strings.NewReader("{}")); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := s.Delete(ctx, "_routes/pid_1.json"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.Head(ctx, "_routes/pid_1.json"); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("Head after Delete = %v, want ErrNotFound", err)
+		}
+		if _, err := s.Head(ctx, "_routes/pid_10.json"); err != nil {
+			t.Fatalf("Delete removed a neighbour: %v", err)
+		}
+		if err := s.Delete(ctx, "_routes/pid_1.json"); err != nil {
+			t.Fatalf("Delete(missing) = %v, want nil", err)
+		}
+		if err := s.Delete(ctx, "../x"); !errors.Is(err, ErrInvalidKey) {
+			t.Fatalf("Delete(../x) = %v, want ErrInvalidKey", err)
+		}
+	})
+}
+
 func TestContractDeletePrefixRemovesOnlyThatPrefix(t *testing.T) {
 	eachStore(t, func(t *testing.T, s contractStore) {
 		ctx := context.Background()

@@ -195,6 +195,18 @@ func (s *S3) List(ctx context.Context, prefix, cursor string) ([]Object, string,
 	return objs, "", nil
 }
 
+// Delete deletes one object; S3 answers 204 for a missing one too.
+func (s *S3) Delete(ctx context.Context, key string) error {
+	if !ValidKey(key) {
+		return ErrInvalidKey
+	}
+	_, err := s.client.DeleteObject(ctx, &s3.DeleteObjectInput{Bucket: &s.bucket, Key: &key})
+	if errors.Is(s.wrap("delete", key, err), ErrNotFound) {
+		return nil
+	}
+	return s.wrap("delete", key, err)
+}
+
 func (s *S3) DeletePrefix(ctx context.Context, prefix string) error {
 	if prefix == "" || !validPrefix(prefix) {
 		return ErrInvalidKey

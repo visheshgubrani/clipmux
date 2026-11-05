@@ -53,7 +53,8 @@ when you introduce or discover it; remove it when it is closed.
   (`stores.AddS3`) until Connect Cloudflare (P2-T04); there is no API or
   dashboard form for a generic S3 bucket, and no way to remove a config or
   rotate its credentials.
-- Sweepers assume one `serve` replica (no `pg_try_advisory_lock` leader yet).
+- One replica runs the background loops (advisory-lock leader, D035), but
+  the sign-in limiter, setup token and storage signer are per process.
   Saving new URLs updates the storage signer of the serve that saved them
   only; another replica keeps the old public URL until it restarts.
 - The owner can't turn on TOTP yet. The sign-in limiter and the setup token
@@ -84,8 +85,7 @@ when you introduce or discover it; remove it when it is closed.
 - When captions, storyboards and viewer analytics enter the roadmap.
 - Confirm defaults: 7-day max token lifetime, retry budgets 5/3, 15-minute
   reconciler, per-output keys derived from one secret.
-- Audit leftovers: leader election with `pg_try_advisory_lock` for multiple
-  replicas; shared Go/Worker test vectors; where the `vid` claim is logged; SSRF
+- Audit leftovers: shared Go/Worker test vectors; where the `vid` claim is logged; SSRF
   hardening (pin resolved IP, block IPv6 ULA and IPv4-mapped); timeouts for jobs
   pinned to an agent that never returns; route caching in the built-in handler;
   backup docs for Postgres, the secrets-encryption key and the content key secret.

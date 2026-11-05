@@ -36,6 +36,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/media"
 	"github.com/visheshgubrani/clipmux/internal/outbox"
 	"github.com/visheshgubrani/clipmux/internal/queue"
+	"github.com/visheshgubrani/clipmux/internal/routes"
 	"github.com/visheshgubrani/clipmux/internal/storage"
 	"github.com/visheshgubrani/clipmux/internal/stores"
 )
@@ -249,10 +250,9 @@ func queueRouteSync(ctx context.Context, qs *db.Queries, asset db.Asset, r route
 // at its output outputID. Call it in the transaction that changes either.
 func QueueRoute(ctx context.Context, qs *db.Queries, asset db.Asset, p db.PlaybackID, outputID string) error {
 	return queueRouteSync(ctx, qs, asset, route{
+		// SyncRoutes publishes the record built from current state; the
+		// payload says only which ID and output the change was for.
 		V: 1, PlaybackID: p.ID, AppID: asset.AppID, AssetID: asset.ID, OutputID: outputID, Policy: p.Policy,
-		// The built-in handler serves every asset from origin storage;
-		// "r2" arrives with the Cloudflare Worker in Phase 2.
-		Backend: "origin",
 	})
 }
 
@@ -307,9 +307,10 @@ func activePlaybackIDs(ctx context.Context, qs *db.Queries, assetID string) ([]d
 	return slices.DeleteFunc(all, func(p db.PlaybackID) bool { return p.Status != "active" }), err
 }
 
-// SyncRoutes publishes pending route records, then finishes publication for
-// every output whose routes are all confirmed. It returns how many routes it
-// published. Safe to run concurrently (SKIP LOCKED) and repeatedly.
+// SyncRoutes publishes pending route records through the project's delivery
+// adapter, then finishes publication for every output whose routes are all
+// confirmed, and rewrites _keys.json where a key changed. It returns how many
+// rows it confirmed. Safe to run concurrently (SKIP LOCKED) and repeatedly.
 func (c *Committer) SyncRoutes(ctx context.Context, limit int) (int, error) {
 	published := 0
 	err := pgx.BeginFunc(ctx, c.pool, func(tx pgx.Tx) error {
@@ -318,6 +319,7 @@ func (c *Committer) SyncRoutes(ctx context.Context, limit int) (int, error) {
 		if err != nil {
 			return err
 		}
+		adapters := c.adapters(qs)
 		type key struct{ asset, output string }
 		touched := map[key]bool{}
 		revokedFrom := map[string]bool{}
@@ -326,17 +328,25 @@ func (c *Committer) SyncRoutes(ctx context.Context, limit int) (int, error) {
 			if err := json.Unmarshal(row.Payload, &r); err != nil {
 				return fmt.Errorf("route_sync %s: %w", row.ID, err)
 			}
-			// The built-in delivery handler reads routes straight from
-			// Postgres, so confirming the row is the whole publication. The
-			// Phase 2 Worker adapter writes (or deletes)
-			// _routes/{playback_id}.json here, from the current state in
-			// Postgres since rows may be confirmed out of order, and a failed
-			// write is retried through RetryOutbox.
+			// The record is rebuilt from current state, because rows may be
+			// confirmed out of order; a failed write is retried, and the
+			// row confirmed only once the write (or delete) has landed.
+			d, bucketID, err := adapters(ctx, row.ProjectID)
+			if err == nil {
+				err = routes.Apply(ctx, qs, d, bucketID, r.PlaybackID)
+			}
+			if err != nil {
+				if err := c.retry(ctx, qs, row, err); err != nil {
+					return err
+				}
+				continue
+			}
 			if err := qs.MarkOutboxDone(ctx, row.ID); err != nil {
 				return err
 			}
 			published++
-			if r.Op == opUnpublish {
+			switch r.Op {
+			case opUnpublish:
 				n, err := qs.RevokePlaybackID(ctx, r.PlaybackID)
 				if err != nil {
 					return err
@@ -344,9 +354,10 @@ func (c *Committer) SyncRoutes(ctx context.Context, limit int) (int, error) {
 				if n == 1 {
 					revokedFrom[r.AssetID] = true
 				}
-				continue
+			case routes.OpRefresh:
+			default:
+				touched[key{r.AssetID, r.OutputID}] = true
 			}
-			touched[key{r.AssetID, r.OutputID}] = true
 		}
 		for k := range touched {
 			if err := finishPublication(ctx, qs, k.asset, k.output); err != nil {
@@ -358,9 +369,75 @@ func (c *Committer) SyncRoutes(ctx context.Context, limit int) (int, error) {
 				return err
 			}
 		}
-		return nil
+		n, err := c.syncKeys(ctx, qs, adapters)
+		published += n
+		return err
 	})
 	return published, err
+}
+
+type adapterFunc func(ctx context.Context, projectID string) (routes.Delivery, string, error)
+
+// adapters resolves each project's delivery adapter once per pass.
+func (c *Committer) adapters(qs *db.Queries) adapterFunc {
+	type entry struct {
+		d        routes.Delivery
+		bucketID string
+		err      error
+	}
+	cache := map[string]entry{}
+	return func(ctx context.Context, projectID string) (routes.Delivery, string, error) {
+		e, ok := cache[projectID]
+		if !ok {
+			e.d, e.bucketID, e.err = routes.ForProject(ctx, qs, c.stores, projectID)
+			cache[projectID] = e
+		}
+		return e.d, e.bucketID, e.err
+	}
+}
+
+// syncKeys rewrites _keys.json once per project with pending keys_sync rows.
+func (c *Committer) syncKeys(ctx context.Context, qs *db.Queries, adapters adapterFunc) (int, error) {
+	rows, err := qs.LockPendingKeySyncs(ctx)
+	if err != nil {
+		return 0, err
+	}
+	byProject := map[string][]db.Outbox{}
+	for _, row := range rows {
+		byProject[row.ProjectID] = append(byProject[row.ProjectID], row)
+	}
+	done := 0
+	for projectID, pending := range byProject {
+		d, _, err := adapters(ctx, projectID)
+		var keys routes.Keys
+		if err == nil {
+			keys, err = routes.DesiredKeys(ctx, qs, projectID)
+		}
+		if err == nil {
+			err = d.PublishKeys(ctx, keys)
+		}
+		for _, row := range pending {
+			if err != nil {
+				if err := c.retry(ctx, qs, row, err); err != nil {
+					return done, err
+				}
+				continue
+			}
+			if err := qs.MarkOutboxDone(ctx, row.ID); err != nil {
+				return done, err
+			}
+			done++
+		}
+	}
+	return done, nil
+}
+
+// retry backs a failed publication off: 15 s, doubling, at most 10 min. The
+// row keeps a code; the error, which may name storage keys, is only logged.
+func (c *Committer) retry(ctx context.Context, qs *db.Queries, row db.Outbox, cause error) error {
+	c.Logger.Warn("route publication failed; will retry", "outbox", row.ID, "kind", row.Kind, "attempts", row.Attempts+1, "err", cause)
+	delay := min(15*float64(int64(1)<<min(row.Attempts, 6)), 600)
+	return qs.RetryOutbox(ctx, db.RetryOutboxParams{ID: row.ID, LastError: pgtype.Text{String: "publish_failed", Valid: true}, DelaySeconds: delay})
 }
 
 // finishRevocation tells the app once a revoked playback ID has stopped

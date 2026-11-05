@@ -201,6 +201,8 @@ type Project struct {
 	CreatedAt               pgtype.Timestamptz
 	SecretsCheck            []byte
 	UrlsConfirmedAt         pgtype.Timestamptz
+	Delivery                string
+	DeliveryStorageID       pgtype.Text
 }
 
 type SetupTest struct {

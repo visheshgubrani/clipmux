@@ -286,6 +286,17 @@ func (f *Filesystem) list(_ context.Context, prefix, cursor string, limit int) (
 	return objs, "", nil
 }
 
+// Delete deletes one object; a missing object is not an error.
+func (f *Filesystem) Delete(_ context.Context, key string) error {
+	if !ValidKey(key) {
+		return ErrInvalidKey
+	}
+	if err := f.root.Remove(objectPath(key)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("delete %s: %w", key, err)
+	}
+	return nil
+}
+
 // DeletePrefix deletes every object under prefix, which must end in "/".
 func (f *Filesystem) DeletePrefix(_ context.Context, prefix string) error {
 	if prefix == "" || !validPrefix(prefix) {

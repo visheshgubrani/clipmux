@@ -26,6 +26,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/db"
 	"github.com/visheshgubrani/clipmux/internal/httpjson"
 	"github.com/visheshgubrani/clipmux/internal/ids"
+	"github.com/visheshgubrani/clipmux/internal/routes"
 	"github.com/visheshgubrani/clipmux/internal/secrets"
 	"github.com/visheshgubrani/clipmux/internal/settings"
 	"github.com/visheshgubrani/clipmux/internal/setuptest"
@@ -269,8 +270,18 @@ func isUniqueViolation(err error) bool {
 
 func (m *API) setDisabled(disabled bool) ownedHandler {
 	return func(w http.ResponseWriter, r *http.Request, o accounts.Owner) error {
+		var app db.App
+		err := pgx.BeginFunc(r.Context(), m.pool, func(tx pgx.Tx) error {
+			var err error
+			q := db.New(tx)
+			if app, err = q.SetAppDisabled(r.Context(), db.SetAppDisabledParams{ProjectID: o.ProjectID, ID: r.PathValue("id"), Disabled: disabled}); err != nil {
+				return err
+			}
+			// Delivery refuses a disabled app's IDs; the Worker learns it when
+			// their routes are unpublished (and republished on enable).
+			return routes.QueueAppRefresh(r.Context(), q, o.ProjectID, app.ID)
+		})
 		q := db.New(m.pool)
-		app, err := q.SetAppDisabled(r.Context(), db.SetAppDisabledParams{ProjectID: o.ProjectID, ID: r.PathValue("id"), Disabled: disabled})
 		if errors.Is(err, pgx.ErrNoRows) {
 			if a, gerr := q.GetApp(r.Context(), db.GetAppParams{ProjectID: o.ProjectID, ID: r.PathValue("id")}); gerr == nil && a.IsBuiltin {
 				return httpjson.Fail(http.StatusConflict, "builtin_app", "the Dashboard app can't be disabled")
@@ -423,7 +434,16 @@ func (m *API) createSigningKey(w http.ResponseWriter, r *http.Request, o account
 }
 
 func (m *API) revokeSigningKey(w http.ResponseWriter, r *http.Request, o accounts.Owner) error {
-	n, err := db.New(m.pool).RevokeSigningKey(r.Context(), db.RevokeSigningKeyParams{ProjectID: o.ProjectID, ID: r.PathValue("id")})
+	var n int64
+	err := pgx.BeginFunc(r.Context(), m.pool, func(tx pgx.Tx) error {
+		q := db.New(tx)
+		var err error
+		if n, err = q.RevokeSigningKey(r.Context(), db.RevokeSigningKeyParams{ProjectID: o.ProjectID, ID: r.PathValue("id")}); err != nil || n == 0 {
+			return err
+		}
+		// Revocation reaches the Worker through _keys.json (60 s cache).
+		return routes.QueueKeys(r.Context(), q, o.ProjectID)
+	})
 	return noContent(w, n, err)
 }
 

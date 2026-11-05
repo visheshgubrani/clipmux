@@ -26,6 +26,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/manage"
 	"github.com/visheshgubrani/clipmux/internal/outputs"
 	"github.com/visheshgubrani/clipmux/internal/queue"
+	"github.com/visheshgubrani/clipmux/internal/routes"
 	"github.com/visheshgubrani/clipmux/internal/secrets"
 	"github.com/visheshgubrani/clipmux/internal/settings"
 	"github.com/visheshgubrani/clipmux/internal/setuptest"
@@ -49,6 +50,10 @@ const UploadSweepInterval = 5 * time.Minute
 // RouteSyncInterval is how often pending route publications are retried;
 // commits publish inline, so this only matters after a crash or an error.
 const RouteSyncInterval = 15 * time.Second
+
+// ReconcileInterval is how often the Worker's route records are compared
+// with Postgres and repaired (docs/architecture.md, "Route records").
+const ReconcileInterval = 15 * time.Minute
 
 // WebhookInterval is how often new events fan out and due deliveries are
 // sent; an event reaches its endpoints within about this long.
@@ -254,30 +259,24 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 	defer wg.Wait()
 	ctx, stop := context.WithCancel(ctx)
 	defer stop()
-	wg.Go(func() {
-		sweeper.Every(ctx, LeaseSweepInterval, "lost_leases", func(ctx context.Context) (int, error) {
-			return q.SweepLostLeases(ctx, 100)
-		}, logger)
+	// One replica runs the background loops (an advisory lock); the others
+	// serve requests. Every loop is safe to run twice, so a handover costs
+	// duplicate work at most.
+	leader := sweeper.NewLeader(pool, logger)
+	wg.Go(func() { leader.Run(ctx) })
+	leader.Await(ctx, 2*time.Second)
+	loop := func(interval time.Duration, name string, task sweeper.Task) {
+		wg.Go(func() { sweeper.Every(ctx, interval, name, leader.Only(task), logger) })
+	}
+	loop(LeaseSweepInterval, "lost_leases", func(ctx context.Context) (int, error) { return q.SweepLostLeases(ctx, 100) })
+	loop(UploadSweepInterval, "uploads", func(ctx context.Context) (int, error) { return upl.Sweep(ctx, 500) })
+	loop(RouteSyncInterval, "routes", func(ctx context.Context) (int, error) { return committer.SyncRoutes(ctx, 1000) })
+	loop(ReconcileInterval, "route_reconciler", func(ctx context.Context) (int, error) {
+		return routes.ReconcileProject(ctx, db.New(pool), set, db.DefaultProjectID)
 	})
-	wg.Go(func() {
-		sweeper.Every(ctx, UploadSweepInterval, "uploads", func(ctx context.Context) (int, error) {
-			return upl.Sweep(ctx, 500)
-		}, logger)
-	})
-	wg.Go(func() {
-		sweeper.Every(ctx, RouteSyncInterval, "routes", func(ctx context.Context) (int, error) {
-			return committer.SyncRoutes(ctx, 1000)
-		}, logger)
-	})
-	wg.Go(func() {
-		sweeper.Every(ctx, WebhookInterval, "webhooks", hooks.Run, logger)
-	})
-	wg.Go(func() {
-		sweeper.Every(ctx, ControlJobInterval, "control_jobs", life.Run, logger)
-	})
-	wg.Go(func() {
-		sweeper.Every(ctx, SetupTestInterval, "setup_tests", tests.Run, logger)
-	})
+	loop(WebhookInterval, "webhooks", hooks.Run)
+	loop(ControlJobInterval, "control_jobs", life.Run)
+	loop(SetupTestInterval, "setup_tests", tests.Run)
 	// Saving the URLs re-runs the setup test: a wrong hostname should fail
 	// here, not in an app.
 	mgmt.URLsSaved = func(settings.URLs) {

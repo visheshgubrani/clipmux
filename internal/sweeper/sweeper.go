@@ -11,7 +11,7 @@ type Task func(ctx context.Context) (int, error)
 
 // Every runs task immediately and then every interval until ctx ends. Errors
 // are logged and the loop keeps going: a failed pass is retried next tick.
-// v1 assumes one `serve` replica; leader election is a known gap.
+// serve wraps each task in Leader.Only, so one replica runs it.
 func Every(ctx context.Context, interval time.Duration, name string, task Task, logger *slog.Logger) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
