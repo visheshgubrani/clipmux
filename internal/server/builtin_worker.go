@@ -59,6 +59,12 @@ func (b *builtinWorker) childEnv() []string {
 	if tmp := os.Getenv("TMPDIR"); tmp != "" {
 		env = append(env, "TMPDIR="+tmp)
 	}
+	// A GPU on the server host encodes for the built-in worker too.
+	for _, name := range append([]string{"CLIPMUX_ENCODER", "CLIPMUX_VAAPI_DEVICE"}, sandbox.EnvAllowed...) {
+		if v := os.Getenv(name); v != "" {
+			env = append(env, name+"="+v)
+		}
+	}
 	return env
 }
 

@@ -29,6 +29,20 @@ const (
 // systemRead are the paths every tool may read: its libraries and their
 // configuration. The data directory (and so the secrets key) is not among
 // them.
+// gpuRead are what GPU drivers read to find their device: sysfs and the
+// NVIDIA driver's /proc entries.
+var gpuRead = []string{"/sys", "/proc/driver"}
+
+// memoryLimit is the resource the memory limit applies to. CUDA and Mesa
+// reserve tens of GiB of address space up front, so a GPU tool is limited
+// by its data segment instead, which still bounds what it can allocate.
+func memoryLimit(gpu bool) int {
+	if gpu {
+		return syscall.RLIMIT_DATA
+	}
+	return syscall.RLIMIT_AS
+}
+
 var systemRead = []string{"/usr", "/lib", "/lib64", "/lib32", "/bin", "/sbin", "/etc", "/opt", "/dev/urandom", "/dev/zero", "/sys/devices/system/cpu", "/proc/cpuinfo"}
 
 // apply confines this process. With argv it then execs the tool and only
@@ -53,7 +67,7 @@ func apply(p Policy, argv []string) (Status, error) {
 		res int
 		max uint64
 	}{
-		{syscall.RLIMIT_AS, p.MemoryMB << 20},
+		{memoryLimit(p.GPU), p.MemoryMB << 20},
 		{syscall.RLIMIT_CPU, p.CPUSeconds},
 		{syscall.RLIMIT_FSIZE, 64 << 30},
 		{syscall.RLIMIT_NOFILE, 1024},
@@ -77,13 +91,16 @@ func apply(p Policy, argv []string) (Status, error) {
 	st.NoNewPrivs = true
 
 	reads := append(append([]string{}, systemRead...), p.Read...)
+	if p.GPU {
+		reads = append(reads, gpuRead...)
+	}
 	if bin != "" {
 		reads = append(reads, filepath.Dir(bin))
 	}
 	// Its own /proc entry (resolved now: the pid survives the exec), never
 	// other processes', whose environments may hold secrets.
 	reads = append(reads, fmt.Sprintf("/proc/%d", os.Getpid()))
-	abi, err := landlock(reads, p.Write)
+	abi, err := landlock(reads, p.Write, p.Devices)
 	if err != nil {
 		return st, fmt.Errorf("landlock: %w", err)
 	}
@@ -97,7 +114,7 @@ func apply(p Policy, argv []string) (Status, error) {
 	if bin == "" {
 		return st, nil
 	}
-	env := []string{}
+	env := append([]string{}, Env(p.Env)...)
 	if p.Write != "" {
 		env = append(env, "TMPDIR="+p.Write)
 	}
@@ -136,7 +153,7 @@ const (
 // landlock restricts the filesystem to reads beneath reads and full access
 // beneath write, and on newer kernels TCP, abstract sockets and signals. It
 // returns the kernel's ABI version, 0 where Landlock is missing or disabled.
-func landlock(reads []string, write string) (int, error) {
+func landlock(reads []string, write string, devices []string) (int, error) {
 	v, _, errno := syscall.RawSyscall(sysLandlockCreateRuleset, 0, 0, 1 /* LANDLOCK_CREATE_RULESET_VERSION */)
 	if errno != 0 {
 		return 0, nil // no Landlock: reported, not required
@@ -179,6 +196,13 @@ func landlock(reads []string, write string) (int, error) {
 	}
 	if write != "" {
 		if err := allow(int(fd), write, handled); err != nil {
+			return abi, err
+		}
+	}
+	// A GPU node is a character device: read, write and (ABI 5+) its
+	// ioctls, which is how drivers talk to the GPU.
+	for _, d := range devices {
+		if err := allow(int(fd), d, uint64(fsReadFile|fsWriteFile|fsIoctlDev)&handled); err != nil {
 			return abi, err
 		}
 	}

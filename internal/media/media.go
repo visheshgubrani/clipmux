@@ -99,6 +99,15 @@ type Manifest struct {
 	Audio           bool         `json:"audio"`
 	Files           []File       `json:"files"`
 	Tools           ToolVersions `json:"tools"`
+	// Encoder is the stage that encoded the ladder, and the ones that failed
+	// before it.
+	Encoder *EncoderUsed `json:"encoder,omitempty"`
+}
+
+// EncoderUsed records which backend encoded an output.
+type EncoderUsed struct {
+	Stage     string   `json:"stage"`
+	Fallbacks []string `json:"fallbacks,omitempty"`
 }
 
 // Rendition is one video rendition in a manifest.

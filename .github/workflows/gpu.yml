@@ -1,0 +1,43 @@
+# Real GPU encodes (P3-T03, D046), on a self-hosted runner with a GPU: the
+# owner's Ubuntu machine with an AMD RX 6600 XT (VAAPI). The runner's service
+# user must be in the `render` group so it can open /dev/dri/renderD*. Runs on
+# main, weekly, by hand, and on PRs that touch encoding. GitHub's hosted
+# runners have no GPU, so CI proves selection and fallback with a fake ffmpeg.
+name: GPU encode
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    - cron: "17 5 * * 1"
+  pull_request:
+    paths:
+      - "internal/media/**"
+      - "internal/sandbox/**"
+      - "internal/worker/**"
+      - "toolchain/**"
+permissions:
+  contents: read
+concurrency:
+  group: gpu-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+jobs:
+  vaapi:
+    # Pull requests from forks never reach a self-hosted runner.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, linux, gpu, vaapi]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: The pinned packager
+        run: |
+          mkdir -p "$RUNNER_TEMP/bin" && toolchain/install_packager.sh "$RUNNER_TEMP/bin"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: GPU parity (golden encode, keyframes, decryption, SSIM against the CPU)
+        env:
+          CLIPMUX_GPU_TEST: "1"
+          CLIPMUX_REQUIRE_MEDIA_TOOLS: "1"
+        run: go test ./internal/media -run 'GPUBackends|Golden|DecryptsBack' -count=1 -v

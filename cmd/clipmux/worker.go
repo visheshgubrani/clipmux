@@ -45,6 +45,7 @@ func runWorker(args []string, getenv func(string) string, stderr io.Writer) int 
 	unconfined := fs.Bool("unsandboxed", false, "run an agent's tools unconfined: it then gets only its own local jobs and the owner's uploads")
 	pair := fs.String("pair", "", "connect this PC with a code from the dashboard's Workers page")
 	name := fs.String("name", "", "what to call this PC on the Workers page (default: its hostname)")
+	encoder := fs.String("encoder", orEnv(getenv("CLIPMUX_ENCODER"), "auto"), "first encoder to try: auto, nvenc, vaapi, cuda-decode or cpu; the CPU always backs it up")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -100,6 +101,31 @@ func runWorker(args []string, getenv func(string) string, stderr io.Writer) int 
 		logger.Error("media tools are missing", "err", err)
 		return 1
 	}
+	prefer, err := media.ParseBackend(*encoder)
+	if err != nil {
+		logger.Error("encoder", "err", err)
+		return 2
+	}
+	// Prove each GPU path with a real encode, under the same sandbox jobs
+	// use, before offering it.
+	var driverEnv []string
+	for _, n := range sandbox.EnvAllowed {
+		if v := getenv(n); v != "" {
+			driverEnv = append(driverEnv, n+"="+v)
+		}
+	}
+	w.Tools.Env = driverEnv
+	probeDir := filepath.Join(*workDir, ".probe")
+	if err := os.MkdirAll(probeDir, 0o750); err != nil {
+		logger.Error("work dir", "err", err)
+		return 1
+	}
+	w.Tools.HW = media.DetectHardware(ctx, w.Tools, probeDir, getenv("CLIPMUX_VAAPI_DEVICE"), prefer)
+	_ = os.RemoveAll(probeDir)
+	if prefer != "" && prefer != media.CPU && w.Tools.HW.Backends()[0] != prefer {
+		logger.Warn("the requested encoder failed its test encode; using the others", "encoder", prefer)
+	}
+	logger.Info("encoders", "order", w.Tools.HW.Describe())
 	logger.Info("clipmux worker started", "server", *server, "once", *once)
 	if agent {
 		// push --local hands this agent files over a socket only this user

@@ -86,6 +86,11 @@ when you introduce or discover it; remove it when it is closed.
 - `clipmux push --local --upload-source` isn't built: an asset whose source
   stays on a PC re-encodes only on that PC, and only while the file is
   unchanged.
+- GPU encoding is proven on real hardware for VAAPI on AMD only (D046).
+  NVENC and `cuda-decode` are covered by argument and fallback tests until
+  they run on Modal (an L4 and an A100); Intel's iHD driver and Quick Sync
+  have no test machine. A GPU stage's failure isn't classified, so any one
+  falls back to the next stage.
 - Disconnecting Cloudflare (back to built-in delivery) has no endpoint yet.
 - The content key secret can't be rotated; when it can, rotation must
   redeploy the Worker's ring through Connect before new outputs use it.

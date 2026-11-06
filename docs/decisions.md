@@ -362,5 +362,26 @@ Decisions within the architecture's rules, made in P3-T05:
 - **Forgetting.** The agent asks `POST /worker/v1/sources/sync` at start and hourly which sources it may forget: their assets were deleted, they're unknown, or they were never attached a day after registering.
 - `--upload-source` isn't built yet (known gap): a local asset re-encodes only on its own PC.
 
+## D046 Hardware encoding with CPU fallback — accepted (2026-11-06)
+Decisions within the architecture's rules and D042, made in P3-T03:
+- **Backends** (`internal/media/encoders.go`), shared by agents and the built-in worker:
+  - `nvenc`: CUDA decode, `scale_cuda`, `h264_nvenc`.
+  - `vaapi`: VAAPI decode, `scale_vaapi`, `h264_vaapi`; AMD radeonsi and Intel iHD.
+  - `cuda-decode`: NVIDIA without NVENC. `-hwaccel cuda` with frames back in system memory and libx264. ffmpeg decodes on the CPU itself if the GPU can't.
+  - `cpu`: libx264.
+- **Detection:** a backend is offered only after a real two-frame encode when the worker starts, under the same sandbox jobs use. `ffmpeg -encoders` proves nothing: it lists `h264_nvenc` on this AMD machine, where an encode fails. VAAPI tries each `/dev/dri/renderD*` unless `CLIPMUX_VAAPI_DEVICE` names one. `--encoder` / `CLIPMUX_ENCODER` (`auto`, `nvenc`, `vaapi`, `cuda-decode`, `cpu`) names the first backend to try, and a failed test encode logs a warning. Claims report the proven encoders and the hardware.
+- **The chain:** each GPU backend decodes on the GPU when the source is a common codec (H.264, HEVC, VP9, AV1, MPEG-2) in 8-bit 4:2:0. Otherwise it decodes on the CPU and encodes on the GPU (a `-hybrid` stage). The CPU comes last.
+  - A stage that fails hands the whole ladder to the next stage in the same attempt, so renditions never mix encoders and the attempt spends no retry budget.
+  - The CPU stage's failure is final (`transcode_failed`, or `unsupported_source` from the probe), and a cancelled context stops the chain.
+  - Every GPU failure falls through rather than being classified from stderr. A corrupt source that got past the probe therefore costs extra encodes, but nothing is mislabelled.
+  - `manifest.json` records `encoder: {stage, fallbacks}`.
+- **Parity:** every backend gets the ladder's bitrate, maxrate and buffer, high profile, CFR at the source rate, `-g` of 6 s, `-force_key_frames` every 6 s and closed GOPs. Scene-cut keyframes are off: `-sc_threshold 0` for libx264, `-no-scenecut 1 -forced-idr 1 -strict_gop 1` for NVENC.
+- **Sandbox (D027):** a GPU stage adds `--gpu` and `--device` for that backend's nodes only (`/dev/dri/renderD*` for VAAPI, `/dev/nvidia*` for CUDA). Landlock then allows read, write and ioctl on those nodes and read on `/sys` and `/proc/driver`. The memory limit moves from `RLIMIT_AS` to `RLIMIT_DATA`, because drivers reserve far more address space than they use. Seccomp still refuses `socket()`. Only `LIBVA_DRIVER_NAME`, `LIBVA_DRIVERS_PATH`, `CUDA_VISIBLE_DEVICES` and `CUDA_DEVICE_ORDER` reach a tool's environment.
+- **Proof:**
+  - On the owner's RX 6600 XT, under the full sandbox, `vaapi` encodes the 1080p ladder with every rendition's segments identical (6.006 s at 29.97 fps). A 10-bit 4:2:2 source takes `vaapi-hybrid`. The golden 480p segment has an SSIM of 0.994 against the CPU encode.
+  - `.github/workflows/gpu.yml` reruns that on a `[self-hosted, linux, gpu, vaapi]` runner whose user is in the `render` group.
+  - NVENC and `cuda-decode` are covered by argument and fallback tests only, until a Modal run on an L4 and an A100 (known gap).
+- The image gains `intel-media-va-driver`. `mesa-va-drivers` and the toolchain check for `h264_nvenc`, `h264_vaapi` and `scale_cuda`'s `format` option were already in place.
+
 ## D007 Shaka Packager 3.9.3 — accepted (2026-11-05)
 Decision: pin v3.9.3 (`toolchain/versions.env`), the version clipmux-lms runs with AES-128 in production, which needs the init-segment workaround for Shaka issue 1616. Move to a release that fixes 1616 when one exists, re-running the Phase 1 player tests.

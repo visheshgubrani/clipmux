@@ -26,6 +26,7 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"slices"
 	"strings"
 )
 
@@ -35,6 +36,16 @@ type Policy struct {
 	Write string
 	// Read are extra readable paths beyond the system defaults.
 	Read []string
+	// Devices are GPU device nodes the tool may open read-write, such as
+	// /dev/dri/renderD128 or /dev/nvidia0. Nothing else under /dev is.
+	Devices []string
+	// GPU swaps the address-space limit for a data-segment limit (GPU
+	// drivers reserve far more address space than they use) and lets the
+	// tool read /sys and /proc/driver, where drivers find their devices.
+	GPU bool
+	// Env are driver variables passed to the tool, such as
+	// LIBVA_DRIVER_NAME; only names in EnvAllowed are kept.
+	Env []string
 	// MemoryMB bounds the address space; CPUSeconds the CPU time.
 	MemoryMB, CPUSeconds uint64
 }
@@ -85,6 +96,15 @@ func Args(p Policy, argv ...string) []string {
 	for _, r := range p.Read {
 		args = append(args, "--read", r)
 	}
+	for _, d := range p.Devices {
+		args = append(args, "--device", d)
+	}
+	if p.GPU {
+		args = append(args, "--gpu")
+	}
+	for _, e := range p.Env {
+		args = append(args, "--env", e)
+	}
 	if p.MemoryMB > 0 {
 		args = append(args, "--memory-mb", fmt.Sprint(p.MemoryMB))
 	}
@@ -92,6 +112,21 @@ func Args(p Policy, argv ...string) []string {
 		args = append(args, "--cpu-seconds", fmt.Sprint(p.CPUSeconds))
 	}
 	return append(append(args, "--"), argv...)
+}
+
+// EnvAllowed are the driver variables a tool may receive: they pick a VAAPI
+// driver or a GPU, and carry no secrets.
+var EnvAllowed = []string{"LIBVA_DRIVER_NAME", "LIBVA_DRIVERS_PATH", "CUDA_VISIBLE_DEVICES", "CUDA_DEVICE_ORDER"}
+
+// Env keeps the NAME=VALUE pairs whose name is in EnvAllowed.
+func Env(pairs []string) []string {
+	var out []string
+	for _, kv := range pairs {
+		if name, _, ok := strings.Cut(kv, "="); ok && slices.Contains(EnvAllowed, name) {
+			out = append(out, kv)
+		}
+	}
+	return out
 }
 
 type multi []string
@@ -107,16 +142,20 @@ func Main(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("sandbox-exec", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	var p Policy
-	var reads multi
+	var reads, devices, env multi
 	fs.StringVar(&p.Write, "write", "", "the one writable directory")
 	fs.Var(&reads, "read", "an extra readable path (repeatable)")
+	fs.Var(&devices, "device", "a GPU device node the tool may open read-write (repeatable)")
+	fs.Var(&env, "env", "NAME=VALUE for a GPU driver variable (repeatable; see EnvAllowed)")
+	fs.BoolVar(&p.GPU, "gpu", false, "limit the data segment instead of the address space, and allow reading /sys")
 	fs.Uint64Var(&p.MemoryMB, "memory-mb", DefaultMemoryMB, "address space limit")
 	fs.Uint64Var(&p.CPUSeconds, "cpu-seconds", DefaultCPUSeconds, "CPU time limit")
 	probe := fs.Bool("probe", false, "apply the sandbox and report what holds")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	p.Read = reads
+	p.Read, p.Devices = reads, devices
+	p.Env = Env(env)
 	if *probe {
 		st, err := apply(p, nil)
 		if err != nil {

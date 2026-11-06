@@ -98,7 +98,7 @@ func probeStream(t *testing.T, init, segment []byte) (codec string, packets int)
 }
 
 func TestTranscodeEncryptsEveryRenditionAndDecryptsBack(t *testing.T) {
-	transcodeAndCheck(t, false)
+	transcodeAndCheck(t, false, Hardware{})
 }
 
 // The same pipeline with every tool confined as the built-in worker runs it:
@@ -107,11 +107,17 @@ func TestGoldenTranscodePassesUnderTheSandbox(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("the sandbox is Linux only")
 	}
-	transcodeAndCheck(t, true)
+	transcodeAndCheck(t, true, Hardware{})
 }
 
-func transcodeAndCheck(t *testing.T, sandboxed bool) {
+// testKey is the content key the golden tests encrypt with.
+var testKey = Key{Version: 1, Key: [16]byte{0x10, 0x32, 0x54, 0x76, 0x98, 0xba, 0xdc, 0xfe, 1, 2, 3, 4, 5, 6, 7, 8}, KeyID: [16]byte{0xaa}}
+
+// transcodeAndCheck encodes a generated clip on hw (the CPU for the zero
+// value), checks the output, and returns its manifest and directory.
+func transcodeAndCheck(t *testing.T, sandboxed bool, hw Hardware) (Manifest, string) {
 	tools := testTools(t)
+	tools.HW = hw
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	dir := t.TempDir()
@@ -131,7 +137,7 @@ func transcodeAndCheck(t *testing.T, sandboxed bool) {
 		t.Fatalf("probe = %+v", src)
 	}
 
-	key := Key{Version: 1, Key: [16]byte{0x10, 0x32, 0x54, 0x76, 0x98, 0xba, 0xdc, 0xfe, 1, 2, 3, 4, 5, 6, 7, 8}, KeyID: [16]byte{0xaa}}
+	key := testKey
 	work, out := filepath.Join(dir, "work"), filepath.Join(dir, "out")
 	var phases []string
 	m, err := Transcode(ctx, tools, source, src, work, out, key, func(phase string, _ float64) {
@@ -208,6 +214,10 @@ func transcodeAndCheck(t *testing.T, sandboxed bool) {
 	if err := json.Unmarshal(raw, &stored); err != nil || len(stored.Files) != len(m.Files) {
 		t.Fatalf("manifest.json: %v", err)
 	}
+	if stored.Encoder == nil || stored.Encoder.Stage != hw.Chain(src)[0].Name() {
+		t.Fatalf("manifest encoder = %+v, want %s", stored.Encoder, hw.Chain(src)[0].Name())
+	}
+	return m, out
 }
 
 func TestProbeRefusesNonVideoAndDisguisedPlaylists(t *testing.T) {

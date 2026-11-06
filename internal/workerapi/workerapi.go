@@ -208,7 +208,10 @@ type claimRequest struct {
 	PackagerVersion  string   `json:"packager_version"`
 	Encoders         []string `json:"encoders"`
 	FreeDiskBytes    int64    `json:"free_disk_bytes"`
-	WaitSeconds      *float64 `json:"wait_seconds"`
+	// Hardware is what the worker's GPUs proved at start, for the Workers
+	// page.
+	Hardware    json.RawMessage `json:"hardware"`
+	WaitSeconds *float64        `json:"wait_seconds"`
 	// Sandbox is what confines the worker's tools, e.g.
 	// "rlimits,no_new_privs,seccomp,idle,landlock_abi_6", or "none".
 	Sandbox string `json:"sandbox"`
@@ -239,7 +242,7 @@ func (a *API) claim(w http.ResponseWriter, r *http.Request) {
 	info, _ := json.Marshal(map[string]any{
 		"ffmpeg_version": req.FFmpegVersion, "packager_version": req.PackagerVersion,
 		"encoders": req.Encoders, "free_disk_bytes": req.FreeDiskBytes, "contract_versions": req.ContractVersions,
-		"sandbox": req.Sandbox,
+		"sandbox": req.Sandbox, "hardware": req.Hardware,
 	})
 	worker.Info = info
 	worker.FreeDiskBytes = max(req.FreeDiskBytes, 0)
