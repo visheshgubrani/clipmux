@@ -47,6 +47,12 @@ func (q *Queue) ReserveSigns(ctx context.Context, token string, n, budget int) (
 // after all, its next call is refused as unknown and it stops.
 func (q *Queue) Release(ctx context.Context, token string) error {
 	_, err := q.withLiveAttempt(ctx, token, func(qs *db.Queries, l locked) (Verdict, error) {
+		if l.attempt.DispatchID.Valid {
+			// The machine never saw its job: its key may claim it again.
+			if err := qs.UnclaimDispatch(ctx, l.attempt.DispatchID.String); err != nil {
+				return Verdict{}, err
+			}
+		}
 		if err := qs.DeleteAttempt(ctx, l.attempt.ID); err != nil {
 			return Verdict{}, err
 		}
@@ -104,6 +110,10 @@ type Queue struct {
 	Backoff func(failures int32) time.Duration
 	// KeyVersion is the content key secret version for new outputs.
 	KeyVersion int32
+	// Dispatch, when set, wakes a provider for a job the router sends to
+	// one (modal, runpod), in the router's transaction. Without it, jobs are
+	// never routed to a provider.
+	Dispatch func(ctx context.Context, qs *db.Queries, job db.Job, kind string) error
 }
 
 // New returns a queue with the architecture's defaults: 90 s leases, budgets
@@ -140,6 +150,9 @@ type Worker struct {
 	// Untrusted agents run their tools unsandboxed, so they claim only jobs
 	// pinned to them and the owner's own (Dashboard app) uploads.
 	Untrusted bool
+	// DispatchID and JobID are set for a serverless machine's one-time key
+	// (D054): it claims that dispatch's job and nothing else.
+	DispatchID, JobID string
 	// FreeDiskBytes is the free space in the worker's scratch directory, or
 	// 0 when it didn't say; a worker takes only sources that fit.
 	FreeDiskBytes int64
@@ -210,11 +223,7 @@ func (q *Queue) Claim(ctx context.Context, w Worker) (*Claim, error) {
 	var claim *Claim
 	err := pgx.BeginFunc(ctx, q.pool, func(tx pgx.Tx) error {
 		qs := db.New(tx)
-		job, err := qs.LockNextClaimableJob(ctx, db.LockNextClaimableJobParams{
-			ProjectID: q.ProjectID, Classes: classes(w.Executor),
-			AgentID: text(w.AgentID), LocalOnly: w.LocalOnly, Untrusted: w.Untrusted,
-			FreeDiskBytes: pgtype.Int8{Int64: w.FreeDiskBytes, Valid: w.FreeDiskBytes > 0},
-		})
+		job, err := q.lockClaimable(ctx, qs, w)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		}
@@ -235,9 +244,15 @@ func (q *Queue) Claim(ctx context.Context, w Worker) (*Claim, error) {
 			ID: ids.New(ids.Attempt), ProjectID: job.ProjectID, JobID: job.ID, AssetID: job.AssetID,
 			AttemptNumber: n, OutputID: output.ID, Executor: w.Executor, AgentID: text(w.AgentID),
 			TokenHash: hash, WorkerInfo: info, LeaseSeconds: q.Lease.Seconds(), RouteReason: job.RouteReason,
+			DispatchID: text(w.DispatchID),
 		})
 		if err != nil {
 			return err
+		}
+		if w.DispatchID != "" {
+			if err := qs.ClaimDispatch(ctx, db.ClaimDispatchParams{ID: w.DispatchID, AttemptID: text(attempt.ID)}); err != nil {
+				return err
+			}
 		}
 		if err := qs.StartJob(ctx, job.ID); err != nil {
 			return err
@@ -252,6 +267,27 @@ func (q *Queue) Claim(ctx context.Context, w Worker) (*Claim, error) {
 		return nil, fmt.Errorf("claim: %w", err)
 	}
 	return claim, nil
+}
+
+// lockClaimable locks the job a worker would claim next. A dispatch key's
+// machine takes only its dispatch's job, and only while the dispatch is
+// still waking within its deadline; lock order is job, then dispatch.
+func (q *Queue) lockClaimable(ctx context.Context, qs *db.Queries, w Worker) (db.Job, error) {
+	if w.DispatchID == "" {
+		return qs.LockNextClaimableJob(ctx, db.LockNextClaimableJobParams{
+			ProjectID: q.ProjectID, Classes: classes(w.Executor),
+			AgentID: text(w.AgentID), LocalOnly: w.LocalOnly, Untrusted: w.Untrusted,
+			FreeDiskBytes: pgtype.Int8{Int64: w.FreeDiskBytes, Valid: w.FreeDiskBytes > 0},
+		})
+	}
+	job, err := qs.LockDispatchedJob(ctx, db.LockDispatchedJobParams{ID: w.JobID, Kind: w.Executor})
+	if err != nil {
+		return db.Job{}, err
+	}
+	if _, err := qs.LockWakingDispatch(ctx, w.DispatchID); err != nil {
+		return db.Job{}, err
+	}
+	return job, nil
 }
 
 // ClaimWait long-polls: it retries Claim every poll interval until it gets

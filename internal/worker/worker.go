@@ -151,6 +151,36 @@ func (w *Worker) Run(ctx context.Context) error {
 	return nil
 }
 
+// RunDispatched is `clipmux worker --once` on a machine a provider started
+// for one dispatch (D054). Its key can claim exactly one job, so it keeps
+// asking through network errors and empty polls (serve restarting, the
+// job's row briefly locked) until it has run that job or the server refuses
+// the key: claimed already, the job gone, or the claim deadline passed.
+// Errors back off from 1 s to 30 s, as Run does.
+func (w *Worker) RunDispatched(ctx context.Context) error {
+	if err := ClearDir(w.WorkDir); err != nil {
+		w.Logger.Warn("clear the scratch directory", "dir", w.WorkDir, "err", err)
+	}
+	backoff := time.Second
+	for {
+		got, err := w.RunOnce(ctx)
+		switch {
+		case got || errors.Is(err, ErrKeyRefused):
+			return err
+		case ctx.Err() != nil:
+			return ctx.Err()
+		case err != nil:
+			w.Logger.Warn("claim failed; will retry", "err", err, "in", backoff)
+			if err := sleep(ctx, backoff); err != nil {
+				return err
+			}
+			backoff = min(backoff*2, 30*time.Second)
+		default:
+			backoff = time.Second // an empty long-poll already waited
+		}
+	}
+}
+
 // ClearDir removes everything inside dir, keeping dir.
 func ClearDir(dir string) error {
 	entries, err := os.ReadDir(dir)

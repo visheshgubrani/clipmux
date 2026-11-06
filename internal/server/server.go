@@ -24,6 +24,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/contentkey"
 	"github.com/visheshgubrani/clipmux/internal/db"
 	"github.com/visheshgubrani/clipmux/internal/delivery"
+	"github.com/visheshgubrani/clipmux/internal/dispatch"
 	"github.com/visheshgubrani/clipmux/internal/lifecycle"
 	"github.com/visheshgubrani/clipmux/internal/manage"
 	"github.com/visheshgubrani/clipmux/internal/outputs"
@@ -50,6 +51,10 @@ const LeaseSweepInterval = 15 * time.Second
 // primary seen offline sends work to the fallback within OnlineWithin plus
 // this.
 const RouteInterval = 5 * time.Second
+
+// DispatchInterval is how often pending wakes and stops are sent to
+// providers.
+const DispatchInterval = 2 * time.Second
 
 // UploadSweepInterval is how often abandoned uploads are checked.
 const UploadSweepInterval = 5 * time.Minute
@@ -238,7 +243,12 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 	// PC agents pair with a code and claim with their own keys (P3-T01).
 	agentSvc := agents.New(pool, q, acct, db.DefaultProjectID, b.urls.PublicURL)
 	agentSvc.Logger = logger
-	worker := workerapi.New(q, workerapi.Auths{workerapi.BuiltinKey(workerKey), agentSvc}, set, keys, committer)
+	// Serverless machines claim one job each with a key minted when the
+	// router sends that job to a provider (P4-T02).
+	disp := dispatch.New(pool, box, b.urls.PublicURL)
+	disp.Logger = logger
+	q.Dispatch = disp.Route
+	worker := workerapi.New(q, workerapi.Auths{workerapi.BuiltinKey(workerKey), agentSvc, disp}, set, keys, committer)
 	worker.Agents = agentSvc
 	worker.Logger = logger
 	upl := uploads.New(pool, set)
@@ -288,6 +298,7 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 	}
 	loop(LeaseSweepInterval, "lost_leases", func(ctx context.Context) (int, error) { return q.SweepLostLeases(ctx, 100) })
 	loop(RouteInterval, "routing", func(ctx context.Context) (int, error) { return q.Route(ctx, 200) })
+	loop(DispatchInterval, "dispatch", func(ctx context.Context) (int, error) { return disp.Publish(ctx, 20) })
 	loop(UploadSweepInterval, "stranded_pinned_jobs", func(ctx context.Context) (int, error) { return q.SweepStrandedPinned(ctx, 100) })
 	loop(UploadSweepInterval, "uploads", func(ctx context.Context) (int, error) { return upl.Sweep(ctx, 500) })
 	loop(RouteSyncInterval, "routes", func(ctx context.Context) (int, error) { return committer.SyncRoutes(ctx, 1000) })

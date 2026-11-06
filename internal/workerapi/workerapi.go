@@ -246,6 +246,12 @@ func (a *API) claim(w http.ResponseWriter, r *http.Request) {
 	})
 	worker.Info = info
 	worker.FreeDiskBytes = max(req.FreeDiskBytes, 0)
+	if worker.DispatchID != "" && !Sandboxed(req.Sandbox) {
+		// A serverless machine takes public uploads like any trusted
+		// worker, so its tools must be confined (D054).
+		httpjson.Error(w, http.StatusConflict, "sandbox_required", "a serverless worker must confine its tools (rlimits, no_new_privs, seccomp)")
+		return
+	}
 	if worker.Executor == "builtin" {
 		// The router counts the built-in worker as online, with this much
 		// disk, for OnlineWithin after it calls.

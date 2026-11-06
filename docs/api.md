@@ -130,7 +130,10 @@ means stop; `404` means the ID is unknown or revoked.
 | `POST /worker/v1/pairings/poll` | `{poll_token}` → `{status: pending \| approved \| denied \| expired, credentials?}`; the key is in the first `approved` answer only |
 
 Agent keys start with `cmxa_` and authenticate `POST /worker/v1/claim` like the
-built-in worker's key. A claim reports `free_disk_bytes`; a worker takes only
+built-in worker's key. A serverless machine's one-time key starts with `cmxd_`
+(D054): it claims only the job its dispatch was created for, once, before the
+dispatch's claim deadline, and its claim is `409 sandbox_required` unless the
+worker reports rlimits, `no_new_privs` and seccomp. A claim reports `free_disk_bytes`; a worker takes only
 uploads whose size, three times over, fits its scratch disk.
 | `POST /worker/v1/sources` | agent key: `{size}` → `201 {id, size}`, a file that stays on the agent (`push --local`) |
 | `POST /worker/v1/sources/{id}/attach` | agent key: `{playback_policy?, passthrough?}` → `201` the asset, as the owner's upload (the Dashboard app), with a transcode job pinned to the agent |

@@ -2,7 +2,7 @@
 
 -- name: QueueSetupTest :one
 -- Nothing is returned while another test is queued or running.
-INSERT INTO setup_tests (id, project_id, trigger) VALUES ($1, $2, $3)
+INSERT INTO setup_tests (id, project_id, trigger, executor) VALUES ($1, $2, $3, $4)
 ON CONFLICT (project_id) WHERE status IN ('queued', 'running') DO NOTHING
 RETURNING *;
 

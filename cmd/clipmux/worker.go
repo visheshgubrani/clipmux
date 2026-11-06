@@ -11,10 +11,12 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
 
+	"github.com/visheshgubrani/clipmux/internal/dispatch"
 	"github.com/visheshgubrani/clipmux/internal/media"
 	"github.com/visheshgubrani/clipmux/internal/sandbox"
 	"github.com/visheshgubrani/clipmux/internal/worker"
@@ -26,6 +28,9 @@ const workerUsage = `Usage:
   clipmux worker                           run, once this PC is connected
   clipmux worker doctor                    check everything this PC needs
   CLIPMUX_WORKER_KEY=KEY clipmux worker --server URL [--once]
+
+A serverless machine's key (cmxd_...) claims its one job and exits; its tools
+are always sandboxed.
 
 Claims and runs media jobs. A connected PC keeps its server and key in
 agent.json under CLIPMUX_AGENT_DIR (default: your config directory), so the
@@ -60,6 +65,16 @@ func runWorker(args []string, getenv func(string) string, stderr io.Writer) int 
 	defer stop()
 	key := getenv("CLIPMUX_WORKER_KEY")
 	agent := key == ""
+	// A provider's machine (D054): one job, always confined, because it
+	// takes public uploads.
+	dispatched := strings.HasPrefix(key, dispatch.KeyPrefix)
+	if dispatched {
+		if *unconfined {
+			fmt.Fprintln(stderr, "clipmux worker: a serverless worker can't run --unsandboxed")
+			return 2
+		}
+		*once, *confine = true, true
+	}
 	var roots []string
 	if agent {
 		// Agent mode: this PC's own key, from pairing.
@@ -153,6 +168,13 @@ func runWorker(args []string, getenv func(string) string, stderr io.Writer) int 
 		})
 		wg.Go(func() { syncSources(ctx, w, local, logger) })
 		return runLoop(ctx, w, *once, logger, getenv)
+	}
+	if dispatched {
+		if err := w.RunDispatched(ctx); err != nil {
+			logger.Error("worker", "err", err)
+			return 1
+		}
+		return 0
 	}
 	return runLoop(ctx, w, *once, logger, getenv)
 }

@@ -2,17 +2,21 @@
 -- Lock order everywhere: job, then attempt, then asset.
 
 -- name: CreateJob :one
--- Media jobs start routed: a pinned job to its agent, any other to the
--- project's primary executor. The router may move a queued one later.
+-- Media jobs start routed: a pinned job to its agent, a setup test's sample
+-- to the executor that test names, any other to the project's primary
+-- executor. The router may move a queued one later.
 INSERT INTO jobs (id, project_id, asset_id, kind, pinned_agent_id, routed_to, route_reason)
 SELECT sqlc.arg(id), p.id, sqlc.arg(asset_id), sqlc.arg(kind)::text, sqlc.narg(pinned_agent_id)::text,
        CASE WHEN sqlc.arg(kind)::text NOT IN ('transcode', 'reencode') THEN NULL
             WHEN sqlc.narg(pinned_agent_id)::text IS NOT NULL THEN 'agents'
-            ELSE p.primary_executor END,
+            ELSE coalesce(t.executor, p.primary_executor) END,
        CASE WHEN sqlc.arg(kind)::text NOT IN ('transcode', 'reencode') THEN NULL
             WHEN sqlc.narg(pinned_agent_id)::text IS NOT NULL THEN 'pinned'
+            WHEN t.executor IS NOT NULL THEN 'setup_test'
             ELSE 'primary' END
-FROM projects p WHERE p.id = sqlc.arg(project_id)
+FROM projects p
+LEFT JOIN setup_tests t ON t.asset_id = sqlc.arg(asset_id) AND t.executor IS NOT NULL
+WHERE p.id = sqlc.arg(project_id)
 RETURNING *;
 
 -- name: LockNextClaimableJob :one
@@ -44,8 +48,8 @@ RETURNING *;
 
 -- name: CreateAttempt :one
 INSERT INTO attempts (id, project_id, job_id, asset_id, attempt_number, output_id, executor, agent_id,
-                      token_hash, lease_expires_at, worker_info, route_reason)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now() + make_interval(secs => sqlc.arg(lease_seconds)::double precision), $10, $11)
+                      token_hash, lease_expires_at, worker_info, route_reason, dispatch_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now() + make_interval(secs => sqlc.arg(lease_seconds)::double precision), $10, $11, $12)
 RETURNING *;
 
 -- name: StartJob :exec
@@ -172,7 +176,22 @@ SELECT p.primary_executor, p.fallback_executor, p.queue_age_fallback_minutes,
              AND NOT (coalesce(a.error_code, '') = ANY (sqlc.arg(capacity_codes)::text[])
                       OR a.error_code LIKE 'wake\_%')
        )::boolean AS fallback_eligible,
-       extract(epoch FROM now() - j.available_at)::double precision AS waited_seconds
+       extract(epoch FROM now() - j.available_at)::double precision AS waited_seconds,
+       -- A provider takes work once connected and verified by a setup test,
+       -- if its machines' disk fits the source.
+       coalesce((SELECT c.verified_at IS NOT NULL
+                        AND job_claimable_by(j.asset_id, j.pinned_agent_id, NULL, false, false, c.disk_bytes)
+                 FROM executor_configs c WHERE c.project_id = j.project_id AND c.kind = 'modal'), false)::boolean AS modal_up,
+       coalesce((SELECT c.verified_at IS NOT NULL
+                        AND job_claimable_by(j.asset_id, j.pinned_agent_id, NULL, false, false, c.disk_bytes)
+                 FROM executor_configs c WHERE c.project_id = j.project_id AND c.kind = 'runpod'), false)::boolean AS runpod_up,
+       -- A setup test's sample runs where its test says, and nowhere else.
+       coalesce((SELECT t.executor FROM setup_tests t WHERE t.asset_id = j.asset_id AND t.executor IS NOT NULL LIMIT 1), '')::text AS forced_executor,
+       EXISTS (SELECT 1 FROM executor_configs c WHERE c.project_id = j.project_id
+                 AND c.kind = (SELECT t.executor FROM setup_tests t WHERE t.asset_id = j.asset_id LIMIT 1))::boolean AS forced_configured,
+       -- A woken machine keeps its job until it claims or its deadline ends
+       -- the dispatch.
+       EXISTS (SELECT 1 FROM dispatches d WHERE d.job_id = j.id AND d.status <> 'ended')::boolean AS has_live_dispatch
 FROM jobs j JOIN projects p ON p.id = j.project_id
 WHERE j.id = sqlc.arg(job_id);
 
@@ -188,3 +207,20 @@ SET builtin_seen_at = now(),
 WHERE id = sqlc.arg(id)
   AND (builtin_seen_at IS NULL OR builtin_seen_at < now() - interval '10 seconds'
        OR builtin_free_disk_bytes IS DISTINCT FROM coalesce(sqlc.narg(free_disk_bytes)::bigint, builtin_free_disk_bytes));
+
+-- name: LockDispatchedJob :one
+-- The one job a dispatch key may claim, while it is still queued and routed
+-- to that provider.
+SELECT * FROM jobs
+WHERE id = sqlc.arg(id) AND status = 'queued' AND available_at <= now() AND routed_to = sqlc.arg(kind)::text
+FOR UPDATE SKIP LOCKED;
+
+-- name: LockWakingDispatch :one
+SELECT * FROM dispatches WHERE id = $1 AND status = 'waking' AND claim_deadline > now() FOR UPDATE;
+
+-- name: ClaimDispatch :exec
+UPDATE dispatches SET status = 'claimed', attempt_id = $2, claimed_at = now() WHERE id = $1;
+
+-- name: UnclaimDispatch :exec
+-- An undelivered claim (Release) gives the dispatch its job back.
+UPDATE dispatches SET status = 'waking', attempt_id = NULL, claimed_at = NULL WHERE id = $1 AND status = 'claimed';

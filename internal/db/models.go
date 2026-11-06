@@ -113,6 +113,7 @@ type Attempt struct {
 	FinishedAt      pgtype.Timestamptz
 	SignedPaths     int32
 	RouteReason     pgtype.Text
+	DispatchID      pgtype.Text
 }
 
 type CloudflareConnection struct {
@@ -134,6 +135,43 @@ type ContentKeySecret struct {
 	Version         int32
 	SecretEncrypted []byte
 	CreatedAt       pgtype.Timestamptz
+}
+
+type Dispatch struct {
+	ID               string
+	ProjectID        string
+	JobID            string
+	ExecutorConfigID string
+	Kind             string
+	Status           string
+	EndReason        pgtype.Text
+	KeyHash          []byte
+	KeySealed        []byte
+	InstanceID       pgtype.Text
+	RateCentsPerHour int32
+	ClaimDeadline    pgtype.Timestamptz
+	AttemptID        pgtype.Text
+	CreatedAt        pgtype.Timestamptz
+	WokenAt          pgtype.Timestamptz
+	ClaimedAt        pgtype.Timestamptz
+	EndedAt          pgtype.Timestamptz
+	StoppedAt        pgtype.Timestamptz
+}
+
+type ExecutorConfig struct {
+	ID                   string
+	ProjectID            string
+	Kind                 string
+	Config               []byte
+	SecretsEncrypted     []byte
+	MaxConcurrent        int32
+	MonthlyLimitCents    int64
+	RateCentsPerHour     int32
+	DiskBytes            int64
+	ClaimDeadlineSeconds int32
+	VerifiedAt           pgtype.Timestamptz
+	CreatedAt            pgtype.Timestamptz
+	UpdatedAt            pgtype.Timestamptz
 }
 
 type IdempotencyKey struct {
@@ -255,6 +293,7 @@ type SetupTest struct {
 	CreatedAt  pgtype.Timestamptz
 	StartedAt  pgtype.Timestamptz
 	FinishedAt pgtype.Timestamptz
+	Executor   pgtype.Text
 }
 
 type SigningKey struct {

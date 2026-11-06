@@ -44,6 +44,11 @@ type env struct {
 
 func newEnv(t *testing.T) *env {
 	t.Helper()
+	return newEnvAuth(t, workerapi.BuiltinKey(workerKey))
+}
+
+func newEnvAuth(t *testing.T, auth workerapi.WorkerAuth) *env {
+	t.Helper()
 	pool := dbtest.New(t)
 	mux := http.NewServeMux()
 	srv := httptest.NewServer(mux)
@@ -58,7 +63,7 @@ func newEnv(t *testing.T) *env {
 		t.Fatal(err)
 	}
 	q := queue.New(pool)
-	api := workerapi.New(q, workerapi.BuiltinKey(workerKey), stores.Fixed(store), contentkey.NewRing(keys), outputs.New(pool, q, stores.Fixed(store)))
+	api := workerapi.New(q, auth, stores.Fixed(store), contentkey.NewRing(keys), outputs.New(pool, q, stores.Fixed(store)))
 	mux.Handle("POST /worker/v1/", api.Handler())
 	for _, m := range []string{"GET", "PUT"} {
 		mux.Handle(m+" /_storage/", store.Handler())
@@ -355,5 +360,32 @@ func TestTheBuiltinWorkersClaimsAndHeartbeatsRecordItsLiveness(t *testing.T) {
 	}
 	if ok, disk := seen(); !ok || disk == nil || *disk != 50<<30 {
 		t.Fatalf("after a heartbeat: seen %v, free disk %v", ok, disk)
+	}
+}
+
+// dispatchKey stands in for dispatch.Service: one serverless machine's key.
+type dispatchKey struct{}
+
+func (dispatchKey) AuthenticateWorker(_ context.Context, key string) (queue.Worker, bool) {
+	return queue.Worker{Executor: "runpod", DispatchID: "dsp_1", JobID: "job_1"}, key == "cmxd_test"
+}
+
+// A serverless machine takes public uploads, so a claim from one whose tools
+// aren't confined is refused before it can take anything (D054).
+func TestAServerlessWorkerMustBeSandboxed(t *testing.T) {
+	e := newEnvAuth(t, dispatchKey{})
+	body := map[string]any{}
+	for k, v := range capable {
+		body[k] = v
+	}
+	for _, sandbox := range []string{"none", "rlimits,no_new_privs"} {
+		body["sandbox"] = sandbox
+		if code, res := e.post("/worker/v1/claim", "cmxd_test", body); code != http.StatusConflict || errorCode(res) != "sandbox_required" {
+			t.Errorf("claim with sandbox %q = %d %v, want 409 sandbox_required", sandbox, code, res)
+		}
+	}
+	body["sandbox"] = "rlimits,no_new_privs,seccomp"
+	if code, _ := e.post("/worker/v1/claim", "cmxd_test", body); code != http.StatusNoContent {
+		t.Fatalf("a sandboxed serverless claim with nothing to take = %d, want 204", code)
 	}
 }

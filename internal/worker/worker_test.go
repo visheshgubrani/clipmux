@@ -218,3 +218,24 @@ func TestARevokedKeyEndsTheWorkerAndStaleAttemptsAreCleared(t *testing.T) {
 		t.Fatalf("claim reported free disk %v, want the scratch directory's", claimed["free_disk_bytes"])
 	}
 }
+
+// A provider's machine keeps asking for its one job through server errors
+// and empty polls, and stops when the server refuses its key (D054).
+func TestADispatchedWorkerRetriesUntilItsKeyIsRefused(t *testing.T) {
+	answers := []int{http.StatusServiceUnavailable, http.StatusNoContent, http.StatusUnauthorized}
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		i := calls.Add(1) - 1
+		w.WriteHeader(answers[min(int(i), len(answers)-1)])
+	}))
+	defer srv.Close()
+	w := &Worker{Server: srv.URL, Key: "cmxd_test", WorkDir: t.TempDir(), Tools: fakeTools(t), Logger: slog.New(slog.DiscardHandler)}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := w.RunDispatched(ctx); !errors.Is(err, ErrKeyRefused) {
+		t.Fatalf("RunDispatched = %v, want ErrKeyRefused", err)
+	}
+	if calls.Load() != 3 {
+		t.Fatalf("claimed %d times, want 3 (503, 204, 401)", calls.Load())
+	}
+}

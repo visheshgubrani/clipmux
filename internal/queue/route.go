@@ -51,7 +51,14 @@ const (
 	ReasonFallbackRefused = "fallback_refused"
 	// ReasonFallbackOffline: the primary and the fallback are both offline.
 	ReasonFallbackOffline = "fallback_offline"
+	// ReasonSetupTest: a setup test's sample, which runs on the executor
+	// its test names and nowhere else.
+	ReasonSetupTest = "setup_test"
 )
+
+// provider reports whether a class is a serverless provider, woken by a
+// dispatch rather than pulling on its own.
+func provider(class string) bool { return class == RouteModal || class == RouteRunPod }
 
 // OnlineWithin is how recently a worker must have called (claim or
 // heartbeat) to count as online, for routing and the Workers page.
@@ -117,9 +124,10 @@ func decideRoute(f routeFacts) (to, reason string) {
 	return f.Fallback, ReasonPrimaryOffline
 }
 
-// up reports whether an executor class has an online worker that could
-// claim the job. Serverless providers arrive with the dispatcher (P4-T02).
-func up(class string, row db.JobRouteFactsRow) bool {
+// up reports whether an executor class could take the job now: a pull
+// executor with an online worker that could claim it, or a verified provider
+// whose machines fit it (and only when this queue can wake one).
+func (q *Queue) up(class string, row db.JobRouteFactsRow) bool {
 	switch class {
 	case RouteWorkers:
 		return row.BuiltinUp || row.AgentsUp
@@ -127,6 +135,10 @@ func up(class string, row db.JobRouteFactsRow) bool {
 		return row.AgentsUp
 	case RouteBuiltin:
 		return row.BuiltinUp
+	case RouteModal:
+		return q.Dispatch != nil && row.ModalUp
+	case RouteRunPod:
+		return q.Dispatch != nil && row.RunpodUp
 	}
 	return false
 }
@@ -157,20 +169,38 @@ func (q *Queue) Route(ctx context.Context, limit int) (int, error) {
 			if err != nil {
 				return err
 			}
-			to, reason := decideRoute(routeFacts{
-				Primary:          row.PrimaryExecutor,
-				Fallback:         row.FallbackExecutor.String,
-				PrimaryUp:        up(row.PrimaryExecutor, row),
-				FallbackUp:       row.FallbackExecutor.Valid && up(row.FallbackExecutor.String, row),
-				FallbackEligible: row.FallbackEligible.Bool,
-				QueueAge:         time.Duration(row.QueueAgeFallbackMinutes.Int32) * time.Minute,
-				Waited:           time.Duration(row.WaitedSeconds * float64(time.Second)),
-			})
-			if job.RoutedTo.String == to && job.RouteReason.String == reason {
-				return nil
+			if row.HasLiveDispatch {
+				return nil // a woken machine keeps its job (D054)
 			}
-			moved++
-			return qs.SetJobRoute(ctx, db.SetJobRouteParams{ID: id, RoutedTo: text(to), RouteReason: text(reason)})
+			var to, reason string
+			var wake bool
+			if row.ForcedExecutor != "" {
+				to, reason = row.ForcedExecutor, ReasonSetupTest
+				wake = q.Dispatch != nil && row.ForcedConfigured
+			} else {
+				to, reason = decideRoute(routeFacts{
+					Primary:          row.PrimaryExecutor,
+					Fallback:         row.FallbackExecutor.String,
+					PrimaryUp:        q.up(row.PrimaryExecutor, row),
+					FallbackUp:       row.FallbackExecutor.Valid && q.up(row.FallbackExecutor.String, row),
+					FallbackEligible: row.FallbackEligible.Bool,
+					QueueAge:         time.Duration(row.QueueAgeFallbackMinutes.Int32) * time.Minute,
+					Waited:           time.Duration(row.WaitedSeconds * float64(time.Second)),
+				})
+				wake = q.up(to, row)
+			}
+			if job.RoutedTo.String != to || job.RouteReason.String != reason {
+				moved++
+				if err := qs.SetJobRoute(ctx, db.SetJobRouteParams{ID: id, RoutedTo: text(to), RouteReason: text(reason)}); err != nil {
+					return err
+				}
+				job.RoutedTo, job.RouteReason = text(to), text(reason)
+			}
+			if provider(to) && wake {
+				// Routed to a provider with nothing awake for it: wake one.
+				return q.Dispatch(ctx, qs, job, to)
+			}
+			return nil
 		})
 		if err != nil {
 			return moved, fmt.Errorf("route job %s: %w", id, err)
