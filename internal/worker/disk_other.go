@@ -2,4 +2,4 @@
 
 package worker
 
-func freeDisk(string) int64 { return 0 }
+func FreeDisk(string) int64 { return 0 }

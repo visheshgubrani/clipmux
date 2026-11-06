@@ -257,11 +257,20 @@ func (s *Service) handleInvite(w http.ResponseWriter, r *http.Request) error {
 	server := strings.TrimRight(s.PublicURL(), "/")
 	httpjson.Write(w, http.StatusCreated, Invitation{
 		Code: code, ExpiresAt: p.ExpiresAt.Time, Server: server,
-		Command: "clipmux worker --server " + server + " --pair " + code,
-		DockerCommand: "docker run -d --name clipmux-agent --restart unless-stopped -v clipmux-agent:/var/lib/clipmux-agent " +
-			"ghcr.io/visheshgubrani/clipmux worker --server " + server + " --pair " + code,
+		Command:       "clipmux worker --server " + server + " --pair " + code,
+		DockerCommand: dockerCommand(server, code),
 	})
 	return nil
+}
+
+// dockerCommand runs the image as an agent: as the host user, keeping its
+// connection in the host's ~/.config/clipmux, so `clipmux push --local` on
+// the host finds the agent's socket. GPUs need one more flag, which the
+// Workers page explains.
+func dockerCommand(server, code string) string {
+	return `docker run -d --name clipmux-agent --restart unless-stopped --no-healthcheck --user "$(id -u):$(id -g)" ` +
+		`-v "$HOME/.config/clipmux:/var/lib/clipmux-agent" -e CLIPMUX_AGENT_DIR=/var/lib/clipmux-agent ` +
+		"ghcr.io/visheshgubrani/clipmux worker --server " + server + " --pair " + code
 }
 
 // PairingView is a pairing as the owner sees it: for an agent-started one,

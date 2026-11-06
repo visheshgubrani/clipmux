@@ -67,7 +67,8 @@ RUN ldconfig && bash /tmp/clipmux-toolchain/verify_toolchain.sh /usr/local/bin/f
 COPY --from=build /out/clipmux /usr/local/bin/clipmux
 
 RUN useradd --system --uid 10001 --home-dir /var/lib/clipmux --create-home --shell /usr/sbin/nologin clipmux \
-    && install -d -o clipmux -g clipmux -m 0750 /var/lib/clipmux/data
+    && install -d -o clipmux -g clipmux -m 0750 /var/lib/clipmux/data \
+    && install -d -o clipmux -g clipmux -m 0700 /var/lib/clipmux-agent
 USER 10001
 ENV CLIPMUX_DATA_DIR=/var/lib/clipmux/data \
     CLIPMUX_LISTEN=:8080

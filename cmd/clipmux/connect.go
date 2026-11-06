@@ -33,6 +33,11 @@ func agentDir(getenv func(string) string) string {
 // sitting at is one command and one click.
 func connectAgent(ctx context.Context, dir, server string, serverSet bool, code, name string, out io.Writer) (worker.AgentConfig, int) {
 	saved, err := worker.LoadAgentConfig(dir)
+	if err == nil && code != "" && (!serverSet || sameServer(saved.Server, server)) {
+		// A container restarted with its original command: the code was
+		// spent on the first run, and this PC is already connected.
+		code = ""
+	}
 	switch {
 	case err == nil && code == "":
 		if serverSet && !sameServer(saved.Server, server) {

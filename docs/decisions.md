@@ -395,5 +395,15 @@ Decisions within the architecture's rules, made in P3-T07:
 - **Polling:** it long-polls (25 s) until an event newer than `after` exists. It returns everything from `since`, so the CLI re-reads a 30 s overlap and catches events committed out of order, then deduplicates by event ID. A full page (100) advances without overlap so it can't loop, and an idle window doesn't move.
 - **Forwarding:** `clipmux listen --server URL --forward-to localhost:3000/webhooks [--events …] [--since 10m]` POSTs each event with D018's headers (`X-Webhook-Event`, `-Id`, `-Timestamp`, `-Signature`) and `User-Agent: ClipMux-Listen/1.0`. It signs with a secret the developer sets as their app's webhook secret: `CLIPMUX_LISTEN_SECRET`, or a `whsec_` secret generated once and kept (0600) beside the agent config, so it stays the same between sessions. A local 5xx or refused connection is retried three times (1, 2, 4 s). A 4xx from the API ends the relay; anything else backs off up to 30 s.
 
+## D049 Running an agent — accepted (2026-11-06)
+Decisions within the architecture's rules, made in P3-T08:
+- **The Docker agent:** the existing image is the agent (`clipmux worker`), and no second image is built. The command the Workers page shows does three things:
+  - It runs as the host user with `--no-healthcheck`, because the healthcheck is serve's.
+  - It bind-mounts `~/.config/clipmux` as the agent directory, so a host `clipmux push --local` finds the container's socket and the connection survives restarts.
+  - It keeps `--pair CODE`. A run whose agent directory already holds a connection to the same server ignores the spent code, so `--restart unless-stopped` can't loop on it.
+  The image creates `/var/lib/clipmux-agent` (0700). GPUs need `--gpus all` (NVIDIA) or `--device /dev/dri` with the render group (AMD, Intel); the card and `docs/agents.md` say so.
+- **`clipmux worker doctor`** checks, in order: the saved connection, the server's `/readyz` (and clock skew from its `Date`), the key (an empty `sources/sync`, which changes nothing), the tool versions, the sandbox probe, a test encode per GPU path, and scratch space. A ✗ exits 1. A missing sandbox, no GPU or less than 10 GiB free is a note, not a failure.
+- **Native Linux** is the `clipmux` binary with an FFmpeg that has the encoders and the pinned packager (`toolchain/install_packager.sh`); `doctor` verifies them. A self-contained tarball with FFmpeg's shared libraries and VAAPI drivers waits for launch, when releases are published (known gap).
+
 ## D007 Shaka Packager 3.9.3 — accepted (2026-11-05)
 Decision: pin v3.9.3 (`toolchain/versions.env`), the version clipmux-lms runs with AES-128 in production, which needs the init-segment workaround for Shaka issue 1616. Move to a release that fixes 1616 when one exists, re-running the Phase 1 player tests.

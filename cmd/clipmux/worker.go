@@ -24,6 +24,7 @@ const workerUsage = `Usage:
   clipmux worker --server URL              connect this PC (approve it in the dashboard)
   clipmux worker --server URL --pair CODE  connect with a code from the Workers page
   clipmux worker                           run, once this PC is connected
+  clipmux worker doctor                    check everything this PC needs
   CLIPMUX_WORKER_KEY=KEY clipmux worker --server URL [--once]
 
 Claims and runs media jobs. A connected PC keeps its server and key in
@@ -34,6 +35,9 @@ CLIPMUX_FFMPEG, CLIPMUX_FFPROBE and CLIPMUX_PACKAGER.
 
 // runWorker runs `clipmux worker`.
 func runWorker(args []string, getenv func(string) string, stderr io.Writer) int {
+	if len(args) > 0 && args[0] == "doctor" {
+		return runDoctor(getenv, stderr)
+	}
 	fs := flag.NewFlagSet("worker", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = func() { fmt.Fprint(stderr, workerUsage) }

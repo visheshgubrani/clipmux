@@ -134,6 +134,14 @@ function ConnectCard({ onConnected }: { onConnected: () => void }) {
             </button>
           </div>
           <Copyable value={docker ? inv.docker_command : inv.command} />
+          {docker && (
+            <Muted>
+              With a GPU, add <code>--gpus all</code> after <code>docker run</code> for NVIDIA (with the
+              NVIDIA Container Toolkit), or{' '}
+              <code>--device /dev/dri --group-add "$(getent group render | cut -d: -f3)"</code> for AMD or
+              Intel on Linux. Docker Desktop on a Mac encodes on the CPU.
+            </Muted>
+          )}
           <Muted>
             {pairing?.status === 'expired'
               ? 'This code expired. Create a new command.'

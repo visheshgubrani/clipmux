@@ -231,7 +231,7 @@ func (a *API) claim(w http.ResponseWriter, r *http.Request) {
 		httpjson.Error(w, http.StatusConflict, "unsupported_contract", "this server needs contract version "+strconv.Itoa(ContractVersion))
 		return
 	}
-	if v, ok := parseVersion(req.PackagerVersion); !ok || compareVersion(v, MinPackager) < 0 {
+	if v, ok := ParseVersion(req.PackagerVersion); !ok || CompareVersion(v, MinPackager) < 0 {
 		httpjson.Error(w, http.StatusConflict, "packager_too_old", "Shaka Packager 3.9.1 or later is required")
 		return
 	}
@@ -536,8 +536,8 @@ func (a *API) internal(w http.ResponseWriter, op string, err error) {
 	httpjson.Error(w, http.StatusInternalServerError, "internal", "internal error")
 }
 
-// parseVersion reads "v3.9.3", "3.9.3" or "v3.9.3-0a8ba4f-release".
-func parseVersion(s string) ([3]int, bool) {
+// ParseVersion reads "v3.9.3", "3.9.3" or "v3.9.3-0a8ba4f-release".
+func ParseVersion(s string) ([3]int, bool) {
 	s = strings.TrimPrefix(strings.TrimSpace(s), "v")
 	if i := strings.IndexAny(s, "-+ "); i >= 0 {
 		s = s[:i]
@@ -557,7 +557,8 @@ func parseVersion(s string) ([3]int, bool) {
 	return v, true
 }
 
-func compareVersion(a, b [3]int) int {
+// CompareVersion orders two versions like strings.Compare.
+func CompareVersion(a, b [3]int) int {
 	for i := range a {
 		if a[i] != b[i] {
 			if a[i] < b[i] {

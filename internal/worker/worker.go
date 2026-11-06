@@ -192,7 +192,7 @@ func (w *Worker) claim(ctx context.Context) (*workerapi.Job, error) {
 		"hardware":          w.Tools.HW,
 		"wait_seconds":      wait.Seconds(),
 		"sandbox":           orNone(w.Sandbox),
-		"free_disk_bytes":   freeDisk(w.WorkDir),
+		"free_disk_bytes":   FreeDisk(w.WorkDir),
 	}, &job)
 	switch {
 	case err != nil:

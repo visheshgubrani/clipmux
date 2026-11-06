@@ -92,6 +92,9 @@ when you introduce or discover it; remove it when it is closed.
   they run on Modal (an L4 and an A100); Intel's iHD driver and Quick Sync
   have no test machine. A GPU stage's failure isn't classified, so any one
   falls back to the next stage.
+- No self-contained Linux tarball for agents yet (D049): a native agent
+  needs an FFmpeg with the GPU encoders and the pinned packager installed;
+  the image works everywhere Docker does.
 - Disconnecting Cloudflare (back to built-in delivery) has no endpoint yet.
 - The content key secret can't be rotated; when it can, rotation must
   redeploy the Worker's ring through Connect before new outputs use it.
