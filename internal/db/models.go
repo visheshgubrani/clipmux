@@ -156,6 +156,7 @@ type Dispatch struct {
 	ClaimedAt        pgtype.Timestamptz
 	EndedAt          pgtype.Timestamptz
 	StoppedAt        pgtype.Timestamptz
+	ReservedSeconds  float64
 }
 
 type ExecutorConfig struct {
@@ -172,6 +173,8 @@ type ExecutorConfig struct {
 	VerifiedAt           pgtype.Timestamptz
 	CreatedAt            pgtype.Timestamptz
 	UpdatedAt            pgtype.Timestamptz
+	WakeFailures         int32
+	BackoffUntil         pgtype.Timestamptz
 }
 
 type IdempotencyKey struct {

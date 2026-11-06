@@ -42,6 +42,17 @@ type Executor interface {
 	Wake(ctx context.Context, w Wake) (instanceID string, err error)
 	// Stop ends a machine. Stopping one that is already gone succeeds.
 	Stop(ctx context.Context, instanceID string) error
+	// Running lists this project's ClipMux machines the provider is still
+	// running (or starting), for the reconciler.
+	Running(ctx context.Context) ([]Instance, error)
+}
+
+// Instance is one machine a provider reports.
+type Instance struct {
+	// ID is the provider's ID, as Wake returned it.
+	ID string
+	// Name is the name Wake gave it, clipmux-{dispatch_id}.
+	Name string
 }
 
 // Wake is what a provider needs to start one machine.
@@ -90,16 +101,21 @@ func New(pool *pgxpool.Pool, box *secrets.Box, serverURL func() string) *Service
 // publisher, so it is committed before any machine can present it, and a
 // retried wake hands the same key to the same machine.
 func (s *Service) Route(ctx context.Context, qs *db.Queries, job db.Job, kind string) error {
-	id := ids.New(ids.Dispatch)
-	key := KeyPrefix + rand.Text()
-	_, err := qs.CreateDispatch(ctx, db.CreateDispatchParams{
-		ID: id, ProjectID: job.ProjectID, JobID: job.ID, Kind: kind,
-		KeyHash: hash(key), KeySealed: s.box.Seal("dispatches", id, []byte(key)),
-	})
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil // disconnected since the router looked
+	// The provider's row lock serialises routers, so two can't both take
+	// its last slot or the last of its monthly budget (D055).
+	p, err := qs.LockProviderWithRoom(ctx, db.LockProviderWithRoomParams{ProjectID: job.ProjectID, Kind: kind, AssetID: job.AssetID})
+	if errors.Is(err, pgx.ErrNoRows) || (err == nil && !p.HasRoom) {
+		return nil // disconnected or full since the router looked; the next pass says why
 	}
 	if err != nil {
+		return fmt.Errorf("lock provider: %w", err)
+	}
+	id := ids.New(ids.Dispatch)
+	key := KeyPrefix + rand.Text()
+	if _, err := qs.CreateDispatch(ctx, db.CreateDispatchParams{
+		ID: id, JobID: job.ID, ExecutorConfigID: p.ID, AssetID: job.AssetID,
+		KeyHash: hash(key), KeySealed: s.box.Seal("dispatches", id, []byte(key)),
+	}); err != nil {
 		return fmt.Errorf("create dispatch: %w", err)
 	}
 	return queueOutbox(ctx, qs, job.ProjectID, job.AssetID, "wake", id)
@@ -145,9 +161,18 @@ func End(ctx context.Context, qs *db.Queries, dispatchID, reason string) error {
 
 // End reasons.
 const (
-	// EndJobGone: the job was claimed elsewhere, cancelled or rerouted
-	// before the machine was started.
+	// EndJobGone: the job was cancelled, ended or rerouted before the
+	// machine claimed it.
 	EndJobGone = "job_gone"
+	// EndWakeFailed: the provider refused or failed to start the machine.
+	EndWakeFailed = "wake_failed"
+	// EndWakeTimeout: the machine didn't claim before the claim deadline.
+	EndWakeTimeout = "wake_timeout"
+	// EndAttemptEnded: the machine's attempt committed, failed or lost its
+	// lease, so the machine has nothing left to do.
+	EndAttemptEnded = "attempt_ended"
+	// EndMaxLifetime: the dispatch outlived MaxLifetime.
+	EndMaxLifetime = "max_lifetime"
 )
 
 // Publish wakes and stops machines for pending outbox rows, up to limit,
@@ -218,13 +243,27 @@ func (s *Service) wake(ctx context.Context, qs *db.Queries, dispatchID string) e
 		return fmt.Errorf("open dispatch key: %w", err)
 	}
 	instance, err := ex.Wake(ctx, Wake{
-		DispatchID: d.ID, Name: "clipmux-" + d.ID, Config: cfg.Config, Lifetime: MaxLifetime,
+		DispatchID: d.ID, Name: Name(d.ID), Config: cfg.Config, Lifetime: MaxLifetime,
 		Env: map[string]string{"CLIPMUX_SERVER": s.ServerURL(), "CLIPMUX_WORKER_KEY": string(key)},
 	})
 	if err != nil {
-		return fmt.Errorf("wake %s: %w", d.Kind, err)
+		if ctx.Err() != nil {
+			return ctx.Err() // shutting down: wake on the next pass, same key
+		}
+		// The job returns to routing (its dispatch ends) without spending a
+		// budget, and three such failures in a row back the provider off
+		// for 5 minutes. A machine the provider started anyway is found by
+		// the reconciler.
+		s.Logger.Warn("a provider failed to wake a machine", "dispatch", d.ID, "provider", d.Kind, "err", err)
+		if err := qs.RecordWakeFailure(ctx, cfg.ID); err != nil {
+			return err
+		}
+		return End(ctx, qs, d.ID, EndWakeFailed)
 	}
 	s.Logger.Info("woke a machine", "dispatch", d.ID, "job", d.JobID, "provider", d.Kind, "instance", instance)
+	if err := qs.RecordWakeSuccess(ctx, cfg.ID); err != nil {
+		return err
+	}
 	return qs.SetDispatchWoken(ctx, db.SetDispatchWokenParams{ID: d.ID, InstanceID: pgtype.Text{String: instance, Valid: true}})
 }
 
@@ -264,6 +303,92 @@ func (s *Service) retry(ctx context.Context, qs *db.Queries, row db.Outbox, caus
 	return qs.RetryOutbox(ctx, db.RetryOutboxParams{
 		ID: row.ID, LastError: pgtype.Text{String: row.Kind + "_failed", Valid: true}, DelaySeconds: delay,
 	})
+}
+
+// Name is the provider-side name of a dispatch's machine.
+func Name(dispatchID string) string { return "clipmux-" + dispatchID }
+
+// Reap ends live dispatches whose machine has nothing left to do, queueing
+// a stop for each one that was started, and returns how many it ended
+// (D055). A dispatch ends when its attempt is no longer running (committed,
+// failed or lost), when its job is no longer queued before the claim, when
+// its claim deadline passes, or at MaxLifetime. Ending makes the job
+// routable again; a wake timeout spends no retry budget, because the job
+// never ran.
+func (s *Service) Reap(ctx context.Context, limit int) (int, error) {
+	maxLife := MaxLifetime.Seconds()
+	candidates, err := db.New(s.pool).ListDispatchesToEnd(ctx, db.ListDispatchesToEndParams{MaxLifetimeSeconds: maxLife, MaxRows: int32(limit)})
+	if err != nil {
+		return 0, fmt.Errorf("list dispatches to end: %w", err)
+	}
+	n := 0
+	for _, id := range candidates {
+		err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+			qs := db.New(tx)
+			if _, err := qs.LockDispatch(ctx, id); err != nil {
+				return err
+			}
+			// Decided again under the lock: a claim may have won meanwhile.
+			reason, err := qs.DispatchEndReason(ctx, db.DispatchEndReasonParams{ID: id, MaxLifetimeSeconds: maxLife})
+			if err != nil || reason == "" {
+				return err
+			}
+			n++
+			s.Logger.Info("dispatch ended", "dispatch", id, "reason", reason)
+			return End(ctx, qs, id, reason)
+		})
+		if err != nil {
+			return n, fmt.Errorf("end dispatch %s: %w", id, err)
+		}
+	}
+	return n, nil
+}
+
+// Reconcile asks each connected provider which ClipMux machines it is
+// running and stops any that no unstopped dispatch accounts for, so a
+// crash between starting a machine and recording it can't leave a paid
+// machine running. A dispatch accounts for a machine by its instance ID,
+// or, while its wake may still be in flight, by name. It returns how many
+// machines it stopped.
+func (s *Service) Reconcile(ctx context.Context) (int, error) {
+	cfgs, err := db.New(s.pool).ListExecutorConfigs(ctx, s.ProjectID)
+	if err != nil {
+		return 0, fmt.Errorf("list providers: %w", err)
+	}
+	stopped := 0
+	for _, cfg := range cfgs {
+		ex, err := s.Resolve(ctx, cfg)
+		if err != nil {
+			return stopped, fmt.Errorf("open %s: %w", cfg.Kind, err)
+		}
+		running, err := ex.Running(ctx)
+		if err != nil {
+			return stopped, fmt.Errorf("list %s machines: %w", cfg.Kind, err)
+		}
+		known, err := db.New(s.pool).ListProviderMachines(ctx, cfg.ID)
+		if err != nil {
+			return stopped, err
+		}
+		byID, pending := map[string]bool{}, map[string]bool{}
+		for _, k := range known {
+			if k.InstanceID.Valid {
+				byID[k.InstanceID.String] = true
+			} else {
+				pending[Name(k.ID)] = true
+			}
+		}
+		for _, m := range running {
+			if byID[m.ID] || pending[m.Name] {
+				continue
+			}
+			if err := ex.Stop(ctx, m.ID); err != nil {
+				return stopped, fmt.Errorf("stop orphaned %s machine %s: %w", cfg.Kind, m.ID, err)
+			}
+			s.Logger.Warn("stopped a machine no dispatch accounts for", "provider", cfg.Kind, "instance", m.ID, "name", m.Name)
+			stopped++
+		}
+	}
+	return stopped, nil
 }
 
 func hash(key string) []byte {

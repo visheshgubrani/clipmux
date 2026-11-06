@@ -100,10 +100,11 @@ when you introduce or discover it; remove it when it is closed.
   registering the self-hosted GPU runner. The Workers and Jobs pages and the
   connect page have no Playwright suite yet.
 - Disconnecting Cloudflare (back to built-in delivery) has no endpoint yet.
-- Dispatches (D054) have no reaper, reconciler or limits until P4-T03: a
-  woken machine that never claims isn't stopped when its deadline passes,
-  and concurrency and spend aren't enforced. No provider can be connected
-  before T04, so nothing is woken in practice yet.
+- Provider spend (D055) is an estimate from the hourly rate set in Connect,
+  not the provider's bill, and a machine that runs past its reservation
+  isn't stopped at the limit, so a month can overshoot by that much. No
+  provider can be connected before P4-T04, so nothing is woken in practice
+  yet.
 - Routing (D053) records the built-in worker's liveness per project, not per
   replica: with several serve replicas, any one worker's calls keep "the
   server" online. A job barred from the fallback because its file failed

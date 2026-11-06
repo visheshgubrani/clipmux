@@ -416,6 +416,11 @@ SELECT p.primary_executor, p.fallback_executor, p.queue_age_fallback_minutes,
        coalesce((SELECT c.verified_at IS NOT NULL
                         AND job_claimable_by(j.asset_id, j.pinned_agent_id, NULL, false, false, c.disk_bytes)
                  FROM executor_configs c WHERE c.project_id = j.project_id AND c.kind = 'runpod'), false)::boolean AS runpod_up,
+       -- Room under the provider's limits and outside its backoff (D055).
+       coalesce((SELECT provider_has_room(c.id, j.asset_id)
+                 FROM executor_configs c WHERE c.project_id = j.project_id AND c.kind = 'modal'), false)::boolean AS modal_room,
+       coalesce((SELECT provider_has_room(c.id, j.asset_id)
+                 FROM executor_configs c WHERE c.project_id = j.project_id AND c.kind = 'runpod'), false)::boolean AS runpod_room,
        -- A setup test's sample runs where its test says, and nowhere else.
        coalesce((SELECT t.executor FROM setup_tests t WHERE t.asset_id = j.asset_id AND t.executor IS NOT NULL LIMIT 1), '')::text AS forced_executor,
        EXISTS (SELECT 1 FROM executor_configs c WHERE c.project_id = j.project_id
@@ -443,6 +448,8 @@ type JobRouteFactsRow struct {
 	WaitedSeconds           float64
 	ModalUp                 bool
 	RunpodUp                bool
+	ModalRoom               bool
+	RunpodRoom              bool
 	ForcedExecutor          string
 	ForcedConfigured        bool
 	HasLiveDispatch         bool
@@ -464,6 +471,8 @@ func (q *Queries) JobRouteFacts(ctx context.Context, arg JobRouteFactsParams) (J
 		&i.WaitedSeconds,
 		&i.ModalUp,
 		&i.RunpodUp,
+		&i.ModalRoom,
+		&i.RunpodRoom,
 		&i.ForcedExecutor,
 		&i.ForcedConfigured,
 		&i.HasLiveDispatch,
@@ -790,7 +799,7 @@ func (q *Queries) LockRoutableJob(ctx context.Context, id string) (Job, error) {
 }
 
 const lockWakingDispatch = `-- name: LockWakingDispatch :one
-SELECT id, project_id, job_id, executor_config_id, kind, status, end_reason, key_hash, key_sealed, instance_id, rate_cents_per_hour, claim_deadline, attempt_id, created_at, woken_at, claimed_at, ended_at, stopped_at FROM dispatches WHERE id = $1 AND status = 'waking' AND claim_deadline > now() FOR UPDATE
+SELECT id, project_id, job_id, executor_config_id, kind, status, end_reason, key_hash, key_sealed, instance_id, rate_cents_per_hour, claim_deadline, attempt_id, created_at, woken_at, claimed_at, ended_at, stopped_at, reserved_seconds FROM dispatches WHERE id = $1 AND status = 'waking' AND claim_deadline > now() FOR UPDATE
 `
 
 func (q *Queries) LockWakingDispatch(ctx context.Context, id string) (Dispatch, error) {
@@ -815,6 +824,7 @@ func (q *Queries) LockWakingDispatch(ctx context.Context, id string) (Dispatch, 
 		&i.ClaimedAt,
 		&i.EndedAt,
 		&i.StoppedAt,
+		&i.ReservedSeconds,
 	)
 	return i, err
 }

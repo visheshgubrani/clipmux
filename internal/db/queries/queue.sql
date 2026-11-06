@@ -185,6 +185,11 @@ SELECT p.primary_executor, p.fallback_executor, p.queue_age_fallback_minutes,
        coalesce((SELECT c.verified_at IS NOT NULL
                         AND job_claimable_by(j.asset_id, j.pinned_agent_id, NULL, false, false, c.disk_bytes)
                  FROM executor_configs c WHERE c.project_id = j.project_id AND c.kind = 'runpod'), false)::boolean AS runpod_up,
+       -- Room under the provider's limits and outside its backoff (D055).
+       coalesce((SELECT provider_has_room(c.id, j.asset_id)
+                 FROM executor_configs c WHERE c.project_id = j.project_id AND c.kind = 'modal'), false)::boolean AS modal_room,
+       coalesce((SELECT provider_has_room(c.id, j.asset_id)
+                 FROM executor_configs c WHERE c.project_id = j.project_id AND c.kind = 'runpod'), false)::boolean AS runpod_room,
        -- A setup test's sample runs where its test says, and nowhere else.
        coalesce((SELECT t.executor FROM setup_tests t WHERE t.asset_id = j.asset_id AND t.executor IS NOT NULL LIMIT 1), '')::text AS forced_executor,
        EXISTS (SELECT 1 FROM executor_configs c WHERE c.project_id = j.project_id

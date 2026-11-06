@@ -56,6 +56,10 @@ const RouteInterval = 5 * time.Second
 // providers.
 const DispatchInterval = 2 * time.Second
 
+// ReapInterval is how often dispatches whose machine has nothing left to do
+// are ended and their machines stopped (D055).
+const ReapInterval = 30 * time.Second
+
 // UploadSweepInterval is how often abandoned uploads are checked.
 const UploadSweepInterval = 5 * time.Minute
 
@@ -299,6 +303,10 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 	loop(LeaseSweepInterval, "lost_leases", func(ctx context.Context) (int, error) { return q.SweepLostLeases(ctx, 100) })
 	loop(RouteInterval, "routing", func(ctx context.Context) (int, error) { return q.Route(ctx, 200) })
 	loop(DispatchInterval, "dispatch", func(ctx context.Context) (int, error) { return disp.Publish(ctx, 20) })
+	loop(ReapInterval, "dispatch_reaper", func(ctx context.Context) (int, error) { return disp.Reap(ctx, 100) })
+	// The first pass runs at boot, which is when a crash may have left a
+	// machine nobody recorded.
+	loop(ReconcileInterval, "machine_reconciler", disp.Reconcile)
 	loop(UploadSweepInterval, "stranded_pinned_jobs", func(ctx context.Context) (int, error) { return q.SweepStrandedPinned(ctx, 100) })
 	loop(UploadSweepInterval, "uploads", func(ctx context.Context) (int, error) { return upl.Sweep(ctx, 500) })
 	loop(RouteSyncInterval, "routes", func(ctx context.Context) (int, error) { return committer.SyncRoutes(ctx, 1000) })

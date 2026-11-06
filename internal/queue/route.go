@@ -51,6 +51,13 @@ const (
 	ReasonFallbackRefused = "fallback_refused"
 	// ReasonFallbackOffline: the primary and the fallback are both offline.
 	ReasonFallbackOffline = "fallback_offline"
+	// ReasonFallbackLimit: the primary is offline and the fallback provider
+	// is at its concurrency or spend limit, or backing off after failed
+	// wakes; the job waits for the primary (D055).
+	ReasonFallbackLimit = "fallback_limit"
+	// ReasonPrimaryLimit: the primary is a provider at its limit; the job
+	// waits for room there (or for queue age to send it to the fallback).
+	ReasonPrimaryLimit = "primary_limit"
 	// ReasonSetupTest: a setup test's sample, which runs on the executor
 	// its test names and nowhere else.
 	ReasonSetupTest = "setup_test"
@@ -95,6 +102,9 @@ type routeFacts struct {
 	// PrimaryUp and FallbackUp: an online worker of that class could claim
 	// this job.
 	PrimaryUp, FallbackUp bool
+	// PrimaryRoom and FallbackRoom: a provider has room under its limits.
+	// Pull executors always have room; a busy one just doesn't claim.
+	PrimaryRoom, FallbackRoom bool
 	// FallbackEligible is false once any attempt on the asset failed for a
 	// reason that may be the file's.
 	FallbackEligible bool
@@ -106,10 +116,13 @@ type routeFacts struct {
 // decideRoute applies the routing table. It is the whole policy; Route
 // gathers the facts and writes the answer.
 func decideRoute(f routeFacts) (to, reason string) {
-	fallbackOK := f.Fallback != "" && f.FallbackUp && f.FallbackEligible
+	fallbackOK := f.Fallback != "" && f.FallbackUp && f.FallbackRoom && f.FallbackEligible
 	if f.PrimaryUp {
-		if f.QueueAge > 0 && f.Waited >= f.QueueAge && fallbackOK {
+		switch {
+		case f.QueueAge > 0 && f.Waited >= f.QueueAge && fallbackOK:
 			return f.Fallback, ReasonQueueAge
+		case !f.PrimaryRoom:
+			return f.Primary, ReasonPrimaryLimit
 		}
 		return f.Primary, ReasonPrimary
 	}
@@ -120,6 +133,8 @@ func decideRoute(f routeFacts) (to, reason string) {
 		return f.Primary, ReasonFallbackRefused
 	case !f.FallbackUp:
 		return f.Primary, ReasonFallbackOffline
+	case !f.FallbackRoom:
+		return f.Primary, ReasonFallbackLimit
 	}
 	return f.Fallback, ReasonPrimaryOffline
 }
@@ -141,6 +156,18 @@ func (q *Queue) up(class string, row db.JobRouteFactsRow) bool {
 		return q.Dispatch != nil && row.RunpodUp
 	}
 	return false
+}
+
+// room reports whether a class has room for the job: always for pull
+// executors, and for a provider while it is under its limits (D055).
+func room(class string, row db.JobRouteFactsRow) bool {
+	switch class {
+	case RouteModal:
+		return row.ModalRoom
+	case RouteRunPod:
+		return row.RunpodRoom
+	}
+	return true
 }
 
 // Route re-evaluates up to limit queued, unpinned media jobs against the
@@ -176,18 +203,22 @@ func (q *Queue) Route(ctx context.Context, limit int) (int, error) {
 			var wake bool
 			if row.ForcedExecutor != "" {
 				to, reason = row.ForcedExecutor, ReasonSetupTest
-				wake = q.Dispatch != nil && row.ForcedConfigured
+				// Its own setup test needs no verification, but still
+				// respects the provider's limits.
+				wake = q.Dispatch != nil && row.ForcedConfigured && room(to, row)
 			} else {
 				to, reason = decideRoute(routeFacts{
 					Primary:          row.PrimaryExecutor,
 					Fallback:         row.FallbackExecutor.String,
 					PrimaryUp:        q.up(row.PrimaryExecutor, row),
 					FallbackUp:       row.FallbackExecutor.Valid && q.up(row.FallbackExecutor.String, row),
+					PrimaryRoom:      room(row.PrimaryExecutor, row),
+					FallbackRoom:     room(row.FallbackExecutor.String, row),
 					FallbackEligible: row.FallbackEligible.Bool,
 					QueueAge:         time.Duration(row.QueueAgeFallbackMinutes.Int32) * time.Minute,
 					Waited:           time.Duration(row.WaitedSeconds * float64(time.Second)),
 				})
-				wake = q.up(to, row)
+				wake = q.up(to, row) && room(to, row)
 			}
 			if job.RoutedTo.String != to || job.RouteReason.String != reason {
 				moved++

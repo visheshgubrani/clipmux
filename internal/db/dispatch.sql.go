@@ -12,35 +12,35 @@ import (
 )
 
 const createDispatch = `-- name: CreateDispatch :one
-
-INSERT INTO dispatches (id, project_id, job_id, executor_config_id, kind, key_hash, key_sealed, rate_cents_per_hour, claim_deadline)
+INSERT INTO dispatches (id, project_id, job_id, executor_config_id, kind, key_hash, key_sealed, rate_cents_per_hour,
+                        claim_deadline, reserved_seconds)
 SELECT $1, c.project_id, $2, c.id, c.kind, $3, $4,
-       c.rate_cents_per_hour, now() + make_interval(secs => c.claim_deadline_seconds)
+       c.rate_cents_per_hour, now() + make_interval(secs => c.claim_deadline_seconds),
+       job_estimated_seconds($5)
 FROM executor_configs c
-WHERE c.project_id = $5 AND c.kind = $6
-RETURNING id, project_id, job_id, executor_config_id, kind, status, end_reason, key_hash, key_sealed, instance_id, rate_cents_per_hour, claim_deadline, attempt_id, created_at, woken_at, claimed_at, ended_at, stopped_at
+WHERE c.id = $6
+RETURNING id, project_id, job_id, executor_config_id, kind, status, end_reason, key_hash, key_sealed, instance_id, rate_cents_per_hour, claim_deadline, attempt_id, created_at, woken_at, claimed_at, ended_at, stopped_at, reserved_seconds
 `
 
 type CreateDispatchParams struct {
-	ID        string
-	JobID     string
-	KeyHash   []byte
-	KeySealed []byte
-	ProjectID string
-	Kind      string
+	ID               string
+	JobID            string
+	KeyHash          []byte
+	KeySealed        []byte
+	AssetID          string
+	ExecutorConfigID string
 }
 
-// Dispatches (P4-T02, D054): waking a serverless provider for one job.
-// In the router's transaction: the provider's rate and claim deadline are
-// copied onto the dispatch.
+// The provider's rate and claim deadline, and the job's estimated run as
+// its reservation, are copied onto the dispatch.
 func (q *Queries) CreateDispatch(ctx context.Context, arg CreateDispatchParams) (Dispatch, error) {
 	row := q.db.QueryRow(ctx, createDispatch,
 		arg.ID,
 		arg.JobID,
 		arg.KeyHash,
 		arg.KeySealed,
-		arg.ProjectID,
-		arg.Kind,
+		arg.AssetID,
+		arg.ExecutorConfigID,
 	)
 	var i Dispatch
 	err := row.Scan(
@@ -62,14 +62,42 @@ func (q *Queries) CreateDispatch(ctx context.Context, arg CreateDispatchParams) 
 		&i.ClaimedAt,
 		&i.EndedAt,
 		&i.StoppedAt,
+		&i.ReservedSeconds,
 	)
 	return i, err
+}
+
+const dispatchEndReason = `-- name: DispatchEndReason :one
+SELECT (CASE
+    WHEN d.status = 'ended' THEN ''
+    WHEN d.created_at < now() - make_interval(secs => $1::double precision) THEN 'max_lifetime'
+    WHEN d.status = 'claimed' AND a.status <> 'running' THEN 'attempt_ended'
+    WHEN d.status = 'waking' AND j.status <> 'queued' THEN 'job_gone'
+    WHEN d.status = 'waking' AND d.claim_deadline <= now() THEN 'wake_timeout'
+    ELSE '' END)::text
+FROM dispatches d
+JOIN jobs j ON j.id = d.job_id
+LEFT JOIN attempts a ON a.id = d.attempt_id
+WHERE d.id = $2
+`
+
+type DispatchEndReasonParams struct {
+	MaxLifetimeSeconds float64
+	ID                 string
+}
+
+// Why a live dispatch should end now, or ” if it shouldn't.
+func (q *Queries) DispatchEndReason(ctx context.Context, arg DispatchEndReasonParams) (string, error) {
+	row := q.db.QueryRow(ctx, dispatchEndReason, arg.MaxLifetimeSeconds, arg.ID)
+	var column_1 string
+	err := row.Scan(&column_1)
+	return column_1, err
 }
 
 const endDispatch = `-- name: EndDispatch :one
 UPDATE dispatches SET status = 'ended', end_reason = $2, ended_at = now()
 WHERE id = $1 AND status <> 'ended'
-RETURNING id, project_id, job_id, executor_config_id, kind, status, end_reason, key_hash, key_sealed, instance_id, rate_cents_per_hour, claim_deadline, attempt_id, created_at, woken_at, claimed_at, ended_at, stopped_at
+RETURNING id, project_id, job_id, executor_config_id, kind, status, end_reason, key_hash, key_sealed, instance_id, rate_cents_per_hour, claim_deadline, attempt_id, created_at, woken_at, claimed_at, ended_at, stopped_at, reserved_seconds
 `
 
 type EndDispatchParams struct {
@@ -99,12 +127,13 @@ func (q *Queries) EndDispatch(ctx context.Context, arg EndDispatchParams) (Dispa
 		&i.ClaimedAt,
 		&i.EndedAt,
 		&i.StoppedAt,
+		&i.ReservedSeconds,
 	)
 	return i, err
 }
 
 const getClaimableDispatchByKeyHash = `-- name: GetClaimableDispatchByKeyHash :one
-SELECT id, project_id, job_id, executor_config_id, kind, status, end_reason, key_hash, key_sealed, instance_id, rate_cents_per_hour, claim_deadline, attempt_id, created_at, woken_at, claimed_at, ended_at, stopped_at FROM dispatches WHERE key_hash = $1 AND status = 'waking' AND claim_deadline > now()
+SELECT id, project_id, job_id, executor_config_id, kind, status, end_reason, key_hash, key_sealed, instance_id, rate_cents_per_hour, claim_deadline, attempt_id, created_at, woken_at, claimed_at, ended_at, stopped_at, reserved_seconds FROM dispatches WHERE key_hash = $1 AND status = 'waking' AND claim_deadline > now()
 `
 
 func (q *Queries) GetClaimableDispatchByKeyHash(ctx context.Context, keyHash []byte) (Dispatch, error) {
@@ -129,12 +158,13 @@ func (q *Queries) GetClaimableDispatchByKeyHash(ctx context.Context, keyHash []b
 		&i.ClaimedAt,
 		&i.EndedAt,
 		&i.StoppedAt,
+		&i.ReservedSeconds,
 	)
 	return i, err
 }
 
 const getDispatch = `-- name: GetDispatch :one
-SELECT id, project_id, job_id, executor_config_id, kind, status, end_reason, key_hash, key_sealed, instance_id, rate_cents_per_hour, claim_deadline, attempt_id, created_at, woken_at, claimed_at, ended_at, stopped_at FROM dispatches WHERE id = $1
+SELECT id, project_id, job_id, executor_config_id, kind, status, end_reason, key_hash, key_sealed, instance_id, rate_cents_per_hour, claim_deadline, attempt_id, created_at, woken_at, claimed_at, ended_at, stopped_at, reserved_seconds FROM dispatches WHERE id = $1
 `
 
 func (q *Queries) GetDispatch(ctx context.Context, id string) (Dispatch, error) {
@@ -159,12 +189,13 @@ func (q *Queries) GetDispatch(ctx context.Context, id string) (Dispatch, error) 
 		&i.ClaimedAt,
 		&i.EndedAt,
 		&i.StoppedAt,
+		&i.ReservedSeconds,
 	)
 	return i, err
 }
 
 const getExecutorConfig = `-- name: GetExecutorConfig :one
-SELECT id, project_id, kind, config, secrets_encrypted, max_concurrent, monthly_limit_cents, rate_cents_per_hour, disk_bytes, claim_deadline_seconds, verified_at, created_at, updated_at FROM executor_configs WHERE id = $1
+SELECT id, project_id, kind, config, secrets_encrypted, max_concurrent, monthly_limit_cents, rate_cents_per_hour, disk_bytes, claim_deadline_seconds, verified_at, created_at, updated_at, wake_failures, backoff_until FROM executor_configs WHERE id = $1
 `
 
 func (q *Queries) GetExecutorConfig(ctx context.Context, id string) (ExecutorConfig, error) {
@@ -184,12 +215,14 @@ func (q *Queries) GetExecutorConfig(ctx context.Context, id string) (ExecutorCon
 		&i.VerifiedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.WakeFailures,
+		&i.BackoffUntil,
 	)
 	return i, err
 }
 
 const latestDispatchForAsset = `-- name: LatestDispatchForAsset :one
-SELECT d.id, d.project_id, d.job_id, d.executor_config_id, d.kind, d.status, d.end_reason, d.key_hash, d.key_sealed, d.instance_id, d.rate_cents_per_hour, d.claim_deadline, d.attempt_id, d.created_at, d.woken_at, d.claimed_at, d.ended_at, d.stopped_at FROM dispatches d JOIN jobs j ON j.id = d.job_id
+SELECT d.id, d.project_id, d.job_id, d.executor_config_id, d.kind, d.status, d.end_reason, d.key_hash, d.key_sealed, d.instance_id, d.rate_cents_per_hour, d.claim_deadline, d.attempt_id, d.created_at, d.woken_at, d.claimed_at, d.ended_at, d.stopped_at, d.reserved_seconds FROM dispatches d JOIN jobs j ON j.id = d.job_id
 WHERE j.asset_id = $1
 ORDER BY d.created_at DESC, d.id DESC
 LIMIT 1
@@ -219,12 +252,126 @@ func (q *Queries) LatestDispatchForAsset(ctx context.Context, assetID string) (D
 		&i.ClaimedAt,
 		&i.EndedAt,
 		&i.StoppedAt,
+		&i.ReservedSeconds,
 	)
 	return i, err
 }
 
+const listDispatchesToEnd = `-- name: ListDispatchesToEnd :many
+SELECT d.id FROM dispatches d
+JOIN jobs j ON j.id = d.job_id
+LEFT JOIN attempts a ON a.id = d.attempt_id
+WHERE d.status <> 'ended'
+  AND (d.created_at < now() - make_interval(secs => $1::double precision)
+       OR (d.status = 'claimed' AND a.status <> 'running')
+       OR (d.status = 'waking' AND (j.status <> 'queued' OR d.claim_deadline <= now())))
+ORDER BY d.created_at, d.id
+LIMIT $2
+`
+
+type ListDispatchesToEndParams struct {
+	MaxLifetimeSeconds float64
+	MaxRows            int32
+}
+
+// Live dispatches the reaper should end; DispatchEndReason decides again
+// under the dispatch's lock.
+func (q *Queries) ListDispatchesToEnd(ctx context.Context, arg ListDispatchesToEndParams) ([]string, error) {
+	rows, err := q.db.Query(ctx, listDispatchesToEnd, arg.MaxLifetimeSeconds, arg.MaxRows)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listExecutorConfigs = `-- name: ListExecutorConfigs :many
+SELECT id, project_id, kind, config, secrets_encrypted, max_concurrent, monthly_limit_cents, rate_cents_per_hour, disk_bytes, claim_deadline_seconds, verified_at, created_at, updated_at, wake_failures, backoff_until FROM executor_configs WHERE project_id = $1 ORDER BY kind
+`
+
+func (q *Queries) ListExecutorConfigs(ctx context.Context, projectID string) ([]ExecutorConfig, error) {
+	rows, err := q.db.Query(ctx, listExecutorConfigs, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ExecutorConfig{}
+	for rows.Next() {
+		var i ExecutorConfig
+		if err := rows.Scan(
+			&i.ID,
+			&i.ProjectID,
+			&i.Kind,
+			&i.Config,
+			&i.SecretsEncrypted,
+			&i.MaxConcurrent,
+			&i.MonthlyLimitCents,
+			&i.RateCentsPerHour,
+			&i.DiskBytes,
+			&i.ClaimDeadlineSeconds,
+			&i.VerifiedAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.WakeFailures,
+			&i.BackoffUntil,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listProviderMachines = `-- name: ListProviderMachines :many
+SELECT id, instance_id FROM dispatches
+WHERE executor_config_id = $1
+  AND (status <> 'ended' OR (instance_id IS NOT NULL AND stopped_at IS NULL))
+`
+
+type ListProviderMachinesRow struct {
+	ID         string
+	InstanceID pgtype.Text
+}
+
+// The machines a provider should be running: those of dispatches that
+// haven't been stopped. A waking dispatch without an instance yet is known
+// by its name, because its wake may be in flight.
+func (q *Queries) ListProviderMachines(ctx context.Context, executorConfigID string) ([]ListProviderMachinesRow, error) {
+	rows, err := q.db.Query(ctx, listProviderMachines, executorConfigID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListProviderMachinesRow{}
+	for rows.Next() {
+		var i ListProviderMachinesRow
+		if err := rows.Scan(&i.ID, &i.InstanceID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const lockDispatch = `-- name: LockDispatch :one
-SELECT id, project_id, job_id, executor_config_id, kind, status, end_reason, key_hash, key_sealed, instance_id, rate_cents_per_hour, claim_deadline, attempt_id, created_at, woken_at, claimed_at, ended_at, stopped_at FROM dispatches WHERE id = $1 FOR UPDATE
+SELECT id, project_id, job_id, executor_config_id, kind, status, end_reason, key_hash, key_sealed, instance_id, rate_cents_per_hour, claim_deadline, attempt_id, created_at, woken_at, claimed_at, ended_at, stopped_at, reserved_seconds FROM dispatches WHERE id = $1 FOR UPDATE
 `
 
 func (q *Queries) LockDispatch(ctx context.Context, id string) (Dispatch, error) {
@@ -249,6 +396,7 @@ func (q *Queries) LockDispatch(ctx context.Context, id string) (Dispatch, error)
 		&i.ClaimedAt,
 		&i.EndedAt,
 		&i.StoppedAt,
+		&i.ReservedSeconds,
 	)
 	return i, err
 }
@@ -291,6 +439,58 @@ func (q *Queries) LockPendingDispatchOutbox(ctx context.Context, limit int32) ([
 		return nil, err
 	}
 	return items, nil
+}
+
+const lockProviderWithRoom = `-- name: LockProviderWithRoom :one
+
+SELECT c.id, provider_has_room(c.id, $1)::boolean AS has_room
+FROM executor_configs c
+WHERE c.project_id = $2 AND c.kind = $3
+FOR UPDATE
+`
+
+type LockProviderWithRoomParams struct {
+	AssetID   string
+	ProjectID string
+	Kind      string
+}
+
+type LockProviderWithRoomRow struct {
+	ID      string
+	HasRoom bool
+}
+
+// Dispatches (P4-T02, D054): waking a serverless provider for one job.
+// In the router's transaction, before creating a dispatch: the provider's
+// row lock serialises routers, so its limits can't be overshot (D055).
+func (q *Queries) LockProviderWithRoom(ctx context.Context, arg LockProviderWithRoomParams) (LockProviderWithRoomRow, error) {
+	row := q.db.QueryRow(ctx, lockProviderWithRoom, arg.AssetID, arg.ProjectID, arg.Kind)
+	var i LockProviderWithRoomRow
+	err := row.Scan(&i.ID, &i.HasRoom)
+	return i, err
+}
+
+const recordWakeFailure = `-- name: RecordWakeFailure :exec
+UPDATE executor_configs
+SET wake_failures = CASE WHEN wake_failures + 1 >= 3 THEN 0 ELSE wake_failures + 1 END,
+    backoff_until = CASE WHEN wake_failures + 1 >= 3 THEN now() + interval '5 minutes' ELSE backoff_until END
+WHERE id = $1
+`
+
+// Three failed wakes in a row put the provider in a 5-minute backoff, so
+// jobs wait for the primary instead of looping (D055).
+func (q *Queries) RecordWakeFailure(ctx context.Context, id string) error {
+	_, err := q.db.Exec(ctx, recordWakeFailure, id)
+	return err
+}
+
+const recordWakeSuccess = `-- name: RecordWakeSuccess :exec
+UPDATE executor_configs SET wake_failures = 0 WHERE id = $1 AND wake_failures <> 0
+`
+
+func (q *Queries) RecordWakeSuccess(ctx context.Context, id string) error {
+	_, err := q.db.Exec(ctx, recordWakeSuccess, id)
+	return err
 }
 
 const setDispatchStopped = `-- name: SetDispatchStopped :exec

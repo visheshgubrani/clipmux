@@ -14,26 +14,33 @@ func TestDecideRouteFollowsTheRoutingTable(t *testing.T) {
 		facts      routeFacts
 		to, reason string
 	}{
-		{"the primary is online", routeFacts{Primary: pc, Fallback: srv, PrimaryUp: true, FallbackUp: true, FallbackEligible: true},
+		{"the primary is online", routeFacts{PrimaryRoom: true, FallbackRoom: true, Primary: pc, Fallback: srv, PrimaryUp: true, FallbackUp: true, FallbackEligible: true},
 			"agents", "primary"},
-		{"no heartbeat from the primary for 60 s: the fallback", routeFacts{Primary: pc, Fallback: srv, FallbackUp: true, FallbackEligible: true},
+		{"no heartbeat from the primary for 60 s: the fallback", routeFacts{PrimaryRoom: true, FallbackRoom: true, Primary: pc, Fallback: srv, FallbackUp: true, FallbackEligible: true},
 			"builtin", "primary_offline"},
-		{"queued past the queue-age setting while the primary is busy", routeFacts{Primary: pc, Fallback: srv, PrimaryUp: true, FallbackUp: true, FallbackEligible: true,
+		{"queued past the queue-age setting while the primary is busy", routeFacts{PrimaryRoom: true, FallbackRoom: true, Primary: pc, Fallback: srv, PrimaryUp: true, FallbackUp: true, FallbackEligible: true,
 			QueueAge: 10 * time.Minute, Waited: 11 * time.Minute}, "builtin", "queue_age"},
-		{"not yet past the queue-age setting", routeFacts{Primary: pc, Fallback: srv, PrimaryUp: true, FallbackUp: true, FallbackEligible: true,
+		{"not yet past the queue-age setting", routeFacts{PrimaryRoom: true, FallbackRoom: true, Primary: pc, Fallback: srv, PrimaryUp: true, FallbackUp: true, FallbackEligible: true,
 			QueueAge: 10 * time.Minute, Waited: 9 * time.Minute}, "agents", "primary"},
-		{"queue-age fallback off (the default) waits however long", routeFacts{Primary: pc, Fallback: srv, PrimaryUp: true, FallbackUp: true, FallbackEligible: true,
+		{"queue-age fallback off (the default) waits however long", routeFacts{PrimaryRoom: true, FallbackRoom: true, Primary: pc, Fallback: srv, PrimaryUp: true, FallbackUp: true, FallbackEligible: true,
 			Waited: 3 * time.Hour}, "agents", "primary"},
-		{"queue age never sends a failing file to the fallback", routeFacts{Primary: pc, Fallback: srv, PrimaryUp: true, FallbackUp: true,
+		{"queue age never sends a failing file to the fallback", routeFacts{PrimaryRoom: true, FallbackRoom: true, Primary: pc, Fallback: srv, PrimaryUp: true, FallbackUp: true,
 			QueueAge: time.Minute, Waited: time.Hour}, "agents", "primary"},
-		{"queue age with the fallback offline stays", routeFacts{Primary: pc, Fallback: srv, PrimaryUp: true,
+		{"queue age with the fallback offline stays", routeFacts{PrimaryRoom: true, FallbackRoom: true, Primary: pc, Fallback: srv, PrimaryUp: true,
 			FallbackEligible: true, QueueAge: time.Minute, Waited: time.Hour}, "agents", "primary"},
-		{"the primary offline and no fallback set: wait", routeFacts{Primary: pc, FallbackEligible: true},
+		{"the primary offline and no fallback set: wait", routeFacts{PrimaryRoom: true, FallbackRoom: true, Primary: pc, FallbackEligible: true},
 			"agents", "no_fallback"},
-		{"a failed file waits for the primary", routeFacts{Primary: pc, Fallback: srv, FallbackUp: true},
+		{"a failed file waits for the primary", routeFacts{PrimaryRoom: true, FallbackRoom: true, Primary: pc, Fallback: srv, FallbackUp: true},
 			"agents", "fallback_refused"},
-		{"both offline: wait for the primary", routeFacts{Primary: pc, Fallback: srv, FallbackEligible: true},
+		{"both offline: wait for the primary", routeFacts{PrimaryRoom: true, FallbackRoom: true, Primary: pc, Fallback: srv, FallbackEligible: true},
 			"agents", "fallback_offline"},
+		// A provider at its concurrency or spend limit, or backing off.
+		{"the fallback provider is at its limit: wait for the primary", routeFacts{Primary: pc, Fallback: "runpod", PrimaryRoom: true,
+			FallbackUp: true, FallbackEligible: true}, "agents", "fallback_limit"},
+		{"a provider primary at its limit keeps the job", routeFacts{Primary: "runpod", Fallback: srv, PrimaryUp: true,
+			FallbackUp: true, FallbackRoom: true, FallbackEligible: true}, "runpod", "primary_limit"},
+		{"queue age moves a job off a full provider primary", routeFacts{Primary: "runpod", Fallback: srv, PrimaryUp: true,
+			FallbackUp: true, FallbackRoom: true, FallbackEligible: true, QueueAge: time.Minute, Waited: 2 * time.Minute}, "builtin", "queue_age"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
