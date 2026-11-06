@@ -61,9 +61,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 	case "sandbox-exec":
 		// Not in the usage: the worker runs each media tool through it.
 		return sandbox.Main(args[1:], stdout, stderr)
-	case "push", "listen":
-		fmt.Fprintf(stderr, "clipmux %s: not implemented yet (see docs/plans/P1-core-product.md)\n", args[0])
-		return 1
+	case "push":
+		return runPush(args[1:], os.Getenv, stdout, stderr)
+	case "listen":
+		return runListen(args[1:], os.Getenv, stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "clipmux: unknown command %q\n\n%s", args[0], usage)
 		return 2

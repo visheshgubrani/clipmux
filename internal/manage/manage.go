@@ -115,6 +115,9 @@ func (m *API) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/setup-test/latest", m.owned(m.latestSetupTest))
 	mux.HandleFunc("GET /v1/cloudflare", m.owned(m.cloudflareStatus))
 	mux.HandleFunc("POST /v1/cloudflare/connect", m.owned(m.connectCloudflare))
+	mux.HandleFunc("GET /v1/jobs", m.owned(m.listJobs))
+	mux.HandleFunc("GET /v1/jobs/{id}", m.owned(m.getJob))
+	mux.HandleFunc("POST /v1/agents/{id}/reencode", m.owned(m.reencodeAgentOutputs))
 	mux.HandleFunc("GET /v1/storage/moves", m.owned(m.moveProgress))
 	mux.HandleFunc("POST /v1/storage/moves", m.owned(m.moveLibrary))
 }

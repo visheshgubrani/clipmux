@@ -30,8 +30,9 @@ refused (`403 cross_origin`).
 | `GET /v1/uploads/{id}/parts` | upload token | `{parts: [{part_number, etag, size}]}` — what storage holds, for resuming |
 | `POST /v1/uploads/{id}/complete` | upload token | `{parts: [{part_number, etag}]}` → the asset, `processing` |
 | `POST /v1/uploads/{id}/cancel` | upload token or `uploads:write` | the asset becomes `errored` / `upload_cancelled` |
-| `POST /v1/assets` | `assets:write` | `{url, playback_policy?, passthrough?}` → `201` the asset, `processing`; serve fetches the public http(s) URL and transcodes it. `400 import_url_refused` for a non-public or credentialed URL; a fetch that fails ends `errored` with `import_url_refused`, `import_failed` or `import_too_large` |
+| `POST /v1/assets` | `assets:write` | `{agent_source_id, playback_policy?, passthrough?}` → `201` the asset, `processing`, on a file a PC agent registered for `clipmux push --local`; its jobs run only on that agent. `404 agent_source_not_found` once attached; `409 source_unavailable` if the agent was revoked. Or `{url, playback_policy?, passthrough?}` → `201` the asset, `processing`; serve fetches the public http(s) URL and transcodes it. `400 import_url_refused` for a non-public or credentialed URL; a fetch that fails ends `errored` with `import_url_refused`, `import_failed` or `import_too_large` |
 | `GET /v1/assets/{id}` | `assets:read` | the asset (below) |
+| `GET /v1/events?since=&after=&wait=` | `assets:read` | the app's webhook events created at or after `since` (default now), oldest first, ≤ 100: `{data: [{id, created_at, body}]}`, `body` being exactly what an endpoint receives. Long-polls up to `wait` seconds (≤ 25) until one is newer than `after`. For `clipmux listen` |
 | `GET /v1/assets?passthrough=` | `assets:read` | the app's assets with that reference, newest first |
 | `GET /v1/assets?updated_since=&cursor=&limit=` | `assets:read` | every change since an RFC 3339 time, oldest first, deleted included, ≤ 100 per page, `next_cursor` |
 | `DELETE /v1/assets/{id}` | `assets:write` | playback stops at once; `200` once files are gone, `202` while the delete job runs |
@@ -108,3 +109,32 @@ means stop; `404` means the ID is unknown or revoked.
 | `POST /v1/cloudflare/connect` | `{token, hostname, bucket?, account_id?}` → `{connected, steps: [{name, ok, detail}]}`; runs Connect Cloudflare, stopping at the first failed step (each is safe to repeat). The token is used for this request only |
 | `GET /v1/storage/moves` | `{default_storage_id, default_kind, not_on_default, active, moved, failed}`: assets not on the default store still play through this server |
 | `POST /v1/storage/moves` | queues a `move` job to the default store for every live asset elsewhere with no active job → `202 {queued, target_storage_id}` |
+| `GET /v1/jobs?status=&asset_id=&agent_id=&cursor=&limit=` | jobs across the library, newest first: `{data: [{id, asset_id, app_id, kind, status, phase, progress, pinned_agent_id, lost_count, failed_count, error_code, attempts: [{number, executor, agent_id, agent_name, status, error_code, phase, progress, encoder: {stage, fallbacks}}]}], next_cursor}` |
+| `GET /v1/jobs/{id}` | one job with its attempts |
+| `POST /v1/agents/{id}/reencode` | queues a re-encode of every ready asset whose current output the agent encoded → `202 {queued, skipped: {asset_id: code}}` |
+| `POST /v1/agents/pairings` | `{name?}` → `201 {code, expires_at, server, command, docker_command}`: a one-time code the owner has already approved, valid for 15 minutes |
+| `GET /v1/agents/pairings/{code}` | `{status, agent_started, name, hostname, platform, ip, agent_id, expires_at}`; `status` is `pending`, `approved`, `denied`, `consumed` (an agent holds its key) or `expired` |
+| `POST /v1/agents/pairings/{code}/approve` · `…/deny` | decides a code that `clipmux worker --server URL` is showing on a PC |
+| `GET /v1/agents` | `{data: [{id, name, status, scope, online, sandboxed, hostname, platform, last_ip, last_seen_at, capabilities}]}` |
+| `PATCH /v1/agents/{id}` | `{name?, scope?: "all" \| "local"}` |
+| `DELETE /v1/agents/{id}` | revokes: the key stops working and the agent's running attempts are fenced and requeued → `{agent, fenced_attempts, current_outputs}` |
+
+## Pairing a PC agent (worker API, no key yet)
+
+| Route | Notes |
+| --- | --- |
+| `POST /worker/v1/pair` | `{code, name?, hostname?, platform?}` → `201 {agent_id, key, name}` for a code from `POST /v1/agents/pairings`; `404 pairing_not_found` once used or expired |
+| `POST /worker/v1/pairings` | `{name?, hostname?, platform?}` → `201 {pairing_id, code, poll_token, verify_url, expires_at, interval_seconds}`; `429 too_many_pairings` while 10 wait for the owner |
+| `POST /worker/v1/pairings/poll` | `{poll_token}` → `{status: pending \| approved \| denied \| expired, credentials?}`; the key is in the first `approved` answer only |
+
+Agent keys start with `cmxa_` and authenticate `POST /worker/v1/claim` like the
+built-in worker's key. A claim reports `free_disk_bytes`; a worker takes only
+uploads whose size, three times over, fits its scratch disk.
+| `POST /worker/v1/sources` | agent key: `{size}` → `201 {id, size}`, a file that stays on the agent (`push --local`) |
+| `POST /worker/v1/sources/{id}/attach` | agent key: `{playback_policy?, passthrough?}` → `201` the asset, as the owner's upload (the Dashboard app), with a transcode job pinned to the agent |
+| `POST /worker/v1/sources/sync` | agent key: `{ids}` (≤ 1000) → `{gone}`: sources the agent may forget (asset deleted, unknown, or unattached for a day) |
+
+A claim for a job on a local source carries `source: {agent_source_id, size}`
+instead of a URL. A job pinned to an agent waits for it, spending no retry
+budget, and ends with `agent_unavailable` once the agent is revoked or unseen
+for 7 days.

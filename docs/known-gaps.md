@@ -7,7 +7,7 @@ when you introduce or discover it; remove it when it is closed.
 
 - Phase 1 has exited (D040): the Go, Chromium, Safari and ExoPlayer exit
   suites and the image job pass in CI. iPhone and AirPlay are checked by hand
-  only; Firefox isn't in CI. The dashboard is minimal: no jobs or workers pages, no
+  only; Firefox isn't in CI. The dashboard is minimal: no
   share links, no playback-ID management in the UI, and a sample preview
   that waits for Play rather than autoplaying.
 - Superseded and failed re-encodes leave their writing outputs and files in
@@ -24,8 +24,10 @@ when you introduce or discover it; remove it when it is closed.
   `SCHED_IDLE` yields to the API, and only compose `cpus:` caps it. Landlock
   is best effort: on kernels before 5.13 (or with it disabled) the tools can
   read any file the worker's user can. Agents off Linux have no sandbox.
-- Workers report no free disk space at claim, and the server doesn't check
-  it; a full disk fails the attempt (transient).
+- Imports have no known source size, so the claim's free-disk check passes
+  them; a full disk fails the attempt (transient).
+- Agent pairing codes are 8 characters (about 39 bits) with no per-address
+  limit on redeeming; they last 15 minutes and work once.
 - Content key secrets live in Postgres sealed with the secrets key (D022).
   Back up Postgres and the secrets key together: losing either makes every
   output unplayable. There is no command to rotate the content key secret.
@@ -66,8 +68,11 @@ when you introduce or discover it; remove it when it is closed.
 - The secrets key (D017) can't be rotated yet. Webhook secrets, the internal
   signing key and the content key secrets are sealed with it; adapter
   secrets join them with R2/S3 in Phase 2.
-- `clipmux push|listen` print "not implemented"; `clipmux admin` has
-  create-key, create-signing-key and create-webhook.
+- `clipmux admin` has create-key, create-signing-key and create-webhook.
+  `clipmux listen` reads events from the outbox, which is never pruned; once
+  it is, `--since` can reach back only as far as rows are kept. `clipmux push` keeps an
+  unfinished push's upload token in a 0600 state file under the user's cache
+  directory until it completes.
 - The image is ~575 MB and built from source on a cache miss (~20 min); it
   isn't published, so every install builds it until launch.
 - Phase 2's exit test passes on the binary with a fake Cloudflare API and
@@ -79,6 +84,21 @@ when you introduce or discover it; remove it when it is closed.
   upload format and the custom-domain call need a run against a real test
   zone before the Phase 2 exit (D037). The manual wrangler path has no CLI
   for adding R2 storage, switching delivery or printing `CONTENT_KEYS`.
+- `clipmux push --local --upload-source` isn't built: an asset whose source
+  stays on a PC re-encodes only on that PC, and only while the file is
+  unchanged.
+- GPU encoding is proven on real hardware for VAAPI on AMD (a self-hosted
+  runner) and for NVENC and `cuda-decode` on Modal (D051); Intel's iHD driver
+  and Quick Sync have no test machine. A GPU stage's failure isn't
+  classified, so any one falls back to the next stage. GPU tools may open
+  AF_UNIX SOCK_SEQPACKET sockets, which CUDA needs.
+- No self-contained Linux tarball for agents yet (D049): a native agent
+  needs an FFmpeg with the GPU encoders and the pinned packager installed;
+  the image works everywhere Docker does.
+- Phase 3's exit passed on the real binary (D050), and NVIDIA on Modal
+  (D051); still by hand: a real suspend of the M4 Mac's Docker agent, and
+  registering the self-hosted GPU runner. The Workers and Jobs pages and the
+  connect page have no Playwright suite yet.
 - Disconnecting Cloudflare (back to built-in delivery) has no endpoint yet.
 - The content key secret can't be rotated; when it can, rotation must
   redeploy the Worker's ring through Connect before new outputs use it.

@@ -32,3 +32,10 @@ WHERE app_id = sqlc.arg(app_id)
   AND (updated_at, id) > (sqlc.arg(after_time)::timestamptz, sqlc.arg(after_id)::text)
 ORDER BY updated_at, id
 LIMIT sqlc.arg(max_assets);
+
+-- name: ListAppEvents :many
+-- An app's webhook events from a time on, oldest first, for clipmux listen.
+SELECT id, payload, created_at FROM outbox
+WHERE app_id = sqlc.arg(app_id) AND kind = 'webhook' AND created_at >= sqlc.arg(since)::timestamptz
+ORDER BY created_at, id
+LIMIT sqlc.arg(max_events);

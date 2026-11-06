@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/visheshgubrani/clipmux/internal/accounts"
+	"github.com/visheshgubrani/clipmux/internal/agents"
 	"github.com/visheshgubrani/clipmux/internal/apikeys"
 	"github.com/visheshgubrani/clipmux/internal/config"
 	"github.com/visheshgubrani/clipmux/internal/db"
@@ -30,6 +31,7 @@ const adminUsage = `Usage:
   clipmux admin create-key --app NAME [--name KEY_NAME] [--scopes uploads:write,assets:read] [--allow-loopback]
   clipmux admin create-signing-key --app NAME
   clipmux admin create-webhook --app NAME --url URL
+  clipmux admin create-pairing [--app PC-NAME]
   clipmux admin reset-password < new-password.txt
   clipmux admin setup-test [--wait] [--timeout 20m]
 
@@ -56,7 +58,7 @@ const project = db.DefaultProjectID
 
 // admin runs host-side administration commands against the database.
 func admin(args []string, getenv func(string) string, stdin io.Reader, stdout, stderr io.Writer) int {
-	if len(args) == 0 || !slices.Contains([]string{"create-key", "create-signing-key", "create-webhook", "reset-password", "setup-test"}, args[0]) {
+	if len(args) == 0 || !slices.Contains([]string{"create-key", "create-signing-key", "create-webhook", "create-pairing", "reset-password", "setup-test"}, args[0]) {
 		fmt.Fprint(stderr, adminUsage)
 		return 2
 	}
@@ -73,7 +75,7 @@ func admin(args []string, getenv func(string) string, stdin io.Reader, stdout, s
 	if err := fs.Parse(args[1:]); err != nil {
 		return 2
 	}
-	if (*app == "" && cmd != "reset-password" && cmd != "setup-test") || (cmd == "create-webhook" && *endpoint == "") {
+	if (*app == "" && cmd != "reset-password" && cmd != "setup-test" && cmd != "create-pairing") || (cmd == "create-webhook" && *endpoint == "") {
 		fmt.Fprintf(stderr, "clipmux admin %s: --app is required (and --url for create-webhook)\n\n%s", cmd, adminUsage)
 		return 2
 	}
@@ -98,6 +100,8 @@ func admin(args []string, getenv func(string) string, stdin io.Reader, stdout, s
 		err = createSigningKey(ctx, pool, *app, stdout)
 	case "reset-password":
 		err = resetPassword(ctx, pool, stdin, stdout)
+	case "create-pairing":
+		err = createPairing(ctx, pool, *app, stdout)
 	case "setup-test":
 		err = setupTest(ctx, pool, *wait, *timeout, time.Second, stdout)
 	case "create-webhook":
@@ -260,4 +264,16 @@ func orDefault(v, def string) string {
 		return def
 	}
 	return v
+}
+
+// createPairing mints a one-time code to connect a PC agent, approved by
+// whoever can run admin commands on the host: for a server with no
+// browser at hand. --app, if given, names the PC.
+func createPairing(ctx context.Context, pool *pgxpool.Pool, name string, stdout io.Writer) error {
+	code, p, err := agents.New(pool, nil, nil, project, nil).Invite(ctx, name)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "code: %s\nexpires: %s\n\nOn the PC, run:\n  clipmux worker --server URL --pair %s\n", code, p.ExpiresAt.Time.Format(time.RFC3339), code)
+	return nil
 }

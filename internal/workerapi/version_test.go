@@ -17,15 +17,15 @@ func TestParseVersion(t *testing.T) {
 		{"latest", [3]int{}, false},
 	}
 	for _, c := range cases {
-		got, ok := parseVersion(c.in)
+		got, ok := ParseVersion(c.in)
 		if ok != c.ok || got != c.want {
-			t.Errorf("parseVersion(%q) = %v, %v; want %v, %v", c.in, got, ok, c.want, c.ok)
+			t.Errorf("ParseVersion(%q) = %v, %v; want %v, %v", c.in, got, ok, c.want, c.ok)
 		}
 	}
-	if compareVersion([3]int{3, 10, 0}, MinPackager) <= 0 {
+	if CompareVersion([3]int{3, 10, 0}, MinPackager) <= 0 {
 		t.Error("3.10.0 must be newer than 3.9.1 (numeric, not lexical)")
 	}
-	if compareVersion([3]int{3, 9, 0}, MinPackager) >= 0 {
+	if CompareVersion([3]int{3, 9, 0}, MinPackager) >= 0 {
 		t.Error("3.9.0 must be older than 3.9.1")
 	}
 }

@@ -1,13 +1,15 @@
 import { useCallback, useEffect, useState } from 'react'
-import { BrowserRouter, Link, Navigate, NavLink, Route, Routes, useNavigate } from 'react-router'
+import { BrowserRouter, Link, Navigate, NavLink, Route, Routes, useLocation, useNavigate } from 'react-router'
 import { api, type Setup } from './api.ts'
 import { AppDetail, Apps } from './pages/apps.tsx'
 import { AssetPage } from './pages/asset.tsx'
 import { Delivery } from './pages/delivery.tsx'
+import { Jobs } from './pages/jobs.tsx'
 import { Library } from './pages/library.tsx'
 import { Login } from './pages/login.tsx'
 import { SetupWizard } from './pages/setup.tsx'
 import { Upload } from './pages/upload.tsx'
+import { ConnectPC, Workers } from './pages/workers.tsx'
 
 type Session = { email: string } | null
 
@@ -33,7 +35,7 @@ export function App() {
             path="/setup"
             element={<SetupWizard setup={setup} signedIn={!!session} onChange={refresh} />}
           />
-          <Route path="/login" element={session ? <Navigate to="/" /> : <Login onSignIn={refresh} />} />
+          <Route path="/login" element={session ? <AfterSignIn /> : <Login onSignIn={refresh} />} />
           {session ? (
             <>
               <Route path="/" element={needsSetup ? <Navigate to="/setup" /> : <Navigate to="/library" />} />
@@ -43,14 +45,31 @@ export function App() {
               <Route path="/apps" element={<Apps />} />
               <Route path="/apps/:id" element={<AppDetail keysAllowed={setup.keys_allowed} />} />
               <Route path="/delivery" element={<Delivery />} />
+              <Route path="/workers" element={<Workers />} />
+              <Route path="/jobs" element={<Jobs />} />
+              <Route path="/workers/connect" element={<ConnectPC />} />
             </>
           ) : (
-            <Route path="*" element={<Navigate to={setup.owner_exists ? '/login' : '/setup'} />} />
+            <Route path="*" element={setup.owner_exists ? <ToSignIn /> : <Navigate to="/setup" />} />
           )}
         </Routes>
       </main>
     </BrowserRouter>
   )
+}
+
+// ToSignIn sends a signed-out visitor to sign in and back, so a link such as
+// the one `clipmux worker` opens still lands on its page afterwards.
+function ToSignIn() {
+  const loc = useLocation()
+  const next = loc.pathname === '/' ? '' : `?next=${encodeURIComponent(loc.pathname + loc.search)}`
+  return <Navigate to={`/login${next}`} replace />
+}
+
+function AfterSignIn() {
+  const next = new URLSearchParams(useLocation().search).get('next') ?? '/'
+  // Only paths on this dashboard, never another origin.
+  return <Navigate to={next.startsWith('/') && !next.startsWith('//') ? next : '/'} replace />
 }
 
 function Nav({ email, onSignOut }: { email: string; onSignOut: () => void }) {
@@ -74,6 +93,12 @@ function Nav({ email, onSignOut }: { email: string; onSignOut: () => void }) {
         </NavLink>
         <NavLink to="/delivery" className={link}>
           Delivery
+        </NavLink>
+        <NavLink to="/jobs" className={link}>
+          Jobs
+        </NavLink>
+        <NavLink to="/workers" className={link} end>
+          Workers
         </NavLink>
         <NavLink to="/setup" className={link}>
           Setup

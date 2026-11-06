@@ -78,7 +78,7 @@ func TestRungDimensionsKeepAspectAndStayEven(t *testing.T) {
 
 func TestEncodeArgsAlignKeyframesToSegments(t *testing.T) {
 	src := Source{Width: 1280, Height: 720, FrameRate: "30000/1001", FPS: 29.97, HasAudio: true, Duration: 60}
-	args := strings.Join(EncodeArgs(src, "/w/source", "/w/enc", SelectLadder(src.Width, src.Height)), " ")
+	args := strings.Join(EncodeArgs(Stage{Backend: CPU}, "", src, "/w/source", "/w/enc", SelectLadder(src.Width, src.Height)), " ")
 	for _, want := range []string{
 		"-format_whitelist " + allowedDemuxers, "-protocol_whitelist file", "-i /w/source",
 		"split=3", "scale=1280:720", "scale=854:480", "scale=640:360",

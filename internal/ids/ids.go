@@ -28,6 +28,7 @@ const (
 	SigningKey = "kid"
 	Owner      = "own"
 	SetupTest  = "stt"
+	Pairing    = "pair"
 )
 
 const alphabet = "0123456789abcdefghjkmnpqrstvwxyz" // Crockford, lowercase

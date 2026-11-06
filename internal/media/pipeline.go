@@ -10,45 +10,12 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"math"
 	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
 )
-
-// EncodeArgs builds one ffmpeg run that decodes the source once and encodes
-// every rung with libx264, keyframes forced on segment boundaries so all
-// renditions align. Renditions carry no audio.
-func EncodeArgs(src Source, input, encDir string, rungs []Rung) []string {
-	gop := strconv.Itoa(int(math.Round(SegmentSeconds * src.FPS)))
-	args := []string{"-hide_banner", "-nostdin", "-y", "-nostats", "-progress", "pipe:1"}
-	args = append(args, inputGuard()...)
-	args = append(args, "-i", input)
-	graph := fmt.Sprintf("[0:v:0]setpts=PTS-STARTPTS,split=%d", len(rungs))
-	for i := range rungs {
-		graph += fmt.Sprintf("[s%d]", i)
-	}
-	for i, r := range rungs {
-		w, h := r.Dimensions(src.Width, src.Height)
-		graph += fmt.Sprintf(";[s%d]scale=%d:%d,format=yuv420p[v%d]", i, w, h, i)
-	}
-	args = append(args, "-filter_complex", graph)
-	for i, r := range rungs {
-		args = append(args,
-			"-map", fmt.Sprintf("[v%d]", i),
-			"-c:v", "libx264", "-preset", "veryfast", "-profile:v", "high",
-			"-b:v", r.Bitrate, "-maxrate", r.Maxrate, "-bufsize", r.Bufsize,
-			"-fps_mode", "cfr", "-r", src.FrameRate,
-			"-g", gop, "-keyint_min", gop, "-sc_threshold", "0",
-			"-force_key_frames", fmt.Sprintf("expr:gte(t,n_forced*%d)", SegmentSeconds),
-			"-flags", "+cgop", "-an",
-			"-movflags", "+frag_keyframe+empty_moov+default_base_moof",
-			filepath.Join(encDir, "v_"+r.Label()+".mp4"))
-	}
-	return args
-}
 
 // AudioArgs encodes the audio rendition: loudness-normalised AAC, 48 kHz stereo.
 func AudioArgs(input, encDir string) []string {
@@ -119,18 +86,9 @@ func Transcode(ctx context.Context, t Tools, input string, src Source, workDir, 
 	}
 	rungs := SelectLadder(src.Width, src.Height)
 
-	progress("transcode", 0)
-	pr, pw := io.Pipe()
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		reportFFmpegProgress(pr, src.Duration, func(f float64) { progress("transcode", f) })
-	}()
-	err = t.run(ctx, t.FFmpeg, EncodeArgs(src, input, encDir, rungs), workDir, pw)
-	pw.Close()
-	<-done
+	used, err := encodeLadder(ctx, t, src, input, workDir, encDir, rungs, progress)
 	if err != nil {
-		return Manifest{}, fmt.Errorf("encode video: %w", err)
+		return Manifest{}, err
 	}
 	if src.HasAudio {
 		if err := t.run(ctx, t.FFmpeg, AudioArgs(input, encDir), workDir, io.Discard); err != nil {
@@ -175,7 +133,7 @@ func Transcode(ctx context.Context, t Tools, input string, src Source, workDir, 
 
 	m := Manifest{
 		OutputFormat: OutputFormat, DurationSeconds: src.Duration, Encryption: "aes-128",
-		KeyVersion: key.Version, Audio: src.HasAudio, Tools: versions,
+		KeyVersion: key.Version, Audio: src.HasAudio, Tools: versions, Encoder: &used,
 	}
 	for _, r := range rungs {
 		w, h := r.Dimensions(src.Width, src.Height)
@@ -190,6 +148,37 @@ func Transcode(ctx context.Context, t Tools, input string, src Source, workDir, 
 	}
 	progress("package", 1)
 	return m, nil
+}
+
+// encodeLadder runs the stages of the source's chain until one encodes the
+// whole ladder. A GPU stage that fails hands everything to the next, so
+// renditions never mix encoders; the CPU stage's failure is final. Only a
+// cancelled context stops the chain early.
+func encodeLadder(ctx context.Context, t Tools, src Source, input, workDir, encDir string, rungs []Rung, progress Progress) (EncoderUsed, error) {
+	var used EncoderUsed
+	chain := t.HW.Chain(src)
+	for i, stage := range chain {
+		progress("transcode", 0)
+		pr, pw := io.Pipe()
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			reportFFmpegProgress(pr, src.Duration, func(f float64) { progress("transcode", f) })
+		}()
+		st := t.forStage(stage)
+		err := st.run(ctx, t.FFmpeg, EncodeArgs(stage, t.HW.VAAPIDevice, src, input, encDir, rungs), workDir, pw)
+		pw.Close()
+		<-done
+		if err == nil {
+			used.Stage = stage.Name()
+			return used, nil
+		}
+		if ctx.Err() != nil || i == len(chain)-1 {
+			return used, fmt.Errorf("encode video (%s): %w", stage.Name(), err)
+		}
+		used.Fallbacks = append(used.Fallbacks, stage.Name())
+	}
+	return used, errors.New("encode video: no encoder")
 }
 
 // Inventory lists the files under dir that match the output grammar, except

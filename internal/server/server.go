@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/visheshgubrani/clipmux/internal/accounts"
+	"github.com/visheshgubrani/clipmux/internal/agents"
 	"github.com/visheshgubrani/clipmux/internal/apikeys"
 	"github.com/visheshgubrani/clipmux/internal/assets"
 	"github.com/visheshgubrani/clipmux/internal/cloudflare"
@@ -229,7 +230,11 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 	// The built-in worker's key lives only in memory and is handed to the
 	// child worker; it is never logged or stored.
 	workerKey := rand.Text()
-	worker := workerapi.New(q, workerapi.BuiltinKey(workerKey), set, keys, committer)
+	// PC agents pair with a code and claim with their own keys (P3-T01).
+	agentSvc := agents.New(pool, q, acct, db.DefaultProjectID, b.urls.PublicURL)
+	agentSvc.Logger = logger
+	worker := workerapi.New(q, workerapi.Auths{workerapi.BuiltinKey(workerKey), agentSvc}, set, keys, committer)
+	worker.Agents = agentSvc
 	worker.Logger = logger
 	upl := uploads.New(pool, set)
 	upl.Logger = logger
@@ -242,6 +247,7 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 	hooks.Logger = logger
 	life := lifecycle.New(pool, set, committer)
 	life.Logger = logger
+	agentSvc.Life = life
 	mgmt := manage.New(pool, box, acct, b.urls)
 	mgmt.Logger = logger
 	tests := setuptest.New(pool, set, box, b.urls, upl, life, cfg.SelfDial)
@@ -276,6 +282,7 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 		wg.Go(func() { sweeper.Every(ctx, interval, name, leader.Only(task), logger) })
 	}
 	loop(LeaseSweepInterval, "lost_leases", func(ctx context.Context) (int, error) { return q.SweepLostLeases(ctx, 100) })
+	loop(UploadSweepInterval, "stranded_pinned_jobs", func(ctx context.Context) (int, error) { return q.SweepStrandedPinned(ctx, 100) })
 	loop(UploadSweepInterval, "uploads", func(ctx context.Context) (int, error) { return upl.Sweep(ctx, 500) })
 	loop(RouteSyncInterval, "routes", func(ctx context.Context) (int, error) { return committer.SyncRoutes(ctx, 1000) })
 	loop(ReconcileInterval, "route_reconciler", func(ctx context.Context) (int, error) {
@@ -310,7 +317,7 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 	srv := &http.Server{
 		Handler: Handler(Deps{
 			DB: pool, Worker: worker.Handler(), Storage: store.Handler(), ServesHost: b.urls.ServesHost,
-			APIs: []Registrar{acct, mgmt, upl, assetsAPI, life, playback},
+			APIs: []Registrar{acct, mgmt, agentSvc, upl, assetsAPI, life, playback},
 		}),
 		ReadHeaderTimeout: 10 * time.Second,
 		// Requests inherit ctx, so long-poll claims end at shutdown.

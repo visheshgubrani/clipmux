@@ -31,7 +31,9 @@ import (
 
 // ImportRequest is POST /v1/assets.
 type ImportRequest struct {
-	URL            string `json:"url"`
+	URL string `json:"url,omitempty"`
+	// AgentSourceID attaches a file a PC agent registered for push --local.
+	AgentSourceID  string `json:"agent_source_id,omitempty"`
 	PlaybackPolicy string `json:"playback_policy,omitempty"`
 	Passthrough    string `json:"passthrough,omitempty"`
 }
@@ -51,6 +53,9 @@ const importRetries = 3
 
 // Import creates a processing asset and its import job.
 func (s *Service) Import(ctx context.Context, key apikeys.Key, req ImportRequest, idemKey string) (assets.View, error) {
+	if req.AgentSourceID != "" {
+		return s.AttachLocal(ctx, key, req, idemKey)
+	}
 	if req.PlaybackPolicy == "" {
 		req.PlaybackPolicy = "signed"
 	}

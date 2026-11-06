@@ -147,6 +147,46 @@ func (q *Queries) GetDefaultStorage(ctx context.Context, projectID string) (GetD
 	return i, err
 }
 
+const listAppEvents = `-- name: ListAppEvents :many
+SELECT id, payload, created_at FROM outbox
+WHERE app_id = $1 AND kind = 'webhook' AND created_at >= $2::timestamptz
+ORDER BY created_at, id
+LIMIT $3
+`
+
+type ListAppEventsParams struct {
+	AppID     pgtype.Text
+	Since     pgtype.Timestamptz
+	MaxEvents int32
+}
+
+type ListAppEventsRow struct {
+	ID        string
+	Payload   []byte
+	CreatedAt pgtype.Timestamptz
+}
+
+// An app's webhook events from a time on, oldest first, for clipmux listen.
+func (q *Queries) ListAppEvents(ctx context.Context, arg ListAppEventsParams) ([]ListAppEventsRow, error) {
+	rows, err := q.db.Query(ctx, listAppEvents, arg.AppID, arg.Since, arg.MaxEvents)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListAppEventsRow{}
+	for rows.Next() {
+		var i ListAppEventsRow
+		if err := rows.Scan(&i.ID, &i.Payload, &i.CreatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listAssetsByPassthrough = `-- name: ListAssetsByPassthrough :many
 SELECT id, project_id, app_id, status, error_code, version, storage_id, source_uri, agent_source_id, source_kept, current_output_id, passthrough, duration_seconds, created_at, updated_at, deleted_at FROM assets
 WHERE app_id = $1 AND passthrough = $2 AND status <> 'deleted'

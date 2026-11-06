@@ -2,8 +2,6 @@ package server
 
 import (
 	"context"
-	"errors"
-	"io/fs"
 	"log/slog"
 	"net"
 	"os"
@@ -14,6 +12,7 @@ import (
 
 	"github.com/visheshgubrani/clipmux/internal/media"
 	"github.com/visheshgubrani/clipmux/internal/sandbox"
+	"github.com/visheshgubrani/clipmux/internal/worker"
 )
 
 // builtinWorker runs `clipmux worker` as a child process over loopback
@@ -60,6 +59,12 @@ func (b *builtinWorker) childEnv() []string {
 	if tmp := os.Getenv("TMPDIR"); tmp != "" {
 		env = append(env, "TMPDIR="+tmp)
 	}
+	// A GPU on the server host encodes for the built-in worker too.
+	for _, name := range append([]string{"CLIPMUX_ENCODER", "CLIPMUX_VAAPI_DEVICE"}, sandbox.EnvAllowed...) {
+		if v := os.Getenv(name); v != "" {
+			env = append(env, name+"="+v)
+		}
+	}
 	return env
 }
 
@@ -102,7 +107,7 @@ func (b *builtinWorker) run(ctx context.Context) {
 	for ctx.Err() == nil {
 		// A child that was killed couldn't remove its attempt directories;
 		// only this supervisor's child uses them, so start each one clean.
-		if err := clearDir(b.workDir); err != nil {
+		if err := worker.ClearDir(b.workDir); err != nil {
 			b.logger.Warn("clear the worker's scratch directory", "err", err)
 		}
 		started := time.Now()
@@ -130,20 +135,3 @@ func (b *builtinWorker) run(ctx context.Context) {
 }
 
 func workerDir(dataDir string) string { return filepath.Join(dataDir, "worker") }
-
-// clearDir removes everything inside dir, keeping dir.
-func clearDir(dir string) error {
-	entries, err := os.ReadDir(dir)
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	for _, e := range entries {
-		if err := os.RemoveAll(filepath.Join(dir, e.Name())); err != nil {
-			return err
-		}
-	}
-	return nil
-}

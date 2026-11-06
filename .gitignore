@@ -13,3 +13,6 @@ e2e/web/test-results/
 e2e/web/playwright-report/
 internal/web/dist/*
 !internal/web/dist/.gitkeep
+
+# The media test binary deploy/modal/gpu_test.py runs on Modal.
+deploy/modal/media.test

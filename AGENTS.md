@@ -12,9 +12,9 @@ anything decided since, and wins over the architecture doc where they differ.
 - Layout follows go.dev/doc/modules/layout for a server: commands in `cmd/`,
   everything else in `internal/`. Nothing is importable from outside.
 - Current packages: `config`, `db` (migrations, sqlc-generated queries and
-  models, `dbtest`), `ids`, `apikeys`, `assets`, `uploads`, `queue`,
+  models, `dbtest`), `ids`, `apikeys`, `agents`, `assets`, `uploads`, `queue`,
   `workerapi`, `worker`, `outputs`, `delivery`, `tokens`, `media`, `contentkey`,
-  `storage` (filesystem and S3 adapters, `s3test`), `stores`, `routes`, `outbox`,
+  `storage` (filesystem and S3 adapters, `s3test`), `stores`, `routes`, `outbox`, `push`, `listen`,
   `httpjson`, `server`, `sweeper`, `web` (embedded dashboard build).
 - Media tests need ffmpeg, ffprobe and Shaka Packager ≥ 3.9.1
   (`toolchain/install_packager.sh`); they skip without them, except in CI

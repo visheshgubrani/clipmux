@@ -490,27 +490,47 @@ func (q *Queries) LockJob(ctx context.Context, id string) (Job, error) {
 
 const lockNextClaimableJob = `-- name: LockNextClaimableJob :one
 SELECT id, project_id, asset_id, kind, status, phase, progress, profile_id, profile_version, pinned_agent_id, lost_count, failed_count, error_code, routed_to, route_reason, available_at, created_at, started_at, finished_at, source_storage_id, target_storage_id, import_url FROM jobs
-WHERE project_id = $1
-  AND status = 'queued'
+WHERE jobs.project_id = $1
+  AND jobs.status = 'queued'
   AND available_at <= now()
   AND kind IN ('transcode', 'reencode')
   AND (pinned_agent_id IS NULL OR pinned_agent_id = $2)
   AND (NOT $3::boolean OR pinned_agent_id = $2)
+  AND (NOT $4::boolean OR pinned_agent_id = $2 OR EXISTS (
+      SELECT 1 FROM assets s JOIN apps p ON p.id = s.app_id
+      WHERE s.id = jobs.asset_id AND p.is_builtin))
+  -- A worker that reports its free disk takes only sources that fit: three
+  -- times an upload's size (source, encodes, packaged output), twice a source
+  -- already on the agent. Unknown sizes (imports) and unreported disk pass.
+  AND ($5::bigint IS NULL OR coalesce(
+      (SELECT 3 * u.declared_size FROM uploads u WHERE u.asset_id = jobs.asset_id ORDER BY u.created_at DESC LIMIT 1),
+      (SELECT 2 * g.size FROM assets s JOIN agent_sources g ON g.id = s.agent_source_id WHERE s.id = jobs.asset_id),
+      0) <= $5::bigint)
 ORDER BY available_at, id
 LIMIT 1
 FOR UPDATE SKIP LOCKED
 `
 
 type LockNextClaimableJobParams struct {
-	ProjectID string
-	AgentID   pgtype.Text
-	LocalOnly bool
+	ProjectID     string
+	AgentID       pgtype.Text
+	LocalOnly     bool
+	Untrusted     bool
+	FreeDiskBytes pgtype.Int8
 }
 
 // Media work only: import, move and delete run in the control plane. Pinned jobs go
-// only to their agent, and local-scoped agents take only pinned jobs.
+// only to their agent, and local-scoped agents take only pinned jobs. An
+// untrusted (unsandboxed) agent takes only jobs pinned to it and the owner's
+// own uploads (the built-in Dashboard app's assets), never public uploads.
 func (q *Queries) LockNextClaimableJob(ctx context.Context, arg LockNextClaimableJobParams) (Job, error) {
-	row := q.db.QueryRow(ctx, lockNextClaimableJob, arg.ProjectID, arg.AgentID, arg.LocalOnly)
+	row := q.db.QueryRow(ctx, lockNextClaimableJob,
+		arg.ProjectID,
+		arg.AgentID,
+		arg.LocalOnly,
+		arg.Untrusted,
+		arg.FreeDiskBytes,
+	)
 	var i Job
 	err := row.Scan(
 		&i.ID,

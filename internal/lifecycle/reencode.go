@@ -49,7 +49,12 @@ func (s *Service) Reencode(ctx context.Context, key apikeys.Key, assetID string,
 	// Checked before any lock; the claim fails the job cleanly if the source
 	// disappears after this.
 	sourceKept := asset.SourceUri.Valid && asset.SourceKept
-	if sourceKept {
+	// A source on a PC agent is that agent's to check, at claim.
+	pinned, err := pinnedAgent(ctx, q, asset)
+	if err != nil {
+		return JobView{}, err
+	}
+	if sourceKept && !asset.AgentSourceID.Valid {
 		store, err := s.stores.Get(ctx, asset.StorageID)
 		if err != nil {
 			return JobView{}, err
@@ -100,7 +105,7 @@ func (s *Service) Reencode(ctx context.Context, key apikeys.Key, assetID string,
 					return err
 				}
 			}
-			j, err := queue.Enqueue(ctx, tx, queue.Job{ProjectID: asset.ProjectID, AssetID: asset.ID, Kind: "reencode"})
+			j, err := queue.Enqueue(ctx, tx, queue.Job{ProjectID: asset.ProjectID, AssetID: asset.ID, Kind: "reencode", PinnedAgentID: pinned})
 			if err != nil {
 				return err
 			}

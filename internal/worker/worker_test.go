@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -16,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/visheshgubrani/clipmux/internal/media"
 	"github.com/visheshgubrani/clipmux/internal/workerapi"
 )
 
@@ -175,5 +177,44 @@ func TestStorageURLsGoThroughTheServerWhenAsked(t *testing.T) {
 	in := "https://video.example.com/_storage/objects/x?exp=1&sig=ab"
 	if got := w.storageURL(in); got != in {
 		t.Errorf("without StorageViaServer: %q, want it unchanged", got)
+	}
+}
+
+// fakeTools are scripts that answer the version checks a claim makes.
+func fakeTools(t *testing.T) media.Tools {
+	t.Helper()
+	dir := t.TempDir()
+	write := func(name, out string) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte("#!/bin/sh\necho '"+out+"'\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	return media.Tools{FFmpeg: write("ffmpeg", "ffmpeg version 8.0"), Packager: write("packager", "packager version v3.9.3-x")}
+}
+
+func TestARevokedKeyEndsTheWorkerAndStaleAttemptsAreCleared(t *testing.T) {
+	var claimed map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&claimed)
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "att_left_by_a_crash"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	w := &Worker{Server: srv.URL, Key: "cmxa_revoked", WorkDir: dir, Tools: fakeTools(t), Logger: slog.New(slog.DiscardHandler)}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := w.Run(ctx); !errors.Is(err, ErrKeyRefused) {
+		t.Fatalf("Run = %v, want ErrKeyRefused without retrying", err)
+	}
+	if entries, _ := os.ReadDir(dir); len(entries) != 0 {
+		t.Fatalf("scratch directory still holds %v", entries)
+	}
+	if free, _ := claimed["free_disk_bytes"].(float64); free <= 0 {
+		t.Fatalf("claim reported free disk %v, want the scratch directory's", claimed["free_disk_bytes"])
 	}
 }

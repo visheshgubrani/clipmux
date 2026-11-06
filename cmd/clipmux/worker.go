@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -10,7 +11,9 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"syscall"
+	"time"
 
 	"github.com/visheshgubrani/clipmux/internal/media"
 	"github.com/visheshgubrani/clipmux/internal/sandbox"
@@ -18,15 +21,23 @@ import (
 )
 
 const workerUsage = `Usage:
-  CLIPMUX_WORKER_KEY=KEY clipmux worker --server URL [--work-dir DIR] [--once]
+  clipmux worker --server URL              connect this PC (approve it in the dashboard)
+  clipmux worker --server URL --pair CODE  connect with a code from the Workers page
+  clipmux worker                           run, once this PC is connected
+  clipmux worker doctor                    check everything this PC needs
+  CLIPMUX_WORKER_KEY=KEY clipmux worker --server URL [--once]
 
-Claims and runs media jobs. The key comes from CLIPMUX_WORKER_KEY so it never
-shows up in a process listing. Tools are found on PATH, or set with
+Claims and runs media jobs. A connected PC keeps its server and key in
+agent.json under CLIPMUX_AGENT_DIR (default: your config directory), so the
+key never shows up in a process listing. Tools are found on PATH, or set with
 CLIPMUX_FFMPEG, CLIPMUX_FFPROBE and CLIPMUX_PACKAGER.
 `
 
 // runWorker runs `clipmux worker`.
 func runWorker(args []string, getenv func(string) string, stderr io.Writer) int {
+	if len(args) > 0 && args[0] == "doctor" {
+		return runDoctor(getenv, stderr)
+	}
 	fs := flag.NewFlagSet("worker", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = func() { fmt.Fprint(stderr, workerUsage) }
@@ -34,14 +45,30 @@ func runWorker(args []string, getenv func(string) string, stderr io.Writer) int 
 	workDir := fs.String("work-dir", filepath.Join(os.TempDir(), "clipmux-worker"), "scratch directory for attempts")
 	once := fs.Bool("once", false, "run at most one job, then exit (serverless)")
 	viaServer := fs.Bool("storage-via-server", false, "fetch and upload signed storage URLs through --server (the built-in worker)")
-	confine := fs.Bool("sandbox", false, "confine ffmpeg and the packager (Linux; required unless the worker is isolated otherwise)")
+	confine := fs.Bool("sandbox", false, "confine ffmpeg and the packager (Linux; agents always do unless --unsandboxed)")
+	unconfined := fs.Bool("unsandboxed", false, "run an agent's tools unconfined: it then gets only its own local jobs and the owner's uploads")
+	pair := fs.String("pair", "", "connect this PC with a code from the dashboard's Workers page")
+	name := fs.String("name", "", "what to call this PC on the Workers page (default: its hostname)")
+	encoder := fs.String("encoder", orEnv(getenv("CLIPMUX_ENCODER"), "auto"), "first encoder to try: auto, nvenc, vaapi, cuda-decode or cpu; the CPU always backs it up")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
+	serverSet := getenv("CLIPMUX_SERVER") != ""
+	fs.Visit(func(f *flag.Flag) { serverSet = serverSet || f.Name == "server" })
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 	key := getenv("CLIPMUX_WORKER_KEY")
-	if key == "" {
-		fmt.Fprint(stderr, "clipmux worker: CLIPMUX_WORKER_KEY is required\n\n"+workerUsage)
-		return 2
+	agent := key == ""
+	var roots []string
+	if agent {
+		// Agent mode: this PC's own key, from pairing.
+		cfg, code := connectAgent(ctx, agentDir(getenv), *server, serverSet, *pair, *name, stderr)
+		if code != 0 {
+			return code
+		}
+		*server, key, roots = cfg.Server, cfg.Key, cfg.Roots
+		*confine = !*unconfined
 	}
 	tools := media.DefaultTools()
 	tools.FFmpeg = orEnv(getenv("CLIPMUX_FFMPEG"), tools.FFmpeg)
@@ -57,8 +84,6 @@ func runWorker(args []string, getenv func(string) string, stderr io.Writer) int 
 		Server: *server, Key: key, WorkDir: *workDir, Tools: tools, Logger: logger,
 		HTTP: worker.DefaultHTTPClient(), StorageViaServer: *viaServer,
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 	if *confine {
 		self, err := os.Executable()
 		if err != nil {
@@ -67,7 +92,8 @@ func runWorker(args []string, getenv func(string) string, stderr io.Writer) int 
 		}
 		st, err := sandbox.ProbeExec(ctx, self)
 		if err != nil {
-			logger.Error("the sandbox doesn't hold here; refusing to run hostile media unconfined", "err", err)
+			logger.Error("the sandbox doesn't hold here; refusing to run hostile media unconfined. "+
+				"Run the agent in Docker, WSL2 or a VM, or pass --unsandboxed to take only your own jobs", "err", err)
 			return 1
 		}
 		mem, _ := strconv.ParseUint(getenv("CLIPMUX_TOOL_MEMORY_MB"), 10, 64)
@@ -79,15 +105,89 @@ func runWorker(args []string, getenv func(string) string, stderr io.Writer) int 
 		logger.Error("media tools are missing", "err", err)
 		return 1
 	}
+	prefer, err := media.ParseBackend(*encoder)
+	if err != nil {
+		logger.Error("encoder", "err", err)
+		return 2
+	}
+	// Prove each GPU path with a real encode, under the same sandbox jobs
+	// use, before offering it.
+	var driverEnv []string
+	for _, n := range sandbox.EnvAllowed {
+		if v := getenv(n); v != "" {
+			driverEnv = append(driverEnv, n+"="+v)
+		}
+	}
+	w.Tools.Env = driverEnv
+	probeDir := filepath.Join(*workDir, ".probe")
+	if err := os.MkdirAll(probeDir, 0o750); err != nil {
+		logger.Error("work dir", "err", err)
+		return 1
+	}
+	w.Tools.HW = media.DetectHardware(ctx, w.Tools, probeDir, getenv("CLIPMUX_VAAPI_DEVICE"), prefer)
+	_ = os.RemoveAll(probeDir)
+	if prefer != "" && prefer != media.CPU && w.Tools.HW.Backends()[0] != prefer {
+		logger.Warn("the requested encoder failed its test encode; using the others", "encoder", prefer)
+	}
+	logger.Info("encoders", "order", w.Tools.HW.Describe())
 	logger.Info("clipmux worker started", "server", *server, "once", *once)
-	if *once {
+	if agent {
+		// push --local hands this agent files over a socket only this user
+		// can open; they stay where they are.
+		dir := agentDir(getenv)
+		local, err := worker.OpenSources(dir)
+		if err != nil {
+			logger.Error("local sources", "err", err)
+			return 1
+		}
+		w.Local = local
+		ctl := &worker.Control{Worker: w, Sources: local, Roots: roots, Logger: logger}
+		var wg sync.WaitGroup
+		defer wg.Wait()
+		ctx, cancel := context.WithCancel(ctx)
+		defer cancel()
+		wg.Go(func() {
+			if err := ctl.Serve(ctx, dir); err != nil {
+				logger.Warn("push --local is unavailable", "err", err)
+			}
+		})
+		wg.Go(func() { syncSources(ctx, w, local, logger) })
+		return runLoop(ctx, w, *once, logger, getenv)
+	}
+	return runLoop(ctx, w, *once, logger, getenv)
+}
+
+// syncSources forgets local sources whose assets were deleted: at start,
+// then hourly.
+func syncSources(ctx context.Context, w *worker.Worker, local *worker.Sources, logger *slog.Logger) {
+	for {
+		if err := w.SyncSources(ctx, local); err != nil && ctx.Err() == nil {
+			logger.Warn("sync local sources", "err", err)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(time.Hour):
+		}
+	}
+}
+
+func runLoop(ctx context.Context, w *worker.Worker, once bool, logger *slog.Logger, getenv func(string) string) int {
+	if once {
 		if _, err := w.RunOnce(ctx); err != nil {
 			logger.Error("worker", "err", err)
 			return 1
 		}
 		return 0
 	}
-	_ = w.Run(ctx)
+	if err := w.Run(ctx); errors.Is(err, worker.ErrKeyRefused) && getenv("CLIPMUX_WORKER_KEY") == "" {
+		logger.Error("this PC was disconnected from the server (revoked on its Workers page). " +
+			"Remove " + worker.ConfigPath(agentDir(getenv)) + " and run clipmux worker --server URL to connect it again")
+		return 1
+	} else if err != nil {
+		logger.Error("worker", "err", err)
+		return 1
+	}
 	return 0
 }
 

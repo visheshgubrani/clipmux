@@ -201,7 +201,8 @@ func TestStatusesAreConstrained(t *testing.T) {
 		{"job kind", `INSERT INTO jobs (id, project_id, asset_id, kind, status) VALUES ('j', 'prj_default', '` + asset + `', 'thumbnail', 'queued')`},
 		{"playback policy", `INSERT INTO playback_ids (id, project_id, asset_id, policy) VALUES ('p', 'prj_default', '` + asset + `', 'private')`},
 		{"api key scope", `INSERT INTO api_keys (id, project_id, app_id, name, key_hash, scopes) VALUES ('k', 'prj_default', 'app_lms', 'k', 'h', '{apps:write}')`},
-		{"unsandboxed agent claiming public jobs", `INSERT INTO agents (id, project_id, name, key_hash, scope, sandboxed) VALUES ('agt', 'prj_default', 'pc', 'h', 'all', false)`},
+		{"agent scope", `INSERT INTO agents (id, project_id, name, key_hash, scope) VALUES ('agt', 'prj_default', 'pc', 'h', 'everything')`},
+		{"pairing consumed without an agent", `INSERT INTO agent_pairings (id, project_id, code_hash, status, expires_at) VALUES ('pair', 'prj_default', 'h', 'consumed', now())`},
 		{"app signing key holding a private key", `INSERT INTO signing_keys (id, project_id, app_id, public_key_pem, private_key_encrypted) VALUES ('kid', 'prj_default', 'app_lms', 'pem', 'secret')`},
 	}
 	for _, c := range cases {

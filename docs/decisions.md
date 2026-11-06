@@ -308,5 +308,124 @@ Made in P2-T07:
 - The move job's late-write wait moved from the copy to the cleanup (D038). The exit test found it held every move for 16 minutes after the asset's last job, though a late PUT can't affect the copy.
 - Not covered here, and required before Phase 2 exits against Cloudflare: the setup test through the Worker (its media URL must resolve to the edge), the Chromium suites against the Worker hostname, and the same run on a real Cloudflare account (D037). These need a test zone, a scoped token and Workers Paid as repository secrets.
 
+## D042 Phase 3 scope — accepted (2026-11-06)
+Context: Phase 2 is merged (visheshgubrani/clipmux#3) with its exit proven on the harness only (D041). The owner chose the next phase and its scope; the plan is [plans/P3-pc-agent.md](plans/P3-pc-agent.md).
+Decision:
+- **Next phase:** Phase 3 (PC agent) follows the architecture's build order. The LMS migration and going public wait.
+- **Phase 2 real-account exit:** it becomes Phase 3's task T00, a parallel track. Phase 3 starts now, because it doesn't change delivery and the open run needs Cloudflare secrets, not code. The Phase 2 exit is recorded when T00 passes.
+- **Platforms:** agents run natively on Linux (amd64, arm64) or as the existing image in Docker. Windows and macOS use WSL2, Docker Desktop or a VM. Native Windows and macOS agents are out of this phase.
+- **Hardware encoding:**
+  - **Backends:** `nvenc`, `vaapi` (AMD and Intel on Linux), `cuda-decode` (NVIDIA cards without NVENC) and `cpu`.
+  - **Selection:** each backend is proved by a real probe encode.
+  - **Fallback:** an encoder failure falls back down that list to the CPU within the same attempt, recorded in the manifest.
+  - **Left out:** AMF, Quick Sync and VideoToolbox, which need native Windows or macOS or add nothing over VAAPI on Linux.
+- **Pairing:** a single-use pairing code in the Connect my PC command, exchanged for the agent's key in a 0600 config file. This amends the architecture's `--key KEY`, because a key never goes in argv (D012).
+- **CLI:** plain `clipmux push` and `clipmux listen --forward-to` land in this phase beside `push --local`.
+- **Proof on real hardware:**
+  - a self-hosted runner on the owner's Ubuntu machine with an AMD RX 6600 XT (VAAPI and CPU);
+  - Modal for NVIDIA (L4 for `nvenc`, A100 for `cuda-decode`);
+  - an M4 Mac running the Docker agent for arm64 and a real lid-close suspend.
+  - Intel hardware is unavailable, so its real run is a known gap.
+Consequence: `--sandbox` becomes the agent default. Unsandboxed agents take pinned and owner-uploaded jobs only, which needs the `agents` check constraint relaxed. No `Executor` interface is added before Phase 4 gives `Wake` a second implementation.
+
+## D043 Pairing PC agents — accepted (2026-11-06)
+Decisions within the architecture's rules and D042, made in P3-T01 and T02:
+- **Two pairing directions, both approved by the owner before a key exists.**
+  - **Dashboard first:** `POST /v1/agents/pairings` mints a code the owner has thereby approved. The PC runs `clipmux worker --server URL --pair CODE` (or the Docker variant the card shows), which exchanges it at `POST /worker/v1/pair`.
+  - **Agent first, for the PC the owner is sitting at:** `clipmux worker --server URL` asks `POST /worker/v1/pairings` for a code and a poll token, prints the code and `{public_url}/workers/connect?code=…`, and opens that link in the desktop's browser. The page shows what the machine said about itself (name, hostname, platform, address), and one click on Connect approves it. The agent polls every 2 s and receives its key on the first poll after approval. A signed-out owner is sent through sign-in and back to the same page.
+  - So agents arrive `approved`. The `pending` status stays in the schema but nothing writes it, which amends "appears as pending until the owner approves it": the owner approved by minting or clicking.
+- **Codes:** 8 characters from an alphabet without look-alikes, shown as `XXXX-XXXX` and accepted in any case with or without the dash. They are stored as SHA-256 and work once, for 15 minutes. An agent-started code can be redeemed only with its poll token, so reading it off the agent's screen doesn't yield the key. At most 10 agent-started pairings may wait at once, because anyone who can reach the server can start one.
+- **Keys:** `cmxa_` plus `rand.Text()`, stored as SHA-256 and shown once. The agent writes server, agent ID, name and key to `agent.json` (0600, written atomically) under `CLIPMUX_AGENT_DIR` or the user's config directory, and later runs need no flags. `CLIPMUX_WORKER_KEY` still wins, for the built-in worker.
+- **Authentication:** `workerapi.Auths` tries the built-in key, then agent keys. An unknown, revoked or pending agent key gets the same 401. A worker that receives 401 on claim stops (`ErrKeyRefused`), and an agent says it was disconnected.
+- **Last seen:** claims and heartbeats update `last_seen_at` and `last_ip` (the client address through trusted proxies), coalesced to one write per 10 s. An agent counts as online when it was seen in the last 60 s.
+- **Revocation** (`DELETE /v1/agents/{id}`) fails the agent's attempts that could still write with `agent_revoked`. Their next call is told to stop, and their jobs return to the queue at once without spending a retry budget. The response counts the current outputs the agent produced, for re-encoding.
+- **Trust rule:** an agent's claim says whether rlimits, `no_new_privs` and seccomp hold. One that doesn't is untrusted and claims only jobs pinned to it and assets of the built-in Dashboard app (the owner's uploads). The schema's `CHECK (sandboxed OR scope = 'local')` is dropped (migration 14). Agents probe the sandbox by default; `--unsandboxed` opts out, and the error on a host without the sandbox says so.
+- **Disk:** claims report `free_disk_bytes` for the scratch directory. A worker that reports it takes only uploads whose declared size, three times over, fits (twice for a source already on the agent). Imports and workers that don't report pass. Workers clear their scratch directory when they start.
+- **Backoff:** network errors back off from 1 s to 30 s, down from a minute, so a PC waking from sleep is back within half a minute.
+
+## D044 clipmux push — accepted (2026-11-06)
+Decisions within the architecture's rules, made in P3-T04:
+- `clipmux push --server URL [--policy signed|public] [--passthrough REF] [--wait] FILE|DIR…` is a client of the public upload API (`internal/push`), with the API key from `CLIPMUX_API_KEY`, never argv. Directories are walked for video extensions, skipping hidden directories. Each file prints `asset_id, playback_id, status, path` on stdout; progress goes to stderr.
+- **One push, one identity:** server, absolute path, size, modification time, policy and passthrough. The `Idempotency-Key` is derived from it, so pushing a finished file again replays the create (no token) and returns the same asset without sending a byte.
+- **Resume:** the upload's ID and token are kept in a 0600 file under `CLIPMUX_PUSH_STATE_DIR` (default the user's cache directory) until complete. Every run lists stored parts and sends only the missing ones (storage is the source of truth, D031). An upload that expired or was cancelled starts over under a fresh key suffix. A list that answers 409 means the sweeper finished it; completing again returns the asset.
+- **Retries:** parts go four at a time. Network errors, 5xx, 408 and 429 retry `min(30 s, 1 s·2ⁿ)` plus up to 1 s of jitter, 6 tries, honouring `Retry-After`. A 403 from storage re-signs the part once. Part URLs are signed in batches of 100 just before use, and again within 5 minutes of expiry. Errors never carry a signed URL.
+
+## D045 push --local and pinned sources — accepted (2026-11-06)
+Decisions within the architecture's rules, made in P3-T05:
+- **The agent's control socket.** A running agent listens on `agent.sock` (0600) beside `agent.json`. `clipmux push --local FILE|DIR…` hands it absolute paths. The agent resolves symlinks and accepts only an existing, non-empty regular file, inside `roots` from `agent.json` when any are set. Without roots, any file the agent's user can read is allowed, because only that user can open the socket. In Docker, the CLI on the host needs the agent directory bind-mounted and the files at the same paths.
+- **Register, then attach.** The agent registers the file with the server by size alone (`POST /worker/v1/sources` → `src_…`) and records path, size and modification time in `sources.json` before any asset exists, so the pinned job it is about to get always finds the file. The asset then comes from:
+  - with an API key, `POST /v1/assets {agent_source_id}`, owned by the key's app;
+  - without one, the agent's `POST /worker/v1/sources/{id}/attach`, owned by the Dashboard app as the owner's upload. So the owner's own PC needs no key.
+  - A source attaches to one asset (a unique index). The asset records `agent://{agent_id}/{source_id}`.
+- **Pinned jobs.** Transcodes and re-encodes of such an asset are pinned to the agent. The claim payload carries `{agent_source_id, size}`. The worker reads the file where it lies, and Landlock adds read access to that one file. It checks size and modification time before encoding and again after, so an edited file can't commit a mixed output. A changed or missing file is a permanent `source_changed` or `source_missing`: only the owner, at that PC, can fix it. A ready asset keeps playing.
+- **Waiting.** A pinned job waits while its agent is away and spends no budget. A sweeper ends it with `agent_unavailable` once the agent is revoked or unseen for 7 days (`queue.PinnedWait`, the retire window). Re-encoding a revoked agent's source is `409 source_unavailable`.
+- **Forgetting.** The agent asks `POST /worker/v1/sources/sync` at start and hourly which sources it may forget: their assets were deleted, they're unknown, or they were never attached a day after registering.
+- `--upload-source` isn't built yet (known gap): a local asset re-encodes only on its own PC.
+
+## D046 Hardware encoding with CPU fallback — accepted (2026-11-06)
+Decisions within the architecture's rules and D042, made in P3-T03:
+- **Backends** (`internal/media/encoders.go`), shared by agents and the built-in worker:
+  - `nvenc`: CUDA decode, `scale_cuda`, `h264_nvenc`.
+  - `vaapi`: VAAPI decode, `scale_vaapi`, `h264_vaapi`; AMD radeonsi and Intel iHD.
+  - `cuda-decode`: NVIDIA without NVENC. `-hwaccel cuda` with frames back in system memory and libx264. ffmpeg decodes on the CPU itself if the GPU can't.
+  - `cpu`: libx264.
+- **Detection:** a backend is offered only after a real two-frame encode when the worker starts, under the same sandbox jobs use. `ffmpeg -encoders` proves nothing: it lists `h264_nvenc` on this AMD machine, where an encode fails. VAAPI tries each `/dev/dri/renderD*` unless `CLIPMUX_VAAPI_DEVICE` names one. `--encoder` / `CLIPMUX_ENCODER` (`auto`, `nvenc`, `vaapi`, `cuda-decode`, `cpu`) names the first backend to try, and a failed test encode logs a warning. Claims report the proven encoders and the hardware.
+- **The chain:** each GPU backend decodes on the GPU when the source is a common codec (H.264, HEVC, VP9, AV1, MPEG-2) in 8-bit 4:2:0. Otherwise it decodes on the CPU and encodes on the GPU (a `-hybrid` stage). The CPU comes last.
+  - A stage that fails hands the whole ladder to the next stage in the same attempt, so renditions never mix encoders and the attempt spends no retry budget.
+  - The CPU stage's failure is final (`transcode_failed`, or `unsupported_source` from the probe), and a cancelled context stops the chain.
+  - Every GPU failure falls through rather than being classified from stderr. A corrupt source that got past the probe therefore costs extra encodes, but nothing is mislabelled.
+  - `manifest.json` records `encoder: {stage, fallbacks}`.
+- **Parity:** every backend gets the ladder's bitrate, maxrate and buffer, high profile, CFR at the source rate, `-g` of 6 s, `-force_key_frames` every 6 s and closed GOPs. Scene-cut keyframes are off: `-sc_threshold 0` for libx264, `-no-scenecut 1 -forced-idr 1 -strict_gop 1` for NVENC.
+- **Sandbox (D027):** a GPU stage adds `--gpu` and `--device` for that backend's nodes only (`/dev/dri/renderD*` for VAAPI, `/dev/nvidia*` for CUDA). Landlock then allows read, write and ioctl on those nodes and read on `/sys` and `/proc/driver`. The memory limit moves from `RLIMIT_AS` to `RLIMIT_DATA`, because drivers reserve far more address space than they use. Seccomp still refuses `socket()`. Only `LIBVA_DRIVER_NAME`, `LIBVA_DRIVERS_PATH`, `CUDA_VISIBLE_DEVICES` and `CUDA_DEVICE_ORDER` reach a tool's environment.
+- **Proof:**
+  - On the owner's RX 6600 XT, under the full sandbox, `vaapi` encodes the 1080p ladder with every rendition's segments identical (6.006 s at 29.97 fps). A 10-bit 4:2:2 source takes `vaapi-hybrid`. The golden 480p segment has an SSIM of 0.994 against the CPU encode.
+  - `.github/workflows/gpu.yml` reruns that on a `[self-hosted, linux, gpu, vaapi]` runner whose user is in the `render` group.
+  - NVENC and `cuda-decode` are covered by argument and fallback tests only, until a Modal run on an L4 and an A100 (known gap).
+- The image gains `intel-media-va-driver`. `mesa-va-drivers` and the toolchain check for `h264_nvenc`, `h264_vaapi` and `scale_cuda`'s `format` option were already in place.
+
+## D047 Workers and Jobs pages — accepted (2026-11-06)
+Decisions within the architecture's rules, made in P3-T06:
+- **Workers page:** a "Connect a PC" card first. It shows the one command for the PC the owner is using (`clipmux worker --server {origin}`, approved on `/workers/connect`), and "Create a command" for any other machine, with Linux and Docker variants and a live "PC connected" once the code is redeemed. Then every agent, showing online (seen in the last 60 s) or when it was last seen, hostname, platform, address, proven encoders, sandbox status and scope. A sandboxed agent can take "any job" or "its local files only"; an unsandboxed one, "your uploads" or "its local files only". The page refreshes every 10 s.
+- **Revoking** reports how many videos currently play an output the agent encoded. A revoked agent offers "Re-encode its videos" (`POST /v1/agents/{id}/reencode`), which re-encodes those assets as their own apps. Assets whose source stayed on that PC, or that have a job running, are skipped and counted.
+- **Jobs page:** `GET /v1/jobs` keyset-pages jobs across the library and loads every listed job's attempts in one query. Each attempt shows where it ran (built-in, or the agent's name), how it ended, and the encoder stage and fallbacks from its output's manifest. Jobs pinned to a PC say they're waiting for it. The page follows running jobs every 3 s. This closes "no jobs or workers pages".
+
+## D048 clipmux listen — accepted (2026-11-06)
+Decisions within the architecture's rules, made in P3-T07:
+- **The CLI reads the outbox through the API.** `GET /v1/events` returns the API key's app's webhook events, the same outbox rows the publisher fans out (D018), as `{id, created_at, body}` with `body` byte for byte what an endpoint receives. It needs `assets:read`, not a new scope, because an event's body is the asset view that scope already reads. No endpoint, delivery row or relay state is created on the server, and integration keys still can't manage endpoints.
+- **Polling:** it long-polls (25 s) until an event newer than `after` exists. It returns everything from `since`, so the CLI re-reads a 30 s overlap and catches events committed out of order, then deduplicates by event ID. A full page (100) advances without overlap so it can't loop, and an idle window doesn't move.
+- **Forwarding:** `clipmux listen --server URL --forward-to localhost:3000/webhooks [--events …] [--since 10m]` POSTs each event with D018's headers (`X-Webhook-Event`, `-Id`, `-Timestamp`, `-Signature`) and `User-Agent: ClipMux-Listen/1.0`. It signs with a secret the developer sets as their app's webhook secret: `CLIPMUX_LISTEN_SECRET`, or a `whsec_` secret generated once and kept (0600) beside the agent config, so it stays the same between sessions. A local 5xx or refused connection is retried three times (1, 2, 4 s). A 4xx from the API ends the relay; anything else backs off up to 30 s.
+
+## D049 Running an agent — accepted (2026-11-06)
+Decisions within the architecture's rules, made in P3-T08:
+- **The Docker agent:** the existing image is the agent (`clipmux worker`), and no second image is built. The command the Workers page shows does three things:
+  - It runs as the host user with `--no-healthcheck`, because the healthcheck is serve's.
+  - It bind-mounts `~/.config/clipmux` as the agent directory, so a host `clipmux push --local` finds the container's socket and the connection survives restarts.
+  - It keeps `--pair CODE`. A run whose agent directory already holds a connection to the same server ignores the spent code, so `--restart unless-stopped` can't loop on it.
+  The image creates `/var/lib/clipmux-agent` (0700). GPUs need `--gpus all` (NVIDIA) or `--device /dev/dri` with the render group (AMD, Intel); the card and `docs/agents.md` say so.
+- **`clipmux worker doctor`** checks, in order: the saved connection, the server's `/readyz` (and clock skew from its `Date`), the key (an empty `sources/sync`, which changes nothing), the tool versions, the sandbox probe, a test encode per GPU path, and scratch space. A ✗ exits 1. A missing sandbox, no GPU or less than 10 GiB free is a note, not a failure.
+- **Native Linux** is the `clipmux` binary with an FFmpeg that has the encoders and the pinned packager (`toolchain/install_packager.sh`); `doctor` verifies them. A self-contained tarball with FFmpeg's shared libraries and VAAPI drivers waits for launch, when releases are published (known gap).
+
+## D050 Phase 3 exit test — accepted (2026-11-06)
+Made in P3-T09. `internal/e2e/agents_db_test.go` runs the real binary, with serve's built-in worker off and agents paired by `clipmux admin create-pairing` (new; also for servers without a browser). Each agent runs in its own process group with `CLIPMUX_ENCODER=cpu`, and the shipped 90 s lease and 15 s sweep apply, with no knob. It passed locally at the first try (233 s):
+- **A sleeping PC recovers its job.** SIGSTOP of the agent's group mid-encode, until the sweeper marks the attempt lost, then SIGCONT. The same attempt commits with `lost_count` 1, and the video plays.
+- **A sleeping PC's job moves.** A second paired agent takes the job on a new attempt and output, and the asset becomes ready. The woken laptop is told to stop, and its attempt never commits.
+- **A local push uploads only outputs.** `clipmux push --local` without an API key leaves no `uploads/{asset}/` object and no upload row, the video plays, and a re-encode is pinned to and runs on the same PC.
+- CI runs these in the Linux exit job (timeouts raised to 45 and 55 minutes).
+Still open before Phase 3 is closed on hardware: the closed-lid suspend on the M4 Mac with the Docker agent (by hand), the Modal run of NVENC and `cuda-decode`, and registering the self-hosted GPU runner. The Workers and Jobs pages have no Playwright suite yet.
+
+## D051 NVIDIA proven on Modal; CUDA's IPC sockets — accepted (2026-11-06)
+Amends D027 and D046, from the Modal run of P3-T03:
+- **NVIDIA failed inside the sandbox at first.** The first run on an L4 and an A100 found no GPU path inside the sandbox, while the same probes passed unconfined. `strace` showed why: `cuInit` opens `socket(AF_UNIX, SOCK_SEQPACKET)` for the driver's own IPC, and seccomp refused every `socket()`, so CUDA reported `CUDA_ERROR_OPERATING_SYSTEM`.
+- **The narrowed rule:** a GPU stage's seccomp filter (`--gpu`) now allows exactly `socket(AF_UNIX, SOCK_SEQPACKET)`, matching the type without its flags.
+  - Every other family stays refused (INET, INET6, NETLINK…), and so do stream and datagram Unix sockets, the types local services such as Docker and D-Bus listen on.
+  - CPU tools still can't open any socket.
+  - `TestGPUToolsGetCUDAsIPCSocketsAndNoOthers` holds all three rules. AMD's VAAPI needed no socket and still passes.
+- **Proof** (`deploy/modal/gpu_test.py`, run with `uvx --from modal modal run deploy/modal/gpu_test.py`):
+  - It builds the pinned toolchain on Modal and runs the media test binary.
+  - NVENC accepts any of an L4, A10G or T4, whichever has capacity (the L4 queue stalled). On an A10 it was detected (`nvenc, cpu`), encoded the golden ladder sandboxed with keyframes aligned and segments decrypting, and scored an SSIM of 0.996 against the CPU encode.
+  - On an A100, NVENC correctly failed its probe and the card was offered as `cuda-decode`, at an SSIM of 0.998.
+  - The harness also prints each probe unconfined and sandboxed, plus the refused calls CUDA makes, for the next driver that needs something.
+- **Modal's sandbox:** it runs gVisor without Landlock (ABI 0, reported, not required). rlimits, `no_new_privs` and seccomp hold there.
+
 ## D007 Shaka Packager 3.9.3 — accepted (2026-11-05)
 Decision: pin v3.9.3 (`toolchain/versions.env`), the version clipmux-lms runs with AES-128 in production, which needs the init-segment workaround for Shaka issue 1616. Move to a release that fixes 1616 when one exists, re-running the Phase 1 player tests.

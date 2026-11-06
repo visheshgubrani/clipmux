@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/visheshgubrani/clipmux/internal/contentkey"
+	"github.com/visheshgubrani/clipmux/internal/db"
 	"github.com/visheshgubrani/clipmux/internal/httpjson"
 	"github.com/visheshgubrani/clipmux/internal/media"
 	"github.com/visheshgubrani/clipmux/internal/outputs"
@@ -58,11 +59,52 @@ func (k BuiltinKey) AuthenticateWorker(_ context.Context, key string) (queue.Wor
 	return queue.Worker{Executor: "builtin"}, true
 }
 
+// Auths tries each WorkerAuth in turn: the built-in worker's key, then
+// agent keys.
+type Auths []WorkerAuth
+
+// AuthenticateWorker implements WorkerAuth.
+func (as Auths) AuthenticateWorker(ctx context.Context, key string) (queue.Worker, bool) {
+	for _, a := range as {
+		if w, ok := a.AuthenticateWorker(ctx, key); ok {
+			return w, true
+		}
+	}
+	return queue.Worker{}, false
+}
+
+// AgentReporter records what PC agents report, and when they were last seen.
+type AgentReporter interface {
+	ReportClaim(r *http.Request, agentID string, info json.RawMessage, sandboxed bool)
+	ReportBeat(r *http.Request, agentID string)
+	// RegisterWorker adds the agent-only routes: pairing, and registering
+	// local sources.
+	RegisterWorker(mux *http.ServeMux)
+	// LocalSource is the agent source an asset's file stays on, or "".
+	LocalSource(ctx context.Context, assetID string) (id string, size int64, err error)
+}
+
+// Sandboxed reports whether a claim's sandbox status enforces what the
+// sandbox requires (rlimits, no_new_privs and seccomp; D027). Landlock is
+// reported, not required.
+func Sandboxed(status string) bool {
+	parts := strings.Split(status, ",")
+	for _, need := range []string{"rlimits", "no_new_privs", "seccomp"} {
+		if !slices.Contains(parts, need) {
+			return false
+		}
+	}
+	return true
+}
+
 // Source is where a worker downloads the asset's source from. URLs are
 // minted at claim time or later, never at enqueue.
 type Source struct {
-	URL  string `json:"url"`
+	URL  string `json:"url,omitempty"`
 	Size int64  `json:"size"`
+	// AgentSourceID replaces URL for a job pinned to the agent that holds
+	// the file (push --local); only that agent knows its path.
+	AgentSourceID string `json:"agent_source_id,omitempty"`
 }
 
 // Encryption is the output's content key, handed over at claim time. It
@@ -114,6 +156,8 @@ type API struct {
 	Stores *stores.Set
 	Keys   contentkey.Ring
 	Commit *outputs.Committer
+	// Agents records agent reports and serves pairing; nil for none.
+	Agents AgentReporter
 	Logger *slog.Logger
 }
 
@@ -130,6 +174,9 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("POST /worker/v1/attempts/{id}/sign", a.sign)
 	mux.HandleFunc("POST /worker/v1/attempts/{id}/complete", a.complete)
 	mux.HandleFunc("POST /worker/v1/attempts/{id}/fail", a.fail)
+	if a.Agents != nil {
+		a.Agents.RegisterWorker(mux)
+	}
 	return mux
 }
 
@@ -137,6 +184,12 @@ func sourceKey(assetID string) string { return "uploads/" + assetID + "/source" 
 
 // source signs a fresh download URL for an asset's source.
 func (a *API) source(ctx context.Context, assetID string) (Source, error) {
+	if a.Agents != nil {
+		id, size, err := a.Agents.LocalSource(ctx, assetID)
+		if err != nil || id != "" {
+			return Source{AgentSourceID: id, Size: size}, err
+		}
+	}
 	store, err := a.Stores.ForAsset(ctx, assetID)
 	if err != nil {
 		return Source{}, err
@@ -155,7 +208,10 @@ type claimRequest struct {
 	PackagerVersion  string   `json:"packager_version"`
 	Encoders         []string `json:"encoders"`
 	FreeDiskBytes    int64    `json:"free_disk_bytes"`
-	WaitSeconds      *float64 `json:"wait_seconds"`
+	// Hardware is what the worker's GPUs proved at start, for the Workers
+	// page.
+	Hardware    json.RawMessage `json:"hardware"`
+	WaitSeconds *float64        `json:"wait_seconds"`
 	// Sandbox is what confines the worker's tools, e.g.
 	// "rlimits,no_new_privs,seccomp,idle,landlock_abi_6", or "none".
 	Sandbox string `json:"sandbox"`
@@ -175,7 +231,7 @@ func (a *API) claim(w http.ResponseWriter, r *http.Request) {
 		httpjson.Error(w, http.StatusConflict, "unsupported_contract", "this server needs contract version "+strconv.Itoa(ContractVersion))
 		return
 	}
-	if v, ok := parseVersion(req.PackagerVersion); !ok || compareVersion(v, MinPackager) < 0 {
+	if v, ok := ParseVersion(req.PackagerVersion); !ok || CompareVersion(v, MinPackager) < 0 {
 		httpjson.Error(w, http.StatusConflict, "packager_too_old", "Shaka Packager 3.9.1 or later is required")
 		return
 	}
@@ -186,9 +242,19 @@ func (a *API) claim(w http.ResponseWriter, r *http.Request) {
 	info, _ := json.Marshal(map[string]any{
 		"ffmpeg_version": req.FFmpegVersion, "packager_version": req.PackagerVersion,
 		"encoders": req.Encoders, "free_disk_bytes": req.FreeDiskBytes, "contract_versions": req.ContractVersions,
-		"sandbox": req.Sandbox,
+		"sandbox": req.Sandbox, "hardware": req.Hardware,
 	})
 	worker.Info = info
+	worker.FreeDiskBytes = max(req.FreeDiskBytes, 0)
+	if worker.AgentID != "" {
+		// Sandbox status is the agent's own report: an agent that lies
+		// exposes only its own machine to hostile uploads.
+		sandboxed := Sandboxed(req.Sandbox)
+		worker.Untrusted = !sandboxed
+		if a.Agents != nil {
+			a.Agents.ReportClaim(r, worker.AgentID, info, sandboxed)
+		}
+	}
 
 	c, err := a.Queue.ClaimWait(r.Context(), worker, wait, pollInterval)
 	if err != nil {
@@ -380,25 +446,31 @@ func (a *API) verdict(w http.ResponseWriter, v queue.Verdict) {
 
 // attemptToken checks the bearer is the token of the attempt in the path.
 func (a *API) attemptToken(w http.ResponseWriter, r *http.Request) (string, bool) {
+	token, _, ok := a.attempt(w, r)
+	return token, ok
+}
+
+// attempt authenticates an attempt token for the attempt in the path.
+func (a *API) attempt(w http.ResponseWriter, r *http.Request) (string, db.Attempt, bool) {
 	token := httpjson.Bearer(r)
 	if token == "" {
 		httpjson.Error(w, http.StatusUnauthorized, "unauthorized", "an attempt token is required")
-		return "", false
+		return "", db.Attempt{}, false
 	}
 	att, err := a.Queue.Authenticate(r.Context(), token)
 	if errors.Is(err, queue.ErrUnknownToken) {
 		httpjson.Error(w, http.StatusUnauthorized, "unauthorized", "unknown attempt token")
-		return "", false
+		return "", db.Attempt{}, false
 	}
 	if err != nil {
 		a.internal(w, "authenticate attempt", err)
-		return "", false
+		return "", db.Attempt{}, false
 	}
 	if att.ID != r.PathValue("id") {
 		httpjson.Error(w, http.StatusForbidden, "attempt_mismatch", "the token belongs to another attempt")
-		return "", false
+		return "", db.Attempt{}, false
 	}
-	return token, true
+	return token, att, true
 }
 
 var phasePattern = regexp.MustCompile(`^[a-z][a-z0-9_]{0,31}$`)
@@ -409,9 +481,12 @@ type heartbeatRequest struct {
 }
 
 func (a *API) heartbeat(w http.ResponseWriter, r *http.Request) {
-	token, ok := a.attemptToken(w, r)
+	token, att, ok := a.attempt(w, r)
 	if !ok {
 		return
+	}
+	if att.AgentID.Valid && a.Agents != nil {
+		a.Agents.ReportBeat(r, att.AgentID.String)
 	}
 	var req heartbeatRequest
 	if !httpjson.Decode(w, r, &req) {
@@ -461,8 +536,8 @@ func (a *API) internal(w http.ResponseWriter, op string, err error) {
 	httpjson.Error(w, http.StatusInternalServerError, "internal", "internal error")
 }
 
-// parseVersion reads "v3.9.3", "3.9.3" or "v3.9.3-0a8ba4f-release".
-func parseVersion(s string) ([3]int, bool) {
+// ParseVersion reads "v3.9.3", "3.9.3" or "v3.9.3-0a8ba4f-release".
+func ParseVersion(s string) ([3]int, bool) {
 	s = strings.TrimPrefix(strings.TrimSpace(s), "v")
 	if i := strings.IndexAny(s, "-+ "); i >= 0 {
 		s = s[:i]
@@ -482,7 +557,8 @@ func parseVersion(s string) ([3]int, bool) {
 	return v, true
 }
 
-func compareVersion(a, b [3]int) int {
+// CompareVersion orders two versions like strings.Compare.
+func CompareVersion(a, b [3]int) int {
 	for i := range a {
 		if a[i] != b[i] {
 			if a[i] < b[i] {
