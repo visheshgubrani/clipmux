@@ -96,8 +96,8 @@ func newRig(t *testing.T) *rig {
 		return r.prov, nil
 	}
 	r.q.Dispatch = r.svc.Route
-	r.exec(`INSERT INTO executor_configs (id, project_id, kind, config, max_concurrent, monthly_limit_cents, rate_cents_per_hour, disk_bytes, verified_at)
-		VALUES ('exe_runpod', 'prj_default', 'runpod', '{"gpu": "L4"}', 2, 5000, 80, 50000000000, now())`)
+	r.exec(`INSERT INTO executor_configs (id, project_id, kind, config, secrets_encrypted, max_concurrent, monthly_limit_cents, rate_cents_per_hour, disk_bytes, verified_at)
+		VALUES ('exe_runpod', 'prj_default', 'runpod', '{"gpu": "L4"}', 'sealed', 2, 5000, 80, 50000000000, now())`)
 	r.exec(`UPDATE projects SET primary_executor = 'agents', fallback_executor = 'runpod' WHERE id = 'prj_default'`)
 	return r
 }

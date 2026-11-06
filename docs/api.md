@@ -98,8 +98,11 @@ means stop; `404` means the ID is unknown or revoked.
 | `POST /v1/setup/owner` | `{setup_token, email, password}` → `201`, signed in; `409 registration_closed` once an owner exists |
 | `POST /v1/session` · `GET /v1/session` · `DELETE /v1/session` | sign in (`429` with `Retry-After` after repeated failures), who am I, sign out |
 | `PUT /v1/settings/urls` | `{public_url, media_url?}`; `409 pinned` when the environment sets them |
-| `GET /v1/settings/routing` | `{primary_executor, fallback_executor, queue_age_fallback_minutes, builtin_worker: {last_seen_at, online}, executors_not_connected}` (D053) |
-| `PUT /v1/settings/routing` | `{primary_executor: workers \| agents \| builtin, fallback_executor?: builtin, queue_age_fallback_minutes?: 1–1440}`; a fallback can't be part of the primary, and queue age needs a fallback (`400 invalid_request`); `modal` and `runpod` are `409 executor_not_connected` until they can be connected |
+| `GET /v1/settings/routing` | `{primary_executor, fallback_executor, queue_age_fallback_minutes, builtin_worker: {last_seen_at, online}, providers_ready}` (D053); `providers_ready` lists the providers connected and verified by a setup test |
+| `PUT /v1/settings/routing` | `{primary_executor: workers \| agents \| builtin, fallback_executor?: builtin, queue_age_fallback_minutes?: 1–1440}`; a fallback can't be part of the primary, and queue age needs a fallback (`400 invalid_request`); a provider (`modal`, `runpod`) is `409 executor_not_connected` until it is connected and its setup test passed |
+| `GET /v1/executors` | `{data: [{kind, connected, verified, verified_at, config, max_concurrent, monthly_limit_cents, rate_cents_per_hour, disk_bytes, month_cents, machines, backoff_until}]}`: every provider ever connected, with this month's estimated spend (D055, D056) |
+| `POST /v1/executors/runpod/connect` | `{api_key, image?, registry_username?, registry_password?, gpu_type_ids?, disk_gb?, max_concurrent?, monthly_limit_cents, rate_cents_per_hour}` → `{connected, steps: [{name, ok, detail}]}`; steps `credentials`, `public_url`, `registry`, `image`, `saved`, `setup_test`, stopping at the first failure; connecting again rotates the key (docs/executors.md) |
+| `DELETE /v1/executors/{kind}` | `204`; `409 executor_in_use` while routing names it, `409 machines_running` while one of its machines may run |
 | `GET /v1/apps` · `POST /v1/apps` | `{name}` |
 | `POST /v1/apps/{id}/disable` · `…/enable` | a disabled app's keys, upload tokens and playback stop; the Dashboard app can't be disabled |
 | `GET`/`POST /v1/apps/{id}/api-keys` · `DELETE /v1/api-keys/{id}` | the secret (`key`) is in the create response only; `409 public_url_required` while the public URL is loopback |

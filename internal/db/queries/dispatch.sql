@@ -101,7 +101,38 @@ LEFT JOIN attempts a ON a.id = d.attempt_id
 WHERE d.id = sqlc.arg(id);
 
 -- name: ListExecutorConfigs :many
-SELECT * FROM executor_configs WHERE project_id = $1 ORDER BY kind;
+-- Connected providers: a disconnected one keeps its row (its dispatches
+-- are spend history) without credentials.
+SELECT * FROM executor_configs WHERE project_id = $1 AND secrets_encrypted IS NOT NULL ORDER BY kind;
+
+-- name: GetExecutorConfigByKind :one
+SELECT * FROM executor_configs WHERE project_id = $1 AND kind = $2;
+
+-- name: LockExecutorConfigByKind :one
+SELECT * FROM executor_configs WHERE project_id = $1 AND kind = $2 FOR UPDATE;
+
+-- name: UpsertExecutorConfig :one
+-- Connect, or connect again: new settings and credentials, and the
+-- provider must pass a setup test again before it takes work.
+INSERT INTO executor_configs (id, project_id, kind, config, secrets_encrypted, max_concurrent, monthly_limit_cents,
+                              rate_cents_per_hour, disk_bytes)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+ON CONFLICT (project_id, kind) DO UPDATE
+SET config = EXCLUDED.config, secrets_encrypted = EXCLUDED.secrets_encrypted, max_concurrent = EXCLUDED.max_concurrent,
+    monthly_limit_cents = EXCLUDED.monthly_limit_cents, rate_cents_per_hour = EXCLUDED.rate_cents_per_hour,
+    disk_bytes = EXCLUDED.disk_bytes, verified_at = NULL, wake_failures = 0, backoff_until = NULL, updated_at = now()
+RETURNING *;
+
+-- name: DisconnectExecutor :exec
+UPDATE executor_configs SET secrets_encrypted = NULL, verified_at = NULL, updated_at = now() WHERE id = $1;
+
+-- name: ExecutorStatus :many
+SELECT c.id, c.kind, c.config, (c.secrets_encrypted IS NOT NULL)::boolean AS connected, c.verified_at,
+       c.max_concurrent, c.monthly_limit_cents, c.rate_cents_per_hour, c.disk_bytes, c.backoff_until,
+       provider_month_cents(c.id)::double precision AS month_cents,
+       (SELECT count(*) FROM dispatches d WHERE d.executor_config_id = c.id
+          AND (d.status <> 'ended' OR (d.instance_id IS NOT NULL AND d.stopped_at IS NULL)))::bigint AS machines
+FROM executor_configs c WHERE c.project_id = $1 ORDER BY c.kind;
 
 -- name: ListProviderMachines :many
 -- The machines a provider should be running: those of dispatches that

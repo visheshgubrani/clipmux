@@ -3,9 +3,11 @@
 package server
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -30,6 +32,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/outputs"
 	"github.com/visheshgubrani/clipmux/internal/queue"
 	"github.com/visheshgubrani/clipmux/internal/routes"
+	"github.com/visheshgubrani/clipmux/internal/runpod"
 	"github.com/visheshgubrani/clipmux/internal/secrets"
 	"github.com/visheshgubrani/clipmux/internal/settings"
 	"github.com/visheshgubrani/clipmux/internal/setuptest"
@@ -278,6 +281,24 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 		API: cfg.CloudflareAPI, R2Endpoint: cloudflare.EndpointTemplate(cfg.R2Endpoint),
 		SetupTest: func(ctx context.Context) error { _, err := tests.Queue(ctx, "urls_saved"); return err },
 	}
+	// Providers (P4-T04): each kind opens its adapter from its stored row.
+	rp := &runpod.Connector{
+		Pool: pool, Box: box, ProjectID: db.DefaultProjectID, API: cmp.Or(cfg.RunPodAPI, runpod.DefaultAPI),
+		PublicURL: b.urls.PublicURL, AllowPrivateURL: cfg.ExecutorsAllowPrivateURL, DefaultImage: cfg.WorkerImage,
+		Resolver: net.DefaultResolver, Logger: logger,
+		SetupTest: func(ctx context.Context) error {
+			_, err := tests.QueueThrough(ctx, "executor_connected", "runpod")
+			return err
+		},
+	}
+	disp.Resolve = func(_ context.Context, row db.ExecutorConfig) (dispatch.Executor, error) {
+		switch row.Kind {
+		case "runpod":
+			return rp.Resolve(row)
+		}
+		return nil, fmt.Errorf("no adapter for provider %q", row.Kind)
+	}
+	mgmt.RunPod = rp
 	assetsAPI := assets.New(pool)
 	// The dashboard calls the integration API with the owner's session,
 	// acting as one app; integration keys never reach the management API.

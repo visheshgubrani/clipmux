@@ -102,9 +102,11 @@ when you introduce or discover it; remove it when it is closed.
 - Disconnecting Cloudflare (back to built-in delivery) has no endpoint yet.
 - Provider spend (D055) is an estimate from the hourly rate set in Connect,
   not the provider's bill, and a machine that runs past its reservation
-  isn't stopped at the limit, so a month can overshoot by that much. No
-  provider can be connected before P4-T04, so nothing is woken in practice
-  yet.
+  isn't stopped at the limit, so a month can overshoot by that much.
+- RunPod (D056) is tested against a fake REST API only; its real-account
+  run, and the cold start that sets the 10-minute claim deadline, come with
+  the Phase 4 exit (T10). Provider machines pull `CLIPMUX_WORKER_IMAGE`
+  until builds carry their own image reference (T06).
 - Routing (D053) records the built-in worker's liveness per project, not per
   replica: with several serve replicas, any one worker's calls keep "the
   server" online. A job barred from the fallback because its file failed

@@ -1,0 +1,193 @@
+package runpod_test
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"log/slog"
+	"net"
+	"strings"
+	"testing"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/visheshgubrani/clipmux/internal/db"
+	"github.com/visheshgubrani/clipmux/internal/db/dbtest"
+	"github.com/visheshgubrani/clipmux/internal/dispatch"
+	"github.com/visheshgubrani/clipmux/internal/runpod"
+	"github.com/visheshgubrani/clipmux/internal/runpod/runpodtest"
+	"github.com/visheshgubrani/clipmux/internal/secrets"
+)
+
+type connectRig struct {
+	pool   *pgxpool.Pool
+	fake   *runpodtest.Fake
+	c      *runpod.Connector
+	queued int
+}
+
+func newConnectRig(t *testing.T) *connectRig {
+	t.Helper()
+	pool := dbtest.New(t)
+	box, _ := secrets.NewBox(1, bytes.Repeat([]byte{5}, 32))
+	r := &connectRig{pool: pool, fake: runpodtest.New(t)}
+	r.c = &runpod.Connector{
+		Pool: pool, Box: box, ProjectID: "prj_default", API: r.fake.URL,
+		PublicURL: func() string { return "https://93.184.215.14" }, Resolver: net.DefaultResolver,
+		DefaultImage: "ghcr.io/visheshgubrani/clipmux:sha-abc", Logger: slog.New(slog.DiscardHandler),
+		SetupTest: func(context.Context) error { r.queued++; return nil },
+	}
+	return r
+}
+
+var request = runpod.Request{
+	APIKey: runpodtest.Key, RegistryUsername: "visheshgubrani", RegistryPassword: "ghp_REGISTRYPASSWORD",
+	MaxConcurrent: 3, MonthlyLimitCents: 5000, RateCentsPerHour: 45,
+}
+
+func steps(res runpod.Result) string {
+	var names []string
+	for _, s := range res.Steps {
+		mark := "ok"
+		if !s.OK {
+			mark = "FAILED"
+		}
+		names = append(names, s.Name+":"+mark)
+	}
+	return strings.Join(names, " ")
+}
+
+func TestConnectRunPodStoresASealedKeyAndQueuesItsSetupTest(t *testing.T) {
+	r := newConnectRig(t)
+	ctx := context.Background()
+	res, err := r.c.Connect(ctx, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "credentials:ok public_url:ok registry:ok image:ok saved:ok setup_test:ok"; steps(res) != want || !res.Connected {
+		t.Fatalf("steps = %s, want %s", steps(res), want)
+	}
+	if r.queued != 1 {
+		t.Fatalf("queued %d setup tests, want 1", r.queued)
+	}
+	row, ok, err := dispatch.Existing(ctx, r.pool, "prj_default", "runpod")
+	if err != nil || !ok {
+		t.Fatalf("no config row: %v", err)
+	}
+	var cfg runpod.Config
+	_ = json.Unmarshal(row.Config, &cfg)
+	auths := r.fake.Auths()
+	if cfg.Image != "ghcr.io/visheshgubrani/clipmux:sha-abc" || cfg.CloudType != "SECURE" || cfg.DiskGB != 50 ||
+		len(cfg.Tag) != 8 || auths[cfg.RegistryAuthID] == "" || len(cfg.GPUTypeIDs) != len(runpod.DefaultGPUTypes) {
+		t.Fatalf("config = %+v, auths %v", cfg, auths)
+	}
+	if row.MaxConcurrent != 3 || row.MonthlyLimitCents != 5000 || row.RateCentsPerHour != 45 || row.DiskBytes != 50<<30 || row.VerifiedAt.Valid {
+		t.Fatalf("row = %+v, want the request's limits and not yet verified", row)
+	}
+	// Neither secret is stored as itself.
+	for _, secret := range []string{runpodtest.Key, "ghp_REGISTRYPASSWORD"} {
+		if bytes.Contains(row.SecretsEncrypted, []byte(secret)) || strings.Contains(string(row.Config), secret) {
+			t.Fatalf("%s is stored in the clear", secret[:4])
+		}
+	}
+	// The stored key opens the executor.
+	ex, err := r.c.Resolve(row)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ex.Running(ctx); err != nil {
+		t.Fatalf("the stored key doesn't work: %v", err)
+	}
+
+	// Connecting again rotates the key's row in place, keeps the tag,
+	// replaces the registry credentials and needs a new setup test.
+	if _, err := r.pool.Exec(ctx, `UPDATE executor_configs SET verified_at = now()`); err != nil {
+		t.Fatal(err)
+	}
+	if res, _ := r.c.Connect(ctx, request); !res.Connected {
+		t.Fatalf("reconnect: %s", steps(res))
+	}
+	again, _, _ := dispatch.Existing(ctx, r.pool, "prj_default", "runpod")
+	var cfg2 runpod.Config
+	_ = json.Unmarshal(again.Config, &cfg2)
+	if again.ID != row.ID || cfg2.Tag != cfg.Tag || again.VerifiedAt.Valid || cfg2.RegistryAuthID == cfg.RegistryAuthID {
+		t.Fatalf("reconnect: row %s→%s tag %s→%s verified %v auth %s→%s", row.ID, again.ID, cfg.Tag, cfg2.Tag,
+			again.VerifiedAt.Valid, cfg.RegistryAuthID, cfg2.RegistryAuthID)
+	}
+	if _, left := r.fake.Auths()[cfg.RegistryAuthID]; left || len(r.fake.Auths()) != 1 {
+		t.Fatalf("auths after reconnect = %v, want only the new one", r.fake.Auths())
+	}
+}
+
+func TestConnectRunPodRefusesBadKeysPrivateURLsAndMissingLimits(t *testing.T) {
+	ctx := context.Background()
+	r := newConnectRig(t)
+	bad := request
+	bad.APIKey = "rpa_NOT_THE_KEY"
+	res, err := r.c.Connect(ctx, bad)
+	if err != nil || res.Connected || steps(res) != "credentials:FAILED" || strings.Contains(res.Steps[0].Detail, "rpa_NOT_THE_KEY") {
+		t.Fatalf("bad key: %s %+v %v", steps(res), res.Steps, err)
+	}
+
+	r.c.PublicURL = func() string { return "https://192.168.1.20" }
+	res, _ = r.c.Connect(ctx, request)
+	if steps(res) != "credentials:ok public_url:FAILED" {
+		t.Fatalf("private URL: %s", steps(res))
+	}
+	r.c.AllowPrivateURL = true
+	if res, _ := r.c.Connect(ctx, request); !res.Connected {
+		t.Fatalf("with the development override: %s", steps(res))
+	}
+
+	noLimit := request
+	noLimit.MonthlyLimitCents = 0
+	if _, err := r.c.Connect(ctx, noLimit); !errors.Is(err, runpod.ErrInvalid) {
+		t.Fatalf("no monthly limit = %v, want ErrInvalid", err)
+	}
+	if r.fake.Created() != 0 {
+		t.Fatal("connecting started a pod")
+	}
+}
+
+func TestDisconnectRunPodWaitsForRoutingAndMachines(t *testing.T) {
+	ctx := context.Background()
+	r := newConnectRig(t)
+	if res, _ := r.c.Connect(ctx, request); !res.Connected {
+		t.Fatal(steps(res))
+	}
+	exec := func(sql string) {
+		t.Helper()
+		if _, err := r.pool.Exec(ctx, sql); err != nil {
+			t.Fatal(err)
+		}
+	}
+	exec(`UPDATE executor_configs SET verified_at = now()`)
+	exec(`UPDATE projects SET primary_executor = 'agents', fallback_executor = 'runpod'`)
+	if err := r.c.Disconnect(ctx); !errors.Is(err, dispatch.ErrInUse) {
+		t.Fatalf("disconnect while it is the fallback = %v, want ErrInUse", err)
+	}
+	exec(`UPDATE projects SET fallback_executor = NULL`)
+	exec(`INSERT INTO assets (id, project_id, app_id, status, storage_id) VALUES ('ast_1', 'prj_default', 'app_dashboard', 'processing', 'sto_default')`)
+	exec(`INSERT INTO jobs (id, project_id, asset_id, kind, routed_to) VALUES ('job_1', 'prj_default', 'ast_1', 'transcode', 'runpod')`)
+	exec(`INSERT INTO dispatches (id, project_id, job_id, executor_config_id, kind, key_hash, key_sealed, rate_cents_per_hour, claim_deadline)
+		SELECT 'dsp_1', 'prj_default', 'job_1', id, 'runpod', 'h', 's', 45, now() + interval '10 minutes' FROM executor_configs`)
+	if err := r.c.Disconnect(ctx); !errors.Is(err, dispatch.ErrMachinesRunning) {
+		t.Fatalf("disconnect with a live dispatch = %v, want ErrMachinesRunning", err)
+	}
+	exec(`UPDATE dispatches SET status = 'ended', ended_at = now(), end_reason = 'job_gone'`)
+	if err := r.c.Disconnect(ctx); err != nil {
+		t.Fatal(err)
+	}
+	sts, _ := dispatch.Statuses(ctx, r.pool, "prj_default")
+	if len(sts) != 1 || sts[0].Connected || sts[0].Verified || len(r.fake.Auths()) != 0 {
+		t.Fatalf("after disconnect: %+v, auths %v", sts, r.fake.Auths())
+	}
+	// Disconnected providers are invisible to the reconciler.
+	if rows, _ := db.New(r.pool).ListExecutorConfigs(ctx, "prj_default"); len(rows) != 0 {
+		t.Fatalf("the reconciler would still see %d providers", len(rows))
+	}
+	if err := r.c.Disconnect(ctx); !errors.Is(err, dispatch.ErrNotConnected) {
+		t.Fatalf("disconnecting twice = %v", err)
+	}
+}

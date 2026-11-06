@@ -67,6 +67,15 @@ func (q *Queries) CreateDispatch(ctx context.Context, arg CreateDispatchParams) 
 	return i, err
 }
 
+const disconnectExecutor = `-- name: DisconnectExecutor :exec
+UPDATE executor_configs SET secrets_encrypted = NULL, verified_at = NULL, updated_at = now() WHERE id = $1
+`
+
+func (q *Queries) DisconnectExecutor(ctx context.Context, id string) error {
+	_, err := q.db.Exec(ctx, disconnectExecutor, id)
+	return err
+}
+
 const dispatchEndReason = `-- name: DispatchEndReason :one
 SELECT (CASE
     WHEN d.status = 'ended' THEN ''
@@ -130,6 +139,63 @@ func (q *Queries) EndDispatch(ctx context.Context, arg EndDispatchParams) (Dispa
 		&i.ReservedSeconds,
 	)
 	return i, err
+}
+
+const executorStatus = `-- name: ExecutorStatus :many
+SELECT c.id, c.kind, c.config, (c.secrets_encrypted IS NOT NULL)::boolean AS connected, c.verified_at,
+       c.max_concurrent, c.monthly_limit_cents, c.rate_cents_per_hour, c.disk_bytes, c.backoff_until,
+       provider_month_cents(c.id)::double precision AS month_cents,
+       (SELECT count(*) FROM dispatches d WHERE d.executor_config_id = c.id
+          AND (d.status <> 'ended' OR (d.instance_id IS NOT NULL AND d.stopped_at IS NULL)))::bigint AS machines
+FROM executor_configs c WHERE c.project_id = $1 ORDER BY c.kind
+`
+
+type ExecutorStatusRow struct {
+	ID                string
+	Kind              string
+	Config            []byte
+	Connected         bool
+	VerifiedAt        pgtype.Timestamptz
+	MaxConcurrent     int32
+	MonthlyLimitCents int64
+	RateCentsPerHour  int32
+	DiskBytes         int64
+	BackoffUntil      pgtype.Timestamptz
+	MonthCents        float64
+	Machines          int64
+}
+
+func (q *Queries) ExecutorStatus(ctx context.Context, projectID string) ([]ExecutorStatusRow, error) {
+	rows, err := q.db.Query(ctx, executorStatus, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ExecutorStatusRow{}
+	for rows.Next() {
+		var i ExecutorStatusRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Kind,
+			&i.Config,
+			&i.Connected,
+			&i.VerifiedAt,
+			&i.MaxConcurrent,
+			&i.MonthlyLimitCents,
+			&i.RateCentsPerHour,
+			&i.DiskBytes,
+			&i.BackoffUntil,
+			&i.MonthCents,
+			&i.Machines,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const getClaimableDispatchByKeyHash = `-- name: GetClaimableDispatchByKeyHash :one
@@ -200,6 +266,38 @@ SELECT id, project_id, kind, config, secrets_encrypted, max_concurrent, monthly_
 
 func (q *Queries) GetExecutorConfig(ctx context.Context, id string) (ExecutorConfig, error) {
 	row := q.db.QueryRow(ctx, getExecutorConfig, id)
+	var i ExecutorConfig
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.Kind,
+		&i.Config,
+		&i.SecretsEncrypted,
+		&i.MaxConcurrent,
+		&i.MonthlyLimitCents,
+		&i.RateCentsPerHour,
+		&i.DiskBytes,
+		&i.ClaimDeadlineSeconds,
+		&i.VerifiedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.WakeFailures,
+		&i.BackoffUntil,
+	)
+	return i, err
+}
+
+const getExecutorConfigByKind = `-- name: GetExecutorConfigByKind :one
+SELECT id, project_id, kind, config, secrets_encrypted, max_concurrent, monthly_limit_cents, rate_cents_per_hour, disk_bytes, claim_deadline_seconds, verified_at, created_at, updated_at, wake_failures, backoff_until FROM executor_configs WHERE project_id = $1 AND kind = $2
+`
+
+type GetExecutorConfigByKindParams struct {
+	ProjectID string
+	Kind      string
+}
+
+func (q *Queries) GetExecutorConfigByKind(ctx context.Context, arg GetExecutorConfigByKindParams) (ExecutorConfig, error) {
+	row := q.db.QueryRow(ctx, getExecutorConfigByKind, arg.ProjectID, arg.Kind)
 	var i ExecutorConfig
 	err := row.Scan(
 		&i.ID,
@@ -297,9 +395,11 @@ func (q *Queries) ListDispatchesToEnd(ctx context.Context, arg ListDispatchesToE
 }
 
 const listExecutorConfigs = `-- name: ListExecutorConfigs :many
-SELECT id, project_id, kind, config, secrets_encrypted, max_concurrent, monthly_limit_cents, rate_cents_per_hour, disk_bytes, claim_deadline_seconds, verified_at, created_at, updated_at, wake_failures, backoff_until FROM executor_configs WHERE project_id = $1 ORDER BY kind
+SELECT id, project_id, kind, config, secrets_encrypted, max_concurrent, monthly_limit_cents, rate_cents_per_hour, disk_bytes, claim_deadline_seconds, verified_at, created_at, updated_at, wake_failures, backoff_until FROM executor_configs WHERE project_id = $1 AND secrets_encrypted IS NOT NULL ORDER BY kind
 `
 
+// Connected providers: a disconnected one keeps its row (its dispatches
+// are spend history) without credentials.
 func (q *Queries) ListExecutorConfigs(ctx context.Context, projectID string) ([]ExecutorConfig, error) {
 	rows, err := q.db.Query(ctx, listExecutorConfigs, projectID)
 	if err != nil {
@@ -397,6 +497,38 @@ func (q *Queries) LockDispatch(ctx context.Context, id string) (Dispatch, error)
 		&i.EndedAt,
 		&i.StoppedAt,
 		&i.ReservedSeconds,
+	)
+	return i, err
+}
+
+const lockExecutorConfigByKind = `-- name: LockExecutorConfigByKind :one
+SELECT id, project_id, kind, config, secrets_encrypted, max_concurrent, monthly_limit_cents, rate_cents_per_hour, disk_bytes, claim_deadline_seconds, verified_at, created_at, updated_at, wake_failures, backoff_until FROM executor_configs WHERE project_id = $1 AND kind = $2 FOR UPDATE
+`
+
+type LockExecutorConfigByKindParams struct {
+	ProjectID string
+	Kind      string
+}
+
+func (q *Queries) LockExecutorConfigByKind(ctx context.Context, arg LockExecutorConfigByKindParams) (ExecutorConfig, error) {
+	row := q.db.QueryRow(ctx, lockExecutorConfigByKind, arg.ProjectID, arg.Kind)
+	var i ExecutorConfig
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.Kind,
+		&i.Config,
+		&i.SecretsEncrypted,
+		&i.MaxConcurrent,
+		&i.MonthlyLimitCents,
+		&i.RateCentsPerHour,
+		&i.DiskBytes,
+		&i.ClaimDeadlineSeconds,
+		&i.VerifiedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.WakeFailures,
+		&i.BackoffUntil,
 	)
 	return i, err
 }
@@ -514,6 +646,64 @@ type SetDispatchWokenParams struct {
 func (q *Queries) SetDispatchWoken(ctx context.Context, arg SetDispatchWokenParams) error {
 	_, err := q.db.Exec(ctx, setDispatchWoken, arg.ID, arg.InstanceID)
 	return err
+}
+
+const upsertExecutorConfig = `-- name: UpsertExecutorConfig :one
+INSERT INTO executor_configs (id, project_id, kind, config, secrets_encrypted, max_concurrent, monthly_limit_cents,
+                              rate_cents_per_hour, disk_bytes)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+ON CONFLICT (project_id, kind) DO UPDATE
+SET config = EXCLUDED.config, secrets_encrypted = EXCLUDED.secrets_encrypted, max_concurrent = EXCLUDED.max_concurrent,
+    monthly_limit_cents = EXCLUDED.monthly_limit_cents, rate_cents_per_hour = EXCLUDED.rate_cents_per_hour,
+    disk_bytes = EXCLUDED.disk_bytes, verified_at = NULL, wake_failures = 0, backoff_until = NULL, updated_at = now()
+RETURNING id, project_id, kind, config, secrets_encrypted, max_concurrent, monthly_limit_cents, rate_cents_per_hour, disk_bytes, claim_deadline_seconds, verified_at, created_at, updated_at, wake_failures, backoff_until
+`
+
+type UpsertExecutorConfigParams struct {
+	ID                string
+	ProjectID         string
+	Kind              string
+	Config            []byte
+	SecretsEncrypted  []byte
+	MaxConcurrent     int32
+	MonthlyLimitCents int64
+	RateCentsPerHour  int32
+	DiskBytes         int64
+}
+
+// Connect, or connect again: new settings and credentials, and the
+// provider must pass a setup test again before it takes work.
+func (q *Queries) UpsertExecutorConfig(ctx context.Context, arg UpsertExecutorConfigParams) (ExecutorConfig, error) {
+	row := q.db.QueryRow(ctx, upsertExecutorConfig,
+		arg.ID,
+		arg.ProjectID,
+		arg.Kind,
+		arg.Config,
+		arg.SecretsEncrypted,
+		arg.MaxConcurrent,
+		arg.MonthlyLimitCents,
+		arg.RateCentsPerHour,
+		arg.DiskBytes,
+	)
+	var i ExecutorConfig
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.Kind,
+		&i.Config,
+		&i.SecretsEncrypted,
+		&i.MaxConcurrent,
+		&i.MonthlyLimitCents,
+		&i.RateCentsPerHour,
+		&i.DiskBytes,
+		&i.ClaimDeadlineSeconds,
+		&i.VerifiedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.WakeFailures,
+		&i.BackoffUntil,
+	)
+	return i, err
 }
 
 const verifyExecutor = `-- name: VerifyExecutor :exec

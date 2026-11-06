@@ -431,6 +431,23 @@ func TestRoutingSettingsChooseAPrimaryAndAFallback(t *testing.T) {
 	if got := r.call("GET", "/v1/settings/routing", nil, ""); got.body["primary_executor"] != "agents" {
 		t.Fatalf("a refused change was saved: %v", got.body)
 	}
+	// A provider becomes a choice once it is connected and its setup test
+	// passed (D056).
+	r.exec(`INSERT INTO executor_configs (id, project_id, kind, secrets_encrypted, monthly_limit_cents, disk_bytes)
+		VALUES ('exe_1', 'prj_default', 'runpod', 'sealed', 5000, 53687091200)`)
+	runpodFallback := map[string]any{"primary_executor": "agents", "fallback_executor": "runpod"}
+	if got := r.call("PUT", "/v1/settings/routing", runpodFallback, ""); got.status != http.StatusConflict {
+		t.Fatalf("an unverified provider as the fallback = %d %v, want 409", got.status, got.body)
+	}
+	r.exec(`UPDATE executor_configs SET verified_at = now()`)
+	got = r.call("PUT", "/v1/settings/routing", runpodFallback, "")
+	if ready, _ := got.body["providers_ready"].([]any); got.status != http.StatusOK || got.body["fallback_executor"] != "runpod" ||
+		len(ready) != 1 || ready[0] != "runpod" {
+		t.Fatalf("a verified provider as the fallback = %d %v", got.status, got.body)
+	}
+	if got := r.call("PUT", "/v1/settings/routing", map[string]any{"primary_executor": "runpod", "fallback_executor": "runpod"}, ""); got.status != http.StatusBadRequest {
+		t.Fatalf("a provider as its own fallback = %d, want 400", got.status)
+	}
 	if got := r.call("PUT", "/v1/settings/routing", map[string]any{"primary_executor": "workers"}, "cmx_not_a_session"); got.status != http.StatusUnauthorized {
 		t.Fatalf("an API key changed routing: %d", got.status)
 	}
