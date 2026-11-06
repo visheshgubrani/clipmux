@@ -14,7 +14,7 @@ anything decided since, and wins over the architecture doc where they differ.
 - Current packages: `config`, `db` (migrations, sqlc-generated queries and
   models, `dbtest`), `ids`, `apikeys`, `agents`, `assets`, `uploads`, `queue`,
   `workerapi`, `worker`, `outputs`, `delivery`, `tokens`, `media`, `contentkey`,
-  `storage` (filesystem and S3 adapters, `s3test`), `stores`, `routes`, `outbox`, `push`,
+  `storage` (filesystem and S3 adapters, `s3test`), `stores`, `routes`, `outbox`, `push`, `listen`,
   `httpjson`, `server`, `sweeper`, `web` (embedded dashboard build).
 - Media tests need ffmpeg, ffprobe and Shaka Packager ≥ 3.9.1
   (`toolchain/install_packager.sh`); they skip without them, except in CI

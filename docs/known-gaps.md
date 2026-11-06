@@ -68,8 +68,9 @@ when you introduce or discover it; remove it when it is closed.
 - The secrets key (D017) can't be rotated yet. Webhook secrets, the internal
   signing key and the content key secrets are sealed with it; adapter
   secrets join them with R2/S3 in Phase 2.
-- `clipmux listen` prints "not implemented"; `clipmux admin` has
-  create-key, create-signing-key and create-webhook. `clipmux push` keeps an
+- `clipmux admin` has create-key, create-signing-key and create-webhook.
+  `clipmux listen` reads events from the outbox, which is never pruned; once
+  it is, `--since` can reach back only as far as rows are kept. `clipmux push` keeps an
   unfinished push's upload token in a 0600 state file under the user's cache
   directory until it completes.
 - The image is ~575 MB and built from source on a cache miss (~20 min); it

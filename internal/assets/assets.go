@@ -89,6 +89,7 @@ func New(pool *pgxpool.Pool) *API { return &API{pool: pool, Auth: apikeys.NewAut
 func (a *API) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/assets/{id}", a.get)
 	mux.HandleFunc("GET /v1/assets", a.list)
+	mux.HandleFunc("GET /v1/events", a.events)
 }
 
 func (a *API) authorize(w http.ResponseWriter, r *http.Request) (apikeys.Key, bool) {

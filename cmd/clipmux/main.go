@@ -64,8 +64,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	case "push":
 		return runPush(args[1:], os.Getenv, stdout, stderr)
 	case "listen":
-		fmt.Fprintf(stderr, "clipmux %s: not implemented yet (see docs/plans/P1-core-product.md)\n", args[0])
-		return 1
+		return runListen(args[1:], os.Getenv, stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "clipmux: unknown command %q\n\n%s", args[0], usage)
 		return 2
