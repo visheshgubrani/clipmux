@@ -492,3 +492,81 @@ func TestReleaseGivesAnUndeliveredClaimBackWithoutCountingALoss(t *testing.T) {
 		t.Fatalf("re-claim = %+v, want attempt 1 again", again)
 	}
 }
+
+func TestUnsandboxedAgentsTakeOnlyTheirOwnAndTheOwnersJobs(t *testing.T) {
+	f := newFixture(t)
+	f.exec(`INSERT INTO apps (id, project_id, name) VALUES ('app_lms', 'prj_default', 'lms')`)
+	f.exec(`INSERT INTO agents (id, project_id, name, key_hash, status) VALUES ('agt_pc', 'prj_default', 'pc', 'h', 'approved')`)
+	f.exec(`INSERT INTO assets (id, project_id, app_id, status, storage_id) VALUES ('ast_public', 'prj_default', 'app_lms', 'processing', 'sto_default')`)
+	public := f.enqueue("ast_public", "transcode")
+	pc := queue.Worker{Executor: "agent", AgentID: "agt_pc", Untrusted: true}
+
+	if c := f.claim(pc); c != nil {
+		t.Fatalf("an unsandboxed agent claimed public upload %s", c.Job.ID)
+	}
+	owners := f.enqueue(f.asset("ast_owner", false), "transcode")
+	if c := f.claim(pc); c == nil || c.Job.ID != owners.ID {
+		t.Fatalf("unsandboxed agent claim = %+v, want the owner's upload", c)
+	}
+	sandboxed := queue.Worker{Executor: "agent", AgentID: "agt_pc"}
+	if c := f.claim(sandboxed); c == nil || c.Job.ID != public.ID {
+		t.Fatalf("sandboxed agent claim = %+v, want the public upload", c)
+	}
+}
+
+func TestFencingARevokedAgentStopsItAndRequeuesFree(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	f.exec(`INSERT INTO agents (id, project_id, name, key_hash, status) VALUES ('agt_pc', 'prj_default', 'pc', 'h', 'approved')`)
+	j := f.enqueue(f.asset("ast_1", false), "transcode")
+	c := f.claim(queue.Worker{Executor: "agent", AgentID: "agt_pc"})
+	if c == nil {
+		t.Fatal("agent claimed nothing")
+	}
+
+	n, err := f.q.FenceAgent(ctx, "agt_pc")
+	if err != nil || n != 1 {
+		t.Fatalf("FenceAgent = %d, %v; want 1 attempt fenced", n, err)
+	}
+	v, err := f.q.Heartbeat(ctx, c.Token, queue.Progress{})
+	if err != nil || !v.Stop {
+		t.Fatalf("heartbeat after revocation = %+v, %v; want stop", v, err)
+	}
+	got := f.job(j.ID)
+	if got.Status != "queued" || got.FailedCount != 0 || got.LostCount != 0 {
+		t.Fatalf("job after fencing = %s failed=%d lost=%d; want queued with no budget spent", got.Status, got.FailedCount, got.LostCount)
+	}
+	if c := f.claim(builtin); c == nil || c.Job.ID != j.ID {
+		t.Fatal("another worker should take the fenced job at once")
+	}
+	if n, err := f.q.FenceAgent(ctx, "agt_pc"); err != nil || n != 0 {
+		t.Fatalf("second FenceAgent = %d, %v; want nothing left to fence", n, err)
+	}
+}
+
+func TestWorkersTakeOnlySourcesThatFitTheirDisk(t *testing.T) {
+	f := newFixture(t)
+	big := f.asset("ast_big", false)
+	f.exec(`INSERT INTO uploads (id, project_id, asset_id, multipart_id, declared_size, part_size, token_hash, status)
+		VALUES ('upl_big', 'prj_default', $1, 'm', 10000000000, 33554432, 'h', 'completed')`, big)
+	j := f.enqueue(big, "transcode")
+
+	// 10 GB needs 30 GB free: the source, the encodes and the output.
+	if c := f.claim(queue.Worker{Executor: "builtin", FreeDiskBytes: 29_000_000_000}); c != nil {
+		t.Fatal("a worker with too little disk claimed a 10 GB source")
+	}
+	if c := f.claim(queue.Worker{Executor: "builtin", FreeDiskBytes: 30_000_000_000}); c == nil || c.Job.ID != j.ID {
+		t.Fatal("a worker with room should take it")
+	}
+}
+
+func TestWorkersThatDontReportDiskStillClaim(t *testing.T) {
+	f := newFixture(t)
+	big := f.asset("ast_big", false)
+	f.exec(`INSERT INTO uploads (id, project_id, asset_id, multipart_id, declared_size, part_size, token_hash, status)
+		VALUES ('upl_big', 'prj_default', $1, 'm', 10000000000, 33554432, 'h', 'completed')`, big)
+	f.enqueue(big, "transcode")
+	if c := f.claim(builtin); c == nil {
+		t.Fatal("a worker that doesn't report its disk was refused")
+	}
+}

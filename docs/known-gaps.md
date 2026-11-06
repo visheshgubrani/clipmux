@@ -24,8 +24,10 @@ when you introduce or discover it; remove it when it is closed.
   `SCHED_IDLE` yields to the API, and only compose `cpus:` caps it. Landlock
   is best effort: on kernels before 5.13 (or with it disabled) the tools can
   read any file the worker's user can. Agents off Linux have no sandbox.
-- Workers report no free disk space at claim, and the server doesn't check
-  it; a full disk fails the attempt (transient).
+- Imports have no known source size, so the claim's free-disk check passes
+  them; a full disk fails the attempt (transient).
+- Agent pairing codes are 8 characters (about 39 bits) with no per-address
+  limit on redeeming; they last 15 minutes and work once.
 - Content key secrets live in Postgres sealed with the secrets key (D022).
   Back up Postgres and the secrets key together: losing either makes every
   output unplayable. There is no command to rotate the content key secret.

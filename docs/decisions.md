@@ -328,5 +328,20 @@ Decision:
   - Intel hardware is unavailable, so its real run is a known gap.
 Consequence: `--sandbox` becomes the agent default. Unsandboxed agents take pinned and owner-uploaded jobs only, which needs the `agents` check constraint relaxed. No `Executor` interface is added before Phase 4 gives `Wake` a second implementation.
 
+## D043 Pairing PC agents — accepted (2026-11-06)
+Decisions within the architecture's rules and D042, made in P3-T01 and T02:
+- **Two pairing directions, both approved by the owner before a key exists.**
+  - **Dashboard first:** `POST /v1/agents/pairings` mints a code the owner has thereby approved. The PC runs `clipmux worker --server URL --pair CODE` (or the Docker variant the card shows), which exchanges it at `POST /worker/v1/pair`.
+  - **Agent first, for the PC the owner is sitting at:** `clipmux worker --server URL` asks `POST /worker/v1/pairings` for a code and a poll token, prints the code and `{public_url}/workers/connect?code=…`, and opens that link in the desktop's browser. The page shows what the machine said about itself (name, hostname, platform, address), and one click on Connect approves it. The agent polls every 2 s and receives its key on the first poll after approval. A signed-out owner is sent through sign-in and back to the same page.
+  - So agents arrive `approved`. The `pending` status stays in the schema but nothing writes it, which amends "appears as pending until the owner approves it": the owner approved by minting or clicking.
+- **Codes:** 8 characters from an alphabet without look-alikes, shown as `XXXX-XXXX` and accepted in any case with or without the dash. They are stored as SHA-256 and work once, for 15 minutes. An agent-started code can be redeemed only with its poll token, so reading it off the agent's screen doesn't yield the key. At most 10 agent-started pairings may wait at once, because anyone who can reach the server can start one.
+- **Keys:** `cmxa_` plus `rand.Text()`, stored as SHA-256 and shown once. The agent writes server, agent ID, name and key to `agent.json` (0600, written atomically) under `CLIPMUX_AGENT_DIR` or the user's config directory, and later runs need no flags. `CLIPMUX_WORKER_KEY` still wins, for the built-in worker.
+- **Authentication:** `workerapi.Auths` tries the built-in key, then agent keys. An unknown, revoked or pending agent key gets the same 401. A worker that receives 401 on claim stops (`ErrKeyRefused`), and an agent says it was disconnected.
+- **Last seen:** claims and heartbeats update `last_seen_at` and `last_ip` (the client address through trusted proxies), coalesced to one write per 10 s. An agent counts as online when it was seen in the last 60 s.
+- **Revocation** (`DELETE /v1/agents/{id}`) fails the agent's attempts that could still write with `agent_revoked`. Their next call is told to stop, and their jobs return to the queue at once without spending a retry budget. The response counts the current outputs the agent produced, for re-encoding.
+- **Trust rule:** an agent's claim says whether rlimits, `no_new_privs` and seccomp hold. One that doesn't is untrusted and claims only jobs pinned to it and assets of the built-in Dashboard app (the owner's uploads). The schema's `CHECK (sandboxed OR scope = 'local')` is dropped (migration 14). Agents probe the sandbox by default; `--unsandboxed` opts out, and the error on a host without the sandbox says so.
+- **Disk:** claims report `free_disk_bytes` for the scratch directory. A worker that reports it takes only uploads whose declared size, three times over, fits (twice for a source already on the agent). Imports and workers that don't report pass. Workers clear their scratch directory when they start.
+- **Backoff:** network errors back off from 1 s to 30 s, down from a minute, so a PC waking from sleep is back within half a minute.
+
 ## D007 Shaka Packager 3.9.3 — accepted (2026-11-05)
 Decision: pin v3.9.3 (`toolchain/versions.env`), the version clipmux-lms runs with AES-128 in production, which needs the init-segment workaround for Shaka issue 1616. Move to a release that fixes 1616 when one exists, re-running the Phase 1 player tests.

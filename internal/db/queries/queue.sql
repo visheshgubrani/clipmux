@@ -8,14 +8,26 @@ RETURNING *;
 
 -- name: LockNextClaimableJob :one
 -- Media work only: import, move and delete run in the control plane. Pinned jobs go
--- only to their agent, and local-scoped agents take only pinned jobs.
+-- only to their agent, and local-scoped agents take only pinned jobs. An
+-- untrusted (unsandboxed) agent takes only jobs pinned to it and the owner's
+-- own uploads (the built-in Dashboard app's assets), never public uploads.
 SELECT * FROM jobs
-WHERE project_id = sqlc.arg(project_id)
-  AND status = 'queued'
+WHERE jobs.project_id = sqlc.arg(project_id)
+  AND jobs.status = 'queued'
   AND available_at <= now()
   AND kind IN ('transcode', 'reencode')
   AND (pinned_agent_id IS NULL OR pinned_agent_id = sqlc.narg(agent_id))
   AND (NOT sqlc.arg(local_only)::boolean OR pinned_agent_id = sqlc.narg(agent_id))
+  AND (NOT sqlc.arg(untrusted)::boolean OR pinned_agent_id = sqlc.narg(agent_id) OR EXISTS (
+      SELECT 1 FROM assets s JOIN apps p ON p.id = s.app_id
+      WHERE s.id = jobs.asset_id AND p.is_builtin))
+  -- A worker that reports its free disk takes only sources that fit: three
+  -- times an upload's size (source, encodes, packaged output), twice a source
+  -- already on the agent. Unknown sizes (imports) and unreported disk pass.
+  AND (sqlc.narg(free_disk_bytes)::bigint IS NULL OR coalesce(
+      (SELECT 3 * u.declared_size FROM uploads u WHERE u.asset_id = jobs.asset_id ORDER BY u.created_at DESC LIMIT 1),
+      (SELECT 2 * g.size FROM assets s JOIN agent_sources g ON g.id = s.agent_source_id WHERE s.id = jobs.asset_id),
+      0) <= sqlc.narg(free_disk_bytes)::bigint)
 ORDER BY available_at, id
 LIMIT 1
 FOR UPDATE SKIP LOCKED;

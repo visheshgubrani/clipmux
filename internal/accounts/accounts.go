@@ -252,6 +252,9 @@ func (s *Service) Owner(r *http.Request) (Owner, error) {
 	return Owner{ID: row.OwnerID, ProjectID: row.ProjectID, Email: row.Email}, nil
 }
 
+// ClientIP is the request's client address, as clientIP finds it.
+func (s *Service) ClientIP(r *http.Request) netip.Addr { return s.clientIP(r) }
+
 // clientIP is the address logins are limited by: the connection's, or the
 // forwarding chain's first untrusted hop when the connection is a trusted
 // proxy (Caddy).

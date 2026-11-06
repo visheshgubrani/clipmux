@@ -92,20 +92,50 @@ const (
 	codeTimeout           = "job_timeout"
 )
 
-// Run claims and runs jobs until ctx ends.
+// ErrKeyRefused means the server no longer accepts this worker's key: an
+// agent that was revoked. Retrying can't help, so Run returns it.
+var ErrKeyRefused = errors.New("worker: the server refused this worker's key")
+
+// Run claims and runs jobs until ctx ends, or until the server refuses the
+// key. It starts by clearing attempt directories a crash left behind: only
+// this worker uses WorkDir. Network errors back off from 1 s to 30 s, so a
+// PC waking from sleep or regaining Wi-Fi is back within half a minute.
 func (w *Worker) Run(ctx context.Context) error {
+	if err := ClearDir(w.WorkDir); err != nil {
+		w.Logger.Warn("clear the scratch directory", "dir", w.WorkDir, "err", err)
+	}
 	backoff := time.Second
 	for ctx.Err() == nil {
 		if _, err := w.RunOnce(ctx); err != nil && ctx.Err() == nil {
+			if errors.Is(err, ErrKeyRefused) {
+				return err
+			}
 			w.Logger.Error("worker", "err", err)
 			select {
 			case <-ctx.Done():
 			case <-time.After(backoff):
 			}
-			backoff = min(backoff*2, time.Minute)
+			backoff = min(backoff*2, 30*time.Second)
 			continue
 		}
 		backoff = time.Second
+	}
+	return nil
+}
+
+// ClearDir removes everything inside dir, keeping dir.
+func ClearDir(dir string) error {
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		if err := os.RemoveAll(filepath.Join(dir, e.Name())); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -140,10 +170,13 @@ func (w *Worker) claim(ctx context.Context) (*workerapi.Job, error) {
 		"encoders":          []string{"libx264"},
 		"wait_seconds":      wait.Seconds(),
 		"sandbox":           orNone(w.Sandbox),
+		"free_disk_bytes":   freeDisk(w.WorkDir),
 	}, &job)
 	switch {
 	case err != nil:
 		return nil, err
+	case status == http.StatusUnauthorized:
+		return nil, ErrKeyRefused
 	case status == http.StatusNoContent:
 		return nil, nil
 	case status != http.StatusOK:

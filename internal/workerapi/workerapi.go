@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/visheshgubrani/clipmux/internal/contentkey"
+	"github.com/visheshgubrani/clipmux/internal/db"
 	"github.com/visheshgubrani/clipmux/internal/httpjson"
 	"github.com/visheshgubrani/clipmux/internal/media"
 	"github.com/visheshgubrani/clipmux/internal/outputs"
@@ -56,6 +57,42 @@ func (k BuiltinKey) AuthenticateWorker(_ context.Context, key string) (queue.Wor
 		return queue.Worker{}, false
 	}
 	return queue.Worker{Executor: "builtin"}, true
+}
+
+// Auths tries each WorkerAuth in turn: the built-in worker's key, then
+// agent keys.
+type Auths []WorkerAuth
+
+// AuthenticateWorker implements WorkerAuth.
+func (as Auths) AuthenticateWorker(ctx context.Context, key string) (queue.Worker, bool) {
+	for _, a := range as {
+		if w, ok := a.AuthenticateWorker(ctx, key); ok {
+			return w, true
+		}
+	}
+	return queue.Worker{}, false
+}
+
+// AgentReporter records what PC agents report, and when they were last seen.
+type AgentReporter interface {
+	ReportClaim(r *http.Request, agentID string, info json.RawMessage, sandboxed bool)
+	ReportBeat(r *http.Request, agentID string)
+	// RegisterWorker adds the pairing routes an agent calls before it has a
+	// key.
+	RegisterWorker(mux *http.ServeMux)
+}
+
+// Sandboxed reports whether a claim's sandbox status enforces what the
+// sandbox requires (rlimits, no_new_privs and seccomp; D027). Landlock is
+// reported, not required.
+func Sandboxed(status string) bool {
+	parts := strings.Split(status, ",")
+	for _, need := range []string{"rlimits", "no_new_privs", "seccomp"} {
+		if !slices.Contains(parts, need) {
+			return false
+		}
+	}
+	return true
 }
 
 // Source is where a worker downloads the asset's source from. URLs are
@@ -114,6 +151,8 @@ type API struct {
 	Stores *stores.Set
 	Keys   contentkey.Ring
 	Commit *outputs.Committer
+	// Agents records agent reports and serves pairing; nil for none.
+	Agents AgentReporter
 	Logger *slog.Logger
 }
 
@@ -130,6 +169,9 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("POST /worker/v1/attempts/{id}/sign", a.sign)
 	mux.HandleFunc("POST /worker/v1/attempts/{id}/complete", a.complete)
 	mux.HandleFunc("POST /worker/v1/attempts/{id}/fail", a.fail)
+	if a.Agents != nil {
+		a.Agents.RegisterWorker(mux)
+	}
 	return mux
 }
 
@@ -189,6 +231,16 @@ func (a *API) claim(w http.ResponseWriter, r *http.Request) {
 		"sandbox": req.Sandbox,
 	})
 	worker.Info = info
+	worker.FreeDiskBytes = max(req.FreeDiskBytes, 0)
+	if worker.AgentID != "" {
+		// Sandbox status is the agent's own report: an agent that lies
+		// exposes only its own machine to hostile uploads.
+		sandboxed := Sandboxed(req.Sandbox)
+		worker.Untrusted = !sandboxed
+		if a.Agents != nil {
+			a.Agents.ReportClaim(r, worker.AgentID, info, sandboxed)
+		}
+	}
 
 	c, err := a.Queue.ClaimWait(r.Context(), worker, wait, pollInterval)
 	if err != nil {
@@ -380,25 +432,31 @@ func (a *API) verdict(w http.ResponseWriter, v queue.Verdict) {
 
 // attemptToken checks the bearer is the token of the attempt in the path.
 func (a *API) attemptToken(w http.ResponseWriter, r *http.Request) (string, bool) {
+	token, _, ok := a.attempt(w, r)
+	return token, ok
+}
+
+// attempt authenticates an attempt token for the attempt in the path.
+func (a *API) attempt(w http.ResponseWriter, r *http.Request) (string, db.Attempt, bool) {
 	token := httpjson.Bearer(r)
 	if token == "" {
 		httpjson.Error(w, http.StatusUnauthorized, "unauthorized", "an attempt token is required")
-		return "", false
+		return "", db.Attempt{}, false
 	}
 	att, err := a.Queue.Authenticate(r.Context(), token)
 	if errors.Is(err, queue.ErrUnknownToken) {
 		httpjson.Error(w, http.StatusUnauthorized, "unauthorized", "unknown attempt token")
-		return "", false
+		return "", db.Attempt{}, false
 	}
 	if err != nil {
 		a.internal(w, "authenticate attempt", err)
-		return "", false
+		return "", db.Attempt{}, false
 	}
 	if att.ID != r.PathValue("id") {
 		httpjson.Error(w, http.StatusForbidden, "attempt_mismatch", "the token belongs to another attempt")
-		return "", false
+		return "", db.Attempt{}, false
 	}
-	return token, true
+	return token, att, true
 }
 
 var phasePattern = regexp.MustCompile(`^[a-z][a-z0-9_]{0,31}$`)
@@ -409,9 +467,12 @@ type heartbeatRequest struct {
 }
 
 func (a *API) heartbeat(w http.ResponseWriter, r *http.Request) {
-	token, ok := a.attemptToken(w, r)
+	token, att, ok := a.attempt(w, r)
 	if !ok {
 		return
+	}
+	if att.AgentID.Valid && a.Agents != nil {
+		a.Agents.ReportBeat(r, att.AgentID.String)
 	}
 	var req heartbeatRequest
 	if !httpjson.Decode(w, r, &req) {

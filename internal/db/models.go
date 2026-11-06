@@ -36,6 +36,23 @@ type Agent struct {
 	CreatedAt    pgtype.Timestamptz
 	ApprovedAt   pgtype.Timestamptz
 	RevokedAt    pgtype.Timestamptz
+	Hostname     string
+	Platform     string
+}
+
+type AgentPairing struct {
+	ID            string
+	ProjectID     string
+	CodeHash      []byte
+	PollTokenHash []byte
+	Status        string
+	Name          string
+	Hostname      string
+	Platform      string
+	Ip            *netip.Addr
+	AgentID       pgtype.Text
+	CreatedAt     pgtype.Timestamptz
+	ExpiresAt     pgtype.Timestamptz
 }
 
 type AgentSource struct {

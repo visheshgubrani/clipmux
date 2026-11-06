@@ -137,6 +137,12 @@ type Worker struct {
 	AgentID string
 	// LocalOnly agents claim only jobs pinned to them.
 	LocalOnly bool
+	// Untrusted agents run their tools unsandboxed, so they claim only jobs
+	// pinned to them and the owner's own (Dashboard app) uploads.
+	Untrusted bool
+	// FreeDiskBytes is the free space in the worker's scratch directory, or
+	// 0 when it didn't say; a worker takes only sources that fit.
+	FreeDiskBytes int64
 	// Info is what the worker reported at claim (tool versions, encoders,
 	// free disk), stored on the attempt as JSON.
 	Info json.RawMessage
@@ -205,7 +211,8 @@ func (q *Queue) Claim(ctx context.Context, w Worker) (*Claim, error) {
 	err := pgx.BeginFunc(ctx, q.pool, func(tx pgx.Tx) error {
 		qs := db.New(tx)
 		job, err := qs.LockNextClaimableJob(ctx, db.LockNextClaimableJobParams{
-			ProjectID: q.ProjectID, AgentID: text(w.AgentID), LocalOnly: w.LocalOnly,
+			ProjectID: q.ProjectID, AgentID: text(w.AgentID), LocalOnly: w.LocalOnly, Untrusted: w.Untrusted,
+			FreeDiskBytes: pgtype.Int8{Int64: w.FreeDiskBytes, Valid: w.FreeDiskBytes > 0},
 		})
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
@@ -445,6 +452,45 @@ func (q *Queue) SweepLostLeases(ctx context.Context, limit int) (int, error) {
 			return n, fmt.Errorf("sweep attempt %s: %w", id, err)
 		}
 		if swept {
+			n++
+		}
+	}
+	return n, nil
+}
+
+// CodeAgentRevoked marks the attempts fenced when their agent is revoked.
+const CodeAgentRevoked = "agent_revoked"
+
+// FenceAgent ends every attempt of a revoked agent that could still write:
+// each becomes failed, which tells the worker to stop on its next call, and
+// its job returns to the queue at once without spending a retry budget,
+// because the job did nothing wrong.
+func (q *Queue) FenceAgent(ctx context.Context, agentID string) (int, error) {
+	live, err := db.New(q.pool).ListAgentLiveAttempts(ctx, text(agentID))
+	if err != nil {
+		return 0, fmt.Errorf("list agent attempts: %w", err)
+	}
+	n := 0
+	for _, a := range live {
+		fenced := false
+		err := pgx.BeginFunc(ctx, q.pool, func(tx pgx.Tx) error {
+			qs := db.New(tx)
+			l, err := lockLive(ctx, qs, a.ID, a.JobID)
+			if err != nil || l.verdict.Stop {
+				return err
+			}
+			if err := qs.SetAttemptStatus(ctx, db.SetAttemptStatusParams{
+				ID: a.ID, Status: "failed", FailureKind: text("transient"), ErrorCode: text(CodeAgentRevoked),
+			}); err != nil {
+				return err
+			}
+			fenced = true
+			return qs.RequeueJob(ctx, db.RequeueJobParams{ID: a.JobID})
+		})
+		if err != nil {
+			return n, fmt.Errorf("fence attempt %s: %w", a.ID, err)
+		}
+		if fenced {
 			n++
 		}
 	}
