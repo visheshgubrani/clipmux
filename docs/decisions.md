@@ -343,5 +343,12 @@ Decisions within the architecture's rules and D042, made in P3-T01 and T02:
 - **Disk:** claims report `free_disk_bytes` for the scratch directory. A worker that reports it takes only uploads whose declared size, three times over, fits (twice for a source already on the agent). Imports and workers that don't report pass. Workers clear their scratch directory when they start.
 - **Backoff:** network errors back off from 1 s to 30 s, down from a minute, so a PC waking from sleep is back within half a minute.
 
+## D044 clipmux push — accepted (2026-11-06)
+Decisions within the architecture's rules, made in P3-T04:
+- `clipmux push --server URL [--policy signed|public] [--passthrough REF] [--wait] FILE|DIR…` is a client of the public upload API (`internal/push`), with the API key from `CLIPMUX_API_KEY`, never argv. Directories are walked for video extensions, skipping hidden directories. Each file prints `asset_id, playback_id, status, path` on stdout; progress goes to stderr.
+- **One push, one identity:** server, absolute path, size, modification time, policy and passthrough. The `Idempotency-Key` is derived from it, so pushing a finished file again replays the create (no token) and returns the same asset without sending a byte.
+- **Resume:** the upload's ID and token are kept in a 0600 file under `CLIPMUX_PUSH_STATE_DIR` (default the user's cache directory) until complete. Every run lists stored parts and sends only the missing ones (storage is the source of truth, D031). An upload that expired or was cancelled starts over under a fresh key suffix. A list that answers 409 means the sweeper finished it; completing again returns the asset.
+- **Retries:** parts go four at a time. Network errors, 5xx, 408 and 429 retry `min(30 s, 1 s·2ⁿ)` plus up to 1 s of jitter, 6 tries, honouring `Retry-After`. A 403 from storage re-signs the part once. Part URLs are signed in batches of 100 just before use, and again within 5 minutes of expiry. Errors never carry a signed URL.
+
 ## D007 Shaka Packager 3.9.3 — accepted (2026-11-05)
 Decision: pin v3.9.3 (`toolchain/versions.env`), the version clipmux-lms runs with AES-128 in production, which needs the init-segment workaround for Shaka issue 1616. Move to a release that fixes 1616 when one exists, re-running the Phase 1 player tests.
