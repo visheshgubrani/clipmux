@@ -95,6 +95,10 @@ when you introduce or discover it; remove it when it is closed.
 - No self-contained Linux tarball for agents yet (D049): a native agent
   needs an FFmpeg with the GPU encoders and the pinned packager installed;
   the image works everywhere Docker does.
+- Phase 3's exit passed on the real binary (D050); still by hand: a real
+  suspend of the M4 Mac's Docker agent, NVENC and `cuda-decode` on Modal, and
+  registering the self-hosted GPU runner. The Workers and Jobs pages and the
+  connect page have no Playwright suite yet.
 - Disconnecting Cloudflare (back to built-in delivery) has no endpoint yet.
 - The content key secret can't be rotated; when it can, rotation must
   redeploy the Worker's ring through Connect before new outputs use it.

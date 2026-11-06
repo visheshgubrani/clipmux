@@ -405,5 +405,13 @@ Decisions within the architecture's rules, made in P3-T08:
 - **`clipmux worker doctor`** checks, in order: the saved connection, the server's `/readyz` (and clock skew from its `Date`), the key (an empty `sources/sync`, which changes nothing), the tool versions, the sandbox probe, a test encode per GPU path, and scratch space. A ✗ exits 1. A missing sandbox, no GPU or less than 10 GiB free is a note, not a failure.
 - **Native Linux** is the `clipmux` binary with an FFmpeg that has the encoders and the pinned packager (`toolchain/install_packager.sh`); `doctor` verifies them. A self-contained tarball with FFmpeg's shared libraries and VAAPI drivers waits for launch, when releases are published (known gap).
 
+## D050 Phase 3 exit test — accepted (2026-11-06)
+Made in P3-T09. `internal/e2e/agents_db_test.go` runs the real binary, with serve's built-in worker off and agents paired by `clipmux admin create-pairing` (new; also for servers without a browser). Each agent runs in its own process group with `CLIPMUX_ENCODER=cpu`, and the shipped 90 s lease and 15 s sweep apply, with no knob. It passed locally at the first try (233 s):
+- **A sleeping PC recovers its job.** SIGSTOP of the agent's group mid-encode, until the sweeper marks the attempt lost, then SIGCONT. The same attempt commits with `lost_count` 1, and the video plays.
+- **A sleeping PC's job moves.** A second paired agent takes the job on a new attempt and output, and the asset becomes ready. The woken laptop is told to stop, and its attempt never commits.
+- **A local push uploads only outputs.** `clipmux push --local` without an API key leaves no `uploads/{asset}/` object and no upload row, the video plays, and a re-encode is pinned to and runs on the same PC.
+- CI runs these in the Linux exit job (timeouts raised to 45 and 55 minutes).
+Still open before Phase 3 is closed on hardware: the closed-lid suspend on the M4 Mac with the Docker agent (by hand), the Modal run of NVENC and `cuda-decode`, and registering the self-hosted GPU runner. The Workers and Jobs pages have no Playwright suite yet.
+
 ## D007 Shaka Packager 3.9.3 — accepted (2026-11-05)
 Decision: pin v3.9.3 (`toolchain/versions.env`), the version clipmux-lms runs with AES-128 in production, which needs the init-segment workaround for Shaka issue 1616. Move to a release that fixes 1616 when one exists, re-running the Phase 1 player tests.
