@@ -43,15 +43,20 @@ type Sandbox struct {
 	Exec string
 	// Dir is the only directory the tools may write: one attempt's.
 	Dir string
+	// Read are files outside Dir the tools may read: a PC agent's local
+	// source, read where it lies.
+	Read []string
 	// MemoryMB bounds each tool's address space (0: the default).
 	MemoryMB uint64
 }
 
-// In returns the tools confined to dir, for one attempt.
-func (t Tools) In(dir string) Tools {
+// In returns the tools confined to dir, for one attempt, also allowed to
+// read the given files.
+func (t Tools) In(dir string, read ...string) Tools {
 	if t.Sandbox != nil {
 		s := *t.Sandbox
 		s.Dir = dir
+		s.Read = append([]string(nil), read...)
 		t.Sandbox = &s
 	}
 	return t
@@ -90,7 +95,7 @@ func (t Tools) run(ctx context.Context, bin string, args []string, dir string, s
 		if err != nil {
 			return fmt.Errorf("%s: %w", name, err)
 		}
-		policy := sandbox.Policy{Write: t.Sandbox.Dir, MemoryMB: t.Sandbox.MemoryMB}
+		policy := sandbox.Policy{Write: t.Sandbox.Dir, Read: t.Sandbox.Read, MemoryMB: t.Sandbox.MemoryMB}
 		args, bin = sandbox.Args(policy, append([]string{abs}, args...)...), t.Sandbox.Exec
 	}
 	cmd := exec.CommandContext(ctx, bin, args...)

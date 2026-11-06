@@ -22,6 +22,8 @@ type AgentConfig struct {
 	AgentID string `json:"agent_id"`
 	Name    string `json:"name"`
 	Key     string `json:"key"`
+	// Roots, when set, are the only folders push --local may hand over.
+	Roots []string `json:"roots,omitempty"`
 }
 
 // ConfigPath is where the agent's config lives in dir.

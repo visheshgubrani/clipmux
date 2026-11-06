@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -21,6 +22,12 @@ import (
 
 const pushUsage = `Usage:
   CLIPMUX_API_KEY=cmx_… clipmux push --server URL [flags] FILE|DIR…
+  clipmux push --local [flags] FILE|DIR…
+
+With --local the files stay on this PC: its connected agent (clipmux worker)
+encodes them in place and uploads only the outputs. Without an API key they
+become your own uploads, as from the dashboard; with one, the key's app owns
+them.
 
 Uploads videos through the public upload API, straight to storage in 32 MiB
 parts. A push that is interrupted resumes where it stopped when run again,
@@ -43,13 +50,14 @@ func runPush(args []string, getenv func(string) string, stdout, stderr io.Writer
 	passthrough := fs.String("passthrough", "", "your own reference, returned in webhooks (one file only)")
 	waitReady := fs.Bool("wait", false, "wait until each video is ready to play")
 	quiet := fs.Bool("quiet", false, "print only asset and playback IDs")
+	local := fs.Bool("local", false, "keep the files on this PC; its agent encodes them and uploads only the outputs")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 	key := getenv("CLIPMUX_API_KEY")
 	switch {
-	case *server == "" || key == "" || fs.NArg() == 0:
-		fmt.Fprint(stderr, "clipmux push: needs --server, CLIPMUX_API_KEY and at least one file\n\n")
+	case fs.NArg() == 0 || (!*local && (*server == "" || key == "")) || (*local && key != "" && *server == ""):
+		fmt.Fprint(stderr, "clipmux push: needs --server and CLIPMUX_API_KEY (or --local), and at least one file\n\n")
 		fs.Usage()
 		return 2
 	case *policy != "signed" && *policy != "public":
@@ -82,8 +90,13 @@ func runPush(args []string, getenv func(string) string, stdout, stderr io.Writer
 		if !*quiet {
 			opts.Progress = progressLine(stderr, filepath.Base(f))
 		}
-		a, err := c.File(ctx, f, opts)
-		if err == nil && *waitReady {
+		var a push.Asset
+		if *local {
+			a, err = pushLocal(ctx, c, agentDir(getenv), f, opts)
+		} else {
+			a, err = c.File(ctx, f, opts)
+		}
+		if err == nil && *waitReady && c.Key != "" {
 			a, err = c.Wait(ctx, a.ID, 2*time.Second)
 		}
 		if !*quiet {
@@ -111,6 +124,26 @@ func runPush(args []string, getenv func(string) string, stdout, stderr io.Writer
 		return 1
 	}
 	return 0
+}
+
+// pushLocal hands one file to this PC's agent. With an API key, the key's
+// app creates the asset; without, the agent creates it as the owner's.
+func pushLocal(ctx context.Context, c *push.Client, dir, path string, o push.Options) (push.Asset, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return push.Asset{}, err
+	}
+	res, err := worker.RegisterLocal(ctx, dir, worker.LocalRequest{
+		Path: abs, Attach: c.Key == "", PlaybackPolicy: o.Policy, Passthrough: o.Passthrough,
+	})
+	if err != nil {
+		return push.Asset{}, err
+	}
+	if c.Key == "" {
+		var a push.Asset
+		return a, json.Unmarshal(res.Asset, &a)
+	}
+	return c.AttachLocal(ctx, res.SourceID, o)
 }
 
 // videoFiles expands directories into the video files under them.

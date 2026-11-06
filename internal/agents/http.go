@@ -14,12 +14,15 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/httpjson"
 )
 
-// RegisterWorker adds the unauthenticated pairing routes under /worker/v1,
-// the only ones an agent can call before it holds a key.
+// RegisterWorker adds the agent routes under /worker/v1: pairing, which an
+// agent calls before it holds a key, and its local sources.
 func (s *Service) RegisterWorker(mux *http.ServeMux) {
 	mux.HandleFunc("POST /worker/v1/pair", s.handleRedeem)
 	mux.HandleFunc("POST /worker/v1/pairings", s.handleStart)
 	mux.HandleFunc("POST /worker/v1/pairings/poll", s.handlePoll)
+	mux.HandleFunc("POST /worker/v1/sources", s.handleSource)
+	mux.HandleFunc("POST /worker/v1/sources/sync", s.handleSync)
+	mux.HandleFunc("POST /worker/v1/sources/{id}/attach", s.handleAttach)
 }
 
 // Register adds the owner's agent routes. Every one needs the owner's

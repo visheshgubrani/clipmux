@@ -83,6 +83,9 @@ when you introduce or discover it; remove it when it is closed.
   upload format and the custom-domain call need a run against a real test
   zone before the Phase 2 exit (D037). The manual wrangler path has no CLI
   for adding R2 storage, switching delivery or printing `CONTENT_KEYS`.
+- `clipmux push --local --upload-source` isn't built: an asset whose source
+  stays on a PC re-encodes only on that PC, and only while the file is
+  unchanged.
 - Disconnecting Cloudflare (back to built-in delivery) has no endpoint yet.
 - The content key secret can't be rotated; when it can, rotation must
   redeploy the Worker's ring through Connect before new outputs use it.

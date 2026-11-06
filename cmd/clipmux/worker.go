@@ -11,7 +11,9 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"syscall"
+	"time"
 
 	"github.com/visheshgubrani/clipmux/internal/media"
 	"github.com/visheshgubrani/clipmux/internal/sandbox"
@@ -52,13 +54,15 @@ func runWorker(args []string, getenv func(string) string, stderr io.Writer) int 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	key := getenv("CLIPMUX_WORKER_KEY")
-	if key == "" {
+	agent := key == ""
+	var roots []string
+	if agent {
 		// Agent mode: this PC's own key, from pairing.
 		cfg, code := connectAgent(ctx, agentDir(getenv), *server, serverSet, *pair, *name, stderr)
 		if code != 0 {
 			return code
 		}
-		*server, key = cfg.Server, cfg.Key
+		*server, key, roots = cfg.Server, cfg.Key, cfg.Roots
 		*confine = !*unconfined
 	}
 	tools := media.DefaultTools()
@@ -97,14 +101,56 @@ func runWorker(args []string, getenv func(string) string, stderr io.Writer) int 
 		return 1
 	}
 	logger.Info("clipmux worker started", "server", *server, "once", *once)
-	if *once {
+	if agent {
+		// push --local hands this agent files over a socket only this user
+		// can open; they stay where they are.
+		dir := agentDir(getenv)
+		local, err := worker.OpenSources(dir)
+		if err != nil {
+			logger.Error("local sources", "err", err)
+			return 1
+		}
+		w.Local = local
+		ctl := &worker.Control{Worker: w, Sources: local, Roots: roots, Logger: logger}
+		var wg sync.WaitGroup
+		defer wg.Wait()
+		ctx, cancel := context.WithCancel(ctx)
+		defer cancel()
+		wg.Go(func() {
+			if err := ctl.Serve(ctx, dir); err != nil {
+				logger.Warn("push --local is unavailable", "err", err)
+			}
+		})
+		wg.Go(func() { syncSources(ctx, w, local, logger) })
+		return runLoop(ctx, w, *once, logger, getenv)
+	}
+	return runLoop(ctx, w, *once, logger, getenv)
+}
+
+// syncSources forgets local sources whose assets were deleted: at start,
+// then hourly.
+func syncSources(ctx context.Context, w *worker.Worker, local *worker.Sources, logger *slog.Logger) {
+	for {
+		if err := w.SyncSources(ctx, local); err != nil && ctx.Err() == nil {
+			logger.Warn("sync local sources", "err", err)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(time.Hour):
+		}
+	}
+}
+
+func runLoop(ctx context.Context, w *worker.Worker, once bool, logger *slog.Logger, getenv func(string) string) int {
+	if once {
 		if _, err := w.RunOnce(ctx); err != nil {
 			logger.Error("worker", "err", err)
 			return 1
 		}
 		return 0
 	}
-	if err := w.Run(ctx); errors.Is(err, worker.ErrKeyRefused) && key != getenv("CLIPMUX_WORKER_KEY") {
+	if err := w.Run(ctx); errors.Is(err, worker.ErrKeyRefused) && getenv("CLIPMUX_WORKER_KEY") == "" {
 		logger.Error("this PC was disconnected from the server (revoked on its Workers page). " +
 			"Remove " + worker.ConfigPath(agentDir(getenv)) + " and run clipmux worker --server URL to connect it again")
 		return 1

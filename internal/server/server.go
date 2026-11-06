@@ -247,6 +247,7 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 	hooks.Logger = logger
 	life := lifecycle.New(pool, set, committer)
 	life.Logger = logger
+	agentSvc.Life = life
 	mgmt := manage.New(pool, box, acct, b.urls)
 	mgmt.Logger = logger
 	tests := setuptest.New(pool, set, box, b.urls, upl, life, cfg.SelfDial)
@@ -281,6 +282,7 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 		wg.Go(func() { sweeper.Every(ctx, interval, name, leader.Only(task), logger) })
 	}
 	loop(LeaseSweepInterval, "lost_leases", func(ctx context.Context) (int, error) { return q.SweepLostLeases(ctx, 100) })
+	loop(UploadSweepInterval, "stranded_pinned_jobs", func(ctx context.Context) (int, error) { return q.SweepStrandedPinned(ctx, 100) })
 	loop(UploadSweepInterval, "uploads", func(ctx context.Context) (int, error) { return upl.Sweep(ctx, 500) })
 	loop(RouteSyncInterval, "routes", func(ctx context.Context) (int, error) { return committer.SyncRoutes(ctx, 1000) })
 	loop(ReconcileInterval, "route_reconciler", func(ctx context.Context) (int, error) {

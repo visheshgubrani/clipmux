@@ -102,6 +102,84 @@ func (q *Queries) CreateAgent(ctx context.Context, arg CreateAgentParams) (Agent
 	return i, err
 }
 
+const createAgentSource = `-- name: CreateAgentSource :one
+INSERT INTO agent_sources (id, project_id, agent_id, size) VALUES ($1, $2, $3, $4)
+RETURNING id, project_id, agent_id, size, created_at
+`
+
+type CreateAgentSourceParams struct {
+	ID        string
+	ProjectID string
+	AgentID   string
+	Size      int64
+}
+
+func (q *Queries) CreateAgentSource(ctx context.Context, arg CreateAgentSourceParams) (AgentSource, error) {
+	row := q.db.QueryRow(ctx, createAgentSource,
+		arg.ID,
+		arg.ProjectID,
+		arg.AgentID,
+		arg.Size,
+	)
+	var i AgentSource
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.AgentID,
+		&i.Size,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const createLocalAsset = `-- name: CreateLocalAsset :one
+INSERT INTO assets (id, project_id, app_id, status, storage_id, source_uri, agent_source_id, passthrough)
+VALUES ($1, $2, $3, 'processing', $4, $5, $6, $7)
+RETURNING id, project_id, app_id, status, error_code, version, storage_id, source_uri, agent_source_id, source_kept, current_output_id, passthrough, duration_seconds, created_at, updated_at, deleted_at
+`
+
+type CreateLocalAssetParams struct {
+	ID            string
+	ProjectID     string
+	AppID         string
+	StorageID     string
+	SourceUri     pgtype.Text
+	AgentSourceID pgtype.Text
+	Passthrough   pgtype.Text
+}
+
+func (q *Queries) CreateLocalAsset(ctx context.Context, arg CreateLocalAssetParams) (Asset, error) {
+	row := q.db.QueryRow(ctx, createLocalAsset,
+		arg.ID,
+		arg.ProjectID,
+		arg.AppID,
+		arg.StorageID,
+		arg.SourceUri,
+		arg.AgentSourceID,
+		arg.Passthrough,
+	)
+	var i Asset
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.AppID,
+		&i.Status,
+		&i.ErrorCode,
+		&i.Version,
+		&i.StorageID,
+		&i.SourceUri,
+		&i.AgentSourceID,
+		&i.SourceKept,
+		&i.CurrentOutputID,
+		&i.Passthrough,
+		&i.DurationSeconds,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DeletedAt,
+	)
+	return i, err
+}
+
 const createPairing = `-- name: CreatePairing :one
 INSERT INTO agent_pairings (id, project_id, code_hash, poll_token_hash, status, name, hostname, platform, ip, expires_at)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now() + make_interval(secs => $10::double precision))
@@ -211,6 +289,73 @@ func (q *Queries) GetAgentByKeyHash(ctx context.Context, keyHash []byte) (Agent,
 	return i, err
 }
 
+const getAssetAgentSource = `-- name: GetAssetAgentSource :one
+SELECT g.id, g.project_id, g.agent_id, g.size, g.created_at, a.status AS agent_status FROM assets s
+JOIN agent_sources g ON g.id = s.agent_source_id
+JOIN agents a ON a.id = g.agent_id
+WHERE s.id = $1
+`
+
+type GetAssetAgentSourceRow struct {
+	ID          string
+	ProjectID   string
+	AgentID     string
+	Size        int64
+	CreatedAt   pgtype.Timestamptz
+	AgentStatus string
+}
+
+func (q *Queries) GetAssetAgentSource(ctx context.Context, id string) (GetAssetAgentSourceRow, error) {
+	row := q.db.QueryRow(ctx, getAssetAgentSource, id)
+	var i GetAssetAgentSourceRow
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.AgentID,
+		&i.Size,
+		&i.CreatedAt,
+		&i.AgentStatus,
+	)
+	return i, err
+}
+
+const getAttachableAgentSource = `-- name: GetAttachableAgentSource :one
+SELECT g.id, g.project_id, g.agent_id, g.size, g.created_at, a.status AS agent_status FROM agent_sources g
+JOIN agents a ON a.id = g.agent_id
+WHERE g.project_id = $1 AND g.id = $2
+  AND NOT EXISTS (SELECT 1 FROM assets s WHERE s.agent_source_id = g.id)
+`
+
+type GetAttachableAgentSourceParams struct {
+	ProjectID string
+	ID        string
+}
+
+type GetAttachableAgentSourceRow struct {
+	ID          string
+	ProjectID   string
+	AgentID     string
+	Size        int64
+	CreatedAt   pgtype.Timestamptz
+	AgentStatus string
+}
+
+// A source an asset may take: in the project, not yet attached, from an
+// agent that isn't revoked.
+func (q *Queries) GetAttachableAgentSource(ctx context.Context, arg GetAttachableAgentSourceParams) (GetAttachableAgentSourceRow, error) {
+	row := q.db.QueryRow(ctx, getAttachableAgentSource, arg.ProjectID, arg.ID)
+	var i GetAttachableAgentSourceRow
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.AgentID,
+		&i.Size,
+		&i.CreatedAt,
+		&i.AgentStatus,
+	)
+	return i, err
+}
+
 const getPairingByCode = `-- name: GetPairingByCode :one
 SELECT id, project_id, code_hash, poll_token_hash, status, name, hostname, platform, ip, agent_id, created_at, expires_at FROM agent_pairings WHERE project_id = $1 AND code_hash = $2
 `
@@ -308,6 +453,79 @@ func (q *Queries) ListAgents(ctx context.Context, projectID string) ([]Agent, er
 			return nil, err
 		}
 		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listGoneAgentSources = `-- name: ListGoneAgentSources :many
+SELECT t.sid::text FROM unnest($1::text[]) AS t (sid)
+WHERE NOT EXISTS (
+    SELECT 1 FROM agent_sources g
+    LEFT JOIN assets s ON s.agent_source_id = g.id
+    WHERE g.id = t.sid AND g.agent_id = $2
+      AND (s.status IS DISTINCT FROM 'deleted')
+      AND (s.id IS NOT NULL OR g.created_at > now() - interval '1 day'))
+ORDER BY 1
+`
+
+type ListGoneAgentSourcesParams struct {
+	Ids     []string
+	AgentID string
+}
+
+// Which of an agent's sources it may forget: unknown, someone else's,
+// attached to a deleted asset, or never attached a day after registering.
+func (q *Queries) ListGoneAgentSources(ctx context.Context, arg ListGoneAgentSourcesParams) ([]string, error) {
+	rows, err := q.db.Query(ctx, listGoneAgentSources, arg.Ids, arg.AgentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var t_sid string
+		if err := rows.Scan(&t_sid); err != nil {
+			return nil, err
+		}
+		items = append(items, t_sid)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listStrandedPinnedJobs = `-- name: ListStrandedPinnedJobs :many
+SELECT j.id FROM jobs j
+JOIN agents a ON a.id = j.pinned_agent_id
+WHERE j.status = 'queued' AND j.pinned_agent_id IS NOT NULL
+  AND (a.status = 'revoked' OR coalesce(a.last_seen_at, a.created_at) < now() - make_interval(secs => $1::double precision))
+LIMIT $2
+`
+
+type ListStrandedPinnedJobsParams struct {
+	UnseenSeconds float64
+	MaxJobs       int32
+}
+
+// Queued jobs pinned to an agent that was revoked, or hasn't been seen for
+// the given time: nothing else may run them, so they end.
+func (q *Queries) ListStrandedPinnedJobs(ctx context.Context, arg ListStrandedPinnedJobsParams) ([]string, error) {
+	rows, err := q.db.Query(ctx, listStrandedPinnedJobs, arg.UnseenSeconds, arg.MaxJobs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

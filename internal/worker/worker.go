@@ -57,6 +57,9 @@ type Worker struct {
 	// to Server instead of the public URL they name: the built-in worker
 	// reaches serve over loopback. The signature doesn't cover the host.
 	StorageViaServer bool
+	// Local holds this agent's push --local files; nil for a worker that
+	// has none (the built-in one).
+	Local *Sources
 }
 
 func orNone(s string) string {
@@ -90,7 +93,25 @@ const (
 	codeUpload            = "upload_failed"
 	codeCommit            = "commit_failed"
 	codeTimeout           = "job_timeout"
+	codeSourceMissing     = "source_missing"
+	codeSourceChanged     = "source_changed"
 )
+
+// localCode is the failure code for a local source that can't be used.
+func localCode(err error) string {
+	switch {
+	case errors.Is(err, ErrSourceChanged):
+		return codeSourceChanged
+	case errors.Is(err, ErrSourceMissing):
+		return codeSourceMissing
+	}
+	return codeTranscode
+}
+
+// permanent reports whether a failure code can't be cured by a retry.
+func permanent(code string) bool {
+	return code == codeUnsupportedSource || code == codeSourceMissing || code == codeSourceChanged
+}
 
 // ErrKeyRefused means the server no longer accepts this worker's key: an
 // agent that was revoked. Retrying can't help, so Run returns it.
@@ -216,7 +237,7 @@ func (w *Worker) handle(ctx context.Context, job *workerapi.Job) error {
 		fallthrough
 	case err != nil:
 		w.Logger.Error("attempt failed", "attempt", job.AttemptID, "code", code, "err", err)
-		return w.fail(ctx, job, code == codeUnsupportedSource, code, err)
+		return w.fail(ctx, job, permanent(code), code, err)
 	}
 	// complete is safe to retry: after a commit the server answers "stop".
 	if _, err := w.report(ctx, job, "complete", map[string]any{"manifest": m}); err != nil {
@@ -269,12 +290,27 @@ func (w *Worker) process(ctx context.Context, job *workerapi.Job, dir string, re
 	if err != nil {
 		return media.Manifest{}, codeTranscode, err
 	}
-	report("download", 0)
-	source := filepath.Join(dir, "source")
-	if err := w.download(ctx, job, source); err != nil {
-		return media.Manifest{}, codeDownload, err
+	var source string
+	var tools media.Tools
+	if id := job.Source.AgentSourceID; id != "" {
+		// push --local: the file stays where it is, readable by the tools
+		// and nothing else outside this attempt's directory.
+		if w.Local == nil {
+			return media.Manifest{}, codeSourceMissing, fmt.Errorf("%w: this worker keeps no local sources", ErrSourceMissing)
+		}
+		path, err := w.Local.Resolve(id, job.Source.Size)
+		if err != nil {
+			return media.Manifest{}, localCode(err), err
+		}
+		source, tools = path, w.Tools.In(dir, path)
+	} else {
+		report("download", 0)
+		source = filepath.Join(dir, "source")
+		if err := w.download(ctx, job, source); err != nil {
+			return media.Manifest{}, codeDownload, err
+		}
+		tools = w.Tools.In(dir) // confined to this attempt's directory
 	}
-	tools := w.Tools.In(dir) // confined to this attempt's directory
 	src, err := media.Probe(ctx, tools, source)
 	if errors.Is(err, media.ErrUnsupportedSource) {
 		return media.Manifest{}, codeUnsupportedSource, err
@@ -286,6 +322,12 @@ func (w *Worker) process(ctx context.Context, job *workerapi.Job, dir string, re
 	m, err := media.Transcode(ctx, tools, source, src, filepath.Join(dir, "work"), out, key, report)
 	if err != nil {
 		return media.Manifest{}, codeTranscode, err
+	}
+	if id := job.Source.AgentSourceID; id != "" {
+		// A file edited while it encoded would commit a mix of two files.
+		if _, err := w.Local.Resolve(id, job.Source.Size); err != nil {
+			return media.Manifest{}, localCode(err), err
+		}
 	}
 	report("upload", 0)
 	if err := w.upload(ctx, job, out, m, report); err != nil {
@@ -566,8 +608,17 @@ func (w *Worker) sign(ctx context.Context, job *workerapi.Job, paths []string, s
 	return out, nil
 }
 
-// post sends a JSON request and decodes a JSON response into out.
+// post sends a JSON request and decodes a 200 JSON response into out.
 func (w *Worker) post(ctx context.Context, path, bearer string, body, out any) (int, error) {
+	return w.send(ctx, path, bearer, body, out, false)
+}
+
+// postJSON is post that also decodes a 201.
+func (w *Worker) postJSON(ctx context.Context, path, bearer string, body, out any) (int, error) {
+	return w.send(ctx, path, bearer, body, out, true)
+}
+
+func (w *Worker) send(ctx context.Context, path, bearer string, body, out any, created bool) (int, error) {
 	raw, err := json.Marshal(body)
 	if err != nil {
 		return 0, err
@@ -583,7 +634,7 @@ func (w *Worker) post(ctx context.Context, path, bearer string, body, out any) (
 		return 0, redact(err)
 	}
 	defer res.Body.Close()
-	if out != nil && res.StatusCode == http.StatusOK {
+	if out != nil && (res.StatusCode == http.StatusOK || (created && res.StatusCode == http.StatusCreated)) {
 		if err := json.NewDecoder(io.LimitReader(res.Body, 1<<20)).Decode(out); err != nil {
 			return res.StatusCode, fmt.Errorf("%s: %w", path, err)
 		}

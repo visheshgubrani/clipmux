@@ -350,5 +350,17 @@ Decisions within the architecture's rules, made in P3-T04:
 - **Resume:** the upload's ID and token are kept in a 0600 file under `CLIPMUX_PUSH_STATE_DIR` (default the user's cache directory) until complete. Every run lists stored parts and sends only the missing ones (storage is the source of truth, D031). An upload that expired or was cancelled starts over under a fresh key suffix. A list that answers 409 means the sweeper finished it; completing again returns the asset.
 - **Retries:** parts go four at a time. Network errors, 5xx, 408 and 429 retry `min(30 s, 1 s·2ⁿ)` plus up to 1 s of jitter, 6 tries, honouring `Retry-After`. A 403 from storage re-signs the part once. Part URLs are signed in batches of 100 just before use, and again within 5 minutes of expiry. Errors never carry a signed URL.
 
+## D045 push --local and pinned sources — accepted (2026-11-06)
+Decisions within the architecture's rules, made in P3-T05:
+- **The agent's control socket.** A running agent listens on `agent.sock` (0600) beside `agent.json`. `clipmux push --local FILE|DIR…` hands it absolute paths. The agent resolves symlinks and accepts only an existing, non-empty regular file, inside `roots` from `agent.json` when any are set. Without roots, any file the agent's user can read is allowed, because only that user can open the socket. In Docker, the CLI on the host needs the agent directory bind-mounted and the files at the same paths.
+- **Register, then attach.** The agent registers the file with the server by size alone (`POST /worker/v1/sources` → `src_…`) and records path, size and modification time in `sources.json` before any asset exists, so the pinned job it is about to get always finds the file. The asset then comes from:
+  - with an API key, `POST /v1/assets {agent_source_id}`, owned by the key's app;
+  - without one, the agent's `POST /worker/v1/sources/{id}/attach`, owned by the Dashboard app as the owner's upload. So the owner's own PC needs no key.
+  - A source attaches to one asset (a unique index). The asset records `agent://{agent_id}/{source_id}`.
+- **Pinned jobs.** Transcodes and re-encodes of such an asset are pinned to the agent. The claim payload carries `{agent_source_id, size}`. The worker reads the file where it lies, and Landlock adds read access to that one file. It checks size and modification time before encoding and again after, so an edited file can't commit a mixed output. A changed or missing file is a permanent `source_changed` or `source_missing`: only the owner, at that PC, can fix it. A ready asset keeps playing.
+- **Waiting.** A pinned job waits while its agent is away and spends no budget. A sweeper ends it with `agent_unavailable` once the agent is revoked or unseen for 7 days (`queue.PinnedWait`, the retire window). Re-encoding a revoked agent's source is `409 source_unavailable`.
+- **Forgetting.** The agent asks `POST /worker/v1/sources/sync` at start and hourly which sources it may forget: their assets were deleted, they're unknown, or they were never attached a day after registering.
+- `--upload-source` isn't built yet (known gap): a local asset re-encodes only on its own PC.
+
 ## D007 Shaka Packager 3.9.3 — accepted (2026-11-05)
 Decision: pin v3.9.3 (`toolchain/versions.env`), the version clipmux-lms runs with AES-128 in production, which needs the init-segment workaround for Shaka issue 1616. Move to a release that fixes 1616 when one exists, re-running the Phase 1 player tests.

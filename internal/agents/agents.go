@@ -35,6 +35,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/db"
 	"github.com/visheshgubrani/clipmux/internal/httpjson"
 	"github.com/visheshgubrani/clipmux/internal/ids"
+	"github.com/visheshgubrani/clipmux/internal/lifecycle"
 	"github.com/visheshgubrani/clipmux/internal/queue"
 )
 
@@ -62,7 +63,10 @@ type Service struct {
 	projectID string
 	// PublicURL is the dashboard's origin, for the connect link.
 	PublicURL func() string
-	Logger    *slog.Logger
+	// Life creates assets on local sources for the owner's push --local;
+	// nil refuses attach.
+	Life   *lifecycle.Service
+	Logger *slog.Logger
 }
 
 // New returns the agent service.

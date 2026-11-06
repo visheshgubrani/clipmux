@@ -19,8 +19,12 @@ import (
 
 	"github.com/visheshgubrani/clipmux/internal/accounts"
 	"github.com/visheshgubrani/clipmux/internal/agents"
+	"github.com/visheshgubrani/clipmux/internal/apikeys"
 	"github.com/visheshgubrani/clipmux/internal/db/dbtest"
+	"github.com/visheshgubrani/clipmux/internal/lifecycle"
 	"github.com/visheshgubrani/clipmux/internal/queue"
+	"github.com/visheshgubrani/clipmux/internal/storage"
+	"github.com/visheshgubrani/clipmux/internal/stores"
 	"github.com/visheshgubrani/clipmux/internal/worker"
 )
 
@@ -41,9 +45,16 @@ func newRig(t *testing.T) *rig {
 	acct := accounts.New(pool, "prj_default", func() string { return "http://localhost:8080" })
 	q := queue.New(pool)
 	svc := agents.New(pool, q, acct, "prj_default", func() string { return "https://clipmux.example" })
+	store, err := storage.OpenFilesystem(t.TempDir(), storage.FilesystemOptions{BaseURL: "http://unused"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+	svc.Life = lifecycle.New(pool, stores.Fixed(store), nil)
 	mux := http.NewServeMux()
 	svc.Register(mux)
 	svc.RegisterWorker(mux)
+	svc.Life.Register(mux)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	token, _, _ := acct.SetupToken(ctx)
@@ -255,4 +266,159 @@ func TestOwnerRoutesNeedTheSession(t *testing.T) {
 func isRefusal(err error, code string) bool {
 	var pe *worker.PairingError
 	return errors.As(err, &pe) && pe.Code == code
+}
+
+// bearer calls a route with an agent or API key.
+func (r *rig) bearer(key, path string, body any) (int, map[string]any) {
+	r.t.Helper()
+	raw, _ := json.Marshal(body)
+	req, _ := http.NewRequest("POST", r.url+path, bytes.NewReader(raw))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+key)
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	defer res.Body.Close()
+	var out map[string]any
+	_ = json.NewDecoder(res.Body).Decode(&out)
+	return res.StatusCode, out
+}
+
+func (r *rig) pairAgent(name string) worker.AgentConfig {
+	r.t.Helper()
+	_, inv := r.owner("POST", "/v1/agents/pairings", nil)
+	cfg, err := worker.Redeem(context.Background(), http.DefaultClient, r.url, inv["code"].(string), name)
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	return cfg
+}
+
+func (r *rig) job(assetID string) (pinned string, status string, code string) {
+	r.t.Helper()
+	var p, c *string
+	if err := r.pool.QueryRow(context.Background(),
+		`SELECT pinned_agent_id, status, error_code FROM jobs WHERE asset_id = $1 ORDER BY created_at DESC LIMIT 1`, assetID).Scan(&p, &status, &c); err != nil {
+		r.t.Fatal(err)
+	}
+	if p != nil {
+		pinned = *p
+	}
+	if c != nil {
+		code = *c
+	}
+	return pinned, status, code
+}
+
+func TestALocalSourceIsPinnedToItsAgent(t *testing.T) {
+	r := newRig(t)
+	ctx := context.Background()
+	pc, other := r.pairAgent("pc"), r.pairAgent("other")
+	key, _, err := apikeys.Create(ctx, r.pool, "prj_default", "app_dashboard", "cli", []string{apikeys.AssetsWrite})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	status, src := r.bearer(pc.Key, "/worker/v1/sources", map[string]any{"size": 1234})
+	if status != http.StatusCreated {
+		t.Fatalf("register = %d %v", status, src)
+	}
+	status, asset := r.bearer(key, "/v1/assets", map[string]any{"agent_source_id": src["id"], "passthrough": "lesson-9"})
+	if status != http.StatusCreated || asset["status"] != "processing" {
+		t.Fatalf("attach = %d %v", status, asset)
+	}
+	if pinned, _, _ := r.job(asset["id"].(string)); pinned != pc.AgentID {
+		t.Fatalf("job pinned to %q, want %s", pinned, pc.AgentID)
+	}
+	if status, body := r.bearer(key, "/v1/assets", map[string]any{"agent_source_id": src["id"]}); status != http.StatusNotFound {
+		t.Fatalf("attaching a source twice = %d %v", status, body)
+	}
+
+	ow, _ := r.authenticates(other.Key)
+	if c, err := r.q.Claim(ctx, ow); err != nil || c != nil {
+		t.Fatalf("another agent claimed %v, %v", c, err)
+	}
+	pw, _ := r.authenticates(pc.Key)
+	c, err := r.q.Claim(ctx, pw)
+	if err != nil || c == nil || c.Job.AssetID != asset["id"] {
+		t.Fatalf("its own agent claim = %v, %v", c, err)
+	}
+	if got, size, err := r.svc.LocalSource(ctx, c.Job.AssetID); err != nil || got != src["id"] || size != 1234 {
+		t.Fatalf("LocalSource = %q %d %v", got, size, err)
+	}
+}
+
+func TestTheOwnersPushNeedsNoAPIKey(t *testing.T) {
+	r := newRig(t)
+	pc := r.pairAgent("pc")
+	_, src := r.bearer(pc.Key, "/worker/v1/sources", map[string]any{"size": 10})
+	status, asset := r.bearer(pc.Key, "/worker/v1/sources/"+src["id"].(string)+"/attach", map[string]any{"playback_policy": "public"})
+	if status != http.StatusCreated || asset["app_id"] != "app_dashboard" {
+		t.Fatalf("attach as the owner = %d %v, want an asset of the Dashboard app", status, asset)
+	}
+	other := r.pairAgent("other")
+	_, theirs := r.bearer(other.Key, "/worker/v1/sources", map[string]any{"size": 10})
+	if status, _ := r.bearer(pc.Key, "/worker/v1/sources/"+theirs["id"].(string)+"/attach", nil); status != http.StatusNotFound {
+		t.Fatalf("attaching another agent's source = %d, want 404", status)
+	}
+}
+
+func TestAJobWaitsForItsPCThenEndsIfItNeverReturns(t *testing.T) {
+	r := newRig(t)
+	ctx := context.Background()
+	pc := r.pairAgent("pc")
+	_, src := r.bearer(pc.Key, "/worker/v1/sources", map[string]any{"size": 10})
+	_, asset := r.bearer(pc.Key, "/worker/v1/sources/"+src["id"].(string)+"/attach", nil)
+	id := asset["id"].(string)
+
+	r.exec(`UPDATE agents SET last_seen_at = now() - interval '6 days'`)
+	if n, err := r.q.SweepStrandedPinned(ctx, 10); err != nil || n != 0 {
+		t.Fatalf("a PC away for 6 days: swept %d, %v; want its job still waiting", n, err)
+	}
+	if _, status, _ := r.job(id); status != "queued" {
+		t.Fatalf("job = %s, want queued", status)
+	}
+	r.exec(`UPDATE agents SET last_seen_at = now() - interval '8 days'`)
+	if n, err := r.q.SweepStrandedPinned(ctx, 10); err != nil || n != 1 {
+		t.Fatalf("a PC away for 8 days: swept %d, %v", n, err)
+	}
+	if _, status, code := r.job(id); status != "failed" || code != "agent_unavailable" {
+		t.Fatalf("job = %s %s, want failed agent_unavailable", status, code)
+	}
+}
+
+func TestAnAgentForgetsSourcesWhoseAssetsWereDeleted(t *testing.T) {
+	r := newRig(t)
+	pc := r.pairAgent("pc")
+	_, kept := r.bearer(pc.Key, "/worker/v1/sources", map[string]any{"size": 10})
+	_, gone := r.bearer(pc.Key, "/worker/v1/sources", map[string]any{"size": 10})
+	_, fresh := r.bearer(pc.Key, "/worker/v1/sources", map[string]any{"size": 10})
+	_, a1 := r.bearer(pc.Key, "/worker/v1/sources/"+kept["id"].(string)+"/attach", nil)
+	_, a2 := r.bearer(pc.Key, "/worker/v1/sources/"+gone["id"].(string)+"/attach", nil)
+	_ = a1
+	r.exec(`UPDATE assets SET status = 'deleted' WHERE id = $1`, a2["id"])
+
+	ids := []string{kept["id"].(string), gone["id"].(string), fresh["id"].(string), "src_unknown"}
+	_, out := r.bearer(pc.Key, "/worker/v1/sources/sync", map[string]any{"ids": ids})
+	got, _ := json.Marshal(out["gone"])
+	if want := `["` + gone["id"].(string) + `","src_unknown"]`; string(got) != want {
+		t.Fatalf("gone = %s, want %s (a fresh, unattached source is kept a day)", got, want)
+	}
+}
+
+func TestARevokedAgentsSourceCantBeReencoded(t *testing.T) {
+	r := newRig(t)
+	ctx := context.Background()
+	pc := r.pairAgent("pc")
+	_, src := r.bearer(pc.Key, "/worker/v1/sources", map[string]any{"size": 10})
+	_, asset := r.bearer(pc.Key, "/worker/v1/sources/"+src["id"].(string)+"/attach", nil)
+	r.exec(`UPDATE jobs SET status = 'succeeded'`)
+	r.exec(`UPDATE assets SET status = 'errored', error_code = 'transcode_failed'`)
+	r.owner("DELETE", "/v1/agents/"+pc.AgentID, nil)
+	key, _, _ := apikeys.Create(ctx, r.pool, "prj_default", "app_dashboard", "cli", []string{apikeys.AssetsWrite})
+	status, body := r.bearer(key, "/v1/assets/"+asset["id"].(string)+"/reencode", nil)
+	if status != http.StatusConflict || body["error"].(map[string]any)["code"] != "source_unavailable" {
+		t.Fatalf("re-encode = %d %v, want 409 source_unavailable", status, body)
+	}
 }

@@ -77,9 +77,11 @@ func (as Auths) AuthenticateWorker(ctx context.Context, key string) (queue.Worke
 type AgentReporter interface {
 	ReportClaim(r *http.Request, agentID string, info json.RawMessage, sandboxed bool)
 	ReportBeat(r *http.Request, agentID string)
-	// RegisterWorker adds the pairing routes an agent calls before it has a
-	// key.
+	// RegisterWorker adds the agent-only routes: pairing, and registering
+	// local sources.
 	RegisterWorker(mux *http.ServeMux)
+	// LocalSource is the agent source an asset's file stays on, or "".
+	LocalSource(ctx context.Context, assetID string) (id string, size int64, err error)
 }
 
 // Sandboxed reports whether a claim's sandbox status enforces what the
@@ -98,8 +100,11 @@ func Sandboxed(status string) bool {
 // Source is where a worker downloads the asset's source from. URLs are
 // minted at claim time or later, never at enqueue.
 type Source struct {
-	URL  string `json:"url"`
+	URL  string `json:"url,omitempty"`
 	Size int64  `json:"size"`
+	// AgentSourceID replaces URL for a job pinned to the agent that holds
+	// the file (push --local); only that agent knows its path.
+	AgentSourceID string `json:"agent_source_id,omitempty"`
 }
 
 // Encryption is the output's content key, handed over at claim time. It
@@ -179,6 +184,12 @@ func sourceKey(assetID string) string { return "uploads/" + assetID + "/source" 
 
 // source signs a fresh download URL for an asset's source.
 func (a *API) source(ctx context.Context, assetID string) (Source, error) {
+	if a.Agents != nil {
+		id, size, err := a.Agents.LocalSource(ctx, assetID)
+		if err != nil || id != "" {
+			return Source{AgentSourceID: id, Size: size}, err
+		}
+	}
 	store, err := a.Stores.ForAsset(ctx, assetID)
 	if err != nil {
 		return Source{}, err

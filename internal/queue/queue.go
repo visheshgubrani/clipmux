@@ -497,6 +497,41 @@ func (q *Queue) FenceAgent(ctx context.Context, agentID string) (int, error) {
 	return n, nil
 }
 
+// CodeAgentUnavailable ends jobs pinned to an agent that can't run them.
+const CodeAgentUnavailable = "agent_unavailable"
+
+// PinnedWait is how long a job pinned to a PC agent waits for that agent to
+// come back, matching the retire window. Waiting spends no retry budget: a
+// laptop shut for a weekend hasn't failed.
+const PinnedWait = 7 * 24 * time.Hour
+
+// SweepStrandedPinned ends queued jobs pinned to an agent that was revoked
+// or hasn't been seen for PinnedWait: only that agent holds the source.
+func (q *Queue) SweepStrandedPinned(ctx context.Context, limit int) (int, error) {
+	stranded, err := db.New(q.pool).ListStrandedPinnedJobs(ctx, db.ListStrandedPinnedJobsParams{
+		UnseenSeconds: PinnedWait.Seconds(), MaxJobs: int32(limit),
+	})
+	if err != nil {
+		return 0, fmt.Errorf("list stranded jobs: %w", err)
+	}
+	n := 0
+	for _, id := range stranded {
+		err := pgx.BeginFunc(ctx, q.pool, func(tx pgx.Tx) error {
+			qs := db.New(tx)
+			job, err := qs.LockJob(ctx, id)
+			if err != nil || job.Status != "queued" {
+				return err
+			}
+			n++
+			return q.endJob(ctx, qs, job, CodeAgentUnavailable)
+		})
+		if err != nil {
+			return n, fmt.Errorf("end stranded job %s: %w", id, err)
+		}
+	}
+	return n, nil
+}
+
 // endJob fails a job for good. A ready asset (a failed re-encode) keeps
 // playing its current output; anything else becomes errored. Either way the
 // app hears about it through the webhook outbox, in this transaction.

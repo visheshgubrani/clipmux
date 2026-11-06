@@ -76,3 +76,47 @@ WHERE a.agent_id = $1 AND a.status IN ('running', 'lost') AND j.status = 'runnin
 SELECT count(*) FROM assets s
 JOIN attempts a ON a.output_id = s.current_output_id
 WHERE a.agent_id = $1 AND s.status <> 'deleted';
+
+-- name: CreateAgentSource :one
+INSERT INTO agent_sources (id, project_id, agent_id, size) VALUES ($1, $2, $3, $4)
+RETURNING *;
+
+-- name: GetAttachableAgentSource :one
+-- A source an asset may take: in the project, not yet attached, from an
+-- agent that isn't revoked.
+SELECT g.*, a.status AS agent_status FROM agent_sources g
+JOIN agents a ON a.id = g.agent_id
+WHERE g.project_id = $1 AND g.id = $2
+  AND NOT EXISTS (SELECT 1 FROM assets s WHERE s.agent_source_id = g.id);
+
+-- name: CreateLocalAsset :one
+INSERT INTO assets (id, project_id, app_id, status, storage_id, source_uri, agent_source_id, passthrough)
+VALUES ($1, $2, $3, 'processing', $4, $5, $6, $7)
+RETURNING *;
+
+-- name: GetAssetAgentSource :one
+SELECT g.*, a.status AS agent_status FROM assets s
+JOIN agent_sources g ON g.id = s.agent_source_id
+JOIN agents a ON a.id = g.agent_id
+WHERE s.id = $1;
+
+-- name: ListGoneAgentSources :many
+-- Which of an agent's sources it may forget: unknown, someone else's,
+-- attached to a deleted asset, or never attached a day after registering.
+SELECT t.sid::text FROM unnest(sqlc.arg(ids)::text[]) AS t (sid)
+WHERE NOT EXISTS (
+    SELECT 1 FROM agent_sources g
+    LEFT JOIN assets s ON s.agent_source_id = g.id
+    WHERE g.id = t.sid AND g.agent_id = sqlc.arg(agent_id)
+      AND (s.status IS DISTINCT FROM 'deleted')
+      AND (s.id IS NOT NULL OR g.created_at > now() - interval '1 day'))
+ORDER BY 1;
+
+-- name: ListStrandedPinnedJobs :many
+-- Queued jobs pinned to an agent that was revoked, or hasn't been seen for
+-- the given time: nothing else may run them, so they end.
+SELECT j.id FROM jobs j
+JOIN agents a ON a.id = j.pinned_agent_id
+WHERE j.status = 'queued' AND j.pinned_agent_id IS NOT NULL
+  AND (a.status = 'revoked' OR coalesce(a.last_seen_at, a.created_at) < now() - make_interval(secs => sqlc.arg(unseen_seconds)::double precision))
+LIMIT sqlc.arg(max_jobs);

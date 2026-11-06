@@ -526,6 +526,18 @@ func redact(err error) error {
 	return fmt.Errorf("%s %s: %w", ue.Op, u.String(), ue.Err)
 }
 
+// AttachLocal creates the asset for a file a PC agent registered for push
+// --local (POST /v1/assets with agent_source_id), as the key's app.
+func (c *Client) AttachLocal(ctx context.Context, sourceID string, o Options) (Asset, error) {
+	if o.Policy == "" {
+		o.Policy = "signed"
+	}
+	var a Asset
+	_, err := c.call(ctx, http.MethodPost, "/v1/assets", c.Key, map[string]string{"Idempotency-Key": "push-local-" + sourceID},
+		map[string]any{"agent_source_id": sourceID, "playback_policy": o.Policy, "passthrough": o.Passthrough}, &a)
+	return a, err
+}
+
 // Asset reads an asset.
 func (c *Client) Asset(ctx context.Context, id string) (Asset, error) {
 	var a Asset
