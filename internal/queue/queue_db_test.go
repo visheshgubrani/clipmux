@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/visheshgubrani/clipmux/internal/db"
@@ -165,8 +166,13 @@ func TestClaimCreatesAttemptLeaseAndFreshOutput(t *testing.T) {
 	if c.Token == "" || string(c.Attempt.TokenHash) == c.Token {
 		t.Fatal("the attempt token must be stored hashed")
 	}
-	if got := f.job(job.ID); got.Status != "running" || got.RoutedTo.String != "builtin" {
+	// routed_to keeps naming the route (D053); the attempt says who ran it
+	// and why.
+	if got := f.job(job.ID); got.Status != "running" || got.RoutedTo.String != "workers" {
 		t.Fatalf("job = status %q routed_to %q", got.Status, got.RoutedTo.String)
+	}
+	if c.Attempt.Executor != "builtin" || c.Attempt.RouteReason.String != "primary" {
+		t.Fatalf("attempt = executor %q route_reason %q, want builtin primary", c.Attempt.Executor, c.Attempt.RouteReason.String)
 	}
 	if again := f.claim(builtin); again != nil {
 		t.Fatal("a running job was claimed twice")
@@ -568,5 +574,79 @@ func TestWorkersThatDontReportDiskStillClaim(t *testing.T) {
 	f.enqueue(big, "transcode")
 	if c := f.claim(builtin); c == nil {
 		t.Fatal("a worker that doesn't report its disk was refused")
+	}
+}
+
+// localAsset is a ready asset whose source stays on agt_pc, uploaded after
+// its encode only when upload is set (push --local --upload-source, D059).
+func (f *fixture) localAsset(id string, upload bool) {
+	f.t.Helper()
+	f.exec(`INSERT INTO agents (id, project_id, name, key_hash, status, sandboxed, last_seen_at)
+		VALUES ('agt_pc', 'prj_default', 'PC', 'h', 'approved', true, now()) ON CONFLICT DO NOTHING`)
+	f.exec(`INSERT INTO agent_sources (id, project_id, agent_id, size, upload_source) VALUES ($1, 'prj_default', 'agt_pc', 1000, $2)`, "src_"+id, upload)
+	f.exec(`INSERT INTO assets (id, project_id, app_id, status, storage_id, source_uri, agent_source_id)
+		VALUES ($1, 'prj_default', 'app_dashboard', 'processing', 'sto_default', 'agent://agt_pc/src_' || $1, 'src_' || $1)`, id)
+}
+
+func (f *fixture) jobsOf(assetID string) []db.Job {
+	f.t.Helper()
+	rows, err := f.pool.Query(context.Background(), `SELECT * FROM jobs WHERE asset_id = $1 ORDER BY created_at, id`, assetID)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	jobs, err := pgx.CollectRows(rows, pgx.RowToStructByPos[db.Job])
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	return jobs
+}
+
+// The commit of a local source's encode queues its upload, pinned to its
+// PC, only when the push asked for it.
+func TestCommittingALocalEncodeQueuesItsSourceUploadWhenAsked(t *testing.T) {
+	f := newFixture(t)
+	pc := queue.Worker{Executor: "agent", AgentID: "agt_pc"}
+	f.localAsset("ast_up", true)
+	f.localAsset("ast_stay", false)
+	for _, a := range []string{"ast_up", "ast_stay"} {
+		if _, err := queue.Enqueue(context.Background(), f.pool, queue.Job{ProjectID: "prj_default", AssetID: a, Kind: "transcode", PinnedAgentID: "agt_pc"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Both encodes are claimed before either commits, so no upload exists
+	// yet to be claimed instead.
+	first, second := f.claim(pc), f.claim(pc)
+	for _, cl := range []*queue.Claim{first, second} {
+		if cl == nil || cl.Job.Kind != "transcode" {
+			t.Fatalf("claim = %+v, want a transcode", cl)
+		}
+		if _, err := f.q.CommitAttempt(context.Background(), cl.Token, func(*db.Queries, db.Attempt, db.Job) error { return nil }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if jobs := f.jobsOf("ast_up"); len(jobs) != 2 || jobs[1].Kind != "upload_source" || jobs[1].PinnedAgentID.String != "agt_pc" ||
+		jobs[1].RouteReason.String != "pinned" || jobs[1].Status != "queued" {
+		t.Fatalf("ast_up: jobs = %+v, want a queued upload_source pinned to the PC", jobs)
+	}
+	if jobs := f.jobsOf("ast_stay"); len(jobs) != 1 {
+		t.Fatalf("ast_stay: queued %d jobs after its encode, want none", len(jobs)-1)
+	}
+	// Only the PC holding the file takes it.
+	if c := f.claim(builtin); c != nil {
+		t.Fatalf("the built-in worker claimed %s", c.Job.Kind)
+	}
+	up := f.claim(pc)
+	if up == nil || up.Job.Kind != "upload_source" {
+		t.Fatalf("the PC claimed %+v, want the upload", up)
+	}
+
+	// An upload that fails for good leaves the video as it was: no error,
+	// no webhook. Its source just stays on the PC.
+	before := len(f.events())
+	if _, err := f.q.Fail(context.Background(), up.Token, queue.Failure{Permanent: true, Code: "source_changed"}); err != nil {
+		t.Fatal(err)
+	}
+	if status, code, _ := f.assetRow("ast_up"); status != "processing" || code != "" || len(f.events()) != before {
+		t.Fatalf("after a failed upload: asset %s %q, %d new events", status, code, len(f.events())-before)
 	}
 }

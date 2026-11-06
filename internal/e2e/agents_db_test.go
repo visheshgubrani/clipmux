@@ -282,3 +282,57 @@ func TestExitALocalPushUploadsOnlyOutputs(t *testing.T) {
 		t.Fatal("the re-encode uploaded the source")
 	}
 }
+
+// push --local --upload-source (D059): the file stays on the PC for its
+// first encode, then the PC uploads it, and a re-encode is no longer tied
+// to that PC.
+func TestALocalPushWithUploadSourceReencodesAnywhere(t *testing.T) {
+	in := start(t, "CLIPMUX_BUILTIN_WORKER=false")
+	key, _, _ := in.credentials("Dashboard")
+	pc := in.startAgent("studio")
+	pc.waitFor(func() bool {
+		_, err := os.Stat(filepath.Join(pc.dir, "agent.sock"))
+		return err == nil
+	}, 30*time.Second, "the agent's socket")
+
+	source := fixture(t, 8, 1280, 720)
+	push := exec.Command(bin, "push", "--local", "--upload-source", "--quiet", source)
+	push.Env = pc.env
+	out, err := push.CombinedOutput()
+	if err != nil {
+		t.Fatalf("clipmux push --local --upload-source: %v\n%s", err, out)
+	}
+	asset := strings.Fields(string(out))[0]
+	in.waitReady(key, asset, 3*time.Minute)
+
+	ctx := context.Background()
+	deadline := time.Now().Add(2 * time.Minute)
+	for {
+		var status string
+		_ = in.pool.QueryRow(ctx, `SELECT status FROM jobs WHERE asset_id = $1 AND kind = 'upload_source'`, asset).Scan(&status)
+		if status == "succeeded" {
+			break
+		}
+		if status == "failed" || time.Now().After(deadline) {
+			t.Fatalf("upload_source %q", status)
+		}
+		time.Sleep(time.Second)
+	}
+	want, err := os.ReadFile(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(in.dataDir, "storage", "objects", "uploads", asset, "source"))
+	if err != nil || !bytes.Equal(got, want) {
+		t.Fatalf("stored source: %d bytes (%v), want the pushed file's %d", len(got), err, len(want))
+	}
+
+	if s := in.call("POST", "/v1/assets/"+asset+"/reencode", key, map[string]any{}, nil); s != 202 {
+		t.Fatalf("re-encode: %d", s)
+	}
+	var pinned string
+	_ = in.pool.QueryRow(ctx, `SELECT coalesce(pinned_agent_id, '') FROM jobs WHERE asset_id = $1 AND kind = 'reencode'`, asset).Scan(&pinned)
+	if pinned != "" {
+		t.Fatalf("the re-encode is still pinned to %s", pinned)
+	}
+}

@@ -64,6 +64,16 @@ type Config struct {
 	// account (CLIPMUX_R2_ENDPOINT; default https://{account_id}.r2.cloudflarestorage.com),
 	// e.g. the EU jurisdiction's https://{account_id}.eu.r2.cloudflarestorage.com.
 	R2Endpoint string
+	// RunPodAPI is RunPod's REST API base (CLIPMUX_RUNPOD_API; default the
+	// public v1 API), for a test double.
+	RunPodAPI string
+	// WorkerImage is the image provider machines run
+	// (CLIPMUX_WORKER_IMAGE), until builds carry their own (P4-T06).
+	WorkerImage string
+	// ExecutorsAllowPrivateURL lets a provider connect while the public URL
+	// is private (CLIPMUX_EXECUTORS_ALLOW_PRIVATE_URL): only for development
+	// and tests whose "provider" runs on the same machine.
+	ExecutorsAllowPrivateURL bool
 	// Tools are the media binaries (CLIPMUX_FFMPEG, CLIPMUX_FFPROBE,
 	// CLIPMUX_PACKAGER; default: found on PATH).
 	Tools media.Tools
@@ -86,6 +96,8 @@ func FromEnv(getenv func(string) string) (Config, error) {
 		SelfDial:      getenv("CLIPMUX_SELF_DIAL"),
 		CloudflareAPI: getenv("CLIPMUX_CLOUDFLARE_API"),
 		R2Endpoint:    getenv("CLIPMUX_R2_ENDPOINT"),
+		RunPodAPI:     getenv("CLIPMUX_RUNPOD_API"),
+		WorkerImage:   getenv("CLIPMUX_WORKER_IMAGE"),
 	}
 	if cfg.DatabaseURL == "" {
 		return Config{}, errors.New("DATABASE_URL is required")
@@ -139,6 +151,13 @@ func FromEnv(getenv func(string) string) (Config, error) {
 		cfg.UnsandboxedWorker = true
 	default:
 		return Config{}, fmt.Errorf("CLIPMUX_UNSANDBOXED_WORKER %q must be true or false", v)
+	}
+	switch v := getenv("CLIPMUX_EXECUTORS_ALLOW_PRIVATE_URL"); v {
+	case "", "false", "0":
+	case "true", "1":
+		cfg.ExecutorsAllowPrivateURL = true
+	default:
+		return Config{}, fmt.Errorf("CLIPMUX_EXECUTORS_ALLOW_PRIVATE_URL %q must be true or false", v)
 	}
 	cfg.Tools = media.DefaultTools()
 	cfg.Tools.FFmpeg = orDefault(getenv("CLIPMUX_FFMPEG"), cfg.Tools.FFmpeg)

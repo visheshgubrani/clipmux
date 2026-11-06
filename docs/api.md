@@ -98,6 +98,12 @@ means stop; `404` means the ID is unknown or revoked.
 | `POST /v1/setup/owner` | `{setup_token, email, password}` → `201`, signed in; `409 registration_closed` once an owner exists |
 | `POST /v1/session` · `GET /v1/session` · `DELETE /v1/session` | sign in (`429` with `Retry-After` after repeated failures), who am I, sign out |
 | `PUT /v1/settings/urls` | `{public_url, media_url?}`; `409 pinned` when the environment sets them |
+| `GET /v1/settings/routing` | `{primary_executor, fallback_executor, queue_age_fallback_minutes, builtin_worker: {last_seen_at, online}, providers_ready}` (D053); `providers_ready` lists the providers connected and verified by a setup test |
+| `PUT /v1/settings/routing` | `{primary_executor: workers \| agents \| builtin, fallback_executor?: builtin, queue_age_fallback_minutes?: 1–1440}`; a fallback can't be part of the primary, and queue age needs a fallback (`400 invalid_request`); a provider (`modal`, `runpod`) is `409 executor_not_connected` until it is connected and its setup test passed |
+| `GET /v1/executors` | `{data: [{kind, connected, verified, verified_at, config, max_concurrent, monthly_limit_cents, rate_cents_per_hour, disk_bytes, month_cents, machines, backoff_until}]}`: every provider ever connected, with this month's estimated spend (D055, D056) |
+| `POST /v1/executors/runpod/connect` | `{api_key, image?, registry_username?, registry_password?, gpu_type_ids?, disk_gb?, max_concurrent?, monthly_limit_cents, rate_cents_per_hour}` → `{connected, steps: [{name, ok, detail}]}`; steps `credentials`, `public_url`, `image` (resolved to its digest with the registry credentials), `registry`, `saved`, `setup_test`, stopping at the first failure; connecting again rotates the key (docs/executors.md) |
+| `POST /v1/executors/modal/connect` | `{token_id, token_secret, environment?, image?, registry_username?, registry_password?, gpu?, cpu?, memory_mib?, disk_gb?, max_concurrent?, monthly_limit_cents, rate_cents_per_hour}` → `{connected, steps}`; steps `credentials`, `public_url`, `image`, `saved`, `setup_test` (D057) |
+| `DELETE /v1/executors/{kind}` | `204`; `409 executor_in_use` while routing names it, `409 machines_running` while one of its machines may run |
 | `GET /v1/apps` · `POST /v1/apps` | `{name}` |
 | `POST /v1/apps/{id}/disable` · `…/enable` | a disabled app's keys, upload tokens and playback stop; the Dashboard app can't be disabled |
 | `GET`/`POST /v1/apps/{id}/api-keys` · `DELETE /v1/api-keys/{id}` | the secret (`key`) is in the create response only; `409 public_url_required` while the public URL is loopback |
@@ -109,7 +115,7 @@ means stop; `404` means the ID is unknown or revoked.
 | `POST /v1/cloudflare/connect` | `{token, hostname, bucket?, account_id?}` → `{connected, steps: [{name, ok, detail}]}`; runs Connect Cloudflare, stopping at the first failed step (each is safe to repeat). The token is used for this request only |
 | `GET /v1/storage/moves` | `{default_storage_id, default_kind, not_on_default, active, moved, failed}`: assets not on the default store still play through this server |
 | `POST /v1/storage/moves` | queues a `move` job to the default store for every live asset elsewhere with no active job → `202 {queued, target_storage_id}` |
-| `GET /v1/jobs?status=&asset_id=&agent_id=&cursor=&limit=` | jobs across the library, newest first: `{data: [{id, asset_id, app_id, kind, status, phase, progress, pinned_agent_id, lost_count, failed_count, error_code, attempts: [{number, executor, agent_id, agent_name, status, error_code, phase, progress, encoder: {stage, fallbacks}}]}], next_cursor}` |
+| `GET /v1/jobs?status=&asset_id=&agent_id=&cursor=&limit=` | jobs across the library, newest first: `{data: [{id, asset_id, app_id, kind, status, phase, progress, pinned_agent_id, lost_count, failed_count, error_code, routed_to, route_reason, attempts: [{number, executor, route_reason, agent_id, agent_name, status, error_code, phase, progress, encoder: {stage, fallbacks}}]}], next_cursor}`. `routed_to` is where a media job is routed (`workers`, `agents`, `builtin`, `modal`, `runpod`) and `route_reason` why: `pinned`, `primary`, `primary_offline`, `queue_age`, `no_fallback`, `fallback_refused` or `fallback_offline` (D053); each attempt keeps the reason it ran where it did, which is `primary` when the primary claims a job that was waiting for it (D062) |
 | `GET /v1/jobs/{id}` | one job with its attempts |
 | `POST /v1/agents/{id}/reencode` | queues a re-encode of every ready asset whose current output the agent encoded → `202 {queued, skipped: {asset_id: code}}` |
 | `POST /v1/agents/pairings` | `{name?}` → `201 {code, expires_at, server, command, docker_command}`: a one-time code the owner has already approved, valid for 15 minutes |
@@ -128,11 +134,23 @@ means stop; `404` means the ID is unknown or revoked.
 | `POST /worker/v1/pairings/poll` | `{poll_token}` → `{status: pending \| approved \| denied \| expired, credentials?}`; the key is in the first `approved` answer only |
 
 Agent keys start with `cmxa_` and authenticate `POST /worker/v1/claim` like the
-built-in worker's key. A claim reports `free_disk_bytes`; a worker takes only
+built-in worker's key. A serverless machine's one-time key starts with `cmxd_`
+(D054): it claims only the job its dispatch was created for, once, before the
+dispatch's claim deadline, and its claim is `409 sandbox_required` unless the
+worker reports rlimits, `no_new_privs` and seccomp. A claim reports `free_disk_bytes`; a worker takes only
 uploads whose size, three times over, fits its scratch disk.
-| `POST /worker/v1/sources` | agent key: `{size}` → `201 {id, size}`, a file that stays on the agent (`push --local`) |
+| `POST /worker/v1/sources` | agent key: `{size, upload_source?}` → `201 {id, size, upload_source}`, a file that stays on the agent (`push --local`); with `upload_source`, the agent uploads it after its first encode (D059) |
 | `POST /worker/v1/sources/{id}/attach` | agent key: `{playback_policy?, passthrough?}` → `201` the asset, as the owner's upload (the Dashboard app), with a transcode job pinned to the agent |
 | `POST /worker/v1/sources/sync` | agent key: `{ids}` (≤ 1000) → `{gone}`: sources the agent may forget (asset deleted, unknown, or unattached for a day) |
+
+An `upload_source` job (D059) is claimed only by the agent holding the file. Its
+attempt calls `POST /worker/v1/attempts/{id}/source-parts` with `{parts: [n…]}`
+(at most 100; an empty list just starts the upload) → `{part_size, part_count,
+urls: {"n": url}, expires_at}`, PUTs each part, and finishes with `complete`
+carrying `{source_parts: [{number, etag}]}` instead of a manifest. The server
+completes the multipart upload into `uploads/{asset}/source`, checks its size
+against the file's (`409 source_invalid` otherwise), and moves the asset's
+source there, unpinned from the agent.
 
 A claim for a job on a local source carries `source: {agent_source_id, size}`
 instead of a URL. A job pinned to an agent waits for it, spending no retry

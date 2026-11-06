@@ -1,0 +1,84 @@
+package queue
+
+import (
+	"testing"
+	"time"
+)
+
+// The routing table (docs/architecture.md, "Routing and fallback"; D053),
+// one case per rule, with the expected route written out.
+func TestDecideRouteFollowsTheRoutingTable(t *testing.T) {
+	const pc, srv = "agents", "builtin"
+	cases := []struct {
+		name       string
+		facts      routeFacts
+		to, reason string
+	}{
+		{"the primary is online", routeFacts{PrimaryRoom: true, FallbackRoom: true, Primary: pc, Fallback: srv, PrimaryUp: true, FallbackUp: true, FallbackEligible: true},
+			"agents", "primary"},
+		{"no heartbeat from the primary for 60 s: the fallback", routeFacts{PrimaryRoom: true, FallbackRoom: true, Primary: pc, Fallback: srv, FallbackUp: true, FallbackEligible: true},
+			"builtin", "primary_offline"},
+		{"queued past the queue-age setting while the primary is busy", routeFacts{PrimaryRoom: true, FallbackRoom: true, Primary: pc, Fallback: srv, PrimaryUp: true, FallbackUp: true, FallbackEligible: true,
+			QueueAge: 10 * time.Minute, Waited: 11 * time.Minute}, "builtin", "queue_age"},
+		{"not yet past the queue-age setting", routeFacts{PrimaryRoom: true, FallbackRoom: true, Primary: pc, Fallback: srv, PrimaryUp: true, FallbackUp: true, FallbackEligible: true,
+			QueueAge: 10 * time.Minute, Waited: 9 * time.Minute}, "agents", "primary"},
+		{"queue-age fallback off (the default) waits however long", routeFacts{PrimaryRoom: true, FallbackRoom: true, Primary: pc, Fallback: srv, PrimaryUp: true, FallbackUp: true, FallbackEligible: true,
+			Waited: 3 * time.Hour}, "agents", "primary"},
+		{"queue age never sends a failing file to the fallback", routeFacts{PrimaryRoom: true, FallbackRoom: true, Primary: pc, Fallback: srv, PrimaryUp: true, FallbackUp: true,
+			QueueAge: time.Minute, Waited: time.Hour}, "agents", "primary"},
+		{"queue age with the fallback offline stays", routeFacts{PrimaryRoom: true, FallbackRoom: true, Primary: pc, Fallback: srv, PrimaryUp: true,
+			FallbackEligible: true, QueueAge: time.Minute, Waited: time.Hour}, "agents", "primary"},
+		{"the primary offline and no fallback set: wait", routeFacts{PrimaryRoom: true, FallbackRoom: true, Primary: pc, FallbackEligible: true},
+			"agents", "no_fallback"},
+		{"a failed file waits for the primary", routeFacts{PrimaryRoom: true, FallbackRoom: true, Primary: pc, Fallback: srv, FallbackUp: true},
+			"agents", "fallback_refused"},
+		{"both offline: wait for the primary", routeFacts{PrimaryRoom: true, FallbackRoom: true, Primary: pc, Fallback: srv, FallbackEligible: true},
+			"agents", "fallback_offline"},
+		// A provider at its concurrency or spend limit, or backing off.
+		{"the fallback provider is at its limit: wait for the primary", routeFacts{Primary: pc, Fallback: "runpod", PrimaryRoom: true,
+			FallbackUp: true, FallbackEligible: true}, "agents", "fallback_limit"},
+		{"a provider primary at its limit keeps the job", routeFacts{Primary: "runpod", Fallback: srv, PrimaryUp: true,
+			FallbackUp: true, FallbackRoom: true, FallbackEligible: true}, "runpod", "primary_limit"},
+		{"queue age moves a job off a full provider primary", routeFacts{Primary: "runpod", Fallback: srv, PrimaryUp: true,
+			FallbackUp: true, FallbackRoom: true, FallbackEligible: true, QueueAge: time.Minute, Waited: 2 * time.Minute}, "builtin", "queue_age"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			to, reason := decideRoute(c.facts)
+			if to != c.to || reason != c.reason {
+				t.Fatalf("decideRoute = (%s, %s), want (%s, %s)", to, reason, c.to, c.reason)
+			}
+		})
+	}
+}
+
+func TestEachWorkerClaimsOnlyItsClasses(t *testing.T) {
+	cases := map[string]string{"builtin": "workers,builtin", "agent": "workers,agents", "modal": "modal", "runpod": "runpod"}
+	for executor, want := range cases {
+		got := ""
+		for i, c := range classes(executor) {
+			if i > 0 {
+				got += ","
+			}
+			got += c
+		}
+		if got != want {
+			t.Errorf("classes(%s) = %s, want %s", executor, got, want)
+		}
+	}
+}
+
+// An attempt records why it ran where it did: a job that waited on its
+// primary for the fallback's sake ran on the primary as the primary.
+func TestAnAttemptRecordsWhyItRanThere(t *testing.T) {
+	for job, want := range map[string]string{
+		"primary": "primary", "pinned": "pinned", "setup_test": "setup_test",
+		"primary_offline": "primary_offline", "queue_age": "queue_age",
+		"no_fallback": "primary", "fallback_refused": "primary", "fallback_offline": "primary",
+		"fallback_limit": "primary", "primary_limit": "primary",
+	} {
+		if got := attemptReason(job); got != want {
+			t.Errorf("a job routed for %s: its attempt records %s, want %s", job, got, want)
+		}
+	}
+}

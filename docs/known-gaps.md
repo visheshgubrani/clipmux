@@ -73,8 +73,9 @@ when you introduce or discover it; remove it when it is closed.
   it is, `--since` can reach back only as far as rows are kept. `clipmux push` keeps an
   unfinished push's upload token in a 0600 state file under the user's cache
   directory until it completes.
-- The image is ~575 MB and built from source on a cache miss (~20 min); it
-  isn't published, so every install builds it until launch.
+- The image is ~575 MB and built from source on a cache miss (~20 min). CI
+  pushes it privately to ghcr on main for serverless providers (D058), but
+  it isn't public, so every install builds it until launch.
 - Phase 2's exit test passes on the binary with a fake Cloudflare API and
   the Worker's logic on Node in front of S3 (D041). Still open before the
   phase exits on Cloudflare: the setup test through the Worker, the Chromium
@@ -84,22 +85,43 @@ when you introduce or discover it; remove it when it is closed.
   upload format and the custom-domain call need a run against a real test
   zone before the Phase 2 exit (D037). The manual wrangler path has no CLI
   for adding R2 storage, switching delivery or printing `CONTENT_KEYS`.
-- `clipmux push --local --upload-source` isn't built: an asset whose source
-  stays on a PC re-encodes only on that PC, and only while the file is
-  unchanged.
+- An asset pushed with `--local` alone re-encodes only on its PC, and only
+  while the file is unchanged; `--upload-source` lifts that (D059). Each
+  upload_source attempt leaves an empty `writing` output row, because every
+  claim creates an output; nothing serves it and nothing cleans it up yet.
 - GPU encoding is proven on real hardware for VAAPI on AMD (a self-hosted
   runner) and for NVENC and `cuda-decode` on Modal (D051); Intel's iHD driver
   and Quick Sync have no test machine. A GPU stage's failure isn't
   classified, so any one falls back to the next stage. GPU tools may open
   AF_UNIX SOCK_SEQPACKET sockets, which CUDA needs.
-- No self-contained Linux tarball for agents yet (D049): a native agent
-  needs an FFmpeg with the GPU encoders and the pinned packager installed;
-  the image works everywhere Docker does.
+- The agent tarball (D061) needs glibc 2.39 or newer, and is a CI artifact
+  until launch. Its arm64 build runs only in CI (no local arm64 machine), and
+  bundles no NVIDIA libraries: NVENC on a native agent needs the host's
+  driver, as in Docker. Without `/usr/share/libdrm/amdgpu.ids` on the host,
+  AMD cards encode fine but print a warning about their name.
 - Phase 3's exit passed on the real binary (D050), and NVIDIA on Modal
   (D051); still by hand: a real suspend of the M4 Mac's Docker agent, and
-  registering the self-hosted GPU runner. The Workers and Jobs pages and the
-  connect page have no Playwright suite yet.
+  registering the self-hosted GPU runner. The pairing page
+  (`/workers/connect`) has no Playwright suite yet; the Workers and Jobs
+  pages do (D060). The Jobs page shows which provider ran an attempt, but not
+  its GPU or its estimated cost.
 - Disconnecting Cloudflare (back to built-in delivery) has no endpoint yet.
+- Provider spend (D055) is an estimate from the hourly rate set in Connect,
+  not the provider's bill, and a machine that runs past its reservation
+  isn't stopped at the limit, so a month can overshoot by that much.
+- Phase 4's exit passed in CI on the real binary against a fake RunPod
+  (D062), but not yet on real accounts: `exit-providers.yml` is written and
+  needs the secrets `RUNPOD_API_KEY`, `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET`
+  and `GHCR_PULL_TOKEN`. Until it runs, these are unproven: Modal's SDK
+  (D057, tested through a seam) and the assumption that a sandbox's command
+  replaces the image's entrypoint; RunPod's real REST API (D056); both
+  providers' cold starts against the 10-minute claim deadline; and whether
+  both accept a digest-only image reference (D058). Modal has no fake
+  provider in the CI exit, only RunPod.
+- Routing (D053) records the built-in worker's liveness per project, not per
+  replica: with several serve replicas, any one worker's calls keep "the
+  server" online. A job barred from the fallback because its file failed
+  waits for the primary without a bound, shown as `fallback_refused`.
 - The content key secret can't be rotated; when it can, rotation must
   redeploy the Worker's ring through Connect before new outputs use it.
 - No captions, chapters or transcripts. The LMS depends on them, so they gate

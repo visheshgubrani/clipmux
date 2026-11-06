@@ -117,7 +117,7 @@ func TestOneActiveMutatingJobPerAsset(t *testing.T) {
 	pool := dbtest.New(t)
 	_, asset := seed(t, pool)
 
-	mustExec(t, pool, `INSERT INTO jobs (id, project_id, asset_id, kind, status) VALUES ('job_1', 'prj_default', $1, 'transcode', 'running')`, asset)
+	mustExec(t, pool, `INSERT INTO jobs (id, project_id, asset_id, kind, routed_to, status) VALUES ('job_1', 'prj_default', $1, 'transcode', 'workers', 'running')`, asset)
 
 	// A move while the transcode runs must be refused (the API turns this into 409).
 	err := exec(t, pool, `INSERT INTO jobs (id, project_id, asset_id, kind, status, source_storage_id, target_storage_id) VALUES ('job_2', 'prj_default', $1, 'move', 'queued', 'sto_default', 'sto_default')`, asset)
@@ -125,7 +125,7 @@ func TestOneActiveMutatingJobPerAsset(t *testing.T) {
 
 	// Once the first job ends, the next one may queue.
 	mustExec(t, pool, `UPDATE jobs SET status = 'succeeded' WHERE id = 'job_1'`)
-	mustExec(t, pool, `INSERT INTO jobs (id, project_id, asset_id, kind, status) VALUES ('job_2', 'prj_default', $1, 'reencode', 'queued')`, asset)
+	mustExec(t, pool, `INSERT INTO jobs (id, project_id, asset_id, kind, routed_to, status) VALUES ('job_2', 'prj_default', $1, 'reencode', 'workers', 'queued')`, asset)
 }
 
 func TestCurrentOutputMustBelongToTheAsset(t *testing.T) {
@@ -167,7 +167,7 @@ func TestAttemptWritesAnOutputOfItsJobsAsset(t *testing.T) {
 	pool := dbtest.New(t)
 	_, asset := seed(t, pool)
 	mustExec(t, pool, `INSERT INTO assets (id, project_id, app_id, status, storage_id) VALUES ('ast_2', 'prj_default', 'app_lms', 'processing', 'sto_default')`)
-	mustExec(t, pool, `INSERT INTO jobs (id, project_id, asset_id, kind, status) VALUES ('job_1', 'prj_default', $1, 'transcode', 'running')`, asset)
+	mustExec(t, pool, `INSERT INTO jobs (id, project_id, asset_id, kind, routed_to, status) VALUES ('job_1', 'prj_default', $1, 'transcode', 'workers', 'running')`, asset)
 	addOutput(t, pool, "out_mine", asset)
 	addOutput(t, pool, "out_other", "ast_2")
 

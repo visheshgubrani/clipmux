@@ -29,6 +29,8 @@ const (
 	Owner      = "own"
 	SetupTest  = "stt"
 	Pairing    = "pair"
+	Executor   = "exe"
+	Dispatch   = "dsp"
 )
 
 const alphabet = "0123456789abcdefghjkmnpqrstvwxyz" // Crockford, lowercase

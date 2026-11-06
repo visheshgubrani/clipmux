@@ -56,11 +56,12 @@ type AgentPairing struct {
 }
 
 type AgentSource struct {
-	ID        string
-	ProjectID string
-	AgentID   string
-	Size      int64
-	CreatedAt pgtype.Timestamptz
+	ID           string
+	ProjectID    string
+	AgentID      string
+	Size         int64
+	CreatedAt    pgtype.Timestamptz
+	UploadSource bool
 }
 
 type App struct {
@@ -92,26 +93,30 @@ type Asset struct {
 }
 
 type Attempt struct {
-	ID              string
-	ProjectID       string
-	JobID           string
-	AssetID         string
-	AttemptNumber   int32
-	OutputID        string
-	Executor        string
-	AgentID         pgtype.Text
-	Status          string
-	TokenHash       []byte
-	LeaseExpiresAt  pgtype.Timestamptz
-	Phase           pgtype.Text
-	Progress        pgtype.Float4
-	WorkerInfo      []byte
-	FailureKind     pgtype.Text
-	ErrorCode       pgtype.Text
-	StartedAt       pgtype.Timestamptz
-	LastHeartbeatAt pgtype.Timestamptz
-	FinishedAt      pgtype.Timestamptz
-	SignedPaths     int32
+	ID                string
+	ProjectID         string
+	JobID             string
+	AssetID           string
+	AttemptNumber     int32
+	OutputID          string
+	Executor          string
+	AgentID           pgtype.Text
+	Status            string
+	TokenHash         []byte
+	LeaseExpiresAt    pgtype.Timestamptz
+	Phase             pgtype.Text
+	Progress          pgtype.Float4
+	WorkerInfo        []byte
+	FailureKind       pgtype.Text
+	ErrorCode         pgtype.Text
+	StartedAt         pgtype.Timestamptz
+	LastHeartbeatAt   pgtype.Timestamptz
+	FinishedAt        pgtype.Timestamptz
+	SignedPaths       int32
+	RouteReason       pgtype.Text
+	DispatchID        pgtype.Text
+	SourceMultipartID pgtype.Text
+	SourcePartSize    pgtype.Int8
 }
 
 type CloudflareConnection struct {
@@ -133,6 +138,46 @@ type ContentKeySecret struct {
 	Version         int32
 	SecretEncrypted []byte
 	CreatedAt       pgtype.Timestamptz
+}
+
+type Dispatch struct {
+	ID               string
+	ProjectID        string
+	JobID            string
+	ExecutorConfigID string
+	Kind             string
+	Status           string
+	EndReason        pgtype.Text
+	KeyHash          []byte
+	KeySealed        []byte
+	InstanceID       pgtype.Text
+	RateCentsPerHour int32
+	ClaimDeadline    pgtype.Timestamptz
+	AttemptID        pgtype.Text
+	CreatedAt        pgtype.Timestamptz
+	WokenAt          pgtype.Timestamptz
+	ClaimedAt        pgtype.Timestamptz
+	EndedAt          pgtype.Timestamptz
+	StoppedAt        pgtype.Timestamptz
+	ReservedSeconds  float64
+}
+
+type ExecutorConfig struct {
+	ID                   string
+	ProjectID            string
+	Kind                 string
+	Config               []byte
+	SecretsEncrypted     []byte
+	MaxConcurrent        int32
+	MonthlyLimitCents    int64
+	RateCentsPerHour     int32
+	DiskBytes            int64
+	ClaimDeadlineSeconds int32
+	VerifiedAt           pgtype.Timestamptz
+	CreatedAt            pgtype.Timestamptz
+	UpdatedAt            pgtype.Timestamptz
+	WakeFailures         int32
+	BackoffUntil         pgtype.Timestamptz
 }
 
 type IdempotencyKey struct {
@@ -237,6 +282,11 @@ type Project struct {
 	UrlsConfirmedAt         pgtype.Timestamptz
 	Delivery                string
 	DeliveryStorageID       pgtype.Text
+	PrimaryExecutor         string
+	FallbackExecutor        pgtype.Text
+	QueueAgeFallbackMinutes pgtype.Int4
+	BuiltinSeenAt           pgtype.Timestamptz
+	BuiltinFreeDiskBytes    pgtype.Int8
 }
 
 type SetupTest struct {
@@ -249,6 +299,7 @@ type SetupTest struct {
 	CreatedAt  pgtype.Timestamptz
 	StartedAt  pgtype.Timestamptz
 	FinishedAt pgtype.Timestamptz
+	Executor   pgtype.Text
 }
 
 type SigningKey struct {

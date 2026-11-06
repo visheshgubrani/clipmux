@@ -21,7 +21,10 @@ import (
 
 // runDoctor is `clipmux worker doctor`: everything an agent needs, checked
 // in the order a failure would stop it, so the first ✗ is the one to fix.
-func runDoctor(getenv func(string) string, out io.Writer) int {
+// With --offline it skips the connection, the server and the key, to check
+// an install (such as the agent tarball) before it is paired (D061).
+func runDoctor(args []string, getenv func(string) string, out io.Writer) int {
+	offline := len(args) > 0 && args[0] == "--offline"
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	failed := false
@@ -38,53 +41,21 @@ func runDoctor(getenv func(string) string, out io.Writer) int {
 	}
 	note := func(what, detail string) { fmt.Fprintf(out, "  ! %s: %s\n", what, detail) }
 
-	dir := agentDir(getenv)
-	cfg, err := worker.LoadAgentConfig(dir)
-	switch {
-	case errors.Is(err, fs.ErrNotExist):
-		check(false, "connected", "not yet; run clipmux worker --server URL")
-		return 1
-	case err != nil:
-		check(false, "connected", err.Error())
+	if !offline && !doctorConnection(ctx, getenv, check, note) {
 		return 1
 	}
-	check(true, "connected", fmt.Sprintf("as %q to %s", cfg.Name, cfg.Server))
-
-	client := worker.DefaultHTTPClient()
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimSuffix(cfg.Server, "/")+"/readyz", nil)
-	res, err := client.Do(req)
-	if err != nil {
-		check(false, "server reachable", err.Error())
-		return 1
-	}
-	res.Body.Close()
-	check(res.StatusCode == http.StatusOK, "server reachable", res.Status)
-	if d, err := http.ParseTime(res.Header.Get("Date")); err == nil {
-		skew := time.Since(d).Round(time.Second)
-		if skew < -time.Minute || skew > time.Minute {
-			note("clock", fmt.Sprintf("%s off the server's; fix NTP or signed URLs may look expired", skew))
-		}
-	}
-
-	body := bytes.NewReader([]byte(`{"ids":[]}`))
-	req, _ = http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimSuffix(cfg.Server, "/")+"/worker/v1/sources/sync", body)
-	req.Header.Set("Authorization", "Bearer "+cfg.Key)
-	req.Header.Set("Content-Type", "application/json")
-	if res, err = client.Do(req); err != nil {
-		check(false, "key accepted", err.Error())
-		return 1
-	}
-	res.Body.Close()
-	if res.StatusCode == http.StatusUnauthorized {
-		check(false, "key accepted", "the server refused it: this PC was revoked; remove "+worker.ConfigPath(dir)+" and connect again")
-		return 1
-	}
-	check(res.StatusCode == http.StatusOK, "key accepted", "")
 
 	tools := media.DefaultTools()
 	tools.FFmpeg = orEnv(getenv("CLIPMUX_FFMPEG"), tools.FFmpeg)
 	tools.FFprobe = orEnv(getenv("CLIPMUX_FFPROBE"), tools.FFprobe)
 	tools.Packager = orEnv(getenv("CLIPMUX_PACKAGER"), tools.Packager)
+	// The driver variables reach the sandboxed tools, as in the worker: a
+	// tarball's VAAPI drivers are found through LIBVA_DRIVERS_PATH.
+	for _, n := range sandbox.EnvAllowed {
+		if v := getenv(n); v != "" {
+			tools.Env = append(tools.Env, n+"="+v)
+		}
+	}
 	v, err := tools.Versions(ctx)
 	if err != nil {
 		check(false, "ffmpeg and Shaka Packager", err.Error())
@@ -123,4 +94,52 @@ func runDoctor(getenv func(string) string, out io.Writer) int {
 	}
 	fmt.Fprintln(out, "\n  This PC is ready to encode.")
 	return 0
+}
+
+// doctorConnection checks the saved connection, the server and the key.
+func doctorConnection(ctx context.Context, getenv func(string) string, check func(bool, string, string), note func(string, string)) bool {
+	dir := agentDir(getenv)
+	cfg, err := worker.LoadAgentConfig(dir)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		check(false, "connected", "not yet; run clipmux worker --server URL")
+		return false
+	case err != nil:
+		check(false, "connected", err.Error())
+		return false
+	}
+	check(true, "connected", fmt.Sprintf("as %q to %s", cfg.Name, cfg.Server))
+
+	client := worker.DefaultHTTPClient()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimSuffix(cfg.Server, "/")+"/readyz", nil)
+	res, err := client.Do(req)
+	if err != nil {
+		check(false, "server reachable", err.Error())
+		return false
+	}
+	res.Body.Close()
+	check(res.StatusCode == http.StatusOK, "server reachable", res.Status)
+	if d, err := http.ParseTime(res.Header.Get("Date")); err == nil {
+		skew := time.Since(d).Round(time.Second)
+		if skew < -time.Minute || skew > time.Minute {
+			note("clock", fmt.Sprintf("%s off the server's; fix NTP or signed URLs may look expired", skew))
+		}
+	}
+
+	body := bytes.NewReader([]byte(`{"ids":[]}`))
+	req, _ = http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimSuffix(cfg.Server, "/")+"/worker/v1/sources/sync", body)
+	req.Header.Set("Authorization", "Bearer "+cfg.Key)
+	req.Header.Set("Content-Type", "application/json")
+	if res, err = client.Do(req); err != nil {
+		check(false, "key accepted", err.Error())
+		return false
+	}
+	res.Body.Close()
+	if res.StatusCode == http.StatusUnauthorized {
+		check(false, "key accepted", "the server refused it: this PC was revoked; remove "+worker.ConfigPath(dir)+" and connect again")
+		return false
+	}
+	check(res.StatusCode == http.StatusOK, "key accepted", "")
+
+	return true
 }

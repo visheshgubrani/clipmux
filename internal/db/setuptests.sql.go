@@ -14,7 +14,7 @@ import (
 const claimSetupTest = `-- name: ClaimSetupTest :one
 UPDATE setup_tests SET status = 'running', started_at = now()
 WHERE id = (SELECT c.id FROM setup_tests c WHERE c.project_id = $1 AND c.status = 'queued' ORDER BY c.created_at LIMIT 1 FOR UPDATE SKIP LOCKED)
-RETURNING id, project_id, status, trigger, asset_id, checks, created_at, started_at, finished_at
+RETURNING id, project_id, status, trigger, asset_id, checks, created_at, started_at, finished_at, executor
 `
 
 func (q *Queries) ClaimSetupTest(ctx context.Context, projectID string) (SetupTest, error) {
@@ -30,6 +30,7 @@ func (q *Queries) ClaimSetupTest(ctx context.Context, projectID string) (SetupTe
 		&i.CreatedAt,
 		&i.StartedAt,
 		&i.FinishedAt,
+		&i.Executor,
 	)
 	return i, err
 }
@@ -61,7 +62,7 @@ func (q *Queries) FinishSetupTest(ctx context.Context, arg FinishSetupTestParams
 }
 
 const getActiveSetupTest = `-- name: GetActiveSetupTest :one
-SELECT id, project_id, status, trigger, asset_id, checks, created_at, started_at, finished_at FROM setup_tests WHERE project_id = $1 AND status IN ('queued', 'running')
+SELECT id, project_id, status, trigger, asset_id, checks, created_at, started_at, finished_at, executor FROM setup_tests WHERE project_id = $1 AND status IN ('queued', 'running')
 `
 
 func (q *Queries) GetActiveSetupTest(ctx context.Context, projectID string) (SetupTest, error) {
@@ -77,12 +78,13 @@ func (q *Queries) GetActiveSetupTest(ctx context.Context, projectID string) (Set
 		&i.CreatedAt,
 		&i.StartedAt,
 		&i.FinishedAt,
+		&i.Executor,
 	)
 	return i, err
 }
 
 const getSetupTest = `-- name: GetSetupTest :one
-SELECT id, project_id, status, trigger, asset_id, checks, created_at, started_at, finished_at FROM setup_tests WHERE id = $1
+SELECT id, project_id, status, trigger, asset_id, checks, created_at, started_at, finished_at, executor FROM setup_tests WHERE id = $1
 `
 
 func (q *Queries) GetSetupTest(ctx context.Context, id string) (SetupTest, error) {
@@ -98,12 +100,13 @@ func (q *Queries) GetSetupTest(ctx context.Context, id string) (SetupTest, error
 		&i.CreatedAt,
 		&i.StartedAt,
 		&i.FinishedAt,
+		&i.Executor,
 	)
 	return i, err
 }
 
 const latestSetupTest = `-- name: LatestSetupTest :one
-SELECT id, project_id, status, trigger, asset_id, checks, created_at, started_at, finished_at FROM setup_tests WHERE project_id = $1 ORDER BY created_at DESC, id DESC LIMIT 1
+SELECT id, project_id, status, trigger, asset_id, checks, created_at, started_at, finished_at, executor FROM setup_tests WHERE project_id = $1 ORDER BY created_at DESC, id DESC LIMIT 1
 `
 
 func (q *Queries) LatestSetupTest(ctx context.Context, projectID string) (SetupTest, error) {
@@ -119,6 +122,7 @@ func (q *Queries) LatestSetupTest(ctx context.Context, projectID string) (SetupT
 		&i.CreatedAt,
 		&i.StartedAt,
 		&i.FinishedAt,
+		&i.Executor,
 	)
 	return i, err
 }
@@ -156,21 +160,27 @@ func (q *Queries) ListEarlierSetupTestAssets(ctx context.Context, arg ListEarlie
 
 const queueSetupTest = `-- name: QueueSetupTest :one
 
-INSERT INTO setup_tests (id, project_id, trigger) VALUES ($1, $2, $3)
+INSERT INTO setup_tests (id, project_id, trigger, executor) VALUES ($1, $2, $3, $4)
 ON CONFLICT (project_id) WHERE status IN ('queued', 'running') DO NOTHING
-RETURNING id, project_id, status, trigger, asset_id, checks, created_at, started_at, finished_at
+RETURNING id, project_id, status, trigger, asset_id, checks, created_at, started_at, finished_at, executor
 `
 
 type QueueSetupTestParams struct {
 	ID        string
 	ProjectID string
 	Trigger   string
+	Executor  pgtype.Text
 }
 
 // The setup test.
 // Nothing is returned while another test is queued or running.
 func (q *Queries) QueueSetupTest(ctx context.Context, arg QueueSetupTestParams) (SetupTest, error) {
-	row := q.db.QueryRow(ctx, queueSetupTest, arg.ID, arg.ProjectID, arg.Trigger)
+	row := q.db.QueryRow(ctx, queueSetupTest,
+		arg.ID,
+		arg.ProjectID,
+		arg.Trigger,
+		arg.Executor,
+	)
 	var i SetupTest
 	err := row.Scan(
 		&i.ID,
@@ -182,6 +192,7 @@ func (q *Queries) QueueSetupTest(ctx context.Context, arg QueueSetupTestParams) 
 		&i.CreatedAt,
 		&i.StartedAt,
 		&i.FinishedAt,
+		&i.Executor,
 	)
 	return i, err
 }

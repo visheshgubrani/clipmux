@@ -20,6 +20,20 @@ func (q *Queries) CancelJob(ctx context.Context, id string) error {
 	return err
 }
 
+const claimDispatch = `-- name: ClaimDispatch :exec
+UPDATE dispatches SET status = 'claimed', attempt_id = $2, claimed_at = now() WHERE id = $1
+`
+
+type ClaimDispatchParams struct {
+	ID        string
+	AttemptID pgtype.Text
+}
+
+func (q *Queries) ClaimDispatch(ctx context.Context, arg ClaimDispatchParams) error {
+	_, err := q.db.Exec(ctx, claimDispatch, arg.ID, arg.AttemptID)
+	return err
+}
+
 const countJobFailure = `-- name: CountJobFailure :one
 UPDATE jobs SET failed_count = failed_count + 1 WHERE id = $1 RETURNING failed_count
 `
@@ -44,9 +58,9 @@ func (q *Queries) CountJobLoss(ctx context.Context, id string) (int32, error) {
 
 const createAttempt = `-- name: CreateAttempt :one
 INSERT INTO attempts (id, project_id, job_id, asset_id, attempt_number, output_id, executor, agent_id,
-                      token_hash, lease_expires_at, worker_info)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now() + make_interval(secs => $11::double precision), $10)
-RETURNING id, project_id, job_id, asset_id, attempt_number, output_id, executor, agent_id, status, token_hash, lease_expires_at, phase, progress, worker_info, failure_kind, error_code, started_at, last_heartbeat_at, finished_at, signed_paths
+                      token_hash, lease_expires_at, worker_info, route_reason, dispatch_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now() + make_interval(secs => $13::double precision), $10, $11, $12)
+RETURNING id, project_id, job_id, asset_id, attempt_number, output_id, executor, agent_id, status, token_hash, lease_expires_at, phase, progress, worker_info, failure_kind, error_code, started_at, last_heartbeat_at, finished_at, signed_paths, route_reason, dispatch_id, source_multipart_id, source_part_size
 `
 
 type CreateAttemptParams struct {
@@ -60,6 +74,8 @@ type CreateAttemptParams struct {
 	AgentID       pgtype.Text
 	TokenHash     []byte
 	WorkerInfo    []byte
+	RouteReason   pgtype.Text
+	DispatchID    pgtype.Text
 	LeaseSeconds  float64
 }
 
@@ -75,6 +91,8 @@ func (q *Queries) CreateAttempt(ctx context.Context, arg CreateAttemptParams) (A
 		arg.AgentID,
 		arg.TokenHash,
 		arg.WorkerInfo,
+		arg.RouteReason,
+		arg.DispatchID,
 		arg.LeaseSeconds,
 	)
 	var i Attempt
@@ -99,34 +117,51 @@ func (q *Queries) CreateAttempt(ctx context.Context, arg CreateAttemptParams) (A
 		&i.LastHeartbeatAt,
 		&i.FinishedAt,
 		&i.SignedPaths,
+		&i.RouteReason,
+		&i.DispatchID,
+		&i.SourceMultipartID,
+		&i.SourcePartSize,
 	)
 	return i, err
 }
 
 const createJob = `-- name: CreateJob :one
 
-INSERT INTO jobs (id, project_id, asset_id, kind, pinned_agent_id)
-VALUES ($1, $2, $3, $4, $5)
+INSERT INTO jobs (id, project_id, asset_id, kind, pinned_agent_id, routed_to, route_reason)
+SELECT $1, p.id, $2, $3::text, $4::text,
+       CASE WHEN $3::text NOT IN ('transcode', 'reencode', 'upload_source') THEN NULL
+            WHEN $4::text IS NOT NULL THEN 'agents'
+            ELSE coalesce(t.executor, p.primary_executor) END,
+       CASE WHEN $3::text NOT IN ('transcode', 'reencode', 'upload_source') THEN NULL
+            WHEN $4::text IS NOT NULL THEN 'pinned'
+            WHEN t.executor IS NOT NULL THEN 'setup_test'
+            ELSE 'primary' END
+FROM projects p
+LEFT JOIN setup_tests t ON t.asset_id = $2 AND t.executor IS NOT NULL
+WHERE p.id = $5
 RETURNING id, project_id, asset_id, kind, status, phase, progress, profile_id, profile_version, pinned_agent_id, lost_count, failed_count, error_code, routed_to, route_reason, available_at, created_at, started_at, finished_at, source_storage_id, target_storage_id, import_url
 `
 
 type CreateJobParams struct {
 	ID            string
-	ProjectID     string
 	AssetID       string
 	Kind          string
 	PinnedAgentID pgtype.Text
+	ProjectID     string
 }
 
 // Leased job queue (docs/architecture.md, "Compute" and "Leases").
 // Lock order everywhere: job, then attempt, then asset.
+// Media jobs start routed: a pinned job to its agent, a setup test's sample
+// to the executor that test names, any other to the project's primary
+// executor. The router may move a queued one later.
 func (q *Queries) CreateJob(ctx context.Context, arg CreateJobParams) (Job, error) {
 	row := q.db.QueryRow(ctx, createJob,
 		arg.ID,
-		arg.ProjectID,
 		arg.AssetID,
 		arg.Kind,
 		arg.PinnedAgentID,
+		arg.ProjectID,
 	)
 	var i Job
 	err := row.Scan(
@@ -211,6 +246,28 @@ func (q *Queries) DeleteWritingOutput(ctx context.Context, id string) error {
 	return err
 }
 
+const enqueueSourceUpload = `-- name: EnqueueSourceUpload :execrows
+INSERT INTO jobs (id, project_id, asset_id, kind, pinned_agent_id, routed_to, route_reason)
+SELECT $1, s.project_id, s.id, 'upload_source', g.agent_id, 'agents', 'pinned'
+FROM assets s JOIN agent_sources g ON g.id = s.agent_source_id
+WHERE s.id = $2 AND g.upload_source AND s.status <> 'deleted'
+`
+
+type EnqueueSourceUploadParams struct {
+	ID      string
+	AssetID string
+}
+
+// In the commit of a local source's encode: if its push asked for
+// --upload-source, the PC holding the file uploads it next (D059).
+func (q *Queries) EnqueueSourceUpload(ctx context.Context, arg EnqueueSourceUploadParams) (int64, error) {
+	result, err := q.db.Exec(ctx, enqueueSourceUpload, arg.ID, arg.AssetID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const failJob = `-- name: FailJob :exec
 UPDATE jobs SET status = 'failed', error_code = $2, finished_at = now() WHERE id = $1
 `
@@ -225,8 +282,19 @@ func (q *Queries) FailJob(ctx context.Context, arg FailJobParams) error {
 	return err
 }
 
+const getAssetAgentSourceSize = `-- name: GetAssetAgentSourceSize :one
+SELECT g.size FROM assets s JOIN agent_sources g ON g.id = s.agent_source_id WHERE s.id = $1
+`
+
+func (q *Queries) GetAssetAgentSourceSize(ctx context.Context, id string) (int64, error) {
+	row := q.db.QueryRow(ctx, getAssetAgentSourceSize, id)
+	var size int64
+	err := row.Scan(&size)
+	return size, err
+}
+
 const getAttempt = `-- name: GetAttempt :one
-SELECT id, project_id, job_id, asset_id, attempt_number, output_id, executor, agent_id, status, token_hash, lease_expires_at, phase, progress, worker_info, failure_kind, error_code, started_at, last_heartbeat_at, finished_at, signed_paths FROM attempts WHERE id = $1
+SELECT id, project_id, job_id, asset_id, attempt_number, output_id, executor, agent_id, status, token_hash, lease_expires_at, phase, progress, worker_info, failure_kind, error_code, started_at, last_heartbeat_at, finished_at, signed_paths, route_reason, dispatch_id, source_multipart_id, source_part_size FROM attempts WHERE id = $1
 `
 
 func (q *Queries) GetAttempt(ctx context.Context, id string) (Attempt, error) {
@@ -253,12 +321,16 @@ func (q *Queries) GetAttempt(ctx context.Context, id string) (Attempt, error) {
 		&i.LastHeartbeatAt,
 		&i.FinishedAt,
 		&i.SignedPaths,
+		&i.RouteReason,
+		&i.DispatchID,
+		&i.SourceMultipartID,
+		&i.SourcePartSize,
 	)
 	return i, err
 }
 
 const getAttemptByTokenHash = `-- name: GetAttemptByTokenHash :one
-SELECT id, project_id, job_id, asset_id, attempt_number, output_id, executor, agent_id, status, token_hash, lease_expires_at, phase, progress, worker_info, failure_kind, error_code, started_at, last_heartbeat_at, finished_at, signed_paths FROM attempts WHERE token_hash = $1
+SELECT id, project_id, job_id, asset_id, attempt_number, output_id, executor, agent_id, status, token_hash, lease_expires_at, phase, progress, worker_info, failure_kind, error_code, started_at, last_heartbeat_at, finished_at, signed_paths, route_reason, dispatch_id, source_multipart_id, source_part_size FROM attempts WHERE token_hash = $1
 `
 
 func (q *Queries) GetAttemptByTokenHash(ctx context.Context, tokenHash []byte) (Attempt, error) {
@@ -285,6 +357,10 @@ func (q *Queries) GetAttemptByTokenHash(ctx context.Context, tokenHash []byte) (
 		&i.LastHeartbeatAt,
 		&i.FinishedAt,
 		&i.SignedPaths,
+		&i.RouteReason,
+		&i.DispatchID,
+		&i.SourceMultipartID,
+		&i.SourcePartSize,
 	)
 	return i, err
 }
@@ -349,6 +425,100 @@ func (q *Queries) InsertOutbox(ctx context.Context, arg InsertOutboxParams) erro
 	return err
 }
 
+const jobRouteFacts = `-- name: JobRouteFacts :one
+SELECT p.primary_executor, p.fallback_executor, p.queue_age_fallback_minutes,
+       coalesce(p.builtin_seen_at > now() - make_interval(secs => $1::double precision)
+                AND job_claimable_by(j.asset_id, j.pinned_agent_id, NULL, false, false, p.builtin_free_disk_bytes),
+                false)::boolean AS builtin_up,
+       EXISTS (
+           SELECT 1 FROM agents g
+           WHERE g.project_id = j.project_id AND g.status = 'approved'
+             AND g.last_seen_at > now() - make_interval(secs => $1::double precision)
+             AND job_claimable_by(j.asset_id, j.pinned_agent_id, g.id, g.scope = 'local', NOT g.sandboxed,
+                                  nullif((g.capabilities ->> 'free_disk_bytes')::bigint, 0))
+       )::boolean AS agents_up,
+       -- Fallback is for missing capacity, never for a failing file: every
+       -- failed attempt on this asset must have failed for a reason that
+       -- isn't the file's.
+       NOT EXISTS (
+           SELECT 1 FROM attempts a
+           WHERE a.asset_id = j.asset_id AND a.status = 'failed'
+             AND NOT (coalesce(a.error_code, '') = ANY ($2::text[])
+                      OR a.error_code LIKE 'wake\_%')
+       )::boolean AS fallback_eligible,
+       extract(epoch FROM now() - j.available_at)::double precision AS waited_seconds,
+       -- A provider takes work once connected and verified by a setup test,
+       -- if its machines' disk fits the source.
+       coalesce((SELECT c.verified_at IS NOT NULL
+                        AND job_claimable_by(j.asset_id, j.pinned_agent_id, NULL, false, false, c.disk_bytes)
+                 FROM executor_configs c WHERE c.project_id = j.project_id AND c.kind = 'modal'), false)::boolean AS modal_up,
+       coalesce((SELECT c.verified_at IS NOT NULL
+                        AND job_claimable_by(j.asset_id, j.pinned_agent_id, NULL, false, false, c.disk_bytes)
+                 FROM executor_configs c WHERE c.project_id = j.project_id AND c.kind = 'runpod'), false)::boolean AS runpod_up,
+       -- Room under the provider's limits and outside its backoff (D055).
+       coalesce((SELECT provider_has_room(c.id, j.asset_id)
+                 FROM executor_configs c WHERE c.project_id = j.project_id AND c.kind = 'modal'), false)::boolean AS modal_room,
+       coalesce((SELECT provider_has_room(c.id, j.asset_id)
+                 FROM executor_configs c WHERE c.project_id = j.project_id AND c.kind = 'runpod'), false)::boolean AS runpod_room,
+       -- A setup test's sample runs where its test says, and nowhere else.
+       coalesce((SELECT t.executor FROM setup_tests t WHERE t.asset_id = j.asset_id AND t.executor IS NOT NULL LIMIT 1), '')::text AS forced_executor,
+       EXISTS (SELECT 1 FROM executor_configs c WHERE c.project_id = j.project_id
+                 AND c.kind = (SELECT t.executor FROM setup_tests t WHERE t.asset_id = j.asset_id LIMIT 1))::boolean AS forced_configured,
+       -- A woken machine keeps its job until it claims or its deadline ends
+       -- the dispatch.
+       EXISTS (SELECT 1 FROM dispatches d WHERE d.job_id = j.id AND d.status <> 'ended')::boolean AS has_live_dispatch
+FROM jobs j JOIN projects p ON p.id = j.project_id
+WHERE j.id = $3
+`
+
+type JobRouteFactsParams struct {
+	OnlineSeconds float64
+	CapacityCodes []string
+	JobID         string
+}
+
+type JobRouteFactsRow struct {
+	PrimaryExecutor         string
+	FallbackExecutor        pgtype.Text
+	QueueAgeFallbackMinutes pgtype.Int4
+	BuiltinUp               bool
+	AgentsUp                bool
+	FallbackEligible        pgtype.Bool
+	WaitedSeconds           float64
+	ModalUp                 bool
+	RunpodUp                bool
+	ModalRoom               bool
+	RunpodRoom              bool
+	ForcedExecutor          string
+	ForcedConfigured        bool
+	HasLiveDispatch         bool
+}
+
+// What the router needs to place one job: the project's routing, whether
+// each pull executor has an online worker that could claim the job, whether
+// the job's asset may go to a fallback, and how long the job has waited.
+func (q *Queries) JobRouteFacts(ctx context.Context, arg JobRouteFactsParams) (JobRouteFactsRow, error) {
+	row := q.db.QueryRow(ctx, jobRouteFacts, arg.OnlineSeconds, arg.CapacityCodes, arg.JobID)
+	var i JobRouteFactsRow
+	err := row.Scan(
+		&i.PrimaryExecutor,
+		&i.FallbackExecutor,
+		&i.QueueAgeFallbackMinutes,
+		&i.BuiltinUp,
+		&i.AgentsUp,
+		&i.FallbackEligible,
+		&i.WaitedSeconds,
+		&i.ModalUp,
+		&i.RunpodUp,
+		&i.ModalRoom,
+		&i.RunpodRoom,
+		&i.ForcedExecutor,
+		&i.ForcedConfigured,
+		&i.HasLiveDispatch,
+	)
+	return i, err
+}
+
 const latestAttemptNumber = `-- name: LatestAttemptNumber :one
 SELECT coalesce(max(attempt_number), 0)::integer FROM attempts WHERE job_id = $1
 `
@@ -369,6 +539,41 @@ LIMIT $1
 
 func (q *Queries) ListExpiredLeases(ctx context.Context, limit int32) ([]string, error) {
 	rows, err := q.db.Query(ctx, listExpiredLeases, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listRoutableJobs = `-- name: ListRoutableJobs :many
+SELECT id FROM jobs
+WHERE project_id = $1 AND status = 'queued' AND kind IN ('transcode', 'reencode')
+  AND pinned_agent_id IS NULL AND available_at <= now()
+ORDER BY available_at, id
+LIMIT $2
+`
+
+type ListRoutableJobsParams struct {
+	ProjectID string
+	Limit     int32
+}
+
+// Queued media jobs the router may move: pinned jobs never move, and a job
+// still backing off isn't routed until it could be claimed.
+func (q *Queries) ListRoutableJobs(ctx context.Context, arg ListRoutableJobsParams) ([]string, error) {
+	rows, err := q.db.Query(ctx, listRoutableJobs, arg.ProjectID, arg.Limit)
 	if err != nil {
 		return nil, err
 	}
@@ -416,7 +621,7 @@ func (q *Queries) LockAsset(ctx context.Context, id string) (Asset, error) {
 }
 
 const lockAttempt = `-- name: LockAttempt :one
-SELECT attempts.id, attempts.project_id, attempts.job_id, attempts.asset_id, attempts.attempt_number, attempts.output_id, attempts.executor, attempts.agent_id, attempts.status, attempts.token_hash, attempts.lease_expires_at, attempts.phase, attempts.progress, attempts.worker_info, attempts.failure_kind, attempts.error_code, attempts.started_at, attempts.last_heartbeat_at, attempts.finished_at, attempts.signed_paths, (lease_expires_at < now())::boolean AS lease_expired
+SELECT attempts.id, attempts.project_id, attempts.job_id, attempts.asset_id, attempts.attempt_number, attempts.output_id, attempts.executor, attempts.agent_id, attempts.status, attempts.token_hash, attempts.lease_expires_at, attempts.phase, attempts.progress, attempts.worker_info, attempts.failure_kind, attempts.error_code, attempts.started_at, attempts.last_heartbeat_at, attempts.finished_at, attempts.signed_paths, attempts.route_reason, attempts.dispatch_id, attempts.source_multipart_id, attempts.source_part_size, (lease_expires_at < now())::boolean AS lease_expired
 FROM attempts WHERE id = $1 FOR UPDATE
 `
 
@@ -449,7 +654,54 @@ func (q *Queries) LockAttempt(ctx context.Context, id string) (LockAttemptRow, e
 		&i.Attempt.LastHeartbeatAt,
 		&i.Attempt.FinishedAt,
 		&i.Attempt.SignedPaths,
+		&i.Attempt.RouteReason,
+		&i.Attempt.DispatchID,
+		&i.Attempt.SourceMultipartID,
+		&i.Attempt.SourcePartSize,
 		&i.LeaseExpired,
+	)
+	return i, err
+}
+
+const lockDispatchedJob = `-- name: LockDispatchedJob :one
+SELECT id, project_id, asset_id, kind, status, phase, progress, profile_id, profile_version, pinned_agent_id, lost_count, failed_count, error_code, routed_to, route_reason, available_at, created_at, started_at, finished_at, source_storage_id, target_storage_id, import_url FROM jobs
+WHERE id = $1 AND status = 'queued' AND available_at <= now() AND routed_to = $2::text
+FOR UPDATE SKIP LOCKED
+`
+
+type LockDispatchedJobParams struct {
+	ID   string
+	Kind string
+}
+
+// The one job a dispatch key may claim, while it is still queued and routed
+// to that provider.
+func (q *Queries) LockDispatchedJob(ctx context.Context, arg LockDispatchedJobParams) (Job, error) {
+	row := q.db.QueryRow(ctx, lockDispatchedJob, arg.ID, arg.Kind)
+	var i Job
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.AssetID,
+		&i.Kind,
+		&i.Status,
+		&i.Phase,
+		&i.Progress,
+		&i.ProfileID,
+		&i.ProfileVersion,
+		&i.PinnedAgentID,
+		&i.LostCount,
+		&i.FailedCount,
+		&i.ErrorCode,
+		&i.RoutedTo,
+		&i.RouteReason,
+		&i.AvailableAt,
+		&i.CreatedAt,
+		&i.StartedAt,
+		&i.FinishedAt,
+		&i.SourceStorageID,
+		&i.TargetStorageID,
+		&i.ImportUrl,
 	)
 	return i, err
 }
@@ -493,19 +745,10 @@ SELECT id, project_id, asset_id, kind, status, phase, progress, profile_id, prof
 WHERE jobs.project_id = $1
   AND jobs.status = 'queued'
   AND available_at <= now()
-  AND kind IN ('transcode', 'reencode')
-  AND (pinned_agent_id IS NULL OR pinned_agent_id = $2)
-  AND (NOT $3::boolean OR pinned_agent_id = $2)
-  AND (NOT $4::boolean OR pinned_agent_id = $2 OR EXISTS (
-      SELECT 1 FROM assets s JOIN apps p ON p.id = s.app_id
-      WHERE s.id = jobs.asset_id AND p.is_builtin))
-  -- A worker that reports its free disk takes only sources that fit: three
-  -- times an upload's size (source, encodes, packaged output), twice a source
-  -- already on the agent. Unknown sizes (imports) and unreported disk pass.
-  AND ($5::bigint IS NULL OR coalesce(
-      (SELECT 3 * u.declared_size FROM uploads u WHERE u.asset_id = jobs.asset_id ORDER BY u.created_at DESC LIMIT 1),
-      (SELECT 2 * g.size FROM assets s JOIN agent_sources g ON g.id = s.agent_source_id WHERE s.id = jobs.asset_id),
-      0) <= $5::bigint)
+  AND kind IN ('transcode', 'reencode', 'upload_source')
+  AND (pinned_agent_id IS NOT NULL OR routed_to = ANY ($2::text[]))
+  AND job_claimable_by(asset_id, pinned_agent_id, $3::text, $4::boolean,
+                       $5::boolean, $6::bigint)
 ORDER BY available_at, id
 LIMIT 1
 FOR UPDATE SKIP LOCKED
@@ -513,19 +756,21 @@ FOR UPDATE SKIP LOCKED
 
 type LockNextClaimableJobParams struct {
 	ProjectID     string
+	Classes       []string
 	AgentID       pgtype.Text
 	LocalOnly     bool
 	Untrusted     bool
 	FreeDiskBytes pgtype.Int8
 }
 
-// Media work only: import, move and delete run in the control plane. Pinned jobs go
-// only to their agent, and local-scoped agents take only pinned jobs. An
-// untrusted (unsandboxed) agent takes only jobs pinned to it and the owner's
-// own uploads (the built-in Dashboard app's assets), never public uploads.
+// Worker work only: import, move and delete run in the control plane;
+// upload_source is always pinned to the PC that holds the file. A job
+// goes to a worker whose class it is routed to (pinned jobs are decided by
+// the pin alone), and job_claimable_by applies the per-worker rules.
 func (q *Queries) LockNextClaimableJob(ctx context.Context, arg LockNextClaimableJobParams) (Job, error) {
 	row := q.db.QueryRow(ctx, lockNextClaimableJob,
 		arg.ProjectID,
+		arg.Classes,
 		arg.AgentID,
 		arg.LocalOnly,
 		arg.Untrusted,
@@ -559,6 +804,73 @@ func (q *Queries) LockNextClaimableJob(ctx context.Context, arg LockNextClaimabl
 	return i, err
 }
 
+const lockRoutableJob = `-- name: LockRoutableJob :one
+SELECT id, project_id, asset_id, kind, status, phase, progress, profile_id, profile_version, pinned_agent_id, lost_count, failed_count, error_code, routed_to, route_reason, available_at, created_at, started_at, finished_at, source_storage_id, target_storage_id, import_url FROM jobs
+WHERE id = $1 AND status = 'queued' AND pinned_agent_id IS NULL AND available_at <= now()
+FOR UPDATE SKIP LOCKED
+`
+
+func (q *Queries) LockRoutableJob(ctx context.Context, id string) (Job, error) {
+	row := q.db.QueryRow(ctx, lockRoutableJob, id)
+	var i Job
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.AssetID,
+		&i.Kind,
+		&i.Status,
+		&i.Phase,
+		&i.Progress,
+		&i.ProfileID,
+		&i.ProfileVersion,
+		&i.PinnedAgentID,
+		&i.LostCount,
+		&i.FailedCount,
+		&i.ErrorCode,
+		&i.RoutedTo,
+		&i.RouteReason,
+		&i.AvailableAt,
+		&i.CreatedAt,
+		&i.StartedAt,
+		&i.FinishedAt,
+		&i.SourceStorageID,
+		&i.TargetStorageID,
+		&i.ImportUrl,
+	)
+	return i, err
+}
+
+const lockWakingDispatch = `-- name: LockWakingDispatch :one
+SELECT id, project_id, job_id, executor_config_id, kind, status, end_reason, key_hash, key_sealed, instance_id, rate_cents_per_hour, claim_deadline, attempt_id, created_at, woken_at, claimed_at, ended_at, stopped_at, reserved_seconds FROM dispatches WHERE id = $1 AND status = 'waking' AND claim_deadline > now() FOR UPDATE
+`
+
+func (q *Queries) LockWakingDispatch(ctx context.Context, id string) (Dispatch, error) {
+	row := q.db.QueryRow(ctx, lockWakingDispatch, id)
+	var i Dispatch
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.JobID,
+		&i.ExecutorConfigID,
+		&i.Kind,
+		&i.Status,
+		&i.EndReason,
+		&i.KeyHash,
+		&i.KeySealed,
+		&i.InstanceID,
+		&i.RateCentsPerHour,
+		&i.ClaimDeadline,
+		&i.AttemptID,
+		&i.CreatedAt,
+		&i.WokenAt,
+		&i.ClaimedAt,
+		&i.EndedAt,
+		&i.StoppedAt,
+		&i.ReservedSeconds,
+	)
+	return i, err
+}
+
 const markAssetErrored = `-- name: MarkAssetErrored :one
 UPDATE assets
 SET status = 'errored', error_code = $2, version = version + 1, updated_at = now()
@@ -576,6 +888,22 @@ func (q *Queries) MarkAssetErrored(ctx context.Context, arg MarkAssetErroredPara
 	var version int64
 	err := row.Scan(&version)
 	return version, err
+}
+
+const moveSourceToStorage = `-- name: MoveSourceToStorage :exec
+UPDATE assets SET source_uri = $2, agent_source_id = NULL, source_kept = true WHERE id = $1
+`
+
+type MoveSourceToStorageParams struct {
+	ID        string
+	SourceUri pgtype.Text
+}
+
+// The PC's upload landed: the source is in storage now, and the asset is
+// no longer tied to that PC (D059).
+func (q *Queries) MoveSourceToStorage(ctx context.Context, arg MoveSourceToStorageParams) error {
+	_, err := q.db.Exec(ctx, moveSourceToStorage, arg.ID, arg.SourceUri)
+	return err
 }
 
 const nextAttemptNumber = `-- name: NextAttemptNumber :one
@@ -651,6 +979,21 @@ func (q *Queries) ReserveSignedPaths(ctx context.Context, arg ReserveSignedPaths
 	return signed_paths, err
 }
 
+const setAttemptSourceMultipart = `-- name: SetAttemptSourceMultipart :exec
+UPDATE attempts SET source_multipart_id = $2, source_part_size = $3 WHERE id = $1
+`
+
+type SetAttemptSourceMultipartParams struct {
+	ID                string
+	SourceMultipartID pgtype.Text
+	SourcePartSize    pgtype.Int8
+}
+
+func (q *Queries) SetAttemptSourceMultipart(ctx context.Context, arg SetAttemptSourceMultipartParams) error {
+	_, err := q.db.Exec(ctx, setAttemptSourceMultipart, arg.ID, arg.SourceMultipartID, arg.SourcePartSize)
+	return err
+}
+
 const setAttemptStatus = `-- name: SetAttemptStatus :exec
 UPDATE attempts
 SET status = $2, failure_kind = $3, error_code = $4,
@@ -675,6 +1018,21 @@ func (q *Queries) SetAttemptStatus(ctx context.Context, arg SetAttemptStatusPara
 	return err
 }
 
+const setJobRoute = `-- name: SetJobRoute :exec
+UPDATE jobs SET routed_to = $2, route_reason = $3 WHERE id = $1
+`
+
+type SetJobRouteParams struct {
+	ID          string
+	RoutedTo    pgtype.Text
+	RouteReason pgtype.Text
+}
+
+func (q *Queries) SetJobRoute(ctx context.Context, arg SetJobRouteParams) error {
+	_, err := q.db.Exec(ctx, setJobRoute, arg.ID, arg.RoutedTo, arg.RouteReason)
+	return err
+}
+
 const setJobRunningProgress = `-- name: SetJobRunningProgress :exec
 UPDATE jobs SET status = 'running', phase = $2, progress = $3 WHERE id = $1
 `
@@ -692,18 +1050,42 @@ func (q *Queries) SetJobRunningProgress(ctx context.Context, arg SetJobRunningPr
 
 const startJob = `-- name: StartJob :exec
 UPDATE jobs
-SET status = 'running', phase = NULL, progress = NULL, started_at = coalesce(started_at, now()),
-    routed_to = $2, route_reason = $3
+SET status = 'running', phase = NULL, progress = NULL, started_at = coalesce(started_at, now())
 WHERE id = $1
 `
 
-type StartJobParams struct {
-	ID          string
-	RoutedTo    pgtype.Text
-	RouteReason pgtype.Text
+func (q *Queries) StartJob(ctx context.Context, id string) error {
+	_, err := q.db.Exec(ctx, startJob, id)
+	return err
 }
 
-func (q *Queries) StartJob(ctx context.Context, arg StartJobParams) error {
-	_, err := q.db.Exec(ctx, startJob, arg.ID, arg.RoutedTo, arg.RouteReason)
+const touchBuiltinWorker = `-- name: TouchBuiltinWorker :exec
+UPDATE projects
+SET builtin_seen_at = now(),
+    builtin_free_disk_bytes = coalesce($1::bigint, builtin_free_disk_bytes)
+WHERE id = $2
+  AND (builtin_seen_at IS NULL OR builtin_seen_at < now() - interval '10 seconds'
+       OR builtin_free_disk_bytes IS DISTINCT FROM coalesce($1::bigint, builtin_free_disk_bytes))
+`
+
+type TouchBuiltinWorkerParams struct {
+	FreeDiskBytes pgtype.Int8
+	ID            string
+}
+
+// Coalesced like agents: a write at most every 10 s, unless the reported
+// free disk changed.
+func (q *Queries) TouchBuiltinWorker(ctx context.Context, arg TouchBuiltinWorkerParams) error {
+	_, err := q.db.Exec(ctx, touchBuiltinWorker, arg.FreeDiskBytes, arg.ID)
+	return err
+}
+
+const unclaimDispatch = `-- name: UnclaimDispatch :exec
+UPDATE dispatches SET status = 'waking', attempt_id = NULL, claimed_at = NULL WHERE id = $1 AND status = 'claimed'
+`
+
+// An undelivered claim (Release) gives the dispatch its job back.
+func (q *Queries) UnclaimDispatch(ctx context.Context, id string) error {
+	_, err := q.db.Exec(ctx, unclaimDispatch, id)
 	return err
 }

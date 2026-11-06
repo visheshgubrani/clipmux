@@ -27,7 +27,8 @@ const pushUsage = `Usage:
 With --local the files stay on this PC: its connected agent (clipmux worker)
 encodes them in place and uploads only the outputs. Without an API key they
 become your own uploads, as from the dashboard; with one, the key's app owns
-them.
+them. Such a video re-encodes only on this PC, unless --upload-source also
+uploads the file once it has been encoded, so any worker can re-encode it.
 
 Uploads videos through the public upload API, straight to storage in 32 MiB
 parts. A push that is interrupted resumes where it stopped when run again,
@@ -51,10 +52,15 @@ func runPush(args []string, getenv func(string) string, stdout, stderr io.Writer
 	waitReady := fs.Bool("wait", false, "wait until each video is ready to play")
 	quiet := fs.Bool("quiet", false, "print only asset and playback IDs")
 	local := fs.Bool("local", false, "keep the files on this PC; its agent encodes them and uploads only the outputs")
+	uploadSource := fs.Bool("upload-source", false, "with --local: once encoded, also upload each file, so any worker can re-encode it")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 	key := getenv("CLIPMUX_API_KEY")
+	if *uploadSource && !*local {
+		fmt.Fprint(stderr, "clipmux push: --upload-source goes with --local (a plain push uploads the file already)\n")
+		return 2
+	}
 	switch {
 	case fs.NArg() == 0 || (!*local && (*server == "" || key == "")) || (*local && key != "" && *server == ""):
 		fmt.Fprint(stderr, "clipmux push: needs --server and CLIPMUX_API_KEY (or --local), and at least one file\n\n")
@@ -92,7 +98,7 @@ func runPush(args []string, getenv func(string) string, stdout, stderr io.Writer
 		}
 		var a push.Asset
 		if *local {
-			a, err = pushLocal(ctx, c, agentDir(getenv), f, opts)
+			a, err = pushLocal(ctx, c, agentDir(getenv), f, opts, *uploadSource)
 		} else {
 			a, err = c.File(ctx, f, opts)
 		}
@@ -128,13 +134,13 @@ func runPush(args []string, getenv func(string) string, stdout, stderr io.Writer
 
 // pushLocal hands one file to this PC's agent. With an API key, the key's
 // app creates the asset; without, the agent creates it as the owner's.
-func pushLocal(ctx context.Context, c *push.Client, dir, path string, o push.Options) (push.Asset, error) {
+func pushLocal(ctx context.Context, c *push.Client, dir, path string, o push.Options, uploadSource bool) (push.Asset, error) {
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		return push.Asset{}, err
 	}
 	res, err := worker.RegisterLocal(ctx, dir, worker.LocalRequest{
-		Path: abs, Attach: c.Key == "", PlaybackPolicy: o.Policy, Passthrough: o.Passthrough,
+		Path: abs, Attach: c.Key == "", PlaybackPolicy: o.Policy, Passthrough: o.Passthrough, UploadSource: uploadSource,
 	})
 	if err != nil {
 		return push.Asset{}, err

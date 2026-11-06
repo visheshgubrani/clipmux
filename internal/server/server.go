@@ -3,9 +3,11 @@
 package server
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -24,11 +26,14 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/contentkey"
 	"github.com/visheshgubrani/clipmux/internal/db"
 	"github.com/visheshgubrani/clipmux/internal/delivery"
+	"github.com/visheshgubrani/clipmux/internal/dispatch"
 	"github.com/visheshgubrani/clipmux/internal/lifecycle"
 	"github.com/visheshgubrani/clipmux/internal/manage"
+	"github.com/visheshgubrani/clipmux/internal/modal"
 	"github.com/visheshgubrani/clipmux/internal/outputs"
 	"github.com/visheshgubrani/clipmux/internal/queue"
 	"github.com/visheshgubrani/clipmux/internal/routes"
+	"github.com/visheshgubrani/clipmux/internal/runpod"
 	"github.com/visheshgubrani/clipmux/internal/secrets"
 	"github.com/visheshgubrani/clipmux/internal/settings"
 	"github.com/visheshgubrani/clipmux/internal/setuptest"
@@ -45,6 +50,19 @@ import (
 // LeaseSweepInterval is how often lost leases are swept. Leases last 90 s and
 // workers heartbeat every 15 s.
 const LeaseSweepInterval = 15 * time.Second
+
+// RouteInterval is how often queued media jobs are routed again (D053): a
+// primary seen offline sends work to the fallback within OnlineWithin plus
+// this.
+const RouteInterval = 5 * time.Second
+
+// DispatchInterval is how often pending wakes and stops are sent to
+// providers.
+const DispatchInterval = 2 * time.Second
+
+// ReapInterval is how often dispatches whose machine has nothing left to do
+// are ended and their machines stopped (D055).
+const ReapInterval = 30 * time.Second
 
 // UploadSweepInterval is how often abandoned uploads are checked.
 const UploadSweepInterval = 5 * time.Minute
@@ -233,7 +251,12 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 	// PC agents pair with a code and claim with their own keys (P3-T01).
 	agentSvc := agents.New(pool, q, acct, db.DefaultProjectID, b.urls.PublicURL)
 	agentSvc.Logger = logger
-	worker := workerapi.New(q, workerapi.Auths{workerapi.BuiltinKey(workerKey), agentSvc}, set, keys, committer)
+	// Serverless machines claim one job each with a key minted when the
+	// router sends that job to a provider (P4-T02).
+	disp := dispatch.New(pool, box, b.urls.PublicURL)
+	disp.Logger = logger
+	q.Dispatch = disp.Route
+	worker := workerapi.New(q, workerapi.Auths{workerapi.BuiltinKey(workerKey), agentSvc, disp}, set, keys, committer)
 	worker.Agents = agentSvc
 	worker.Logger = logger
 	upl := uploads.New(pool, set)
@@ -259,6 +282,35 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 		API: cfg.CloudflareAPI, R2Endpoint: cloudflare.EndpointTemplate(cfg.R2Endpoint),
 		SetupTest: func(ctx context.Context) error { _, err := tests.Queue(ctx, "urls_saved"); return err },
 	}
+	// Providers (P4-T04): each kind opens its adapter from its stored row.
+	rp := &runpod.Connector{
+		Pool: pool, Box: box, ProjectID: db.DefaultProjectID, API: cmp.Or(cfg.RunPodAPI, runpod.DefaultAPI),
+		PublicURL: b.urls.PublicURL, AllowPrivateURL: cfg.ExecutorsAllowPrivateURL, DefaultImage: cfg.WorkerImage,
+		Resolver: net.DefaultResolver, Logger: logger,
+		SetupTest: func(ctx context.Context) error {
+			_, err := tests.QueueThrough(ctx, "executor_connected", "runpod")
+			return err
+		},
+	}
+	md := &modal.Connector{
+		Pool: pool, Box: box, ProjectID: db.DefaultProjectID,
+		PublicURL: b.urls.PublicURL, AllowPrivateURL: cfg.ExecutorsAllowPrivateURL, DefaultImage: cfg.WorkerImage,
+		Resolver: net.DefaultResolver, Logger: logger,
+		SetupTest: func(ctx context.Context) error {
+			_, err := tests.QueueThrough(ctx, "executor_connected", "modal")
+			return err
+		},
+	}
+	disp.Resolve = func(_ context.Context, row db.ExecutorConfig) (dispatch.Executor, error) {
+		switch row.Kind {
+		case "runpod":
+			return rp.Resolve(row)
+		case "modal":
+			return md.Resolve(row)
+		}
+		return nil, fmt.Errorf("no adapter for provider %q", row.Kind)
+	}
+	mgmt.RunPod, mgmt.Modal = rp, md
 	assetsAPI := assets.New(pool)
 	// The dashboard calls the integration API with the owner's session,
 	// acting as one app; integration keys never reach the management API.
@@ -282,6 +334,12 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 		wg.Go(func() { sweeper.Every(ctx, interval, name, leader.Only(task), logger) })
 	}
 	loop(LeaseSweepInterval, "lost_leases", func(ctx context.Context) (int, error) { return q.SweepLostLeases(ctx, 100) })
+	loop(RouteInterval, "routing", func(ctx context.Context) (int, error) { return q.Route(ctx, 200) })
+	loop(DispatchInterval, "dispatch", func(ctx context.Context) (int, error) { return disp.Publish(ctx, 20) })
+	loop(ReapInterval, "dispatch_reaper", func(ctx context.Context) (int, error) { return disp.Reap(ctx, 100) })
+	// The first pass runs at boot, which is when a crash may have left a
+	// machine nobody recorded.
+	loop(ReconcileInterval, "machine_reconciler", disp.Reconcile)
 	loop(UploadSweepInterval, "stranded_pinned_jobs", func(ctx context.Context) (int, error) { return q.SweepStrandedPinned(ctx, 100) })
 	loop(UploadSweepInterval, "uploads", func(ctx context.Context) (int, error) { return upl.Sweep(ctx, 500) })
 	loop(RouteSyncInterval, "routes", func(ctx context.Context) (int, error) { return committer.SyncRoutes(ctx, 1000) })

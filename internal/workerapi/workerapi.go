@@ -15,6 +15,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgtype"
+
 	"github.com/visheshgubrani/clipmux/internal/contentkey"
 	"github.com/visheshgubrani/clipmux/internal/db"
 	"github.com/visheshgubrani/clipmux/internal/httpjson"
@@ -173,6 +175,7 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("POST /worker/v1/attempts/{id}/heartbeat", a.heartbeat)
 	mux.HandleFunc("POST /worker/v1/attempts/{id}/sign", a.sign)
 	mux.HandleFunc("POST /worker/v1/attempts/{id}/complete", a.complete)
+	mux.HandleFunc("POST /worker/v1/attempts/{id}/source-parts", a.sourceParts)
 	mux.HandleFunc("POST /worker/v1/attempts/{id}/fail", a.fail)
 	if a.Agents != nil {
 		a.Agents.RegisterWorker(mux)
@@ -246,6 +249,19 @@ func (a *API) claim(w http.ResponseWriter, r *http.Request) {
 	})
 	worker.Info = info
 	worker.FreeDiskBytes = max(req.FreeDiskBytes, 0)
+	if worker.DispatchID != "" && !Sandboxed(req.Sandbox) {
+		// A serverless machine takes public uploads like any trusted
+		// worker, so its tools must be confined (D054).
+		httpjson.Error(w, http.StatusConflict, "sandbox_required", "a serverless worker must confine its tools (rlimits, no_new_privs, seccomp)")
+		return
+	}
+	if worker.Executor == "builtin" {
+		// The router counts the built-in worker as online, with this much
+		// disk, for OnlineWithin after it calls.
+		if err := a.Queue.TouchBuiltin(r.Context(), worker.FreeDiskBytes); err != nil {
+			a.Logger.Error("worker api", "op", "touch builtin", "err", err)
+		}
+	}
 	if worker.AgentID != "" {
 		// Sandbox status is the agent's own report: an agent that lies
 		// exposes only its own machine to hostile uploads.
@@ -328,8 +344,14 @@ func (a *API) complete(w http.ResponseWriter, r *http.Request) {
 	}
 	var req struct {
 		Manifest media.Manifest `json:"manifest"`
+		// SourceParts finishes an upload_source attempt instead (D059).
+		SourceParts []SourcePart `json:"source_parts"`
 	}
 	if !httpjson.DecodeLimit(w, r, &req, maxManifest) {
+		return
+	}
+	if req.SourceParts != nil {
+		a.completeSource(w, r, token, req.SourceParts)
 		return
 	}
 	v, err := a.Commit.Commit(r.Context(), token, req.Manifest)
@@ -485,8 +507,13 @@ func (a *API) heartbeat(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if att.AgentID.Valid && a.Agents != nil {
+	switch {
+	case att.AgentID.Valid && a.Agents != nil:
 		a.Agents.ReportBeat(r, att.AgentID.String)
+	case att.Executor == "builtin":
+		if err := a.Queue.TouchBuiltin(r.Context(), 0); err != nil {
+			a.Logger.Error("worker api", "op", "touch builtin", "err", err)
+		}
 	}
 	var req heartbeatRequest
 	if !httpjson.Decode(w, r, &req) {
@@ -568,4 +595,148 @@ func CompareVersion(a, b [3]int) int {
 		}
 	}
 	return 0
+}
+
+// Uploading a local source from its PC (push --local --upload-source,
+// D059). The attempt writes one object, uploads/{asset}/source, in parts
+// signed for it alone, and its commit moves the asset's source there.
+
+// MaxSourceParts caps the part URLs one source-parts call signs.
+const MaxSourceParts = 100
+
+// SourcePart is one stored part of a source upload, as complete lists it.
+type SourcePart struct {
+	Number int    `json:"number"`
+	ETag   string `json:"etag"`
+}
+
+// SourcePartsResponse answers source-parts.
+type SourcePartsResponse struct {
+	Action    string            `json:"action"`
+	Reason    string            `json:"reason,omitempty"`
+	PartSize  int64             `json:"part_size,omitempty"`
+	PartCount int               `json:"part_count,omitempty"`
+	URLs      map[string]string `json:"urls,omitempty"`
+	ExpiresAt time.Time         `json:"expires_at"`
+}
+
+func (a *API) sourceParts(w http.ResponseWriter, r *http.Request) {
+	token, att, ok := a.attempt(w, r)
+	if !ok {
+		return
+	}
+	var req struct {
+		Parts []int `json:"parts"`
+	}
+	if !httpjson.Decode(w, r, &req) {
+		return
+	}
+	parts := slices.Compact(slices.Sorted(slices.Values(req.Parts)))
+	if len(parts) > MaxSourceParts {
+		httpjson.Error(w, http.StatusBadRequest, "invalid_request", fmt.Sprintf("sign at most %d parts per call", MaxSourceParts))
+		return
+	}
+	store, err := a.Stores.ForAsset(r.Context(), att.AssetID)
+	if err != nil {
+		a.internal(w, "storage", err)
+		return
+	}
+	key := sourceKey(att.AssetID)
+	v, _, up, err := a.Queue.SourceUpload(r.Context(), token, func(size int64) (queue.SourceUpload, error) {
+		mp, err := store.CreateMultipart(r.Context(), key, size)
+		return queue.SourceUpload{UploadID: mp.UploadID, PartSize: mp.PartSize}, err
+	})
+	switch {
+	case errors.Is(err, queue.ErrNotSourceUpload):
+		httpjson.Error(w, http.StatusConflict, "not_a_source_upload", "this attempt doesn't upload a source")
+		return
+	case err != nil:
+		a.internal(w, "source parts", err)
+		return
+	case v.Stop:
+		a.verdict(w, v)
+		return
+	}
+	count := int((up.Size + up.PartSize - 1) / up.PartSize)
+	resp := SourcePartsResponse{
+		Action: "continue", PartSize: up.PartSize, PartCount: count,
+		URLs: make(map[string]string, len(parts)), ExpiresAt: time.Now().Add(sourceURLTTL).UTC(),
+	}
+	for _, n := range parts {
+		if n < 1 || n > count {
+			httpjson.Error(w, http.StatusBadRequest, "invalid_part", fmt.Sprintf("part %d is outside 1 to %d", n, count))
+			return
+		}
+		u, err := store.PresignPart(r.Context(), key, up.UploadID, n, sourceURLTTL)
+		if err != nil {
+			a.internal(w, "sign part", err)
+			return
+		}
+		resp.URLs[strconv.Itoa(n)] = u
+	}
+	httpjson.Write(w, http.StatusOK, resp)
+}
+
+// errSourceInvalid is a finished upload whose size isn't the file's.
+var errSourceInvalid = errors.New("the uploaded source isn't the registered size")
+
+// completeSource finishes an upload_source attempt: it completes the
+// multipart upload, checks the stored size against the file's, and in the
+// attempt's commit moves the asset's source to storage and unpins it from
+// the PC. A retry after storage finished but the commit didn't finds the
+// object already there.
+func (a *API) completeSource(w http.ResponseWriter, r *http.Request, token string, sent []SourcePart) {
+	parts := make([]storage.Part, len(sent))
+	for i, p := range sent {
+		parts[i] = storage.Part{Number: p.Number, ETag: p.ETag}
+	}
+	att, err := a.Queue.Authenticate(r.Context(), token)
+	if err != nil {
+		httpjson.Error(w, http.StatusUnauthorized, "unauthorized", "unknown attempt token")
+		return
+	}
+	store, err := a.Stores.ForAsset(r.Context(), att.AssetID)
+	if err != nil {
+		a.internal(w, "storage", err)
+		return
+	}
+	key := sourceKey(att.AssetID)
+	v, err := a.Queue.CommitAttempt(r.Context(), token, func(qs *db.Queries, at db.Attempt, job db.Job) error {
+		if job.Kind != queue.KindUploadSource || !at.SourceMultipartID.Valid {
+			return queue.ErrNotSourceUpload
+		}
+		size, err := qs.GetAssetAgentSourceSize(r.Context(), job.AssetID)
+		if err != nil {
+			return err
+		}
+		// A completion that fails may have finished in an earlier try; the
+		// stored object decides.
+		cerr := store.CompleteMultipart(r.Context(), key, at.SourceMultipartID.String, parts)
+		obj, herr := store.Head(r.Context(), key)
+		switch {
+		case herr != nil && cerr != nil:
+			return cerr
+		case herr != nil:
+			return herr
+		case obj.Size != size && cerr != nil:
+			return cerr
+		case obj.Size != size:
+			return errSourceInvalid
+		}
+		return qs.MoveSourceToStorage(r.Context(), db.MoveSourceToStorageParams{
+			ID: job.AssetID, SourceUri: pgtype.Text{String: key, Valid: true},
+		})
+	})
+	switch {
+	case errors.Is(err, queue.ErrNotSourceUpload):
+		httpjson.Error(w, http.StatusConflict, "not_a_source_upload", "this attempt doesn't upload a source")
+	case errors.Is(err, errSourceInvalid):
+		httpjson.Error(w, http.StatusConflict, "source_invalid", err.Error())
+	case err != nil:
+		a.internal(w, "complete source", err)
+	case v.Stop:
+		a.verdict(w, v)
+	default:
+		httpjson.Write(w, http.StatusOK, verdictResponse{Action: "done"})
+	}
 }

@@ -47,8 +47,33 @@ COPY cmd/ cmd/
 COPY internal/ internal/
 COPY --from=web /src/internal/web/dist/ internal/web/dist/
 ARG VERSION=dev
+# The image this build is pushed as (ghcr.io/visheshgubrani/clipmux:sha-…),
+# which serverless providers run so they match this server (D058).
+ARG WORKER_IMAGE=
 RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
-    CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o /out/clipmux ./cmd/clipmux
+    CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=${VERSION} -X main.workerImage=${WORKER_IMAGE}" -o /out/clipmux ./cmd/clipmux
+
+# ── Agent tarball (D061) ─────────────────────────────────────────────────────
+# Built only when asked for, and before the runtime stage so a plain build
+# still makes the image:
+#   docker build --target agent --output type=local,dest=dist .
+# The pack stage holds the runtime image's files, plus patchelf.
+FROM ${BASE} AS agent-pack
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+ARG DEBIAN_FRONTEND=noninteractive
+COPY toolchain/apt-packages.env toolchain/pack_agent.sh /tmp/clipmux-toolchain/
+RUN set -eux; \
+    . /tmp/clipmux-toolchain/apt-packages.env; \
+    apt-get update; \
+    if [ "$(dpkg --print-architecture)" = amd64 ]; then CLIPMUX_RUNTIME_PACKAGES+=("${CLIPMUX_RUNTIME_PACKAGES_AMD64[@]}"); fi; \
+    apt-get install -y --no-install-recommends "${CLIPMUX_RUNTIME_PACKAGES[@]}" patchelf; \
+    rm -rf /var/lib/apt/lists/*
+COPY --from=toolchain /usr/local/ /usr/local/
+COPY --from=build /out/clipmux /usr/local/bin/clipmux
+RUN ldconfig && bash /tmp/clipmux-toolchain/pack_agent.sh /out
+
+FROM scratch AS agent
+COPY --from=agent-pack /out/ /
 
 # ── Runtime ──────────────────────────────────────────────────────────────────
 FROM ${BASE}
@@ -58,6 +83,7 @@ COPY toolchain/apt-packages.env toolchain/verify_toolchain.sh /tmp/clipmux-toolc
 RUN set -eux; \
     . /tmp/clipmux-toolchain/apt-packages.env; \
     apt-get update; \
+    if [ "$(dpkg --print-architecture)" = amd64 ]; then CLIPMUX_RUNTIME_PACKAGES+=("${CLIPMUX_RUNTIME_PACKAGES_AMD64[@]}"); fi; \
     apt-get install -y --no-install-recommends "${CLIPMUX_RUNTIME_PACKAGES[@]}" tini; \
     rm -rf /var/lib/apt/lists/*
 COPY --from=toolchain /usr/local/ /usr/local/
@@ -70,8 +96,11 @@ RUN useradd --system --uid 10001 --home-dir /var/lib/clipmux --create-home --she
     && install -d -o clipmux -g clipmux -m 0750 /var/lib/clipmux/data \
     && install -d -o clipmux -g clipmux -m 0700 /var/lib/clipmux-agent
 USER 10001
+# NVENC needs the driver's video capability, which NVIDIA's container
+# runtime injects only when asked (Modal, RunPod, docker --gpus).
 ENV CLIPMUX_DATA_DIR=/var/lib/clipmux/data \
-    CLIPMUX_LISTEN=:8080
+    CLIPMUX_LISTEN=:8080 \
+    NVIDIA_DRIVER_CAPABILITIES=compute,video,utility
 VOLUME /var/lib/clipmux/data
 EXPOSE 8080
 HEALTHCHECK --interval=15s --timeout=5s --start-period=30s CMD ["clipmux", "healthcheck"]

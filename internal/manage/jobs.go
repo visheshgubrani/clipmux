@@ -23,20 +23,21 @@ import (
 
 // AttemptView is one executor's run of a job.
 type AttemptView struct {
-	ID         string          `json:"id"`
-	Number     int32           `json:"number"`
-	Executor   string          `json:"executor"`
-	AgentID    string          `json:"agent_id,omitempty"`
-	AgentName  string          `json:"agent_name,omitempty"`
-	Status     string          `json:"status"`
-	Failure    string          `json:"failure_kind,omitempty"`
-	ErrorCode  string          `json:"error_code,omitempty"`
-	Phase      string          `json:"phase,omitempty"`
-	Progress   *float32        `json:"progress,omitempty"`
-	Encoder    json.RawMessage `json:"encoder,omitempty"`
-	StartedAt  time.Time       `json:"started_at"`
-	FinishedAt *time.Time      `json:"finished_at,omitempty"`
-	LastBeatAt *time.Time      `json:"last_heartbeat_at,omitempty"`
+	ID          string          `json:"id"`
+	Number      int32           `json:"number"`
+	Executor    string          `json:"executor"`
+	RouteReason string          `json:"route_reason,omitempty"`
+	AgentID     string          `json:"agent_id,omitempty"`
+	AgentName   string          `json:"agent_name,omitempty"`
+	Status      string          `json:"status"`
+	Failure     string          `json:"failure_kind,omitempty"`
+	ErrorCode   string          `json:"error_code,omitempty"`
+	Phase       string          `json:"phase,omitempty"`
+	Progress    *float32        `json:"progress,omitempty"`
+	Encoder     json.RawMessage `json:"encoder,omitempty"`
+	StartedAt   time.Time       `json:"started_at"`
+	FinishedAt  *time.Time      `json:"finished_at,omitempty"`
+	LastBeatAt  *time.Time      `json:"last_heartbeat_at,omitempty"`
 }
 
 // JobView is a job with its attempts.
@@ -54,6 +55,7 @@ type JobView struct {
 	FailedCount   int32         `json:"failed_count"`
 	ErrorCode     string        `json:"error_code,omitempty"`
 	RoutedTo      string        `json:"routed_to,omitempty"`
+	RouteReason   string        `json:"route_reason,omitempty"`
 	CreatedAt     time.Time     `json:"created_at"`
 	StartedAt     *time.Time    `json:"started_at,omitempty"`
 	FinishedAt    *time.Time    `json:"finished_at,omitempty"`
@@ -72,7 +74,7 @@ func jobView(j db.ListJobsRow) JobView {
 		ID: j.ID, AssetID: j.AssetID, AppID: j.AppID, Passthrough: j.Passthrough.String, Kind: j.Kind, Status: j.Status,
 		Phase: j.Phase.String, Progress: optFloat(j.Progress), PinnedAgentID: j.PinnedAgentID.String,
 		LostCount: j.LostCount, FailedCount: j.FailedCount, ErrorCode: j.ErrorCode.String, RoutedTo: j.RoutedTo.String,
-		CreatedAt: j.CreatedAt.Time, StartedAt: optTime(j.StartedAt), FinishedAt: optTime(j.FinishedAt),
+		RouteReason: j.RouteReason.String, CreatedAt: j.CreatedAt.Time, StartedAt: optTime(j.StartedAt), FinishedAt: optTime(j.FinishedAt),
 		Attempts: []AttemptView{},
 	}
 }
@@ -93,7 +95,7 @@ func (m *API) withAttempts(r *http.Request, jobs []JobView) error {
 	}
 	for _, a := range rows {
 		v := AttemptView{
-			ID: a.ID, Number: a.AttemptNumber, Executor: a.Executor, AgentID: a.AgentID.String, AgentName: a.AgentName,
+			ID: a.ID, Number: a.AttemptNumber, Executor: a.Executor, RouteReason: a.RouteReason.String, AgentID: a.AgentID.String, AgentName: a.AgentName,
 			Status: a.Status, Failure: a.FailureKind.String, ErrorCode: a.ErrorCode.String, Phase: a.Phase.String,
 			Progress: optFloat(a.Progress), StartedAt: a.StartedAt.Time, FinishedAt: optTime(a.FinishedAt),
 			LastBeatAt: optTime(a.LastHeartbeatAt),

@@ -64,7 +64,7 @@ LIMIT sqlc.arg(max_jobs);
 -- name: ListJobAttempts :many
 -- Each attempt of the given jobs: where it ran, how it ended, and which
 -- encoder stage its output's manifest records.
-SELECT a.id, a.job_id, a.attempt_number, a.executor, a.agent_id, coalesce(g.name, '')::text AS agent_name,
+SELECT a.id, a.job_id, a.attempt_number, a.executor, a.route_reason, a.agent_id, coalesce(g.name, '')::text AS agent_name,
        a.status, a.failure_kind, a.error_code, a.phase, a.progress, a.started_at, a.finished_at,
        a.last_heartbeat_at, a.output_id, (o.manifest -> 'encoder')::jsonb AS encoder
 FROM attempts a

@@ -7,20 +7,25 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"syscall"
 	"testing"
 	"time"
 
+	"github.com/visheshgubrani/clipmux/internal/registry/registrytest"
+	"github.com/visheshgubrani/clipmux/internal/runpod/runpodtest"
 	"github.com/visheshgubrani/clipmux/internal/tokens"
 )
 
 // TestPlayerFixture serves the browser exit suites (e2e/web): the real
-// serve with an encoded 30 s, three-rung video, and on another origin the
-// built test pages plus:
+// serve with an encoded 30 s, three-rung video, an owner account and a
+// connected PC, backed by a fake RunPod and a fake private registry; and on
+// another origin the built test pages plus:
 //
-//	GET  /config                 {base_url, playback_id, api, dashboard, setup_token}
+//	GET  /config                 {base_url, playback_id, api, dashboard, setup_token,
+//	                              ops, ops_email, ops_password, runpod_key, registry_*}
 //	GET  /token?aud=v&ttl=SECS   a fresh playback token (text)
 //	POST /uploads?size=BYTES     an upload created with the app's API key
 //
@@ -29,7 +34,16 @@ func TestPlayerFixture(t *testing.T) {
 	if os.Getenv("CLIPMUX_E2E_FIXTURE") != "1" {
 		t.Skip("set CLIPMUX_E2E_FIXTURE=1 to serve the browser suites")
 	}
-	in := start(t)
+	// The Workers suite connects RunPod: a fake RunPod API and a fake
+	// private registry, which serve trusts through SSL_CERT_FILE.
+	rp := runpodtest.New(t)
+	reg := registrytest.New(t)
+	certFile := filepath.Join(t.TempDir(), "registry.pem")
+	if err := os.WriteFile(certFile, reg.CertPEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	in := start(t, "CLIPMUX_RUNPOD_API="+rp.URL, "CLIPMUX_EXECUTORS_ALLOW_PRIVATE_URL=true",
+		"SSL_CERT_FILE="+certFile, "CLIPMUX_WORKER_IMAGE="+reg.Image())
 	key, kid, priv := in.credentials("Browser suites")
 	asset, pid := in.upload(key, fixture(t, 30, 1280, 720))
 	in.waitReady(key, asset, 5*time.Minute)
@@ -39,6 +53,12 @@ func TestPlayerFixture(t *testing.T) {
 	setupToken := regexp.MustCompile(`setup_token=(\S+)`).FindStringSubmatch(fresh.log())
 	if setupToken == nil {
 		t.Fatalf("the fresh install printed no setup token:\n%s", fresh.log())
+	}
+	// The Workers suite signs in as the owner and finds a connected PC.
+	in.owner()
+	if _, err := in.pool.Exec(context.Background(), `INSERT INTO agents (id, project_id, name, key_hash, status, sandboxed, hostname, platform, capabilities, last_seen_at)
+		VALUES ('agt_studio', 'prj_default', 'studio-pc', 'fixture', 'approved', true, 'studio', 'linux/amd64', '{"encoders": ["h264_vaapi", "libx264"]}', now() + interval '1 day')`); err != nil {
+		t.Fatal(err)
 	}
 	signer, err := tokens.ParsePrivateKey(priv)
 	if err != nil {
@@ -56,6 +76,8 @@ func TestPlayerFixture(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]string{
 			"base_url": in.url, "playback_id": pid, "api": in.url,
 			"dashboard": fresh.url, "setup_token": setupToken[1],
+			"ops": in.url, "ops_email": "owner@example.test", "ops_password": "a long test password",
+			"runpod_key": runpodtest.Key, "registry_username": registrytest.Username, "registry_password": registrytest.Password,
 		})
 	})
 	mux.HandleFunc("GET /token", func(w http.ResponseWriter, r *http.Request) {

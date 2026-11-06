@@ -659,6 +659,10 @@ The built-in worker is a separate process that holds only an attempt token. It h
 | Worker writes outside its output, or uploads hostile files | Path grammar on sign, worker-side filter and the playlist check at commit |
 | Hostile file served from the media domain | Extension allowlist, `Content-Type` from the extension, `nosniff` and a separate domain |
 | Worker or agent key leaked | One key per agent, owner approval, one-click revocation and an optional local scope; attempts record the agent, so its outputs can be found and re-encoded |
+| A provider's machine sees one job's plaintext source and its output's content key | The same as any worker: signed URLs and an attempt token, no storage credentials, tools always sandboxed (`sandbox_required`), RunPod on Secure Cloud only, and the machine stopped when its attempt ends |
+| A one-time dispatch key leaked | It claims only its own job, only while its dispatch is waking and before its claim deadline; it is stored hashed, passed in the environment and never argv, and spent by the claim |
+| A file that kills the encoder runs up a provider's bill | Fallback only for jobs whose asset has failed for capacity alone, per asset and across re-encodes; per-provider concurrency and monthly spend limits |
+| A crash leaves a paid machine running | Wakes and stops go through the outbox, machines are named for their dispatch, and the reaper and the reconciler (at boot and every 15 minutes) stop any machine no live dispatch accounts for |
 | SSRF through import from URL | HTTP and HTTPS only, with private, loopback and link-local ranges blocked after DNS and on every redirect |
 | Server asks an agent for arbitrary files | Opaque source IDs, with real paths kept on the agent |
 | Token stripped from a signed URL | Route record policy, default deny |

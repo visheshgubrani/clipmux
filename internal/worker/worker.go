@@ -92,9 +92,16 @@ const (
 	codeTranscode         = "transcode_failed"
 	codeUpload            = "upload_failed"
 	codeCommit            = "commit_failed"
-	codeTimeout           = "job_timeout"
-	codeSourceMissing     = "source_missing"
-	codeSourceChanged     = "source_changed"
+	// codeOutputInvalid: commit refused the output (409 output_invalid). The
+	// file can cause that, so the router treats it as the file's fault.
+	codeOutputInvalid = "output_invalid"
+	// codeScratchFull: the work directory couldn't be made. Like a failed
+	// download or upload, it says nothing about the file, so the job may
+	// still go to a fallback (D053).
+	codeScratchFull   = "scratch_full"
+	codeTimeout       = "job_timeout"
+	codeSourceMissing = "source_missing"
+	codeSourceChanged = "source_changed"
 )
 
 // localCode is the failure code for a local source that can't be used.
@@ -142,6 +149,36 @@ func (w *Worker) Run(ctx context.Context) error {
 		backoff = time.Second
 	}
 	return nil
+}
+
+// RunDispatched is `clipmux worker --once` on a machine a provider started
+// for one dispatch (D054). Its key can claim exactly one job, so it keeps
+// asking through network errors and empty polls (serve restarting, the
+// job's row briefly locked) until it has run that job or the server refuses
+// the key: claimed already, the job gone, or the claim deadline passed.
+// Errors back off from 1 s to 30 s, as Run does.
+func (w *Worker) RunDispatched(ctx context.Context) error {
+	if err := ClearDir(w.WorkDir); err != nil {
+		w.Logger.Warn("clear the scratch directory", "dir", w.WorkDir, "err", err)
+	}
+	backoff := time.Second
+	for {
+		got, err := w.RunOnce(ctx)
+		switch {
+		case got || errors.Is(err, ErrKeyRefused):
+			return err
+		case ctx.Err() != nil:
+			return ctx.Err()
+		case err != nil:
+			w.Logger.Warn("claim failed; will retry", "err", err, "in", backoff)
+			if err := sleep(ctx, backoff); err != nil {
+				return err
+			}
+			backoff = min(backoff*2, 30*time.Second)
+		default:
+			backoff = time.Second // an empty long-poll already waited
+		}
+	}
 }
 
 // ClearDir removes everything inside dir, keeping dir.
@@ -224,7 +261,19 @@ func (w *Worker) handle(ctx context.Context, job *workerapi.Job) error {
 	jobCtx, cancel := context.WithTimeout(ctx, maxJob)
 	defer cancel()
 	hb := w.startHeartbeat(jobCtx, cancel, job)
-	m, code, err := w.process(jobCtx, job, dir, hb.report)
+	// complete carries the output's manifest, or an uploaded source's parts.
+	var done map[string]any
+	var code string
+	var err error
+	if job.Kind == "upload_source" {
+		var parts []workerapi.SourcePart
+		parts, code, err = w.uploadSource(jobCtx, job, hb.report)
+		done = map[string]any{"source_parts": parts}
+	} else {
+		var m media.Manifest
+		m, code, err = w.process(jobCtx, job, dir, hb.report)
+		done = map[string]any{"manifest": m}
+	}
 	hb.stop()
 
 	switch {
@@ -241,8 +290,15 @@ func (w *Worker) handle(ctx context.Context, job *workerapi.Job) error {
 		return w.fail(ctx, job, permanent(code), code, err)
 	}
 	// complete is safe to retry: after a commit the server answers "stop".
-	if _, err := w.report(ctx, job, "complete", map[string]any{"manifest": m}); err != nil {
-		return w.fail(ctx, job, false, codeCommit, err)
+	if status, err := w.report(ctx, job, "complete", done); err != nil {
+		code := codeCommit
+		switch {
+		case status == http.StatusConflict && job.Kind == "upload_source":
+			code = codeUpload // the stored size wasn't the file's: upload again
+		case status == http.StatusConflict:
+			code = codeOutputInvalid
+		}
+		return w.fail(ctx, job, false, code, err)
 	}
 	return nil
 }
@@ -285,7 +341,7 @@ func (w *Worker) report(ctx context.Context, job *workerapi.Job, call string, bo
 // any error.
 func (w *Worker) process(ctx context.Context, job *workerapi.Job, dir string, report media.Progress) (media.Manifest, string, error) {
 	if err := os.MkdirAll(dir, 0o750); err != nil {
-		return media.Manifest{}, codeTranscode, err
+		return media.Manifest{}, codeScratchFull, err
 	}
 	key, err := contentKey(job.Encryption)
 	if err != nil {

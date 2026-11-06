@@ -131,10 +131,29 @@ func New(pool *pgxpool.Pool, set *stores.Set, box *secrets.Box, urls *settings.S
 // Queue asks for a test. While one is queued or running, that one is
 // returned instead of a second.
 func (r *Runner) Queue(ctx context.Context, trigger string) (Test, error) {
+	return r.QueueThrough(ctx, trigger, "")
+}
+
+// ErrBusy means another setup test is queued or running, through a
+// different executor than the one asked for.
+var ErrBusy = errors.New("setuptest: another setup test is running")
+
+// QueueThrough asks for a test whose sample runs only on executor (D054):
+// after a provider is connected, its own machines must encode the sample,
+// and a pass marks the provider verified. An empty executor follows the
+// project's routing. While a test is queued or running, that one is
+// returned if it goes the same way, and ErrBusy otherwise.
+func (r *Runner) QueueThrough(ctx context.Context, trigger, executor string) (Test, error) {
 	q := db.New(r.pool)
-	t, err := q.QueueSetupTest(ctx, db.QueueSetupTestParams{ID: ids.New(ids.SetupTest), ProjectID: r.projectID, Trigger: trigger})
+	t, err := q.QueueSetupTest(ctx, db.QueueSetupTestParams{
+		ID: ids.New(ids.SetupTest), ProjectID: r.projectID, Trigger: trigger,
+		Executor: pgtype.Text{String: executor, Valid: executor != ""},
+	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		t, err = q.GetActiveSetupTest(ctx, r.projectID)
+		if err == nil && t.Executor.String != executor {
+			return view(t), ErrBusy
+		}
 	}
 	if err != nil {
 		return Test{}, fmt.Errorf("queue setup test: %w", err)
@@ -195,6 +214,12 @@ func (r *Runner) Run(ctx context.Context) (int, error) {
 	// Record the result even if serve is stopping.
 	if err := q.FinishSetupTest(context.WithoutCancel(ctx), db.FinishSetupTestParams{ID: t.ID, Status: status, Checks: raw}); err != nil {
 		return 1, fmt.Errorf("record setup test: %w", err)
+	}
+	if status == "passed" && (t.Executor.String == "modal" || t.Executor.String == "runpod") {
+		// The provider's own machines encoded the sample: it may take work.
+		if err := q.VerifyExecutor(context.WithoutCancel(ctx), db.VerifyExecutorParams{ProjectID: r.projectID, Kind: t.Executor.String}); err != nil {
+			return 1, fmt.Errorf("verify executor: %w", err)
+		}
 	}
 	if status == "passed" {
 		r.Logger.Info("setup test passed", "test", t.ID)
@@ -391,6 +416,11 @@ func (r *Runner) waitReady(parent context.Context, assetID string) error {
 			return nil
 		case a.Status == "errored":
 			return fmt.Errorf("the sample failed to encode: %s", a.ErrorCode.String)
+		}
+		// A provider's machine that ended without claiming the sample
+		// fails the test now rather than at the timeout.
+		if d, err := q.LatestDispatchForAsset(ctx, assetID); err == nil && d.Status == "ended" && !d.AttemptID.Valid {
+			return fmt.Errorf("the %s machine never took the sample: %s", d.Kind, d.EndReason.String)
 		}
 		select {
 		case <-ctx.Done():

@@ -1,0 +1,91 @@
+# The Phase 4 exit test's real-account check (docs/plans/P4-serverless.md,
+# check 9): Connect RunPod and Connect Modal each run the setup test
+# through their provider, against serve behind a Cloudflare quick tunnel,
+# encode on NVENC, and leave no machine running (TestExitRealProviders).
+# It pays for a few GPU-minutes, so it runs after CI pushed main's image,
+# weekly and by hand, and does nothing without the providers' secrets.
+name: Exit test (providers)
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    - cron: "41 5 * * 1"
+permissions:
+  contents: read
+concurrency:
+  # One run at a time: the accounts' limits are set for one.
+  group: exit-providers
+  cancel-in-progress: false
+env:
+  TEST_DATABASE_URL: postgres://clipmux:clipmux@localhost:5432/clipmux_test?sslmode=disable
+  CLIPMUX_REQUIRE_MEDIA_TOOLS: "1"
+  CLOUDFLARED_VERSION: 2026.10.3
+  CLOUDFLARED_SHA256: 053b80b0a23031a038fdbf3c073f59f82b8f1f152aa67971d7383ffafc0dbab0
+jobs:
+  providers:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: clipmux
+          POSTGRES_PASSWORD: clipmux
+          POSTGRES_DB: clipmux_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U clipmux -d clipmux_test"
+          --health-interval 2s --health-timeout 3s --health-retries 30
+    env:
+      RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+      # A read:packages token, which the providers keep to pull the image.
+      CLIPMUX_E2E_REGISTRY_USERNAME: ${{ github.repository_owner }}
+      CLIPMUX_E2E_REGISTRY_PASSWORD: ${{ secrets.GHCR_PULL_TOKEN }}
+      CLIPMUX_E2E_SERVE_PORT: "8090"
+    steps:
+      - name: Secrets present
+        id: secrets
+        run: |
+          if [ -z "$CLIPMUX_E2E_REGISTRY_PASSWORD" ] || { [ -z "$RUNPOD_API_KEY" ] && [ -z "$MODAL_TOKEN_ID" ]; }; then
+            echo "::notice::GHCR_PULL_TOKEN and RUNPOD_API_KEY or MODAL_TOKEN_ID/MODAL_TOKEN_SECRET are not set; skipping"
+            echo "run=false" >>"$GITHUB_OUTPUT"
+          else
+            echo "run=true" >>"$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@v4
+        if: steps.secrets.outputs.run == 'true'
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+      - uses: actions/setup-go@v5
+        if: steps.secrets.outputs.run == 'true'
+        with:
+          go-version-file: go.mod
+      - name: Media tools (the built-in worker's first-boot setup test)
+        if: steps.secrets.outputs.run == 'true'
+        timeout-minutes: 20
+        run: toolchain/ci_media_tools.sh
+      - name: Tunnel
+        if: steps.secrets.outputs.run == 'true'
+        run: |
+          curl -fsSL -o cloudflared "https://github.com/cloudflare/cloudflared/releases/download/$CLOUDFLARED_VERSION/cloudflared-linux-amd64"
+          echo "$CLOUDFLARED_SHA256  cloudflared" | sha256sum -c -
+          chmod +x cloudflared
+          nohup ./cloudflared tunnel --no-autoupdate --url "http://127.0.0.1:$CLIPMUX_E2E_SERVE_PORT" >cloudflared.log 2>&1 &
+          for i in $(seq 60); do
+            url=$(grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' cloudflared.log | head -1 || true)
+            if [ -n "$url" ]; then echo "CLIPMUX_E2E_PUBLIC_URL=$url" >>"$GITHUB_ENV"; exit 0; fi
+            sleep 1
+          done
+          cat cloudflared.log; exit 1
+      - name: Real accounts
+        if: steps.secrets.outputs.run == 'true'
+        env:
+          CLIPMUX_E2E_PROVIDERS: "1"
+          CLIPMUX_E2E_IMAGE: ghcr.io/${{ github.repository }}:sha-${{ github.event.workflow_run.head_sha || github.sha }}
+        run: CLIPMUX_E2E=1 go test ./internal/e2e -count=1 -timeout 60m -run TestExitRealProviders -v

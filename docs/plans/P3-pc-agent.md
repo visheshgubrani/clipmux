@@ -21,6 +21,9 @@ Phase 2 exited on the harness (D041). Its real-account run is task T00, a
 parallel track that needs Cloudflare secrets rather than code from this phase
 (D042).
 
+Next: [Phase 4 — Serverless](P4-serverless.md). This phase's by-hand checks
+and the Phase 2 real-account run carry into its task T00 (D052).
+
 **Exit test:** sleeping a PC mid-job recovers it, and a local push uploads only
 outputs.
 
