@@ -65,6 +65,39 @@ rotate the key or change settings; the provider then needs a new setup test.
   routing names RunPod, or while a RunPod pod may still run. It forgets the
   key and removes the registry credentials from the account.
 
+## Modal
+
+Create a token in Modal (**Settings → API Tokens**). Then **Workers → Connect
+Modal**, or `POST /v1/executors/modal/connect` with:
+
+```json
+{"token_id": "ak-...", "token_secret": "as-...", "registry_username": "you", "registry_password": "ghp_...",
+ "max_concurrent": 2, "monthly_limit_cents": 5000, "rate_cents_per_hour": 90}
+```
+
+Optional fields: `environment` (the Modal environment; default the account's
+own), `image` (default `CLIPMUX_WORKER_IMAGE`), `gpu` (default `L4`, which has
+NVENC; D051 also proved the A10G and T4), `cpu` (default 4 cores),
+`memory_mib` (default 16384) and `disk_gb` (default 50, held to the
+free-disk rule).
+
+Connect checks the token by opening this install's Modal app,
+`clipmux-{tag}`, then checks the public URL, saves the token and the
+registry credentials sealed, and queues the setup test. Connect again to
+rotate the token or change settings; Modal then needs a new setup test.
+
+- **Sandboxes** run in the app `clipmux-{tag}`, tagged with this install and
+  their dispatch, so ClipMux only ever lists or stops its own. Modal ends a
+  sandbox when `clipmux worker --once` exits, or at 6 h 15 min; ClipMux also
+  stops one whose attempt ended or that didn't claim in time.
+- **Registry credentials** stay sealed in ClipMux's database. Each wake hands
+  them to Modal as an ephemeral secret for that pull; no named secret is
+  left in the Modal workspace.
+- **Modal runs gVisor without Landlock** (D051). The sandbox's rlimits,
+  `no_new_privs` and seccomp hold, which is what a serverless claim needs.
+- **Disconnect** with `DELETE /v1/executors/modal`, under the same rules as
+  RunPod.
+
 ## Security
 
 A provider's machine is a worker like any other: it sees one source and one

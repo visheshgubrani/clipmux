@@ -29,6 +29,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/httpjson"
 	"github.com/visheshgubrani/clipmux/internal/ids"
 	"github.com/visheshgubrani/clipmux/internal/lifecycle"
+	"github.com/visheshgubrani/clipmux/internal/modal"
 	"github.com/visheshgubrani/clipmux/internal/routes"
 	"github.com/visheshgubrani/clipmux/internal/runpod"
 	"github.com/visheshgubrani/clipmux/internal/secrets"
@@ -60,6 +61,8 @@ type API struct {
 	Cloudflare *cloudflare.Connector
 	// RunPod runs Connect RunPod; nil leaves its routes 404.
 	RunPod *runpod.Connector
+	// Modal runs Connect Modal; nil leaves its routes 404.
+	Modal *modal.Connector
 	// Life queues library moves; nil leaves their routes 404.
 	Life   *lifecycle.Service
 	Now    func() time.Time
@@ -103,6 +106,7 @@ func (m *API) Register(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /v1/settings/routing", m.owned(m.saveRouting))
 	mux.HandleFunc("GET /v1/executors", m.owned(m.listExecutors))
 	mux.HandleFunc("POST /v1/executors/runpod/connect", m.owned(m.connectRunPod))
+	mux.HandleFunc("POST /v1/executors/modal/connect", m.owned(m.connectModal))
 	mux.HandleFunc("DELETE /v1/executors/{kind}", m.owned(m.disconnectExecutor))
 	mux.HandleFunc("GET /v1/apps", m.owned(m.listApps))
 	mux.HandleFunc("POST /v1/apps", m.owned(m.createApp))

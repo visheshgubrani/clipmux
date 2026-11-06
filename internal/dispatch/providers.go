@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/netip"
 	"net/url"
@@ -198,4 +199,46 @@ func CheckPublicURL(ctx context.Context, publicURL string, resolver *net.Resolve
 		}
 	}
 	return nil
+}
+
+// Step is one step of a provider's Connect. Details never hold a key, a
+// token or a password.
+type Step struct {
+	Name   string `json:"name"`
+	OK     bool   `json:"ok"`
+	Detail string `json:"detail,omitempty"`
+}
+
+// Result is a whole Connect run.
+type Result struct {
+	Connected bool   `json:"connected"`
+	Steps     []Step `json:"steps"`
+}
+
+// Steps runs a Connect's steps in order, stopping at the first that fails:
+// each step is safe to repeat, so the owner fixes what failed and connects
+// again.
+type Steps struct {
+	Result   Result
+	Provider string
+	Logger   *slog.Logger
+	failed   bool
+}
+
+// Do runs one step unless an earlier one failed, and reports whether every
+// step so far succeeded. fn returns the step's detail.
+func (s *Steps) Do(name string, fn func() (string, error)) bool {
+	if s.failed {
+		return false
+	}
+	detail, err := fn()
+	st := Step{Name: name, OK: err == nil, Detail: detail}
+	if err != nil {
+		st.Detail = err.Error()
+		s.failed = true
+		s.Logger.Warn("connect "+s.Provider, "step", name, "err", err)
+	}
+	s.Result.Steps = append(s.Result.Steps, st)
+	s.Result.Connected = !s.failed
+	return !s.failed
 }

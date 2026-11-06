@@ -1,6 +1,7 @@
 package manage
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strings"
@@ -8,11 +9,12 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/accounts"
 	"github.com/visheshgubrani/clipmux/internal/dispatch"
 	"github.com/visheshgubrani/clipmux/internal/httpjson"
+	"github.com/visheshgubrani/clipmux/internal/modal"
 	"github.com/visheshgubrani/clipmux/internal/runpod"
 )
 
-// Serverless providers (D056): their status, Connect RunPod, and
-// disconnecting.
+// Serverless providers (D056, D057): their status, Connect RunPod and
+// Connect Modal, and disconnecting.
 
 func (m *API) listExecutors(w http.ResponseWriter, r *http.Request, o accounts.Owner) error {
 	sts, err := dispatch.Statuses(r.Context(), m.pool, o.ProjectID)
@@ -23,25 +25,39 @@ func (m *API) listExecutors(w http.ResponseWriter, r *http.Request, o accounts.O
 	return nil
 }
 
-// connectRunPod runs Connect RunPod with the key the owner pastes. Every
-// step's result comes back; a failed step can be fixed and connected again.
-func (m *API) connectRunPod(w http.ResponseWriter, r *http.Request, _ accounts.Owner) error {
+// connectWith runs a provider's Connect with the credentials the owner
+// pastes. Every step's result comes back; a failed step can be fixed and
+// connected again. Credentials are used for this request and stored sealed.
+func connectWith[R any](connect func(context.Context, R) (dispatch.Result, error), invalid error) func(http.ResponseWriter, *http.Request, accounts.Owner) error {
+	return func(w http.ResponseWriter, r *http.Request, _ accounts.Owner) error {
+		var req R
+		if err := decode(w, r, &req); err != nil {
+			return err
+		}
+		res, err := connect(r.Context(), req)
+		if errors.Is(err, invalid) {
+			return httpjson.Fail(http.StatusBadRequest, "invalid_request", strings.TrimPrefix(err.Error(), invalid.Error()+": "))
+		}
+		if err != nil {
+			return err
+		}
+		httpjson.Write(w, http.StatusOK, res)
+		return nil
+	}
+}
+
+func (m *API) connectRunPod(w http.ResponseWriter, r *http.Request, o accounts.Owner) error {
 	if m.RunPod == nil {
 		return errNotFound
 	}
-	var req runpod.Request
-	if err := decode(w, r, &req); err != nil {
-		return err
+	return connectWith(m.RunPod.Connect, runpod.ErrInvalid)(w, r, o)
+}
+
+func (m *API) connectModal(w http.ResponseWriter, r *http.Request, o accounts.Owner) error {
+	if m.Modal == nil {
+		return errNotFound
 	}
-	res, err := m.RunPod.Connect(r.Context(), req)
-	if errors.Is(err, runpod.ErrInvalid) {
-		return httpjson.Fail(http.StatusBadRequest, "invalid_request", strings.TrimPrefix(err.Error(), runpod.ErrInvalid.Error()+": "))
-	}
-	if err != nil {
-		return err
-	}
-	httpjson.Write(w, http.StatusOK, res)
-	return nil
+	return connectWith(m.Modal.Connect, modal.ErrInvalid)(w, r, o)
 }
 
 func (m *API) disconnectExecutor(w http.ResponseWriter, r *http.Request, _ accounts.Owner) error {
@@ -49,6 +65,8 @@ func (m *API) disconnectExecutor(w http.ResponseWriter, r *http.Request, _ accou
 	switch kind := r.PathValue("kind"); {
 	case kind == "runpod" && m.RunPod != nil:
 		err = m.RunPod.Disconnect(r.Context())
+	case kind == "modal" && m.Modal != nil:
+		err = m.Modal.Disconnect(r.Context())
 	default:
 		return errNotFound
 	}

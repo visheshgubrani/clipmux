@@ -29,6 +29,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/dispatch"
 	"github.com/visheshgubrani/clipmux/internal/lifecycle"
 	"github.com/visheshgubrani/clipmux/internal/manage"
+	"github.com/visheshgubrani/clipmux/internal/modal"
 	"github.com/visheshgubrani/clipmux/internal/outputs"
 	"github.com/visheshgubrani/clipmux/internal/queue"
 	"github.com/visheshgubrani/clipmux/internal/routes"
@@ -291,14 +292,25 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 			return err
 		},
 	}
+	md := &modal.Connector{
+		Pool: pool, Box: box, ProjectID: db.DefaultProjectID,
+		PublicURL: b.urls.PublicURL, AllowPrivateURL: cfg.ExecutorsAllowPrivateURL, DefaultImage: cfg.WorkerImage,
+		Resolver: net.DefaultResolver, Logger: logger,
+		SetupTest: func(ctx context.Context) error {
+			_, err := tests.QueueThrough(ctx, "executor_connected", "modal")
+			return err
+		},
+	}
 	disp.Resolve = func(_ context.Context, row db.ExecutorConfig) (dispatch.Executor, error) {
 		switch row.Kind {
 		case "runpod":
 			return rp.Resolve(row)
+		case "modal":
+			return md.Resolve(row)
 		}
 		return nil, fmt.Errorf("no adapter for provider %q", row.Kind)
 	}
-	mgmt.RunPod = rp
+	mgmt.RunPod, mgmt.Modal = rp, md
 	assetsAPI := assets.New(pool)
 	// The dashboard calls the integration API with the owner's session,
 	// acting as one app; integration keys never reach the management API.

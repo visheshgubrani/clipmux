@@ -46,7 +46,7 @@ var request = runpod.Request{
 	MaxConcurrent: 3, MonthlyLimitCents: 5000, RateCentsPerHour: 45,
 }
 
-func steps(res runpod.Result) string {
+func steps(res dispatch.Result) string {
 	var names []string
 	for _, s := range res.Steps {
 		mark := "ok"

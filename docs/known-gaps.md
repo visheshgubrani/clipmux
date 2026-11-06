@@ -103,6 +103,10 @@ when you introduce or discover it; remove it when it is closed.
 - Provider spend (D055) is an estimate from the hourly rate set in Connect,
   not the provider's bill, and a machine that runs past its reservation
   isn't stopped at the limit, so a month can overshoot by that much.
+- Modal (D057) is tested through a seam in front of its gRPC SDK; the SDK
+  itself, the assumption that a sandbox's command replaces the image's
+  entrypoint, and its cold start are proven only by the real-account run
+  (T10).
 - RunPod (D056) is tested against a fake REST API only; its real-account
   run, and the cold start that sets the 10-minute claim deadline, come with
   the Phase 4 exit (T10). Provider machines pull `CLIPMUX_WORKER_IMAGE`

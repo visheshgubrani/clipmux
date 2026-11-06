@@ -39,19 +39,6 @@ type Request struct {
 	RateCentsPerHour  int32 `json:"rate_cents_per_hour"`
 }
 
-// Step is one step's outcome. Details never hold the key or a password.
-type Step struct {
-	Name   string `json:"name"`
-	OK     bool   `json:"ok"`
-	Detail string `json:"detail,omitempty"`
-}
-
-// Result is the whole run.
-type Result struct {
-	Connected bool   `json:"connected"`
-	Steps     []Step `json:"steps"`
-}
-
 // ErrInvalid wraps a request that can't be tried.
 var ErrInvalid = errors.New("runpod: invalid request")
 
@@ -80,7 +67,7 @@ var imageRef = regexp.MustCompile(`^[a-z0-9]+([._/:@-][a-zA-Z0-9_.-]+)+$`)
 // Connect runs the steps in order and stops at the first that fails. Each
 // step is safe to repeat, so connecting again rotates the key or changes
 // the settings.
-func (c *Connector) Connect(ctx context.Context, req Request) (Result, error) {
+func (c *Connector) Connect(ctx context.Context, req Request) (dispatch.Result, error) {
 	req.APIKey = strings.TrimSpace(req.APIKey)
 	if req.Image == "" {
 		req.Image = c.DefaultImage
@@ -100,33 +87,24 @@ func (c *Connector) Connect(ctx context.Context, req Request) (Result, error) {
 	}
 	switch {
 	case req.APIKey == "":
-		return Result{}, fmt.Errorf("%w: api_key is required", ErrInvalid)
+		return dispatch.Result{}, fmt.Errorf("%w: api_key is required", ErrInvalid)
 	case req.Image == "" || !imageRef.MatchString(req.Image):
-		return Result{}, fmt.Errorf("%w: image must be an image reference such as ghcr.io/owner/clipmux:tag", ErrInvalid)
+		return dispatch.Result{}, fmt.Errorf("%w: image must be an image reference such as ghcr.io/owner/clipmux:tag", ErrInvalid)
 	case (req.RegistryUsername == "") != (req.RegistryPassword == ""):
-		return Result{}, fmt.Errorf("%w: registry_username and registry_password go together", ErrInvalid)
+		return dispatch.Result{}, fmt.Errorf("%w: registry_username and registry_password go together", ErrInvalid)
 	case req.DiskGB > 2000:
-		return Result{}, fmt.Errorf("%w: disk_gb must be at most 2000", ErrInvalid)
+		return dispatch.Result{}, fmt.Errorf("%w: disk_gb must be at most 2000", ErrInvalid)
 	}
 	if err := settings.Valid(); err != nil {
-		return Result{}, fmt.Errorf("%w: %v", ErrInvalid, err)
+		return dispatch.Result{}, fmt.Errorf("%w: %v", ErrInvalid, err)
 	}
 
-	var res Result
-	step := func(name string, fn func() (string, error)) bool {
-		detail, err := fn()
-		s := Step{Name: name, OK: err == nil, Detail: detail}
-		if err != nil {
-			s.Detail = err.Error()
-			c.Logger.Warn("connect runpod", "step", name, "err", err)
-		}
-		res.Steps = append(res.Steps, s)
-		return err == nil
-	}
+	steps := &dispatch.Steps{Provider: "runpod", Logger: c.Logger}
+	step := steps.Do
 	client := NewClient(c.API, req.APIKey)
 	existing, had, err := dispatch.Existing(ctx, c.Pool, c.ProjectID, "runpod")
 	if err != nil {
-		return Result{}, err
+		return dispatch.Result{}, err
 	}
 	var old Config
 	if had {
@@ -137,7 +115,7 @@ func (c *Connector) Connect(ctx context.Context, req Request) (Result, error) {
 		cfg.Tag = strings.ToLower(rand.Text()[:8])
 	}
 
-	ok := step("credentials", func() (string, error) {
+	step("credentials", func() (string, error) {
 		if _, err := client.ListPods(ctx, "clipmux-connect-check"); err != nil {
 			var api *APIError
 			if errors.As(err, &api) && (api.Status == 401 || api.Status == 403) {
@@ -146,7 +124,8 @@ func (c *Connector) Connect(ctx context.Context, req Request) (Result, error) {
 			return "", err
 		}
 		return "the API key works", nil
-	}) && step("public_url", func() (string, error) {
+	})
+	step("public_url", func() (string, error) {
 		if c.AllowPrivateURL {
 			return "skipped (CLIPMUX_EXECUTORS_ALLOW_PRIVATE_URL)", nil
 		}
@@ -154,7 +133,8 @@ func (c *Connector) Connect(ctx context.Context, req Request) (Result, error) {
 			return "", err
 		}
 		return "pods can reach " + c.PublicURL(), nil
-	}) && step("registry", func() (string, error) {
+	})
+	step("registry", func() (string, error) {
 		if req.RegistryUsername == "" {
 			return "the image is public", nil
 		}
@@ -164,9 +144,11 @@ func (c *Connector) Connect(ctx context.Context, req Request) (Result, error) {
 		}
 		cfg.RegistryAuthID = id
 		return "pods pull with stored registry credentials", nil
-	}) && step("image", func() (string, error) {
+	})
+	step("image", func() (string, error) {
 		return req.Image, nil
-	}) && step("saved", func() (string, error) {
+	})
+	step("saved", func() (string, error) {
 		if _, err := dispatch.Save(ctx, c.Pool, c.Box, c.ProjectID, "runpod", cfg, Secret{APIKey: req.APIKey}, settings); err != nil {
 			return "", err
 		}
@@ -179,16 +161,15 @@ func (c *Connector) Connect(ctx context.Context, req Request) (Result, error) {
 		}
 		return "RunPod takes work once its setup test passes", nil
 	})
-	if ok && c.SetupTest != nil {
-		ok = step("setup_test", func() (string, error) {
+	if c.SetupTest != nil {
+		step("setup_test", func() (string, error) {
 			if err := c.SetupTest(ctx); err != nil {
 				return "", err
 			}
 			return "queued: a RunPod pod must encode and play the sample", nil
 		})
 	}
-	res.Connected = ok
-	return res, nil
+	return steps.Result, nil
 }
 
 // Disconnect forgets RunPod's key (dispatch.Disconnect refuses while
