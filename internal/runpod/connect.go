@@ -15,6 +15,7 @@ import (
 
 	"github.com/visheshgubrani/clipmux/internal/db"
 	"github.com/visheshgubrani/clipmux/internal/dispatch"
+	"github.com/visheshgubrani/clipmux/internal/registry"
 	"github.com/visheshgubrani/clipmux/internal/secrets"
 )
 
@@ -56,6 +57,8 @@ type Connector struct {
 	AllowPrivateURL bool
 	// DefaultImage is the worker image this build pairs with (T06).
 	DefaultImage string
+	// Registry resolves the image's digest; nil means a default resolver.
+	Registry *registry.Resolver
 	// SetupTest queues the setup test through RunPod.
 	SetupTest func(ctx context.Context) error
 	Resolver  *net.Resolver
@@ -134,6 +137,12 @@ func (c *Connector) Connect(ctx context.Context, req Request) (dispatch.Result, 
 		}
 		return "pods can reach " + c.PublicURL(), nil
 	})
+	step("image", func() (string, error) {
+		// Before anything is stored in RunPod: wrong credentials fail here.
+		pinned, detail, err := dispatch.PinImage(ctx, c.registry(), req.Image, req.RegistryUsername, req.RegistryPassword)
+		cfg.Image = pinned
+		return detail, err
+	})
 	step("registry", func() (string, error) {
 		if req.RegistryUsername == "" {
 			return "the image is public", nil
@@ -144,9 +153,6 @@ func (c *Connector) Connect(ctx context.Context, req Request) (dispatch.Result, 
 		}
 		cfg.RegistryAuthID = id
 		return "pods pull with stored registry credentials", nil
-	})
-	step("image", func() (string, error) {
-		return req.Image, nil
 	})
 	step("saved", func() (string, error) {
 		if _, err := dispatch.Save(ctx, c.Pool, c.Box, c.ProjectID, "runpod", cfg, Secret{APIKey: req.APIKey}, settings); err != nil {
@@ -202,4 +208,11 @@ func (c *Connector) Disconnect(ctx context.Context) error {
 // for RunPod rows.
 func (c *Connector) Resolve(row db.ExecutorConfig) (dispatch.Executor, error) {
 	return Open(row, c.Box, c.API)
+}
+
+func (c *Connector) registry() *registry.Resolver {
+	if c.Registry != nil {
+		return c.Registry
+	}
+	return registry.NewResolver()
 }

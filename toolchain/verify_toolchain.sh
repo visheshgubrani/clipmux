@@ -22,6 +22,9 @@
 # an unreadable "Option 'format' not found" at encode time, on a GPU machine, in
 # production. It is now a build-time assertion.
 set -euo pipefail
+# Listings are fed to grep -q with here-strings, never piped: grep -q exits
+# at its first match, and under pipefail the writer's SIGPIPE would then
+# turn a capability that is present into a failure, depending on timing.
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -85,17 +88,17 @@ fi
 # Build flags are the cheapest proof that --enable-cuda-llvm and --enable-gpl
 # took effect, and they are printed by every FFmpeg.
 version_full="$("$FFMPEG_BIN" -hide_banner -version 2>&1)"
-if printf '%s\n' "$version_full" | grep -q -- '--enable-cuda-llvm'; then
+if grep -q -- '--enable-cuda-llvm' <<<"$version_full"; then
   ok "built with --enable-cuda-llvm"
 else
   fail "ffmpeg was not built with --enable-cuda-llvm (scale_cuda would lack its CUDA device-code path)"
 fi
-if printf '%s\n' "$version_full" | grep -q -- '--enable-libdav1d'; then
+if grep -q -- '--enable-libdav1d' <<<"$version_full"; then
   ok "built with --enable-libdav1d"
 else
   fail "ffmpeg was not built with --enable-libdav1d (AV1 decoding falls back to a slow path)"
 fi
-if printf '%s\n' "$version_full" | grep -q -- '--enable-libzimg'; then
+if grep -q -- '--enable-libzimg' <<<"$version_full"; then
   ok "built with --enable-libzimg"
 else
   fail "ffmpeg was not built with --enable-libzimg (the zscale HDR→SDR chain is unavailable)"
@@ -111,7 +114,7 @@ FILTERS="$("$FFMPEG_BIN" -hide_banner -filters 2>&1)"
 # `h264_vaapi_hwaccel` in `-hwaccels` from matching a bare `h264_vaapi`.
 require() {
   local kind="$1" listing="$2" name="$3" why="$4"
-  if printf '%s\n' "$listing" | grep -qE "(^|[[:space:]])${name}([[:space:]]|$)"; then
+  if grep -qE "(^|[[:space:]])${name}([[:space:]]|$)" <<<"$listing"; then
     ok "$kind $name"
   else
     fail "missing $kind: $name — $why"
@@ -151,7 +154,7 @@ require filter "$FILTERS" loudnorm      "audio normalization (-af loudnorm=I=-16
 # Anchoring on the option-name column avoids matching the word "format" inside a
 # help string (scale and scale_vaapi both mention it without having the option).
 scale_cuda_help="$("$FFMPEG_BIN" -hide_banner -h filter=scale_cuda 2>&1 || true)"
-if printf '%s\n' "$scale_cuda_help" | grep -qE '^[[:space:]]*format[[:space:]]+<'; then
+if grep -qE '^[[:space:]]*format[[:space:]]+<' <<<"$scale_cuda_help"; then
   ok "scale_cuda has the 'format' option (scale_cuda=W:H:format=yuv420p)"
 else
   fail "scale_cuda is present but has no 'format' option — the NVENC scaling path passes scale_cuda=W:H:format=yuv420p and would fail at encode time. This is the exact defect the source build replaced."
@@ -174,7 +177,7 @@ if "$FFMPEG_BIN" -hide_banner -nostdin -loglevel error -y \
     probe="$("$FFPROBE_BIN" -hide_banner -loglevel error -select_streams v:0 \
               -show_entries stream=codec_name,width,height,nb_read_frames \
               -count_frames -of default=noprint_wrappers=1 "$tmpdir/encode.mp4" 2>&1 || true)"
-    if printf '%s\n' "$probe" | grep -q 'codec_name=h264'; then
+    if grep -q 'codec_name=h264' <<<"$probe"; then
       ok "real CPU encode round-trips ($(printf '%s' "$probe" | tr '\n' ' ' | sed 's/  */ /g'))"
     else
       fail "the libx264 output is not readable as H.264 by ffprobe: $probe"

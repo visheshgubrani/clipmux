@@ -22,6 +22,12 @@ import (
 // version is set at build time with -ldflags "-X main.version=...".
 var version = "dev"
 
+// workerImage is the image built from this same commit, set at build time
+// with -ldflags "-X main.workerImage=..." (D058). Provider machines run it,
+// so they always match the server's worker API; CLIPMUX_WORKER_IMAGE
+// overrides it.
+var workerImage = ""
+
 const usage = `clipmux - open-source, self-hosted video infrastructure
 
 Usage:
@@ -77,6 +83,9 @@ func serve(stderr io.Writer) int {
 	if err != nil {
 		logger.Error("invalid configuration", "err", err)
 		return 1
+	}
+	if cfg.WorkerImage == "" {
+		cfg.WorkerImage = workerImage
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

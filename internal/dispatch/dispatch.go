@@ -102,13 +102,22 @@ func New(pool *pgxpool.Pool, box *secrets.Box, serverURL func() string) *Service
 // retried wake hands the same key to the same machine.
 func (s *Service) Route(ctx context.Context, qs *db.Queries, job db.Job, kind string) error {
 	// The provider's row lock serialises routers, so two can't both take
-	// its last slot or the last of its monthly budget (D055).
-	p, err := qs.LockProviderWithRoom(ctx, db.LockProviderWithRoomParams{ProjectID: job.ProjectID, Kind: kind, AssetID: job.AssetID})
-	if errors.Is(err, pgx.ErrNoRows) || (err == nil && !p.HasRoom) {
-		return nil // disconnected or full since the router looked; the next pass says why
+	// its last slot or the last of its monthly budget (D055). Room is
+	// checked in a second statement, whose snapshot is taken after the
+	// lock is granted and so sees what the previous holder committed.
+	p, err := qs.LockExecutorConfigByKind(ctx, db.LockExecutorConfigByKindParams{ProjectID: job.ProjectID, Kind: kind})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil // disconnected since the router looked
 	}
 	if err != nil {
 		return fmt.Errorf("lock provider: %w", err)
+	}
+	hasRoom, err := qs.ProviderHasRoom(ctx, db.ProviderHasRoomParams{ID: p.ID, AssetID: job.AssetID})
+	if err != nil {
+		return fmt.Errorf("provider room: %w", err)
+	}
+	if !hasRoom {
+		return nil // full since the router looked; the next pass says why
 	}
 	id := ids.New(ids.Dispatch)
 	key := KeyPrefix + rand.Text()

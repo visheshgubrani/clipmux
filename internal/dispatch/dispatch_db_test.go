@@ -533,14 +533,14 @@ func TestTheReconcilerStopsMachinesNoDispatchAccountsFor(t *testing.T) {
 }
 
 // Parallel routers can't overshoot max_concurrent: the provider's row lock
-// serialises them (D055).
+// serialises them (D055), and room is counted after the lock (D058).
 func TestConcurrencyHoldsUnderParallelRouters(t *testing.T) {
 	r := newRig(t)
-	for i := range 6 {
+	for i := range 10 {
 		r.job("ast_" + string(rune('a'+i)))
 	}
 	var wg sync.WaitGroup
-	for range 4 {
+	for range 8 {
 		wg.Go(func() {
 			if _, err := r.q.Route(context.Background(), 100); err != nil {
 				t.Error(err)
@@ -555,8 +555,8 @@ func TestConcurrencyHoldsUnderParallelRouters(t *testing.T) {
 		(SELECT count(*) FROM jobs WHERE route_reason = 'fallback_limit')`).Scan(&live, &limited); err != nil {
 		t.Fatal(err)
 	}
-	if live != 2 || limited != 4 {
-		t.Fatalf("%d live dispatches and %d jobs at the limit, want 2 and 4", live, limited)
+	if live != 2 || limited != 8 {
+		t.Fatalf("%d live dispatches and %d jobs at the limit, want 2 and 8", live, limited)
 	}
 }
 

@@ -13,10 +13,14 @@ uploads it through the worker API, and holds no storage credentials.
   resolves to a private, loopback or link-local address: the machines call the
   worker API there, and, on filesystem storage, download sources and upload
   outputs there too.
-- **The worker image.** Machines pull the image this server was built with.
-  Until launch it lives in a private ghcr package, so Connect asks for a
-  registry username and a token that can read packages (D052). Set
-  `CLIPMUX_WORKER_IMAGE` to the image reference until builds carry their own.
+- **The worker image.** Machines run the image this server was built from:
+  CI pushes `ghcr.io/visheshgubrani/clipmux:sha-{commit}` on every main
+  commit that passes, and the binary carries that reference
+  (`CLIPMUX_WORKER_IMAGE` overrides it). Until launch the package is private,
+  so Connect asks for a registry username and a token with `read:packages`
+  (D052). Connect resolves the image to its digest with those credentials,
+  which proves they can pull, and machines then run exactly that digest even
+  if the tag moves (D058).
 - **A monthly spend limit and an hourly rate.** ClipMux estimates spend from
   the rate you enter and each machine's running time (D055); it isn't the
   provider's bill. A job reserves its estimated run (an hour per 4 GiB of
@@ -47,8 +51,9 @@ Optional fields: `image` (default `CLIPMUX_WORKER_IMAGE`), `gpu_type_ids`
 cards with NVENC), and `disk_gb` (default 50; a machine takes only sources
 whose size, three times over, fits).
 
-Connect checks the key, the public URL, stores the registry credentials in
-RunPod, saves the key sealed, and queues the setup test. Connect again to
+Connect checks the key and the public URL, pins the image's digest with the
+registry credentials, stores those credentials in RunPod, saves the key
+sealed, and queues the setup test. Connect again to
 rotate the key or change settings; the provider then needs a new setup test.
 
 - **Pods** are named `clipmux-{tag}-{dispatch}`, where the tag is this
@@ -82,8 +87,8 @@ NVENC; D051 also proved the A10G and T4), `cpu` (default 4 cores),
 free-disk rule).
 
 Connect checks the token by opening this install's Modal app,
-`clipmux-{tag}`, then checks the public URL, saves the token and the
-registry credentials sealed, and queues the setup test. Connect again to
+`clipmux-{tag}`, then checks the public URL, pins the image's digest, saves
+the token and the registry credentials sealed, and queues the setup test. Connect again to
 rotate the token or change settings; Modal then needs a new setup test.
 
 - **Sandboxes** run in the app `clipmux-{tag}`, tagged with this install and

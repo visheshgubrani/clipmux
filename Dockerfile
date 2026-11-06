@@ -47,8 +47,11 @@ COPY cmd/ cmd/
 COPY internal/ internal/
 COPY --from=web /src/internal/web/dist/ internal/web/dist/
 ARG VERSION=dev
+# The image this build is pushed as (ghcr.io/visheshgubrani/clipmux:sha-…),
+# which serverless providers run so they match this server (D058).
+ARG WORKER_IMAGE=
 RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
-    CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o /out/clipmux ./cmd/clipmux
+    CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=${VERSION} -X main.workerImage=${WORKER_IMAGE}" -o /out/clipmux ./cmd/clipmux
 
 # ── Runtime ──────────────────────────────────────────────────────────────────
 FROM ${BASE}
@@ -70,8 +73,11 @@ RUN useradd --system --uid 10001 --home-dir /var/lib/clipmux --create-home --she
     && install -d -o clipmux -g clipmux -m 0750 /var/lib/clipmux/data \
     && install -d -o clipmux -g clipmux -m 0700 /var/lib/clipmux-agent
 USER 10001
+# NVENC needs the driver's video capability, which NVIDIA's container
+# runtime injects only when asked (Modal, RunPod, docker --gpus).
 ENV CLIPMUX_DATA_DIR=/var/lib/clipmux/data \
-    CLIPMUX_LISTEN=:8080
+    CLIPMUX_LISTEN=:8080 \
+    NVIDIA_DRIVER_CAPABILITIES=compute,video,utility
 VOLUME /var/lib/clipmux/data
 EXPOSE 8080
 HEALTHCHECK --interval=15s --timeout=5s --start-period=30s CMD ["clipmux", "healthcheck"]

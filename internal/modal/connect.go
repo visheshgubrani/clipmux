@@ -17,6 +17,7 @@ import (
 
 	"github.com/visheshgubrani/clipmux/internal/db"
 	"github.com/visheshgubrani/clipmux/internal/dispatch"
+	"github.com/visheshgubrani/clipmux/internal/registry"
 	"github.com/visheshgubrani/clipmux/internal/secrets"
 )
 
@@ -60,6 +61,8 @@ type Connector struct {
 	AllowPrivateURL bool
 	// DefaultImage is the worker image this build pairs with (T06).
 	DefaultImage string
+	// Registry resolves the image's digest; nil means a default resolver.
+	Registry *registry.Resolver
 	// SetupTest queues the setup test through Modal.
 	SetupTest func(ctx context.Context) error
 	Resolver  *net.Resolver
@@ -171,10 +174,9 @@ func (c *Connector) Connect(ctx context.Context, req Request) (dispatch.Result, 
 		return "sandboxes can reach " + c.PublicURL(), nil
 	})
 	steps.Do("image", func() (string, error) {
-		if req.RegistryUsername != "" {
-			return req.Image + ", pulled with sealed registry credentials", nil
-		}
-		return req.Image + " (public)", nil
+		pinned, detail, err := dispatch.PinImage(ctx, c.registry(), req.Image, req.RegistryUsername, req.RegistryPassword)
+		cfg.Image = pinned
+		return detail, err
 	})
 	steps.Do("saved", func() (string, error) {
 		sec := Secret{TokenID: req.TokenID, TokenSecret: req.TokenSecret, RegistryUsername: req.RegistryUsername, RegistryPassword: req.RegistryPassword}
@@ -241,4 +243,11 @@ func (c *Connector) Resolve(row db.ExecutorConfig) (dispatch.Executor, error) {
 	ex := &Executor{api: a, cfg: cfg, secret: sec}
 	c.cache[row.ID] = cached{updated: row.UpdatedAt.Time, ex: ex, api: a}
 	return ex, nil
+}
+
+func (c *Connector) registry() *registry.Resolver {
+	if c.Registry != nil {
+		return c.Registry
+	}
+	return registry.NewResolver()
 }

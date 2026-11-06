@@ -21,6 +21,8 @@ import (
 
 	"github.com/visheshgubrani/clipmux/internal/db/dbtest"
 	"github.com/visheshgubrani/clipmux/internal/dispatch"
+	"github.com/visheshgubrani/clipmux/internal/registry"
+	"github.com/visheshgubrani/clipmux/internal/registry/registrytest"
 	"github.com/visheshgubrani/clipmux/internal/secrets"
 )
 
@@ -156,11 +158,13 @@ func TestStopAndRunningSeeOnlyThisInstallsSandboxes(t *testing.T) {
 func connector(t *testing.T, f *fakeModal) (*Connector, *int) {
 	t.Helper()
 	pool := dbtest.New(t)
+	reg := registrytest.New(t)
 	box, _ := secrets.NewBox(1, bytes.Repeat([]byte{6}, 32))
 	queued := 0
 	c := &Connector{
 		Pool: pool, Box: box, ProjectID: "prj_default", PublicURL: func() string { return "https://93.184.215.14" },
-		Resolver: net.DefaultResolver, DefaultImage: "ghcr.io/visheshgubrani/clipmux:sha-abc", Logger: slog.New(slog.DiscardHandler),
+		Resolver: net.DefaultResolver, DefaultImage: reg.Image(), Registry: &registry.Resolver{HTTP: reg.Client},
+		Logger:    slog.New(slog.DiscardHandler),
 		SetupTest: func(context.Context) error { queued++; return nil },
 		newAPI: func(_, sec, _ string) (checkedAPI, error) {
 			f.mu.Lock()
@@ -173,7 +177,7 @@ func connector(t *testing.T, f *fakeModal) (*Connector, *int) {
 	return c, &queued
 }
 
-var request = Request{TokenID: tokenID, TokenSecret: tokenSecret, RegistryUsername: "visheshgubrani", RegistryPassword: "ghp_REGISTRY",
+var request = Request{TokenID: tokenID, TokenSecret: tokenSecret, RegistryUsername: registrytest.Username, RegistryPassword: registrytest.Password,
 	MaxConcurrent: 2, MonthlyLimitCents: 5000, RateCentsPerHour: 90}
 
 func stepNames(res dispatch.Result) string {
@@ -202,10 +206,10 @@ func TestConnectModalSealsTheTokenAndQueuesItsSetupTest(t *testing.T) {
 	row, _, _ := dispatch.Existing(ctx, c.Pool, "prj_default", "modal")
 	var cfg Config
 	_ = json.Unmarshal(row.Config, &cfg)
-	if cfg.GPU != "L4" || cfg.CPU != 4 || cfg.MemoryMiB != 16384 || len(cfg.Tag) != 8 || row.DiskBytes != 50<<30 || row.RateCentsPerHour != 90 {
+	if !strings.Contains(cfg.Image, "@sha256:") || cfg.GPU != "L4" || cfg.CPU != 4 || cfg.MemoryMiB != 16384 || len(cfg.Tag) != 8 || row.DiskBytes != 50<<30 || row.RateCentsPerHour != 90 {
 		t.Fatalf("config = %+v, row %+v", cfg, row)
 	}
-	for _, secret := range []string{tokenSecret, "ghp_REGISTRY", tokenID} {
+	for _, secret := range []string{tokenSecret, registrytest.Password, tokenID} {
 		if bytes.Contains(row.SecretsEncrypted, []byte(secret)) || strings.Contains(string(row.Config), secret) {
 			t.Fatalf("%s is stored in the clear", secret[:3])
 		}
@@ -231,7 +235,7 @@ func TestConnectModalSealsTheTokenAndQueuesItsSetupTest(t *testing.T) {
 		t.Fatalf("after reconnect: new executor %v, tag %s→%s, closed %d→%d", second != first, cfg.Tag, cfg2.Tag, closedBefore, f.closed)
 	}
 	// The resolved executor carries the sealed registry credentials.
-	if _, err := second.Wake(ctx, wake); err != nil || f.creates[0].RegistryPassword != "ghp_REGISTRY" {
+	if _, err := second.Wake(ctx, wake); err != nil || f.creates[0].RegistryPassword != registrytest.Password || !strings.Contains(f.creates[0].Image, "@sha256:") {
 		t.Fatalf("wake with the stored config: %v", err)
 	}
 }

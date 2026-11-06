@@ -73,8 +73,9 @@ when you introduce or discover it; remove it when it is closed.
   it is, `--since` can reach back only as far as rows are kept. `clipmux push` keeps an
   unfinished push's upload token in a 0600 state file under the user's cache
   directory until it completes.
-- The image is ~575 MB and built from source on a cache miss (~20 min); it
-  isn't published, so every install builds it until launch.
+- The image is ~575 MB and built from source on a cache miss (~20 min). CI
+  pushes it privately to ghcr on main for serverless providers (D058), but
+  it isn't public, so every install builds it until launch.
 - Phase 2's exit test passes on the binary with a fake Cloudflare API and
   the Worker's logic on Node in front of S3 (D041). Still open before the
   phase exits on Cloudflare: the setup test through the Worker, the Chromium
@@ -109,8 +110,8 @@ when you introduce or discover it; remove it when it is closed.
   (T10).
 - RunPod (D056) is tested against a fake REST API only; its real-account
   run, and the cold start that sets the 10-minute claim deadline, come with
-  the Phase 4 exit (T10). Provider machines pull `CLIPMUX_WORKER_IMAGE`
-  until builds carry their own image reference (T06).
+  the Phase 4 exit (T10). Whether both providers accept a digest-only
+  image reference (D058) is also confirmed there.
 - Routing (D053) records the built-in worker's liveness per project, not per
   replica: with several serve replicas, any one worker's calls keep "the
   server" online. A job barred from the fallback because its file failed

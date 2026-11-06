@@ -15,6 +15,8 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/db"
 	"github.com/visheshgubrani/clipmux/internal/db/dbtest"
 	"github.com/visheshgubrani/clipmux/internal/dispatch"
+	"github.com/visheshgubrani/clipmux/internal/registry"
+	"github.com/visheshgubrani/clipmux/internal/registry/registrytest"
 	"github.com/visheshgubrani/clipmux/internal/runpod"
 	"github.com/visheshgubrani/clipmux/internal/runpod/runpodtest"
 	"github.com/visheshgubrani/clipmux/internal/secrets"
@@ -23,6 +25,7 @@ import (
 type connectRig struct {
 	pool   *pgxpool.Pool
 	fake   *runpodtest.Fake
+	reg    *registrytest.Registry
 	c      *runpod.Connector
 	queued int
 }
@@ -31,18 +34,18 @@ func newConnectRig(t *testing.T) *connectRig {
 	t.Helper()
 	pool := dbtest.New(t)
 	box, _ := secrets.NewBox(1, bytes.Repeat([]byte{5}, 32))
-	r := &connectRig{pool: pool, fake: runpodtest.New(t)}
+	r := &connectRig{pool: pool, fake: runpodtest.New(t), reg: registrytest.New(t)}
 	r.c = &runpod.Connector{
 		Pool: pool, Box: box, ProjectID: "prj_default", API: r.fake.URL,
 		PublicURL: func() string { return "https://93.184.215.14" }, Resolver: net.DefaultResolver,
-		DefaultImage: "ghcr.io/visheshgubrani/clipmux:sha-abc", Logger: slog.New(slog.DiscardHandler),
+		DefaultImage: r.reg.Image(), Registry: &registry.Resolver{HTTP: r.reg.Client}, Logger: slog.New(slog.DiscardHandler),
 		SetupTest: func(context.Context) error { r.queued++; return nil },
 	}
 	return r
 }
 
 var request = runpod.Request{
-	APIKey: runpodtest.Key, RegistryUsername: "visheshgubrani", RegistryPassword: "ghp_REGISTRYPASSWORD",
+	APIKey: runpodtest.Key, RegistryUsername: registrytest.Username, RegistryPassword: registrytest.Password,
 	MaxConcurrent: 3, MonthlyLimitCents: 5000, RateCentsPerHour: 45,
 }
 
@@ -65,7 +68,7 @@ func TestConnectRunPodStoresASealedKeyAndQueuesItsSetupTest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := "credentials:ok public_url:ok registry:ok image:ok saved:ok setup_test:ok"; steps(res) != want || !res.Connected {
+	if want := "credentials:ok public_url:ok image:ok registry:ok saved:ok setup_test:ok"; steps(res) != want || !res.Connected {
 		t.Fatalf("steps = %s, want %s", steps(res), want)
 	}
 	if r.queued != 1 {
@@ -78,7 +81,8 @@ func TestConnectRunPodStoresASealedKeyAndQueuesItsSetupTest(t *testing.T) {
 	var cfg runpod.Config
 	_ = json.Unmarshal(row.Config, &cfg)
 	auths := r.fake.Auths()
-	if cfg.Image != "ghcr.io/visheshgubrani/clipmux:sha-abc" || cfg.CloudType != "SECURE" || cfg.DiskGB != 50 ||
+	// Pods run exactly the image that was connected, by digest.
+	if cfg.Image != r.reg.Pinned() || cfg.CloudType != "SECURE" || cfg.DiskGB != 50 ||
 		len(cfg.Tag) != 8 || auths[cfg.RegistryAuthID] == "" || len(cfg.GPUTypeIDs) != len(runpod.DefaultGPUTypes) {
 		t.Fatalf("config = %+v, auths %v", cfg, auths)
 	}
@@ -86,7 +90,7 @@ func TestConnectRunPodStoresASealedKeyAndQueuesItsSetupTest(t *testing.T) {
 		t.Fatalf("row = %+v, want the request's limits and not yet verified", row)
 	}
 	// Neither secret is stored as itself.
-	for _, secret := range []string{runpodtest.Key, "ghp_REGISTRYPASSWORD"} {
+	for _, secret := range []string{runpodtest.Key, registrytest.Password} {
 		if bytes.Contains(row.SecretsEncrypted, []byte(secret)) || strings.Contains(string(row.Config), secret) {
 			t.Fatalf("%s is stored in the clear", secret[:4])
 		}
@@ -138,6 +142,17 @@ func TestConnectRunPodRefusesBadKeysPrivateURLsAndMissingLimits(t *testing.T) {
 	r.c.AllowPrivateURL = true
 	if res, _ := r.c.Connect(ctx, request); !res.Connected {
 		t.Fatalf("with the development override: %s", steps(res))
+	}
+
+	// Credentials that can't pull the image fail before RunPod stores them.
+	r.c.AllowPrivateURL = false
+	r.c.PublicURL = func() string { return "https://93.184.215.14" }
+	wrongRegistry := request
+	wrongRegistry.RegistryPassword = "ghp_WRONG"
+	authsBefore := len(r.fake.Auths())
+	res, _ = r.c.Connect(ctx, wrongRegistry)
+	if steps(res) != "credentials:ok public_url:ok image:FAILED" || len(r.fake.Auths()) != authsBefore || strings.Contains(res.Steps[2].Detail, "ghp_WRONG") {
+		t.Fatalf("wrong registry password: %s, %d auths stored", steps(res), len(r.fake.Auths())-authsBefore)
 	}
 
 	noLimit := request

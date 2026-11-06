@@ -1,0 +1,61 @@
+package registry_test
+
+import (
+	"context"
+	"errors"
+	"testing"
+
+	"github.com/visheshgubrani/clipmux/internal/registry"
+	"github.com/visheshgubrani/clipmux/internal/registry/registrytest"
+)
+
+func TestParseReadsReferencesTheWayDockerDoes(t *testing.T) {
+	digest := "sha256:" + "ab0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcd"[:64]
+	cases := map[string]registry.Ref{
+		"ghcr.io/visheshgubrani/clipmux:sha-abc":   {Host: "ghcr.io", Repo: "visheshgubrani/clipmux", Tag: "sha-abc"},
+		"ghcr.io/visheshgubrani/clipmux@" + digest: {Host: "ghcr.io", Repo: "visheshgubrani/clipmux", Digest: digest},
+		"ubuntu":             {Host: "registry-1.docker.io", Repo: "library/ubuntu", Tag: "latest"},
+		"someone/app:1.2":    {Host: "registry-1.docker.io", Repo: "someone/app", Tag: "1.2"},
+		"localhost:5000/app": {Host: "localhost:5000", Repo: "app", Tag: "latest"},
+	}
+	for ref, want := range cases {
+		got, err := registry.Parse(ref)
+		if err != nil || got != want {
+			t.Errorf("Parse(%s) = %+v, %v; want %+v", ref, got, err, want)
+		}
+	}
+	if _, err := registry.Parse("ghcr.io/x/y@sha256:short"); err == nil {
+		t.Error("Parse accepted a malformed digest")
+	}
+	if got := (registry.Ref{Host: "registry-1.docker.io", Repo: "library/ubuntu", Digest: digest}).Pinned(); got != "docker.io/library/ubuntu@"+digest {
+		t.Errorf("Pinned = %s", got)
+	}
+}
+
+// A private image resolves to its digest through the Bearer token flow,
+// only with the right credentials.
+func TestResolvePinsAPrivateImageWithItsCredentials(t *testing.T) {
+	reg := registrytest.New(t)
+	r := &registry.Resolver{HTTP: reg.Client}
+	ctx := context.Background()
+
+	got, err := r.Resolve(ctx, reg.Image(), registrytest.Username, registrytest.Password)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Digest != reg.Digest || got.Pinned() != reg.Pinned() {
+		t.Fatalf("Resolve = %+v, want %s", got, reg.Pinned())
+	}
+	// A pinned reference is checked again, not trusted.
+	if again, err := r.Resolve(ctx, reg.Pinned(), registrytest.Username, registrytest.Password); err != nil || again.Pinned() != reg.Pinned() {
+		t.Fatalf("Resolve(pinned) = %+v, %v", again, err)
+	}
+	for _, c := range []struct{ user, pass string }{{"", ""}, {registrytest.Username, "ghp_WRONG"}} {
+		if _, err := r.Resolve(ctx, reg.Image(), c.user, c.pass); !errors.Is(err, registry.ErrDenied) {
+			t.Errorf("Resolve as %q = %v, want ErrDenied", c.user, err)
+		}
+	}
+	if _, err := r.Resolve(ctx, reg.Host+"/"+registrytest.Repo+":no-such-tag", registrytest.Username, registrytest.Password); !errors.Is(err, registry.ErrDenied) {
+		t.Errorf("an unknown tag = %v, want ErrDenied", err)
+	}
+}

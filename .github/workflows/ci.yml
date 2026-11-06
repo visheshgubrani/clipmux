@@ -91,9 +91,17 @@ jobs:
   image:
     # The packaged stack: the image builds (FFmpeg from source, cached),
     # starts under compose behind Caddy, confines its tools, and passes the
-    # setup test end to end. The image is never pushed (D005, D006).
+    # setup test end to end. On main, an image that passed is pushed to the
+    # private ghcr package as sha-{commit}, which serverless providers pull
+    # (D052, D058). It is never pushed as /server or /web (D006), and never
+    # from a pull request.
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ghcr.io/visheshgubrani/clipmux:sha-${{ github.sha }}
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
@@ -104,6 +112,11 @@ jobs:
           load: true
           push: false
           tags: clipmux:local
+          # The binary names the image it ships in, so providers run this
+          # same build.
+          build-args: |
+            VERSION=${{ github.sha }}
+            WORKER_IMAGE=${{ env.IMAGE }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
       - name: Start app, Postgres and Caddy
@@ -122,6 +135,15 @@ jobs:
         run: docker compose -f deploy/compose.yml exec -T app clipmux admin setup-test --wait --timeout 15m
       - name: Health through Caddy
         run: curl -fsS http://localhost/healthz
+      - name: The binary names its own image
+        run: |
+          docker run --rm --entrypoint grep clipmux:local -aqF "$IMAGE" /usr/local/bin/clipmux
+      - name: Push to the private package (main only)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker tag clipmux:local "$IMAGE"
+          docker push "$IMAGE"
       - name: Logs
         if: failure()
         # No deploy/.env means the stack never started (e.g. the build failed).

@@ -573,33 +573,26 @@ func (q *Queries) LockPendingDispatchOutbox(ctx context.Context, limit int32) ([
 	return items, nil
 }
 
-const lockProviderWithRoom = `-- name: LockProviderWithRoom :one
+const providerHasRoom = `-- name: ProviderHasRoom :one
 
-SELECT c.id, provider_has_room(c.id, $1)::boolean AS has_room
-FROM executor_configs c
-WHERE c.project_id = $2 AND c.kind = $3
-FOR UPDATE
+SELECT provider_has_room($1, $2)::boolean
 `
 
-type LockProviderWithRoomParams struct {
-	AssetID   string
-	ProjectID string
-	Kind      string
-}
-
-type LockProviderWithRoomRow struct {
+type ProviderHasRoomParams struct {
 	ID      string
-	HasRoom bool
+	AssetID string
 }
 
 // Dispatches (P4-T02, D054): waking a serverless provider for one job.
-// In the router's transaction, before creating a dispatch: the provider's
-// row lock serialises routers, so its limits can't be overshot (D055).
-func (q *Queries) LockProviderWithRoom(ctx context.Context, arg LockProviderWithRoomParams) (LockProviderWithRoomRow, error) {
-	row := q.db.QueryRow(ctx, lockProviderWithRoom, arg.AssetID, arg.ProjectID, arg.Kind)
-	var i LockProviderWithRoomRow
-	err := row.Scan(&i.ID, &i.HasRoom)
-	return i, err
+// Called after LockExecutorConfigByKind, as its own statement: under READ
+// COMMITTED a statement's snapshot is taken before it waits for a row lock,
+// so a room check in the locking statement itself would miss the
+// dispatches the previous lock holder just committed (D058).
+func (q *Queries) ProviderHasRoom(ctx context.Context, arg ProviderHasRoomParams) (bool, error) {
+	row := q.db.QueryRow(ctx, providerHasRoom, arg.ID, arg.AssetID)
+	var column_1 bool
+	err := row.Scan(&column_1)
+	return column_1, err
 }
 
 const recordWakeFailure = `-- name: RecordWakeFailure :exec

@@ -1,12 +1,11 @@
 -- Dispatches (P4-T02, D054): waking a serverless provider for one job.
 
--- name: LockProviderWithRoom :one
--- In the router's transaction, before creating a dispatch: the provider's
--- row lock serialises routers, so its limits can't be overshot (D055).
-SELECT c.id, provider_has_room(c.id, sqlc.arg(asset_id))::boolean AS has_room
-FROM executor_configs c
-WHERE c.project_id = sqlc.arg(project_id) AND c.kind = sqlc.arg(kind)
-FOR UPDATE;
+-- name: ProviderHasRoom :one
+-- Called after LockExecutorConfigByKind, as its own statement: under READ
+-- COMMITTED a statement's snapshot is taken before it waits for a row lock,
+-- so a room check in the locking statement itself would miss the
+-- dispatches the previous lock holder just committed (D058).
+SELECT provider_has_room(sqlc.arg(id), sqlc.arg(asset_id))::boolean;
 
 -- name: CreateDispatch :one
 -- The provider's rate and claim deadline, and the job's estimated run as

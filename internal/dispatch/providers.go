@@ -18,6 +18,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/db"
 	"github.com/visheshgubrani/clipmux/internal/ids"
 	"github.com/visheshgubrani/clipmux/internal/publicnet"
+	"github.com/visheshgubrani/clipmux/internal/registry"
 	"github.com/visheshgubrani/clipmux/internal/secrets"
 )
 
@@ -241,4 +242,22 @@ func (s *Steps) Do(name string, fn func() (string, error)) bool {
 	s.Result.Steps = append(s.Result.Steps, st)
 	s.Result.Connected = !s.failed
 	return !s.failed
+}
+
+// PinImage resolves a provider's worker image to its digest with the
+// registry credentials its machines will pull with (D058). It proves those
+// credentials can pull before any machine is woken, and pins the image so
+// every machine runs exactly what was connected, even if the tag moves.
+func PinImage(ctx context.Context, r *registry.Resolver, image, username, password string) (pinned, detail string, err error) {
+	ref, err := r.Resolve(ctx, image, username, password)
+	if errors.Is(err, registry.ErrDenied) {
+		if username == "" {
+			return "", "", fmt.Errorf("%s can't be pulled anonymously: give registry credentials that can read it", image)
+		}
+		return "", "", fmt.Errorf("%s can't be pulled with these registry credentials", image)
+	}
+	if err != nil {
+		return "", "", err
+	}
+	return ref.Pinned(), "pinned to " + ref.Digest, nil
 }
