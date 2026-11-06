@@ -211,7 +211,8 @@ func (q *Queue) Claim(ctx context.Context, w Worker) (*Claim, error) {
 	err := pgx.BeginFunc(ctx, q.pool, func(tx pgx.Tx) error {
 		qs := db.New(tx)
 		job, err := qs.LockNextClaimableJob(ctx, db.LockNextClaimableJobParams{
-			ProjectID: q.ProjectID, AgentID: text(w.AgentID), LocalOnly: w.LocalOnly, Untrusted: w.Untrusted,
+			ProjectID: q.ProjectID, Classes: classes(w.Executor),
+			AgentID: text(w.AgentID), LocalOnly: w.LocalOnly, Untrusted: w.Untrusted,
 			FreeDiskBytes: pgtype.Int8{Int64: w.FreeDiskBytes, Valid: w.FreeDiskBytes > 0},
 		})
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -233,12 +234,12 @@ func (q *Queue) Claim(ctx context.Context, w Worker) (*Claim, error) {
 		attempt, err := qs.CreateAttempt(ctx, db.CreateAttemptParams{
 			ID: ids.New(ids.Attempt), ProjectID: job.ProjectID, JobID: job.ID, AssetID: job.AssetID,
 			AttemptNumber: n, OutputID: output.ID, Executor: w.Executor, AgentID: text(w.AgentID),
-			TokenHash: hash, WorkerInfo: info, LeaseSeconds: q.Lease.Seconds(),
+			TokenHash: hash, WorkerInfo: info, LeaseSeconds: q.Lease.Seconds(), RouteReason: job.RouteReason,
 		})
 		if err != nil {
 			return err
 		}
-		if err := qs.StartJob(ctx, db.StartJobParams{ID: job.ID, RoutedTo: text(w.Executor), RouteReason: text("claimed")}); err != nil {
+		if err := qs.StartJob(ctx, job.ID); err != nil {
 			return err
 		}
 		if job, err = qs.LockJob(ctx, job.ID); err != nil {

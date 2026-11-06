@@ -12,6 +12,7 @@ import (
 
 	"github.com/visheshgubrani/clipmux/internal/db"
 	"github.com/visheshgubrani/clipmux/internal/httpjson"
+	"github.com/visheshgubrani/clipmux/internal/queue"
 )
 
 // RegisterWorker adds the agent routes under /worker/v1: pairing, which an
@@ -140,7 +141,8 @@ type View struct {
 
 // OnlineWithin is how recently an agent must have called to count as
 // online: a claim long-polls for up to 30 s, and heartbeats come every 15 s.
-const OnlineWithin = 60 * time.Second
+// The router uses the same rule (queue.OnlineWithin).
+const OnlineWithin = queue.OnlineWithin
 
 func optTime(t pgtype.Timestamptz) *time.Time {
 	if !t.Valid {

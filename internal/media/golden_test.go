@@ -14,6 +14,7 @@ import (
 	"crypto/cipher"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -240,5 +241,35 @@ func TestProbeRefusesNonVideoAndDisguisedPlaylists(t *testing.T) {
 		if _, err := Probe(ctx, tools, p); err == nil {
 			t.Errorf("Probe(%s) accepted it", filepath.Base(p))
 		}
+	}
+}
+
+// testdata/corrupt.mp4 (toolchain/make_corrupt.sh) stands for a file that
+// kills the encoder after the probe let it through. The routing tests and
+// the Phase 4 exit test rely on exactly that, so it is proven here with the
+// real tools: Probe accepts it and Transcode fails, not as an unsupported
+// source (which would end the job at once) but as an encode failure.
+func TestCorruptFixturePassesTheProbeButFailsTheEncode(t *testing.T) {
+	tools := testTools(t)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	source, err := filepath.Abs("testdata/corrupt.mp4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src, err := Probe(ctx, tools, source)
+	if err != nil {
+		t.Fatalf("Probe refused the fixture: %v", err)
+	}
+	if src.Width != 320 || src.Height != 240 || !src.HasAudio {
+		t.Fatalf("Probe = %+v, want 320x240 with audio", src)
+	}
+	dir := t.TempDir()
+	_, err = Transcode(ctx, tools, source, src, filepath.Join(dir, "work"), filepath.Join(dir, "out"), Key{Version: 1}, nil)
+	if err == nil {
+		t.Fatal("Transcode encoded the corrupt fixture")
+	}
+	if errors.Is(err, ErrUnsupportedSource) {
+		t.Fatalf("Transcode called it unsupported, want an encode failure: %v", err)
 	}
 }

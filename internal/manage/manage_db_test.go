@@ -352,12 +352,12 @@ func TestTheJobsPageShowsWhereEachAttemptRanAndOnWhat(t *testing.T) {
 	r := newRig(t, config.Config{})
 	r.exec(`INSERT INTO agents (id, project_id, name, key_hash, status) VALUES ('agt_pc', 'prj_default', 'Studio PC', 'h', 'approved')`)
 	r.exec(`INSERT INTO assets (id, project_id, app_id, status, storage_id) VALUES ('ast_1', 'prj_default', 'app_dashboard', 'processing', 'sto_default')`)
-	r.exec(`INSERT INTO jobs (id, project_id, asset_id, kind, status, lost_count) VALUES ('job_1', 'prj_default', 'ast_1', 'transcode', 'running', 1)`)
+	r.exec(`INSERT INTO jobs (id, project_id, asset_id, kind, routed_to, route_reason, status, lost_count) VALUES ('job_1', 'prj_default', 'ast_1', 'transcode', 'builtin', 'primary_offline', 'running', 1)`)
 	r.exec(`INSERT INTO outputs (id, project_id, asset_id, key_version, status) VALUES ('out_a', 'prj_default', 'ast_1', 1, 'writing')`)
 	r.exec(`INSERT INTO outputs (id, project_id, asset_id, key_version, status, manifest) VALUES ('out_b', 'prj_default', 'ast_1', 1, 'committed', '{"encoder": {"stage": "cpu", "fallbacks": ["vaapi"]}}')`)
-	r.exec(`INSERT INTO attempts (id, project_id, job_id, asset_id, attempt_number, output_id, executor, agent_id, status, token_hash, lease_expires_at)
-		VALUES ('att_1', 'prj_default', 'job_1', 'ast_1', 1, 'out_a', 'agent', 'agt_pc', 'lost', 'h1', now()),
-		       ('att_2', 'prj_default', 'job_1', 'ast_1', 2, 'out_b', 'builtin', NULL, 'running', 'h2', now())`)
+	r.exec(`INSERT INTO attempts (id, project_id, job_id, asset_id, attempt_number, output_id, executor, agent_id, status, token_hash, lease_expires_at, route_reason)
+		VALUES ('att_1', 'prj_default', 'job_1', 'ast_1', 1, 'out_a', 'agent', 'agt_pc', 'lost', 'h1', now(), 'primary'),
+		       ('att_2', 'prj_default', 'job_1', 'ast_1', 2, 'out_b', 'builtin', NULL, 'running', 'h2', now(), 'primary_offline')`)
 
 	res := r.call("GET", "/v1/jobs?agent_id=agt_pc", nil, "")
 	if res.status != http.StatusOK || len(res.list) != 1 {
@@ -369,6 +369,12 @@ func TestTheJobsPageShowsWhereEachAttemptRanAndOnWhat(t *testing.T) {
 	if job["lost_count"] != float64(1) || first["agent_name"] != "Studio PC" || first["status"] != "lost" || second["executor"] != "builtin" {
 		t.Fatalf("job = %v", job)
 	}
+	// Why: the job is routed to the server because the PC went away, and
+	// each attempt keeps the reason it ran where it did.
+	if job["routed_to"] != "builtin" || job["route_reason"] != "primary_offline" ||
+		first["route_reason"] != "primary" || second["route_reason"] != "primary_offline" {
+		t.Fatalf("routes: job %v/%v, attempts %v/%v", job["routed_to"], job["route_reason"], first["route_reason"], second["route_reason"])
+	}
 	if enc := second["encoder"].(map[string]any); enc["stage"] != "cpu" || enc["fallbacks"].([]any)[0] != "vaapi" {
 		t.Fatalf("encoder = %v", second["encoder"])
 	}
@@ -377,5 +383,55 @@ func TestTheJobsPageShowsWhereEachAttemptRanAndOnWhat(t *testing.T) {
 	}
 	if res := r.call("GET", "/v1/jobs", nil, "cmx_not_a_session"); res.status != http.StatusUnauthorized {
 		t.Fatalf("an API key reached the jobs page: %d", res.status)
+	}
+}
+
+func TestRoutingSettingsChooseAPrimaryAndAFallback(t *testing.T) {
+	r := newRig(t, config.Config{})
+	got := r.call("GET", "/v1/settings/routing", nil, "")
+	if got.status != http.StatusOK || got.body["primary_executor"] != "workers" || got.body["fallback_executor"] != nil ||
+		got.body["queue_age_fallback_minutes"] != nil {
+		t.Fatalf("default routing = %d %v, want workers with no fallback", got.status, got.body)
+	}
+	if b := got.body["builtin_worker"].(map[string]any); b["online"] != false {
+		t.Fatalf("builtin_worker = %v, want offline before it ever called", b)
+	}
+
+	// My PC, else the server, after 10 minutes in the queue.
+	got = r.call("PUT", "/v1/settings/routing", map[string]any{
+		"primary_executor": "agents", "fallback_executor": "builtin", "queue_age_fallback_minutes": 10}, "")
+	if got.status != http.StatusOK || got.body["primary_executor"] != "agents" || got.body["fallback_executor"] != "builtin" ||
+		got.body["queue_age_fallback_minutes"] != float64(10) {
+		t.Fatalf("saved routing = %d %v", got.status, got.body)
+	}
+	r.exec(`UPDATE projects SET builtin_seen_at = now() WHERE id = 'prj_default'`)
+	if b := r.call("GET", "/v1/settings/routing", nil, "").body["builtin_worker"].(map[string]any); b["online"] != true {
+		t.Fatalf("builtin_worker = %v, want online", b)
+	}
+
+	refused := []struct {
+		body   map[string]any
+		status int
+		code   string
+	}{
+		{map[string]any{"primary_executor": "cloud"}, 400, "invalid_request"},
+		{map[string]any{"primary_executor": "workers", "fallback_executor": "builtin"}, 400, "invalid_request"},
+		{map[string]any{"primary_executor": "builtin", "fallback_executor": "builtin"}, 400, "invalid_request"},
+		{map[string]any{"primary_executor": "agents", "queue_age_fallback_minutes": 10}, 400, "invalid_request"},
+		{map[string]any{"primary_executor": "agents", "fallback_executor": "builtin", "queue_age_fallback_minutes": 0}, 400, "invalid_request"},
+		{map[string]any{"primary_executor": "modal"}, 409, "executor_not_connected"},
+		{map[string]any{"primary_executor": "agents", "fallback_executor": "runpod"}, 409, "executor_not_connected"},
+	}
+	for _, c := range refused {
+		got := r.call("PUT", "/v1/settings/routing", c.body, "")
+		if errBody, _ := got.body["error"].(map[string]any); got.status != c.status || errBody["code"] != c.code {
+			t.Errorf("PUT %v = %d %v, want %d %s", c.body, got.status, got.body, c.status, c.code)
+		}
+	}
+	if got := r.call("GET", "/v1/settings/routing", nil, ""); got.body["primary_executor"] != "agents" {
+		t.Fatalf("a refused change was saved: %v", got.body)
+	}
+	if got := r.call("PUT", "/v1/settings/routing", map[string]any{"primary_executor": "workers"}, "cmx_not_a_session"); got.status != http.StatusUnauthorized {
+		t.Fatalf("an API key changed routing: %d", got.status)
 	}
 }

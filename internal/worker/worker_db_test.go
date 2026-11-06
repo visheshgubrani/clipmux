@@ -125,7 +125,7 @@ func (r *rig) uploaded(t *testing.T) {
 	}
 	for _, sql := range []string{
 		`INSERT INTO assets (id, project_id, app_id, status, storage_id) VALUES ('ast_1', 'prj_default', 'app_dashboard', 'processing', 'sto_default')`,
-		`INSERT INTO jobs (id, project_id, asset_id, kind) VALUES ('job_1', 'prj_default', 'ast_1', 'transcode')`,
+		`INSERT INTO jobs (id, project_id, asset_id, kind, routed_to) VALUES ('job_1', 'prj_default', 'ast_1', 'transcode', 'workers')`,
 	} {
 		if _, err := r.pool.Exec(ctx, sql); err != nil {
 			t.Fatal(err)
@@ -234,7 +234,7 @@ func TestAnUnusableSourceFailsPermanently(t *testing.T) {
 	}
 	for _, sql := range []string{
 		`INSERT INTO assets (id, project_id, app_id, status, storage_id) VALUES ('ast_1', 'prj_default', 'app_dashboard', 'processing', 'sto_default')`,
-		`INSERT INTO jobs (id, project_id, asset_id, kind) VALUES ('job_1', 'prj_default', 'ast_1', 'transcode')`,
+		`INSERT INTO jobs (id, project_id, asset_id, kind, routed_to) VALUES ('job_1', 'prj_default', 'ast_1', 'transcode', 'workers')`,
 	} {
 		if _, err := r.pool.Exec(ctx, sql); err != nil {
 			t.Fatal(err)

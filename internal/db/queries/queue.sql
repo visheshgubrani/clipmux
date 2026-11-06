@@ -2,32 +2,31 @@
 -- Lock order everywhere: job, then attempt, then asset.
 
 -- name: CreateJob :one
-INSERT INTO jobs (id, project_id, asset_id, kind, pinned_agent_id)
-VALUES ($1, $2, $3, $4, $5)
+-- Media jobs start routed: a pinned job to its agent, any other to the
+-- project's primary executor. The router may move a queued one later.
+INSERT INTO jobs (id, project_id, asset_id, kind, pinned_agent_id, routed_to, route_reason)
+SELECT sqlc.arg(id), p.id, sqlc.arg(asset_id), sqlc.arg(kind)::text, sqlc.narg(pinned_agent_id)::text,
+       CASE WHEN sqlc.arg(kind)::text NOT IN ('transcode', 'reencode') THEN NULL
+            WHEN sqlc.narg(pinned_agent_id)::text IS NOT NULL THEN 'agents'
+            ELSE p.primary_executor END,
+       CASE WHEN sqlc.arg(kind)::text NOT IN ('transcode', 'reencode') THEN NULL
+            WHEN sqlc.narg(pinned_agent_id)::text IS NOT NULL THEN 'pinned'
+            ELSE 'primary' END
+FROM projects p WHERE p.id = sqlc.arg(project_id)
 RETURNING *;
 
 -- name: LockNextClaimableJob :one
--- Media work only: import, move and delete run in the control plane. Pinned jobs go
--- only to their agent, and local-scoped agents take only pinned jobs. An
--- untrusted (unsandboxed) agent takes only jobs pinned to it and the owner's
--- own uploads (the built-in Dashboard app's assets), never public uploads.
+-- Media work only: import, move and delete run in the control plane. A job
+-- goes to a worker whose class it is routed to (pinned jobs are decided by
+-- the pin alone), and job_claimable_by applies the per-worker rules.
 SELECT * FROM jobs
 WHERE jobs.project_id = sqlc.arg(project_id)
   AND jobs.status = 'queued'
   AND available_at <= now()
   AND kind IN ('transcode', 'reencode')
-  AND (pinned_agent_id IS NULL OR pinned_agent_id = sqlc.narg(agent_id))
-  AND (NOT sqlc.arg(local_only)::boolean OR pinned_agent_id = sqlc.narg(agent_id))
-  AND (NOT sqlc.arg(untrusted)::boolean OR pinned_agent_id = sqlc.narg(agent_id) OR EXISTS (
-      SELECT 1 FROM assets s JOIN apps p ON p.id = s.app_id
-      WHERE s.id = jobs.asset_id AND p.is_builtin))
-  -- A worker that reports its free disk takes only sources that fit: three
-  -- times an upload's size (source, encodes, packaged output), twice a source
-  -- already on the agent. Unknown sizes (imports) and unreported disk pass.
-  AND (sqlc.narg(free_disk_bytes)::bigint IS NULL OR coalesce(
-      (SELECT 3 * u.declared_size FROM uploads u WHERE u.asset_id = jobs.asset_id ORDER BY u.created_at DESC LIMIT 1),
-      (SELECT 2 * g.size FROM assets s JOIN agent_sources g ON g.id = s.agent_source_id WHERE s.id = jobs.asset_id),
-      0) <= sqlc.narg(free_disk_bytes)::bigint)
+  AND (pinned_agent_id IS NOT NULL OR routed_to = ANY (sqlc.arg(classes)::text[]))
+  AND job_claimable_by(asset_id, pinned_agent_id, sqlc.narg(agent_id)::text, sqlc.arg(local_only)::boolean,
+                       sqlc.arg(untrusted)::boolean, sqlc.narg(free_disk_bytes)::bigint)
 ORDER BY available_at, id
 LIMIT 1
 FOR UPDATE SKIP LOCKED;
@@ -45,14 +44,13 @@ RETURNING *;
 
 -- name: CreateAttempt :one
 INSERT INTO attempts (id, project_id, job_id, asset_id, attempt_number, output_id, executor, agent_id,
-                      token_hash, lease_expires_at, worker_info)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now() + make_interval(secs => sqlc.arg(lease_seconds)::double precision), $10)
+                      token_hash, lease_expires_at, worker_info, route_reason)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now() + make_interval(secs => sqlc.arg(lease_seconds)::double precision), $10, $11)
 RETURNING *;
 
 -- name: StartJob :exec
 UPDATE jobs
-SET status = 'running', phase = NULL, progress = NULL, started_at = coalesce(started_at, now()),
-    routed_to = $2, route_reason = $3
+SET status = 'running', phase = NULL, progress = NULL, started_at = coalesce(started_at, now())
 WHERE id = $1;
 
 -- name: GetAttempt :one
@@ -135,3 +133,58 @@ DELETE FROM attempts WHERE id = $1;
 
 -- name: DeleteWritingOutput :exec
 DELETE FROM outputs WHERE id = $1 AND status = 'writing';
+
+-- name: ListRoutableJobs :many
+-- Queued media jobs the router may move: pinned jobs never move, and a job
+-- still backing off isn't routed until it could be claimed.
+SELECT id FROM jobs
+WHERE project_id = $1 AND status = 'queued' AND kind IN ('transcode', 'reencode')
+  AND pinned_agent_id IS NULL AND available_at <= now()
+ORDER BY available_at, id
+LIMIT $2;
+
+-- name: LockRoutableJob :one
+SELECT * FROM jobs
+WHERE id = $1 AND status = 'queued' AND pinned_agent_id IS NULL AND available_at <= now()
+FOR UPDATE SKIP LOCKED;
+
+-- name: JobRouteFacts :one
+-- What the router needs to place one job: the project's routing, whether
+-- each pull executor has an online worker that could claim the job, whether
+-- the job's asset may go to a fallback, and how long the job has waited.
+SELECT p.primary_executor, p.fallback_executor, p.queue_age_fallback_minutes,
+       coalesce(p.builtin_seen_at > now() - make_interval(secs => sqlc.arg(online_seconds)::double precision)
+                AND job_claimable_by(j.asset_id, j.pinned_agent_id, NULL, false, false, p.builtin_free_disk_bytes),
+                false)::boolean AS builtin_up,
+       EXISTS (
+           SELECT 1 FROM agents g
+           WHERE g.project_id = j.project_id AND g.status = 'approved'
+             AND g.last_seen_at > now() - make_interval(secs => sqlc.arg(online_seconds)::double precision)
+             AND job_claimable_by(j.asset_id, j.pinned_agent_id, g.id, g.scope = 'local', NOT g.sandboxed,
+                                  nullif((g.capabilities ->> 'free_disk_bytes')::bigint, 0))
+       )::boolean AS agents_up,
+       -- Fallback is for missing capacity, never for a failing file: every
+       -- failed attempt on this asset must have failed for a reason that
+       -- isn't the file's.
+       NOT EXISTS (
+           SELECT 1 FROM attempts a
+           WHERE a.asset_id = j.asset_id AND a.status = 'failed'
+             AND NOT (coalesce(a.error_code, '') = ANY (sqlc.arg(capacity_codes)::text[])
+                      OR a.error_code LIKE 'wake\_%')
+       )::boolean AS fallback_eligible,
+       extract(epoch FROM now() - j.available_at)::double precision AS waited_seconds
+FROM jobs j JOIN projects p ON p.id = j.project_id
+WHERE j.id = sqlc.arg(job_id);
+
+-- name: SetJobRoute :exec
+UPDATE jobs SET routed_to = $2, route_reason = $3 WHERE id = $1;
+
+-- name: TouchBuiltinWorker :exec
+-- Coalesced like agents: a write at most every 10 s, unless the reported
+-- free disk changed.
+UPDATE projects
+SET builtin_seen_at = now(),
+    builtin_free_disk_bytes = coalesce(sqlc.narg(free_disk_bytes)::bigint, builtin_free_disk_bytes)
+WHERE id = sqlc.arg(id)
+  AND (builtin_seen_at IS NULL OR builtin_seen_at < now() - interval '10 seconds'
+       OR builtin_free_disk_bytes IS DISTINCT FROM coalesce(sqlc.narg(free_disk_bytes)::bigint, builtin_free_disk_bytes));

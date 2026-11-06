@@ -100,6 +100,10 @@ when you introduce or discover it; remove it when it is closed.
   registering the self-hosted GPU runner. The Workers and Jobs pages and the
   connect page have no Playwright suite yet.
 - Disconnecting Cloudflare (back to built-in delivery) has no endpoint yet.
+- Routing (D053) records the built-in worker's liveness per project, not per
+  replica: with several serve replicas, any one worker's calls keep "the
+  server" online. A job barred from the fallback because its file failed
+  waits for the primary without a bound, shown as `fallback_refused`.
 - The content key secret can't be rotated; when it can, rotation must
   redeploy the Worker's ring through Connect before new outputs use it.
 - No captions, chapters or transcripts. The LMS depends on them, so they gate

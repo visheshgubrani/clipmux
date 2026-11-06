@@ -92,9 +92,16 @@ const (
 	codeTranscode         = "transcode_failed"
 	codeUpload            = "upload_failed"
 	codeCommit            = "commit_failed"
-	codeTimeout           = "job_timeout"
-	codeSourceMissing     = "source_missing"
-	codeSourceChanged     = "source_changed"
+	// codeOutputInvalid: commit refused the output (409 output_invalid). The
+	// file can cause that, so the router treats it as the file's fault.
+	codeOutputInvalid = "output_invalid"
+	// codeScratchFull: the work directory couldn't be made. Like a failed
+	// download or upload, it says nothing about the file, so the job may
+	// still go to a fallback (D053).
+	codeScratchFull   = "scratch_full"
+	codeTimeout       = "job_timeout"
+	codeSourceMissing = "source_missing"
+	codeSourceChanged = "source_changed"
 )
 
 // localCode is the failure code for a local source that can't be used.
@@ -241,8 +248,12 @@ func (w *Worker) handle(ctx context.Context, job *workerapi.Job) error {
 		return w.fail(ctx, job, permanent(code), code, err)
 	}
 	// complete is safe to retry: after a commit the server answers "stop".
-	if _, err := w.report(ctx, job, "complete", map[string]any{"manifest": m}); err != nil {
-		return w.fail(ctx, job, false, codeCommit, err)
+	if status, err := w.report(ctx, job, "complete", map[string]any{"manifest": m}); err != nil {
+		code := codeCommit
+		if status == http.StatusConflict {
+			code = codeOutputInvalid
+		}
+		return w.fail(ctx, job, false, code, err)
 	}
 	return nil
 }
@@ -285,7 +296,7 @@ func (w *Worker) report(ctx context.Context, job *workerapi.Job, call string, bo
 // any error.
 func (w *Worker) process(ctx context.Context, job *workerapi.Job, dir string, report media.Progress) (media.Manifest, string, error) {
 	if err := os.MkdirAll(dir, 0o750); err != nil {
-		return media.Manifest{}, codeTranscode, err
+		return media.Manifest{}, codeScratchFull, err
 	}
 	key, err := contentKey(job.Encryption)
 	if err != nil {

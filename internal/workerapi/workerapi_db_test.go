@@ -75,7 +75,7 @@ func newEnv(t *testing.T) *env {
 // enqueue creates an uploaded asset with a source and a queued transcode.
 func (e *env) enqueue() {
 	e.exec(`INSERT INTO assets (id, project_id, app_id, status, storage_id) VALUES ('ast_1', 'prj_default', 'app_dashboard', 'processing', 'sto_default')`)
-	e.exec(`INSERT INTO jobs (id, project_id, asset_id, kind) VALUES ('job_1', 'prj_default', 'ast_1', 'transcode')`)
+	e.exec(`INSERT INTO jobs (id, project_id, asset_id, kind, routed_to) VALUES ('job_1', 'prj_default', 'ast_1', 'transcode', 'workers')`)
 	if err := e.store.Put(context.Background(), "uploads/ast_1/source", strings.NewReader("source-bytes")); err != nil {
 		e.t.Fatal(err)
 	}
@@ -180,7 +180,7 @@ func TestSignTellsAStaleWorkerToStop(t *testing.T) {
 func TestClaimFailsAJobWhoseSourceIsGone(t *testing.T) {
 	e := newEnv(t)
 	e.exec(`INSERT INTO assets (id, project_id, app_id, status, storage_id) VALUES ('ast_1', 'prj_default', 'app_dashboard', 'processing', 'sto_default')`)
-	e.exec(`INSERT INTO jobs (id, project_id, asset_id, kind) VALUES ('job_1', 'prj_default', 'ast_1', 'transcode')`)
+	e.exec(`INSERT INTO jobs (id, project_id, asset_id, kind, routed_to) VALUES ('job_1', 'prj_default', 'ast_1', 'transcode', 'workers')`)
 	if code, _ := e.post("/worker/v1/claim", workerKey, capable); code != http.StatusNoContent {
 		t.Fatalf("claim: %d, want 204", code)
 	}
@@ -323,5 +323,37 @@ func TestClaimPayloadAndAttemptCalls(t *testing.T) {
 	}
 	if code, body := e.post(base+"/heartbeat", token, map[string]any{}); code != http.StatusOK || body["action"] != "stop" || body["reason"] != "finished" {
 		t.Fatalf("heartbeat after fail: %d %v", code, body)
+	}
+}
+
+// The router counts the built-in worker as online only after it calls
+// (D053), with the free disk its claim reported.
+func TestTheBuiltinWorkersClaimsAndHeartbeatsRecordItsLiveness(t *testing.T) {
+	e := newEnv(t)
+	seen := func() (ok bool, disk *int64) {
+		t.Helper()
+		if err := e.pool.QueryRow(context.Background(),
+			`SELECT coalesce(builtin_seen_at > now() - interval '5 seconds', false), builtin_free_disk_bytes FROM projects WHERE id = 'prj_default'`,
+		).Scan(&ok, &disk); err != nil {
+			t.Fatal(err)
+		}
+		return ok, disk
+	}
+	if ok, _ := seen(); ok {
+		t.Fatal("the built-in worker counted as seen before it called")
+	}
+	e.enqueue()
+	job := e.claim()
+	if ok, disk := seen(); !ok || disk == nil || *disk != 50<<30 {
+		t.Fatalf("after a claim: seen %v, free disk %v; want seen with 50 GiB", ok, disk)
+	}
+
+	// A heartbeat keeps it seen without forgetting the disk it reported.
+	e.exec(`UPDATE projects SET builtin_seen_at = now() - interval '1 minute' WHERE id = 'prj_default'`)
+	if code, _ := e.post("/worker/v1/attempts/"+str(job, "attempt_id")+"/heartbeat", str(job, "attempt_token"), map[string]any{}); code != http.StatusOK {
+		t.Fatalf("heartbeat: %d", code)
+	}
+	if ok, disk := seen(); !ok || disk == nil || *disk != 50<<30 {
+		t.Fatalf("after a heartbeat: seen %v, free disk %v", ok, disk)
 	}
 }

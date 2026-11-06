@@ -40,6 +40,31 @@ func (q *Queries) GetProjectURLs(ctx context.Context, id string) (GetProjectURLs
 	return i, err
 }
 
+const getRouting = `-- name: GetRouting :one
+SELECT primary_executor, fallback_executor, queue_age_fallback_minutes, builtin_seen_at
+FROM projects WHERE id = $1
+`
+
+type GetRoutingRow struct {
+	PrimaryExecutor         string
+	FallbackExecutor        pgtype.Text
+	QueueAgeFallbackMinutes pgtype.Int4
+	BuiltinSeenAt           pgtype.Timestamptz
+}
+
+// The routing settings (P4-T01), with the built-in worker's liveness.
+func (q *Queries) GetRouting(ctx context.Context, id string) (GetRoutingRow, error) {
+	row := q.db.QueryRow(ctx, getRouting, id)
+	var i GetRoutingRow
+	err := row.Scan(
+		&i.PrimaryExecutor,
+		&i.FallbackExecutor,
+		&i.QueueAgeFallbackMinutes,
+		&i.BuiltinSeenAt,
+	)
+	return i, err
+}
+
 const getSecretsCheck = `-- name: GetSecretsCheck :one
 
 SELECT secrets_check FROM projects WHERE id = $1
@@ -81,6 +106,29 @@ type SetProjectURLsParams struct {
 
 func (q *Queries) SetProjectURLs(ctx context.Context, arg SetProjectURLsParams) error {
 	_, err := q.db.Exec(ctx, setProjectURLs, arg.ID, arg.PublicUrl, arg.MediaUrl)
+	return err
+}
+
+const setRouting = `-- name: SetRouting :exec
+UPDATE projects
+SET primary_executor = $2, fallback_executor = $3, queue_age_fallback_minutes = $4
+WHERE id = $1
+`
+
+type SetRoutingParams struct {
+	ID                      string
+	PrimaryExecutor         string
+	FallbackExecutor        pgtype.Text
+	QueueAgeFallbackMinutes pgtype.Int4
+}
+
+func (q *Queries) SetRouting(ctx context.Context, arg SetRoutingParams) error {
+	_, err := q.db.Exec(ctx, setRouting,
+		arg.ID,
+		arg.PrimaryExecutor,
+		arg.FallbackExecutor,
+		arg.QueueAgeFallbackMinutes,
+	)
 	return err
 }
 

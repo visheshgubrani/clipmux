@@ -450,5 +450,30 @@ Decision:
 - **Parallel track (T00):** Phase 2's real-account run, and Phase 3's by-hand checks (the M4 Mac's lid-close, registering the GPU runner). Each exit is recorded when it passes.
 Consequence: `jobs.routed_to` changes meaning from "who claimed it" to "where it is routed while queued", and attempts record who ran them and why. The default primary, `workers`, keeps today's behaviour on upgrade.
 
+## D053 Routing: a primary, a fallback, and no fallback for a failing file — accepted (2026-11-06)
+Decisions within the architecture's rules and D052, made in P4-T01:
+- **Settings** (`projects`, `GET`/`PUT /v1/settings/routing`, owner session):
+  - `primary_executor` is `workers` (the built-in worker and PCs compete, as before; the default), `agents` (PCs only, so the built-in worker idles), or `builtin`.
+  - `fallback_executor` is null or `builtin`. A fallback can't be part of the primary (the schema refuses `builtin` under `workers`).
+  - `queue_age_fallback_minutes` is null (off, the default) or 1 to 1440, and needs a fallback.
+  - `modal` and `runpod` are in the schema but refused with `409 executor_not_connected` until P4-T04 and T05 can connect them.
+  - "My PC, else the server" is `agents` with fallback `builtin`. This answers P3 open question 2; `CLIPMUX_BUILTIN_WORKER=false` still removes the built-in worker entirely.
+- **`jobs.routed_to` names where a queued media job is routed**, no longer who claimed it.
+  - `CreateJob` stamps it, reading the primary in the same statement: `agents`/`pinned` for a pinned job, otherwise the primary with `primary`. Import, move and delete jobs carry no route (`jobs_media_routed` holds this). Migration 17 backfilled existing jobs to `workers`/`primary` or `agents`/`pinned`.
+  - `StartJob` no longer writes it. `attempts.route_reason` copies the reason at claim, and `attempts.executor` says who ran it.
+  - A worker claims only jobs routed to its class: the built-in worker `workers` or `builtin`, an agent `workers` or `agents`; pinned jobs are decided by the pin alone.
+- **The router** (`queue.Route`, a leader loop every 5 s) re-evaluates queued, unpinned media jobs whose `available_at` has passed, each in its own transaction under its row lock, and writes only a change. In order:
+  - the primary has an online worker that could take the job: `primary`, unless queue age is on, `now() − available_at` has passed it and the fallback could take the job: `queue_age`;
+  - otherwise the fallback could take it: `primary_offline`;
+  - otherwise it waits on the primary with `no_fallback`, `fallback_refused` or `fallback_offline`.
+  
+  A job on the fallback that nobody has claimed returns to the primary as soon as the primary is back. Lost leases, transient failures and revocations requeue the job, so each retry is routed afresh.
+- **Online means a worker that could claim this job**, seen in the last 60 s (`queue.OnlineWithin`, which the Workers page shares). The claim's per-worker rules (pin, local scope, the unsandboxed trust rule, free disk) moved into a SQL function, `job_claimable_by`, which both the claim and the router call. An unsandboxed PC therefore isn't a primary for a public upload. The built-in worker's claims and heartbeats now record `projects.builtin_seen_at` and its free disk, coalesced like agents.
+- **No fallback for a failing file.** A job may go to a fallback only while every failed attempt on its **asset** failed with a capacity code: `agent_revoked`, `source_download_failed`, `upload_failed` or `scratch_full` (and `wake_*` once providers exist). Lost leases don't count against it. The bar is per asset, so a re-encode of an asset whose file failed stays off the fallback too.
+  - The worker now reports `scratch_full` when its work directory can't be made, and `output_invalid` when commit refuses the output (it was `commit_failed`).
+  - `transcode_failed`, `output_invalid`, `job_timeout` (P4 open question 3: an encode that runs six hours is suspicious), `commit_failed` and `processing_failed` all bar it. A barred job whose primary never returns waits without a bound, visible as `fallback_refused` (known gap).
+- **The corrupt fixture.** `internal/media/testdata/corrupt.mp4` (`toolchain/make_corrupt.sh`, 52 KB) has intact MP4 boxes and AES-CTR noise for every sample byte: ffprobe reports a 320×240 video, and ffmpeg exits 69 without a frame on FFmpeg 6.1 (CI's apt build), 8.0 and 9.0.1 (the image). `TestCorruptFixturePassesTheProbeButFailsTheEncode` holds it with the real tools.
+- Tests: the routing table as a pure function, one case per rule; on real Postgres, the router with real liveness, a lost lease moving to the fallback, queue age, the trust rule, the per-asset bar for each code, pinned jobs and free disk; the routing API's refusals; the built-in worker's liveness through the worker API.
+
 ## D007 Shaka Packager 3.9.3 — accepted (2026-11-05)
 Decision: pin v3.9.3 (`toolchain/versions.env`), the version clipmux-lms runs with AES-128 in production, which needs the init-segment workaround for Shaka issue 1616. Move to a release that fixes 1616 when one exists, re-running the Phase 1 player tests.

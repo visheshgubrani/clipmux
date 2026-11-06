@@ -246,6 +246,13 @@ func (a *API) claim(w http.ResponseWriter, r *http.Request) {
 	})
 	worker.Info = info
 	worker.FreeDiskBytes = max(req.FreeDiskBytes, 0)
+	if worker.Executor == "builtin" {
+		// The router counts the built-in worker as online, with this much
+		// disk, for OnlineWithin after it calls.
+		if err := a.Queue.TouchBuiltin(r.Context(), worker.FreeDiskBytes); err != nil {
+			a.Logger.Error("worker api", "op", "touch builtin", "err", err)
+		}
+	}
 	if worker.AgentID != "" {
 		// Sandbox status is the agent's own report: an agent that lies
 		// exposes only its own machine to hostile uploads.
@@ -485,8 +492,13 @@ func (a *API) heartbeat(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if att.AgentID.Valid && a.Agents != nil {
+	switch {
+	case att.AgentID.Valid && a.Agents != nil:
 		a.Agents.ReportBeat(r, att.AgentID.String)
+	case att.Executor == "builtin":
+		if err := a.Queue.TouchBuiltin(r.Context(), 0); err != nil {
+			a.Logger.Error("worker api", "op", "touch builtin", "err", err)
+		}
 	}
 	var req heartbeatRequest
 	if !httpjson.Decode(w, r, &req) {

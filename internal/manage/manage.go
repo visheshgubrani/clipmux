@@ -96,6 +96,8 @@ func (m *API) ActAsApp(r *http.Request) (apikeys.Key, error) {
 func (m *API) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/setup", m.setup)
 	mux.HandleFunc("PUT /v1/settings/urls", m.owned(m.saveURLs))
+	mux.HandleFunc("GET /v1/settings/routing", m.owned(m.getRouting))
+	mux.HandleFunc("PUT /v1/settings/routing", m.owned(m.saveRouting))
 	mux.HandleFunc("GET /v1/apps", m.owned(m.listApps))
 	mux.HandleFunc("POST /v1/apps", m.owned(m.createApp))
 	mux.HandleFunc("POST /v1/apps/{id}/disable", m.owned(m.setDisabled(true)))

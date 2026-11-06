@@ -98,6 +98,8 @@ means stop; `404` means the ID is unknown or revoked.
 | `POST /v1/setup/owner` | `{setup_token, email, password}` → `201`, signed in; `409 registration_closed` once an owner exists |
 | `POST /v1/session` · `GET /v1/session` · `DELETE /v1/session` | sign in (`429` with `Retry-After` after repeated failures), who am I, sign out |
 | `PUT /v1/settings/urls` | `{public_url, media_url?}`; `409 pinned` when the environment sets them |
+| `GET /v1/settings/routing` | `{primary_executor, fallback_executor, queue_age_fallback_minutes, builtin_worker: {last_seen_at, online}, executors_not_connected}` (D053) |
+| `PUT /v1/settings/routing` | `{primary_executor: workers \| agents \| builtin, fallback_executor?: builtin, queue_age_fallback_minutes?: 1–1440}`; a fallback can't be part of the primary, and queue age needs a fallback (`400 invalid_request`); `modal` and `runpod` are `409 executor_not_connected` until they can be connected |
 | `GET /v1/apps` · `POST /v1/apps` | `{name}` |
 | `POST /v1/apps/{id}/disable` · `…/enable` | a disabled app's keys, upload tokens and playback stop; the Dashboard app can't be disabled |
 | `GET`/`POST /v1/apps/{id}/api-keys` · `DELETE /v1/api-keys/{id}` | the secret (`key`) is in the create response only; `409 public_url_required` while the public URL is loopback |
@@ -109,7 +111,7 @@ means stop; `404` means the ID is unknown or revoked.
 | `POST /v1/cloudflare/connect` | `{token, hostname, bucket?, account_id?}` → `{connected, steps: [{name, ok, detail}]}`; runs Connect Cloudflare, stopping at the first failed step (each is safe to repeat). The token is used for this request only |
 | `GET /v1/storage/moves` | `{default_storage_id, default_kind, not_on_default, active, moved, failed}`: assets not on the default store still play through this server |
 | `POST /v1/storage/moves` | queues a `move` job to the default store for every live asset elsewhere with no active job → `202 {queued, target_storage_id}` |
-| `GET /v1/jobs?status=&asset_id=&agent_id=&cursor=&limit=` | jobs across the library, newest first: `{data: [{id, asset_id, app_id, kind, status, phase, progress, pinned_agent_id, lost_count, failed_count, error_code, attempts: [{number, executor, agent_id, agent_name, status, error_code, phase, progress, encoder: {stage, fallbacks}}]}], next_cursor}` |
+| `GET /v1/jobs?status=&asset_id=&agent_id=&cursor=&limit=` | jobs across the library, newest first: `{data: [{id, asset_id, app_id, kind, status, phase, progress, pinned_agent_id, lost_count, failed_count, error_code, routed_to, route_reason, attempts: [{number, executor, route_reason, agent_id, agent_name, status, error_code, phase, progress, encoder: {stage, fallbacks}}]}], next_cursor}`. `routed_to` is where a media job is routed (`workers`, `agents`, `builtin`, `modal`, `runpod`) and `route_reason` why: `pinned`, `primary`, `primary_offline`, `queue_age`, `no_fallback`, `fallback_refused` or `fallback_offline` (D053); each attempt keeps the reason it ran where it did |
 | `GET /v1/jobs/{id}` | one job with its attempts |
 | `POST /v1/agents/{id}/reencode` | queues a re-encode of every ready asset whose current output the agent encoded → `202 {queued, skipped: {asset_id: code}}` |
 | `POST /v1/agents/pairings` | `{name?}` → `201 {code, expires_at, server, command, docker_command}`: a one-time code the owner has already approved, valid for 15 minutes |

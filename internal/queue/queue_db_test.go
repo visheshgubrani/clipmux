@@ -165,8 +165,13 @@ func TestClaimCreatesAttemptLeaseAndFreshOutput(t *testing.T) {
 	if c.Token == "" || string(c.Attempt.TokenHash) == c.Token {
 		t.Fatal("the attempt token must be stored hashed")
 	}
-	if got := f.job(job.ID); got.Status != "running" || got.RoutedTo.String != "builtin" {
+	// routed_to keeps naming the route (D053); the attempt says who ran it
+	// and why.
+	if got := f.job(job.ID); got.Status != "running" || got.RoutedTo.String != "workers" {
 		t.Fatalf("job = status %q routed_to %q", got.Status, got.RoutedTo.String)
+	}
+	if c.Attempt.Executor != "builtin" || c.Attempt.RouteReason.String != "primary" {
+		t.Fatalf("attempt = executor %q route_reason %q, want builtin primary", c.Attempt.Executor, c.Attempt.RouteReason.String)
 	}
 	if again := f.claim(builtin); again != nil {
 		t.Fatal("a running job was claimed twice")

@@ -46,6 +46,11 @@ import (
 // workers heartbeat every 15 s.
 const LeaseSweepInterval = 15 * time.Second
 
+// RouteInterval is how often queued media jobs are routed again (D053): a
+// primary seen offline sends work to the fallback within OnlineWithin plus
+// this.
+const RouteInterval = 5 * time.Second
+
 // UploadSweepInterval is how often abandoned uploads are checked.
 const UploadSweepInterval = 5 * time.Minute
 
@@ -282,6 +287,7 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 		wg.Go(func() { sweeper.Every(ctx, interval, name, leader.Only(task), logger) })
 	}
 	loop(LeaseSweepInterval, "lost_leases", func(ctx context.Context) (int, error) { return q.SweepLostLeases(ctx, 100) })
+	loop(RouteInterval, "routing", func(ctx context.Context) (int, error) { return q.Route(ctx, 200) })
 	loop(UploadSweepInterval, "stranded_pinned_jobs", func(ctx context.Context) (int, error) { return q.SweepStrandedPinned(ctx, 100) })
 	loop(UploadSweepInterval, "uploads", func(ctx context.Context) (int, error) { return upl.Sweep(ctx, 500) })
 	loop(RouteSyncInterval, "routes", func(ctx context.Context) (int, error) { return committer.SyncRoutes(ctx, 1000) })

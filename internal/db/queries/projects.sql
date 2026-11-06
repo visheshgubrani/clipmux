@@ -20,3 +20,13 @@ UPDATE projects SET public_url = $2, media_url = $3, urls_confirmed_at = now() W
 -- name: GetMediaURL :one
 -- base_url in asset views and webhook events.
 SELECT coalesce(media_url, public_url, '')::text FROM projects WHERE id = $1;
+
+-- name: GetRouting :one
+-- The routing settings (P4-T01), with the built-in worker's liveness.
+SELECT primary_executor, fallback_executor, queue_age_fallback_minutes, builtin_seen_at
+FROM projects WHERE id = $1;
+
+-- name: SetRouting :exec
+UPDATE projects
+SET primary_executor = $2, fallback_executor = $3, queue_age_fallback_minutes = $4
+WHERE id = $1;

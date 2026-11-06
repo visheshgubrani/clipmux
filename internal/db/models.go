@@ -112,6 +112,7 @@ type Attempt struct {
 	LastHeartbeatAt pgtype.Timestamptz
 	FinishedAt      pgtype.Timestamptz
 	SignedPaths     int32
+	RouteReason     pgtype.Text
 }
 
 type CloudflareConnection struct {
@@ -237,6 +238,11 @@ type Project struct {
 	UrlsConfirmedAt         pgtype.Timestamptz
 	Delivery                string
 	DeliveryStorageID       pgtype.Text
+	PrimaryExecutor         string
+	FallbackExecutor        pgtype.Text
+	QueueAgeFallbackMinutes pgtype.Int4
+	BuiltinSeenAt           pgtype.Timestamptz
+	BuiltinFreeDiskBytes    pgtype.Int8
 }
 
 type SetupTest struct {
