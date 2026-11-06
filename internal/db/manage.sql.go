@@ -84,6 +84,76 @@ func (q *Queries) GetAssetInProject(ctx context.Context, arg GetAssetInProjectPa
 	return i, err
 }
 
+const getJobInProject = `-- name: GetJobInProject :one
+SELECT j.id, j.project_id, j.asset_id, j.kind, j.status, j.phase, j.progress, j.profile_id, j.profile_version, j.pinned_agent_id, j.lost_count, j.failed_count, j.error_code, j.routed_to, j.route_reason, j.available_at, j.created_at, j.started_at, j.finished_at, j.source_storage_id, j.target_storage_id, j.import_url, s.app_id, s.passthrough FROM jobs j
+JOIN assets s ON s.id = j.asset_id
+WHERE j.project_id = $1 AND j.id = $2
+`
+
+type GetJobInProjectParams struct {
+	ProjectID string
+	ID        string
+}
+
+type GetJobInProjectRow struct {
+	ID              string
+	ProjectID       string
+	AssetID         string
+	Kind            string
+	Status          string
+	Phase           pgtype.Text
+	Progress        pgtype.Float4
+	ProfileID       string
+	ProfileVersion  int32
+	PinnedAgentID   pgtype.Text
+	LostCount       int32
+	FailedCount     int32
+	ErrorCode       pgtype.Text
+	RoutedTo        pgtype.Text
+	RouteReason     pgtype.Text
+	AvailableAt     pgtype.Timestamptz
+	CreatedAt       pgtype.Timestamptz
+	StartedAt       pgtype.Timestamptz
+	FinishedAt      pgtype.Timestamptz
+	SourceStorageID pgtype.Text
+	TargetStorageID pgtype.Text
+	ImportUrl       pgtype.Text
+	AppID           string
+	Passthrough     pgtype.Text
+}
+
+func (q *Queries) GetJobInProject(ctx context.Context, arg GetJobInProjectParams) (GetJobInProjectRow, error) {
+	row := q.db.QueryRow(ctx, getJobInProject, arg.ProjectID, arg.ID)
+	var i GetJobInProjectRow
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.AssetID,
+		&i.Kind,
+		&i.Status,
+		&i.Phase,
+		&i.Progress,
+		&i.ProfileID,
+		&i.ProfileVersion,
+		&i.PinnedAgentID,
+		&i.LostCount,
+		&i.FailedCount,
+		&i.ErrorCode,
+		&i.RoutedTo,
+		&i.RouteReason,
+		&i.AvailableAt,
+		&i.CreatedAt,
+		&i.StartedAt,
+		&i.FinishedAt,
+		&i.SourceStorageID,
+		&i.TargetStorageID,
+		&i.ImportUrl,
+		&i.AppID,
+		&i.Passthrough,
+	)
+	return i, err
+}
+
 const listAPIKeys = `-- name: ListAPIKeys :many
 SELECT id, name, scopes, created_at, last_used_at, revoked_at FROM api_keys
 WHERE app_id = $1 ORDER BY created_at DESC, id DESC
@@ -125,6 +195,40 @@ func (q *Queries) ListAPIKeys(ctx context.Context, appID string) ([]ListAPIKeysR
 	return items, nil
 }
 
+const listAgentCurrentAssets = `-- name: ListAgentCurrentAssets :many
+SELECT s.id FROM assets s
+JOIN attempts a ON a.output_id = s.current_output_id
+WHERE a.agent_id = $1 AND s.project_id = $2 AND s.status = 'ready'
+ORDER BY s.id
+`
+
+type ListAgentCurrentAssetsParams struct {
+	AgentID   pgtype.Text
+	ProjectID string
+}
+
+// Live assets whose current output an agent encoded, for re-encoding after
+// the agent is revoked.
+func (q *Queries) ListAgentCurrentAssets(ctx context.Context, arg ListAgentCurrentAssetsParams) ([]string, error) {
+	rows, err := q.db.Query(ctx, listAgentCurrentAssets, arg.AgentID, arg.ProjectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listApps = `-- name: ListApps :many
 
 SELECT id, project_id, name, is_builtin, disabled_at, created_at FROM apps WHERE project_id = $1 ORDER BY is_builtin DESC, created_at, id
@@ -147,6 +251,179 @@ func (q *Queries) ListApps(ctx context.Context, projectID string) ([]App, error)
 			&i.IsBuiltin,
 			&i.DisabledAt,
 			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listJobAttempts = `-- name: ListJobAttempts :many
+SELECT a.id, a.job_id, a.attempt_number, a.executor, a.agent_id, coalesce(g.name, '')::text AS agent_name,
+       a.status, a.failure_kind, a.error_code, a.phase, a.progress, a.started_at, a.finished_at,
+       a.last_heartbeat_at, a.output_id, (o.manifest -> 'encoder')::jsonb AS encoder
+FROM attempts a
+LEFT JOIN agents g ON g.id = a.agent_id
+LEFT JOIN outputs o ON o.id = a.output_id
+WHERE a.job_id = ANY ($1::text[])
+ORDER BY a.job_id, a.attempt_number
+`
+
+type ListJobAttemptsRow struct {
+	ID              string
+	JobID           string
+	AttemptNumber   int32
+	Executor        string
+	AgentID         pgtype.Text
+	AgentName       string
+	Status          string
+	FailureKind     pgtype.Text
+	ErrorCode       pgtype.Text
+	Phase           pgtype.Text
+	Progress        pgtype.Float4
+	StartedAt       pgtype.Timestamptz
+	FinishedAt      pgtype.Timestamptz
+	LastHeartbeatAt pgtype.Timestamptz
+	OutputID        string
+	Encoder         []byte
+}
+
+// Each attempt of the given jobs: where it ran, how it ended, and which
+// encoder stage its output's manifest records.
+func (q *Queries) ListJobAttempts(ctx context.Context, jobIds []string) ([]ListJobAttemptsRow, error) {
+	rows, err := q.db.Query(ctx, listJobAttempts, jobIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListJobAttemptsRow{}
+	for rows.Next() {
+		var i ListJobAttemptsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.JobID,
+			&i.AttemptNumber,
+			&i.Executor,
+			&i.AgentID,
+			&i.AgentName,
+			&i.Status,
+			&i.FailureKind,
+			&i.ErrorCode,
+			&i.Phase,
+			&i.Progress,
+			&i.StartedAt,
+			&i.FinishedAt,
+			&i.LastHeartbeatAt,
+			&i.OutputID,
+			&i.Encoder,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listJobs = `-- name: ListJobs :many
+SELECT j.id, j.project_id, j.asset_id, j.kind, j.status, j.phase, j.progress, j.profile_id, j.profile_version, j.pinned_agent_id, j.lost_count, j.failed_count, j.error_code, j.routed_to, j.route_reason, j.available_at, j.created_at, j.started_at, j.finished_at, j.source_storage_id, j.target_storage_id, j.import_url, s.app_id, s.passthrough FROM jobs j
+JOIN assets s ON s.id = j.asset_id
+WHERE j.project_id = $1
+  AND ($2::text IS NULL OR j.status = $2)
+  AND ($3::text IS NULL OR j.asset_id = $3)
+  AND ($4::text IS NULL OR j.pinned_agent_id = $4
+       OR EXISTS (SELECT 1 FROM attempts a WHERE a.job_id = j.id AND a.agent_id = $4))
+  AND (j.created_at, j.id) < ($5::timestamptz, $6::text)
+ORDER BY j.created_at DESC, j.id DESC
+LIMIT $7
+`
+
+type ListJobsParams struct {
+	ProjectID  string
+	Status     pgtype.Text
+	AssetID    pgtype.Text
+	AgentID    pgtype.Text
+	BeforeTime pgtype.Timestamptz
+	BeforeID   string
+	MaxJobs    int32
+}
+
+type ListJobsRow struct {
+	ID              string
+	ProjectID       string
+	AssetID         string
+	Kind            string
+	Status          string
+	Phase           pgtype.Text
+	Progress        pgtype.Float4
+	ProfileID       string
+	ProfileVersion  int32
+	PinnedAgentID   pgtype.Text
+	LostCount       int32
+	FailedCount     int32
+	ErrorCode       pgtype.Text
+	RoutedTo        pgtype.Text
+	RouteReason     pgtype.Text
+	AvailableAt     pgtype.Timestamptz
+	CreatedAt       pgtype.Timestamptz
+	StartedAt       pgtype.Timestamptz
+	FinishedAt      pgtype.Timestamptz
+	SourceStorageID pgtype.Text
+	TargetStorageID pgtype.Text
+	ImportUrl       pgtype.Text
+	AppID           string
+	Passthrough     pgtype.Text
+}
+
+// Jobs across the library, newest first, keyset-paged on (created_at, id).
+func (q *Queries) ListJobs(ctx context.Context, arg ListJobsParams) ([]ListJobsRow, error) {
+	rows, err := q.db.Query(ctx, listJobs,
+		arg.ProjectID,
+		arg.Status,
+		arg.AssetID,
+		arg.AgentID,
+		arg.BeforeTime,
+		arg.BeforeID,
+		arg.MaxJobs,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListJobsRow{}
+	for rows.Next() {
+		var i ListJobsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.ProjectID,
+			&i.AssetID,
+			&i.Kind,
+			&i.Status,
+			&i.Phase,
+			&i.Progress,
+			&i.ProfileID,
+			&i.ProfileVersion,
+			&i.PinnedAgentID,
+			&i.LostCount,
+			&i.FailedCount,
+			&i.ErrorCode,
+			&i.RoutedTo,
+			&i.RouteReason,
+			&i.AvailableAt,
+			&i.CreatedAt,
+			&i.StartedAt,
+			&i.FinishedAt,
+			&i.SourceStorageID,
+			&i.TargetStorageID,
+			&i.ImportUrl,
+			&i.AppID,
+			&i.Passthrough,
 		); err != nil {
 			return nil, err
 		}

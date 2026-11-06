@@ -165,10 +165,31 @@ export function Workers() {
     const t = setInterval(() => void load(), 10000)
     return () => clearInterval(t)
   }, [load])
+  const [notice, setNotice] = useState('')
   const revoke = async (a: Agent) => {
     if (!confirm(`Revoke ${a.name}? It stops at once, and its running job moves to another worker.`)) return
-    await api(`/v1/agents/${a.id}`, { method: 'DELETE' })
+    const res = await api<{ fenced_attempts: number; current_outputs: number }>(`/v1/agents/${a.id}`, {
+      method: 'DELETE',
+    })
+    setNotice(
+      res.current_outputs > 0
+        ? `${a.name} is revoked. ${res.current_outputs} video(s) currently play an output it encoded; re-encode them if you no longer trust it.`
+        : `${a.name} is revoked.`,
+    )
     void load()
+  }
+  const reencode = async (a: Agent) => {
+    if (!confirm(`Re-encode every video whose current version ${a.name} encoded?`)) return
+    const res = await post<{ queued: string[]; skipped: Record<string, string> }>(
+      `/v1/agents/${a.id}/reencode`,
+    )
+    const skipped = Object.keys(res.skipped).length
+    setNotice(
+      `Queued ${res.queued.length} re-encode(s).` +
+        (skipped
+          ? ` ${skipped} couldn't be (their source stayed on that PC, or another job is running).`
+          : ''),
+    )
   }
   const setScope = async (a: Agent, scope: string) => {
     await api(`/v1/agents/${a.id}`, { method: 'PATCH', body: JSON.stringify({ scope }) })
@@ -179,7 +200,15 @@ export function Workers() {
       <ConnectCard onConnected={load} />
       <Card className="grid gap-4">
         <CardTitle>Workers</CardTitle>
-        <Muted>Connected PCs take jobs alongside this server's built-in worker, if it's on.</Muted>
+        <Muted>
+          Connected PCs take jobs alongside this server's built-in worker, if it's on. See where each job ran
+          on the{' '}
+          <Link to="/jobs" className="underline">
+            Jobs
+          </Link>{' '}
+          page.
+        </Muted>
+        {notice && <p className="rounded bg-amber-50 p-2 text-sm">{notice}</p>}
         {agents.length === 0 ? (
           <Muted>No PCs connected yet.</Muted>
         ) : (
@@ -230,9 +259,13 @@ export function Workers() {
                     )}
                   </Td>
                   <Td>
-                    {a.status !== 'revoked' && (
+                    {a.status !== 'revoked' ? (
                       <Button variant="ghost" size="sm" type="button" onClick={() => void revoke(a)}>
                         Revoke
+                      </Button>
+                    ) : (
+                      <Button variant="ghost" size="sm" type="button" onClick={() => void reencode(a)}>
+                        Re-encode its videos
                       </Button>
                     )}
                   </Td>

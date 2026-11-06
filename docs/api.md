@@ -108,6 +108,9 @@ means stop; `404` means the ID is unknown or revoked.
 | `POST /v1/cloudflare/connect` | `{token, hostname, bucket?, account_id?}` → `{connected, steps: [{name, ok, detail}]}`; runs Connect Cloudflare, stopping at the first failed step (each is safe to repeat). The token is used for this request only |
 | `GET /v1/storage/moves` | `{default_storage_id, default_kind, not_on_default, active, moved, failed}`: assets not on the default store still play through this server |
 | `POST /v1/storage/moves` | queues a `move` job to the default store for every live asset elsewhere with no active job → `202 {queued, target_storage_id}` |
+| `GET /v1/jobs?status=&asset_id=&agent_id=&cursor=&limit=` | jobs across the library, newest first: `{data: [{id, asset_id, app_id, kind, status, phase, progress, pinned_agent_id, lost_count, failed_count, error_code, attempts: [{number, executor, agent_id, agent_name, status, error_code, phase, progress, encoder: {stage, fallbacks}}]}], next_cursor}` |
+| `GET /v1/jobs/{id}` | one job with its attempts |
+| `POST /v1/agents/{id}/reencode` | queues a re-encode of every ready asset whose current output the agent encoded → `202 {queued, skipped: {asset_id: code}}` |
 | `POST /v1/agents/pairings` | `{name?}` → `201 {code, expires_at, server, command, docker_command}`: a one-time code the owner has already approved, valid for 15 minutes |
 | `GET /v1/agents/pairings/{code}` | `{status, agent_started, name, hostname, platform, ip, agent_id, expires_at}`; `status` is `pending`, `approved`, `denied`, `consumed` (an agent holds its key) or `expired` |
 | `POST /v1/agents/pairings/{code}/approve` · `…/deny` | decides a code that `clipmux worker --server URL` is showing on a PC |

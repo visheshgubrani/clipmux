@@ -383,5 +383,11 @@ Decisions within the architecture's rules and D042, made in P3-T03:
   - NVENC and `cuda-decode` are covered by argument and fallback tests only, until a Modal run on an L4 and an A100 (known gap).
 - The image gains `intel-media-va-driver`. `mesa-va-drivers` and the toolchain check for `h264_nvenc`, `h264_vaapi` and `scale_cuda`'s `format` option were already in place.
 
+## D047 Workers and Jobs pages — accepted (2026-11-06)
+Decisions within the architecture's rules, made in P3-T06:
+- **Workers page:** a "Connect a PC" card first. It shows the one command for the PC the owner is using (`clipmux worker --server {origin}`, approved on `/workers/connect`), and "Create a command" for any other machine, with Linux and Docker variants and a live "PC connected" once the code is redeemed. Then every agent, showing online (seen in the last 60 s) or when it was last seen, hostname, platform, address, proven encoders, sandbox status and scope. A sandboxed agent can take "any job" or "its local files only"; an unsandboxed one, "your uploads" or "its local files only". The page refreshes every 10 s.
+- **Revoking** reports how many videos currently play an output the agent encoded. A revoked agent offers "Re-encode its videos" (`POST /v1/agents/{id}/reencode`), which re-encodes those assets as their own apps. Assets whose source stayed on that PC, or that have a job running, are skipped and counted.
+- **Jobs page:** `GET /v1/jobs` keyset-pages jobs across the library and loads every listed job's attempts in one query. Each attempt shows where it ran (built-in, or the agent's name), how it ended, and the encoder stage and fallbacks from its output's manifest. Jobs pinned to a PC say they're waiting for it. The page follows running jobs every 3 s. This closes "no jobs or workers pages".
+
 ## D007 Shaka Packager 3.9.3 — accepted (2026-11-05)
 Decision: pin v3.9.3 (`toolchain/versions.env`), the version clipmux-lms runs with AES-128 in production, which needs the init-segment workaround for Shaka issue 1616. Move to a release that fixes 1616 when one exists, re-running the Phase 1 player tests.

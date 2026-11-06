@@ -347,3 +347,35 @@ func TestPreviewTokenIsSignedByTheInternalKeyForAnHour(t *testing.T) {
 		t.Fatalf("an asset with no playback ID = %d, want 409", got.status)
 	}
 }
+
+func TestTheJobsPageShowsWhereEachAttemptRanAndOnWhat(t *testing.T) {
+	r := newRig(t, config.Config{})
+	r.exec(`INSERT INTO agents (id, project_id, name, key_hash, status) VALUES ('agt_pc', 'prj_default', 'Studio PC', 'h', 'approved')`)
+	r.exec(`INSERT INTO assets (id, project_id, app_id, status, storage_id) VALUES ('ast_1', 'prj_default', 'app_dashboard', 'processing', 'sto_default')`)
+	r.exec(`INSERT INTO jobs (id, project_id, asset_id, kind, status, lost_count) VALUES ('job_1', 'prj_default', 'ast_1', 'transcode', 'running', 1)`)
+	r.exec(`INSERT INTO outputs (id, project_id, asset_id, key_version, status) VALUES ('out_a', 'prj_default', 'ast_1', 1, 'writing')`)
+	r.exec(`INSERT INTO outputs (id, project_id, asset_id, key_version, status, manifest) VALUES ('out_b', 'prj_default', 'ast_1', 1, 'committed', '{"encoder": {"stage": "cpu", "fallbacks": ["vaapi"]}}')`)
+	r.exec(`INSERT INTO attempts (id, project_id, job_id, asset_id, attempt_number, output_id, executor, agent_id, status, token_hash, lease_expires_at)
+		VALUES ('att_1', 'prj_default', 'job_1', 'ast_1', 1, 'out_a', 'agent', 'agt_pc', 'lost', 'h1', now()),
+		       ('att_2', 'prj_default', 'job_1', 'ast_1', 2, 'out_b', 'builtin', NULL, 'running', 'h2', now())`)
+
+	res := r.call("GET", "/v1/jobs?agent_id=agt_pc", nil, "")
+	if res.status != http.StatusOK || len(res.list) != 1 {
+		t.Fatalf("jobs = %d %v", res.status, res.body)
+	}
+	job := res.list[0].(map[string]any)
+	attempts := job["attempts"].([]any)
+	first, second := attempts[0].(map[string]any), attempts[1].(map[string]any)
+	if job["lost_count"] != float64(1) || first["agent_name"] != "Studio PC" || first["status"] != "lost" || second["executor"] != "builtin" {
+		t.Fatalf("job = %v", job)
+	}
+	if enc := second["encoder"].(map[string]any); enc["stage"] != "cpu" || enc["fallbacks"].([]any)[0] != "vaapi" {
+		t.Fatalf("encoder = %v", second["encoder"])
+	}
+	if res := r.call("GET", "/v1/jobs/job_1", nil, ""); res.status != http.StatusOK || res.body["id"] != "job_1" {
+		t.Fatalf("job = %d %v", res.status, res.body)
+	}
+	if res := r.call("GET", "/v1/jobs", nil, "cmx_not_a_session"); res.status != http.StatusUnauthorized {
+		t.Fatalf("an API key reached the jobs page: %d", res.status)
+	}
+}

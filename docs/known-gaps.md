@@ -7,7 +7,7 @@ when you introduce or discover it; remove it when it is closed.
 
 - Phase 1 has exited (D040): the Go, Chromium, Safari and ExoPlayer exit
   suites and the image job pass in CI. iPhone and AirPlay are checked by hand
-  only; Firefox isn't in CI. The dashboard is minimal: no jobs or workers pages, no
+  only; Firefox isn't in CI. The dashboard is minimal: no
   share links, no playback-ID management in the UI, and a sample preview
   that waits for Play rather than autoplaying.
 - Superseded and failed re-encodes leave their writing outputs and files in
