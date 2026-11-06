@@ -53,6 +53,28 @@ ARG WORKER_IMAGE=
 RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=${VERSION} -X main.workerImage=${WORKER_IMAGE}" -o /out/clipmux ./cmd/clipmux
 
+# ── Agent tarball (D061) ─────────────────────────────────────────────────────
+# Built only when asked for, and before the runtime stage so a plain build
+# still makes the image:
+#   docker build --target agent --output type=local,dest=dist .
+# The pack stage holds the runtime image's files, plus patchelf.
+FROM ${BASE} AS agent-pack
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+ARG DEBIAN_FRONTEND=noninteractive
+COPY toolchain/apt-packages.env toolchain/pack_agent.sh /tmp/clipmux-toolchain/
+RUN set -eux; \
+    . /tmp/clipmux-toolchain/apt-packages.env; \
+    apt-get update; \
+    if [ "$(dpkg --print-architecture)" = amd64 ]; then CLIPMUX_RUNTIME_PACKAGES+=("${CLIPMUX_RUNTIME_PACKAGES_AMD64[@]}"); fi; \
+    apt-get install -y --no-install-recommends "${CLIPMUX_RUNTIME_PACKAGES[@]}" patchelf; \
+    rm -rf /var/lib/apt/lists/*
+COPY --from=toolchain /usr/local/ /usr/local/
+COPY --from=build /out/clipmux /usr/local/bin/clipmux
+RUN ldconfig && bash /tmp/clipmux-toolchain/pack_agent.sh /out
+
+FROM scratch AS agent
+COPY --from=agent-pack /out/ /
+
 # ── Runtime ──────────────────────────────────────────────────────────────────
 FROM ${BASE}
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
@@ -61,6 +83,7 @@ COPY toolchain/apt-packages.env toolchain/verify_toolchain.sh /tmp/clipmux-toolc
 RUN set -eux; \
     . /tmp/clipmux-toolchain/apt-packages.env; \
     apt-get update; \
+    if [ "$(dpkg --print-architecture)" = amd64 ]; then CLIPMUX_RUNTIME_PACKAGES+=("${CLIPMUX_RUNTIME_PACKAGES_AMD64[@]}"); fi; \
     apt-get install -y --no-install-recommends "${CLIPMUX_RUNTIME_PACKAGES[@]}" tini; \
     rm -rf /var/lib/apt/lists/*
 COPY --from=toolchain /usr/local/ /usr/local/

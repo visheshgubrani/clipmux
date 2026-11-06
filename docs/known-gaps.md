@@ -94,9 +94,11 @@ when you introduce or discover it; remove it when it is closed.
   and Quick Sync have no test machine. A GPU stage's failure isn't
   classified, so any one falls back to the next stage. GPU tools may open
   AF_UNIX SOCK_SEQPACKET sockets, which CUDA needs.
-- No self-contained Linux tarball for agents yet (D049): a native agent
-  needs an FFmpeg with the GPU encoders and the pinned packager installed;
-  the image works everywhere Docker does.
+- The agent tarball (D061) needs glibc 2.39 or newer, and is a CI artifact
+  until launch. Its arm64 build runs only in CI (no local arm64 machine), and
+  bundles no NVIDIA libraries: NVENC on a native agent needs the host's
+  driver, as in Docker. Without `/usr/share/libdrm/amdgpu.ids` on the host,
+  AMD cards encode fine but print a warning about their name.
 - Phase 3's exit passed on the real binary (D050), and NVIDIA on Modal
   (D051); still by hand: a real suspend of the M4 Mac's Docker agent, and
   registering the self-hosted GPU runner. The pairing page

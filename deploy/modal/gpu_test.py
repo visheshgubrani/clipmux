@@ -29,7 +29,7 @@ image = (
     .add_local_dir(ROOT / "toolchain", "/opt/clipmux-toolchain", copy=True)
     .run_commands(
         "bash -c '. /opt/clipmux-toolchain/apt-packages.env && apt-get update"
-        ' && apt-get install -y --no-install-recommends "${CLIPMUX_BUILD_PACKAGES[@]}" "${CLIPMUX_RUNTIME_PACKAGES[@]}"'
+        ' && apt-get install -y --no-install-recommends "${CLIPMUX_BUILD_PACKAGES[@]}" "${CLIPMUX_RUNTIME_PACKAGES[@]}" "${CLIPMUX_RUNTIME_PACKAGES_AMD64[@]}"'
         " curl ca-certificates xz-utils'",
         "CLIPMUX_BUILD_DIR=/var/tmp/ffmpeg-build bash /opt/clipmux-toolchain/build_ffmpeg.sh /usr/local",
         "bash /opt/clipmux-toolchain/install_packager.sh /usr/local/bin",

@@ -26,7 +26,7 @@ const workerUsage = `Usage:
   clipmux worker --server URL              connect this PC (approve it in the dashboard)
   clipmux worker --server URL --pair CODE  connect with a code from the Workers page
   clipmux worker                           run, once this PC is connected
-  clipmux worker doctor                    check everything this PC needs
+  clipmux worker doctor [--offline]        check everything this PC needs (--offline: before pairing)
   CLIPMUX_WORKER_KEY=KEY clipmux worker --server URL [--once]
 
 A serverless machine's key (cmxd_...) claims its one job and exits; its tools
@@ -41,7 +41,7 @@ CLIPMUX_FFMPEG, CLIPMUX_FFPROBE and CLIPMUX_PACKAGER.
 // runWorker runs `clipmux worker`.
 func runWorker(args []string, getenv func(string) string, stderr io.Writer) int {
 	if len(args) > 0 && args[0] == "doctor" {
-		return runDoctor(getenv, stderr)
+		return runDoctor(args[1:], getenv, stderr)
 	}
 	fs := flag.NewFlagSet("worker", flag.ContinueOnError)
 	fs.SetOutput(stderr)

@@ -1,0 +1,51 @@
+# The self-contained Linux agent (D061): clipmux with its own FFmpeg,
+# libraries, VAAPI drivers and packager, built natively for amd64 and arm64,
+# checked in a clean container with no FFmpeg of its own, and kept as a
+# workflow artifact. Nothing is published before launch (D005, D006).
+name: Agent tarball
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "Dockerfile"
+      - "toolchain/**"
+      - ".github/workflows/agent.yml"
+permissions:
+  contents: read
+concurrency:
+  group: agent-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+jobs:
+  tarball:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    # A cold FFmpeg build on arm64 takes most of this.
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: agent
+          outputs: type=local,dest=dist
+          build-args: VERSION=${{ github.sha }}
+          # The image job's cache serves amd64's toolchain stage; each
+          # architecture keeps its own as well.
+          cache-from: |
+            type=gha
+            type=gha,scope=agent-${{ runner.arch }}
+          cache-to: type=gha,mode=max,scope=agent-${{ runner.arch }}
+      - name: Works in a clean Ubuntu 24.04
+        run: toolchain/check_agent.sh dist/clipmux-agent-linux-*.tar.gz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: clipmux-agent-linux-${{ runner.arch }}
+          path: dist/
+          retention-days: 30

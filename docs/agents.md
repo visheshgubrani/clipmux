@@ -28,6 +28,26 @@ clipmux worker --server https://video.example.com --pair ABCD-EFGH
 
 The page shows the PC as connected the moment the command runs.
 
+## Linux without Docker
+
+The agent tarball (`clipmux-agent-linux-amd64.tar.gz` or `-arm64`) is
+clipmux with its own FFmpeg, libraries, VAAPI drivers (AMD, and Intel on
+amd64) and Shaka Packager, so nothing else needs installing. It needs a
+glibc at least as new as Ubuntu 24.04's (2.39), such as Ubuntu 24.04,
+Debian 13 or Fedora 40 and later. Until launch it is a CI artifact (the
+Agent tarball workflow), or build it from this repository:
+
+```bash
+docker build --target agent --output type=local,dest=dist .
+tar -xzf dist/clipmux-agent-linux-amd64.tar.gz
+clipmux-agent/clipmux worker doctor --offline
+clipmux-agent/clipmux worker --server https://video.example.com
+```
+
+`clipmux-agent/clipmux` points the agent at its bundled tools; link it into
+your PATH as `clipmux`. `SHA256SUMS` lists every file, and `licenses/` holds
+FFmpeg's GPL notices and the copyright of every bundled library.
+
 ## Docker (Windows, macOS, or Linux without installing anything)
 
 The ClipMux image is also the agent. The Docker variant of the command runs it
@@ -129,6 +149,8 @@ clipmux worker doctor
 
 This checks the connection, the server, the key, the tool versions, the
 sandbox, each encoder and scratch disk space. The first ✗ is the one to fix.
+`clipmux worker doctor --offline` skips the first three, to check a machine
+before it is connected.
 
 ## Disconnect
 
