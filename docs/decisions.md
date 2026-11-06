@@ -427,5 +427,28 @@ Amends D027 and D046, from the Modal run of P3-T03:
   - The harness also prints each probe unconfined and sandboxed, plus the refused calls CUDA makes, for the next driver that needs something.
 - **Modal's sandbox:** it runs gVisor without Landlock (ABI 0, reported, not required). rlimits, `no_new_privs` and seccomp hold there.
 
+## D052 Phase 4 scope — accepted (2026-11-06)
+Context: Phase 3 is merged (visheshgubrani/clipmux#4) with its exit proven on the real binary (D050) and NVIDIA proven on Modal (D051). The owner chose the next phase and its scope; the plan is [plans/P4-serverless.md](plans/P4-serverless.md).
+Decision:
+- **Next phase:** Phase 4 (Serverless) follows the architecture's build order. The LMS migration and going public wait.
+- **Providers:**
+  - RunPod uses on-demand pods through its REST API. It comes first, because its fake drives the CI exit test.
+  - Modal uses Sandboxes through its Go SDK.
+  - Both are proven on a real account in `exit-providers.yml`.
+- **The worker image:**
+  - CI pushes `ghcr.io/visheshgubrani/clipmux:sha-{commit}` on main as a private package, and providers pull it with a credential sealed by Connect. This amends D005, D006 and D028, which kept the image unpushed.
+  - The package goes public at launch.
+- **`Executor`:**
+  - Lands with `Wake`, `Stop`, `Running` and `Check`. This amends the architecture's `Available`, `Wake` and `Capabilities`: availability is router logic, and `Stop` and `Running` keep a crash from leaving a paid machine running.
+  - Wakes run from the outbox, and the one-time key is minted in the routing transaction.
+  - One-time keys are the third `WorkerAuth`.
+- **Fallback rule:** fallback is for missing capacity, never for a failing file. Only infrastructure failures and lost leases on an asset leave it eligible, so a corrupt source can't reach a paid machine, even on re-encode.
+- **Carried from Phase 3:**
+  - the Playwright suite for the Workers and Jobs pages;
+  - `push --local --upload-source`;
+  - the self-contained agent tarball. This amends D049: built in CI now, published at launch.
+- **Parallel track (T00):** Phase 2's real-account run, and Phase 3's by-hand checks (the M4 Mac's lid-close, registering the GPU runner). Each exit is recorded when it passes.
+Consequence: `jobs.routed_to` changes meaning from "who claimed it" to "where it is routed while queued", and attempts record who ran them and why. The default primary, `workers`, keeps today's behaviour on upgrade.
+
 ## D007 Shaka Packager 3.9.3 — accepted (2026-11-05)
 Decision: pin v3.9.3 (`toolchain/versions.env`), the version clipmux-lms runs with AES-128 in production, which needs the init-segment workaround for Shaka issue 1616. Move to a release that fixes 1616 when one exists, re-running the Phase 1 player tests.
