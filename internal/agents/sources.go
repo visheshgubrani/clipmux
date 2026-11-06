@@ -41,6 +41,9 @@ func (s *Service) handleSource(w http.ResponseWriter, r *http.Request) {
 	}
 	var req struct {
 		Size int64 `json:"size"`
+		// UploadSource asks for the file to be uploaded to storage once it
+		// has been encoded (push --local --upload-source, D059).
+		UploadSource bool `json:"upload_source"`
 	}
 	if !httpjson.Decode(w, r, &req) {
 		return
@@ -50,13 +53,13 @@ func (s *Service) handleSource(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	src, err := db.New(s.pool).CreateAgentSource(r.Context(), db.CreateAgentSourceParams{
-		ID: ids.New(ids.Source), ProjectID: s.projectID, AgentID: wk.AgentID, Size: req.Size,
+		ID: ids.New(ids.Source), ProjectID: s.projectID, AgentID: wk.AgentID, Size: req.Size, UploadSource: req.UploadSource,
 	})
 	if err != nil {
 		s.fail(w, r, err)
 		return
 	}
-	httpjson.Write(w, http.StatusCreated, map[string]any{"id": src.ID, "size": src.Size})
+	httpjson.Write(w, http.StatusCreated, map[string]any{"id": src.ID, "size": src.Size, "upload_source": src.UploadSource})
 }
 
 // handleAttach creates the asset on one of the agent's own sources, as the

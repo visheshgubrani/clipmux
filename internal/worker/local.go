@@ -169,6 +169,9 @@ type LocalRequest struct {
 	Attach         bool   `json:"attach"`
 	PlaybackPolicy string `json:"playback_policy,omitempty"`
 	Passthrough    string `json:"passthrough,omitempty"`
+	// UploadSource uploads the file to storage once it has been encoded
+	// (push --local --upload-source, D059).
+	UploadSource bool `json:"upload_source,omitempty"`
 }
 
 // LocalResponse is a registered file, and its asset when attached.
@@ -226,7 +229,7 @@ func (c *Control) handleRegister(w http.ResponseWriter, r *http.Request) {
 	var out struct {
 		ID string `json:"id"`
 	}
-	status, err := c.Worker.postJSON(r.Context(), "/worker/v1/sources", c.Worker.Key, map[string]any{"size": f.Size}, &out)
+	status, err := c.Worker.postJSON(r.Context(), "/worker/v1/sources", c.Worker.Key, map[string]any{"size": f.Size, "upload_source": req.UploadSource}, &out)
 	if err != nil || status != http.StatusCreated {
 		writeLocal(w, http.StatusBadGateway, "server_refused", fmt.Sprintf("registering with the server: HTTP %d %v", status, err))
 		return

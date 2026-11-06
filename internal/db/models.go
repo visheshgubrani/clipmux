@@ -56,11 +56,12 @@ type AgentPairing struct {
 }
 
 type AgentSource struct {
-	ID        string
-	ProjectID string
-	AgentID   string
-	Size      int64
-	CreatedAt pgtype.Timestamptz
+	ID           string
+	ProjectID    string
+	AgentID      string
+	Size         int64
+	CreatedAt    pgtype.Timestamptz
+	UploadSource bool
 }
 
 type App struct {
@@ -92,28 +93,30 @@ type Asset struct {
 }
 
 type Attempt struct {
-	ID              string
-	ProjectID       string
-	JobID           string
-	AssetID         string
-	AttemptNumber   int32
-	OutputID        string
-	Executor        string
-	AgentID         pgtype.Text
-	Status          string
-	TokenHash       []byte
-	LeaseExpiresAt  pgtype.Timestamptz
-	Phase           pgtype.Text
-	Progress        pgtype.Float4
-	WorkerInfo      []byte
-	FailureKind     pgtype.Text
-	ErrorCode       pgtype.Text
-	StartedAt       pgtype.Timestamptz
-	LastHeartbeatAt pgtype.Timestamptz
-	FinishedAt      pgtype.Timestamptz
-	SignedPaths     int32
-	RouteReason     pgtype.Text
-	DispatchID      pgtype.Text
+	ID                string
+	ProjectID         string
+	JobID             string
+	AssetID           string
+	AttemptNumber     int32
+	OutputID          string
+	Executor          string
+	AgentID           pgtype.Text
+	Status            string
+	TokenHash         []byte
+	LeaseExpiresAt    pgtype.Timestamptz
+	Phase             pgtype.Text
+	Progress          pgtype.Float4
+	WorkerInfo        []byte
+	FailureKind       pgtype.Text
+	ErrorCode         pgtype.Text
+	StartedAt         pgtype.Timestamptz
+	LastHeartbeatAt   pgtype.Timestamptz
+	FinishedAt        pgtype.Timestamptz
+	SignedPaths       int32
+	RouteReason       pgtype.Text
+	DispatchID        pgtype.Text
+	SourceMultipartID pgtype.Text
+	SourcePartSize    pgtype.Int8
 }
 
 type CloudflareConnection struct {

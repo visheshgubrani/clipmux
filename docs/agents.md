@@ -88,6 +88,19 @@ it stays away for 7 days. A file that changes or disappears before it's encoded
 ends its job as `source_changed` or `source_missing`, and the video keeps
 playing what it had.
 
+To keep re-encoding possible without this PC, add `--upload-source`:
+
+```bash
+clipmux push --local --upload-source ~/Videos/course
+```
+
+Each video is still encoded here first, so it plays without waiting for an
+upload. Then the agent uploads the file to the server's storage, in 32 MiB
+parts, and from then on the video is like any other upload: any worker,
+including a cloud fallback, can re-encode it. If the file changes before it
+is uploaded, the upload is refused (`source_changed`) and the video stays
+tied to this PC.
+
 To limit what `push --local` may hand over, list folders in `agent.json`:
 
 ```json

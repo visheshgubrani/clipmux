@@ -7,10 +7,10 @@
 -- executor. The router may move a queued one later.
 INSERT INTO jobs (id, project_id, asset_id, kind, pinned_agent_id, routed_to, route_reason)
 SELECT sqlc.arg(id), p.id, sqlc.arg(asset_id), sqlc.arg(kind)::text, sqlc.narg(pinned_agent_id)::text,
-       CASE WHEN sqlc.arg(kind)::text NOT IN ('transcode', 'reencode') THEN NULL
+       CASE WHEN sqlc.arg(kind)::text NOT IN ('transcode', 'reencode', 'upload_source') THEN NULL
             WHEN sqlc.narg(pinned_agent_id)::text IS NOT NULL THEN 'agents'
             ELSE coalesce(t.executor, p.primary_executor) END,
-       CASE WHEN sqlc.arg(kind)::text NOT IN ('transcode', 'reencode') THEN NULL
+       CASE WHEN sqlc.arg(kind)::text NOT IN ('transcode', 'reencode', 'upload_source') THEN NULL
             WHEN sqlc.narg(pinned_agent_id)::text IS NOT NULL THEN 'pinned'
             WHEN t.executor IS NOT NULL THEN 'setup_test'
             ELSE 'primary' END
@@ -20,14 +20,15 @@ WHERE p.id = sqlc.arg(project_id)
 RETURNING *;
 
 -- name: LockNextClaimableJob :one
--- Media work only: import, move and delete run in the control plane. A job
+-- Worker work only: import, move and delete run in the control plane;
+-- upload_source is always pinned to the PC that holds the file. A job
 -- goes to a worker whose class it is routed to (pinned jobs are decided by
 -- the pin alone), and job_claimable_by applies the per-worker rules.
 SELECT * FROM jobs
 WHERE jobs.project_id = sqlc.arg(project_id)
   AND jobs.status = 'queued'
   AND available_at <= now()
-  AND kind IN ('transcode', 'reencode')
+  AND kind IN ('transcode', 'reencode', 'upload_source')
   AND (pinned_agent_id IS NOT NULL OR routed_to = ANY (sqlc.arg(classes)::text[]))
   AND job_claimable_by(asset_id, pinned_agent_id, sqlc.narg(agent_id)::text, sqlc.arg(local_only)::boolean,
                        sqlc.arg(untrusted)::boolean, sqlc.narg(free_disk_bytes)::bigint)
@@ -229,3 +230,22 @@ UPDATE dispatches SET status = 'claimed', attempt_id = $2, claimed_at = now() WH
 -- name: UnclaimDispatch :exec
 -- An undelivered claim (Release) gives the dispatch its job back.
 UPDATE dispatches SET status = 'waking', attempt_id = NULL, claimed_at = NULL WHERE id = $1 AND status = 'claimed';
+
+-- name: EnqueueSourceUpload :execrows
+-- In the commit of a local source's encode: if its push asked for
+-- --upload-source, the PC holding the file uploads it next (D059).
+INSERT INTO jobs (id, project_id, asset_id, kind, pinned_agent_id, routed_to, route_reason)
+SELECT sqlc.arg(id), s.project_id, s.id, 'upload_source', g.agent_id, 'agents', 'pinned'
+FROM assets s JOIN agent_sources g ON g.id = s.agent_source_id
+WHERE s.id = sqlc.arg(asset_id) AND g.upload_source AND s.status <> 'deleted';
+
+-- name: SetAttemptSourceMultipart :exec
+UPDATE attempts SET source_multipart_id = $2, source_part_size = $3 WHERE id = $1;
+
+-- name: GetAssetAgentSourceSize :one
+SELECT g.size FROM assets s JOIN agent_sources g ON g.id = s.agent_source_id WHERE s.id = $1;
+
+-- name: MoveSourceToStorage :exec
+-- The PC's upload landed: the source is in storage now, and the asset is
+-- no longer tied to that PC (D059).
+UPDATE assets SET source_uri = $2, agent_source_id = NULL, source_kept = true WHERE id = $1;

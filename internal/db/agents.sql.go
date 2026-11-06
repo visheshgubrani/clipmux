@@ -103,15 +103,16 @@ func (q *Queries) CreateAgent(ctx context.Context, arg CreateAgentParams) (Agent
 }
 
 const createAgentSource = `-- name: CreateAgentSource :one
-INSERT INTO agent_sources (id, project_id, agent_id, size) VALUES ($1, $2, $3, $4)
-RETURNING id, project_id, agent_id, size, created_at
+INSERT INTO agent_sources (id, project_id, agent_id, size, upload_source) VALUES ($1, $2, $3, $4, $5)
+RETURNING id, project_id, agent_id, size, created_at, upload_source
 `
 
 type CreateAgentSourceParams struct {
-	ID        string
-	ProjectID string
-	AgentID   string
-	Size      int64
+	ID           string
+	ProjectID    string
+	AgentID      string
+	Size         int64
+	UploadSource bool
 }
 
 func (q *Queries) CreateAgentSource(ctx context.Context, arg CreateAgentSourceParams) (AgentSource, error) {
@@ -120,6 +121,7 @@ func (q *Queries) CreateAgentSource(ctx context.Context, arg CreateAgentSourcePa
 		arg.ProjectID,
 		arg.AgentID,
 		arg.Size,
+		arg.UploadSource,
 	)
 	var i AgentSource
 	err := row.Scan(
@@ -128,6 +130,7 @@ func (q *Queries) CreateAgentSource(ctx context.Context, arg CreateAgentSourcePa
 		&i.AgentID,
 		&i.Size,
 		&i.CreatedAt,
+		&i.UploadSource,
 	)
 	return i, err
 }
@@ -290,19 +293,20 @@ func (q *Queries) GetAgentByKeyHash(ctx context.Context, keyHash []byte) (Agent,
 }
 
 const getAssetAgentSource = `-- name: GetAssetAgentSource :one
-SELECT g.id, g.project_id, g.agent_id, g.size, g.created_at, a.status AS agent_status FROM assets s
+SELECT g.id, g.project_id, g.agent_id, g.size, g.created_at, g.upload_source, a.status AS agent_status FROM assets s
 JOIN agent_sources g ON g.id = s.agent_source_id
 JOIN agents a ON a.id = g.agent_id
 WHERE s.id = $1
 `
 
 type GetAssetAgentSourceRow struct {
-	ID          string
-	ProjectID   string
-	AgentID     string
-	Size        int64
-	CreatedAt   pgtype.Timestamptz
-	AgentStatus string
+	ID           string
+	ProjectID    string
+	AgentID      string
+	Size         int64
+	CreatedAt    pgtype.Timestamptz
+	UploadSource bool
+	AgentStatus  string
 }
 
 func (q *Queries) GetAssetAgentSource(ctx context.Context, id string) (GetAssetAgentSourceRow, error) {
@@ -314,13 +318,14 @@ func (q *Queries) GetAssetAgentSource(ctx context.Context, id string) (GetAssetA
 		&i.AgentID,
 		&i.Size,
 		&i.CreatedAt,
+		&i.UploadSource,
 		&i.AgentStatus,
 	)
 	return i, err
 }
 
 const getAttachableAgentSource = `-- name: GetAttachableAgentSource :one
-SELECT g.id, g.project_id, g.agent_id, g.size, g.created_at, a.status AS agent_status FROM agent_sources g
+SELECT g.id, g.project_id, g.agent_id, g.size, g.created_at, g.upload_source, a.status AS agent_status FROM agent_sources g
 JOIN agents a ON a.id = g.agent_id
 WHERE g.project_id = $1 AND g.id = $2
   AND NOT EXISTS (SELECT 1 FROM assets s WHERE s.agent_source_id = g.id)
@@ -332,12 +337,13 @@ type GetAttachableAgentSourceParams struct {
 }
 
 type GetAttachableAgentSourceRow struct {
-	ID          string
-	ProjectID   string
-	AgentID     string
-	Size        int64
-	CreatedAt   pgtype.Timestamptz
-	AgentStatus string
+	ID           string
+	ProjectID    string
+	AgentID      string
+	Size         int64
+	CreatedAt    pgtype.Timestamptz
+	UploadSource bool
+	AgentStatus  string
 }
 
 // A source an asset may take: in the project, not yet attached, from an
@@ -351,6 +357,7 @@ func (q *Queries) GetAttachableAgentSource(ctx context.Context, arg GetAttachabl
 		&i.AgentID,
 		&i.Size,
 		&i.CreatedAt,
+		&i.UploadSource,
 		&i.AgentStatus,
 	)
 	return i, err

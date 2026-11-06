@@ -38,6 +38,7 @@ type rig struct {
 	store  storage.Storage
 	media  string // base URL serving delivery
 	worker *Worker
+	api    *workerapi.API
 }
 
 func tools(t *testing.T) media.Tools {
@@ -59,7 +60,11 @@ func tools(t *testing.T) media.Tools {
 
 func newRig(t *testing.T) *rig {
 	t.Helper()
-	return newRigOn(t, func(base string, mux *http.ServeMux) storage.Storage {
+	return newRigOn(t, workerapi.BuiltinKey("k"), fsStore(t))
+}
+
+func fsStore(t *testing.T) func(base string, mux *http.ServeMux) storage.Storage {
+	return func(base string, mux *http.ServeMux) storage.Storage {
 		fs, err := storage.OpenFilesystem(t.TempDir(), storage.FilesystemOptions{BaseURL: base})
 		if err != nil {
 			t.Fatal(err)
@@ -69,24 +74,28 @@ func newRig(t *testing.T) *rig {
 			mux.Handle(m+" /_storage/", fs.Handler())
 		}
 		return fs
-	})
+	}
 }
 
 // newS3Rig runs the same pipeline on an S3-compatible bucket: the worker
 // downloads and uploads through presigned S3 URLs, never through serve.
 func newS3Rig(t *testing.T) *rig {
 	t.Helper()
-	b := s3test.New(t)
-	return newRigOn(t, func(string, *http.ServeMux) storage.Storage {
+	return newRigOn(t, workerapi.BuiltinKey("k"), s3Store(t))
+}
+
+func s3Store(t *testing.T) func(string, *http.ServeMux) storage.Storage {
+	return func(string, *http.ServeMux) storage.Storage {
+		b := s3test.New(t)
 		st, err := storage.OpenS3(storage.S3Options{Endpoint: b.Endpoint, Bucket: b.Name, AccessKeyID: b.AccessKeyID, SecretAccessKey: b.SecretAccessKey})
 		if err != nil {
 			t.Fatal(err)
 		}
 		return st
-	})
+	}
 }
 
-func newRigOn(t *testing.T, open func(base string, mux *http.ServeMux) storage.Storage) *rig {
+func newRigOn(t *testing.T, auth workerapi.WorkerAuth, open func(base string, mux *http.ServeMux) storage.Storage) *rig {
 	t.Helper()
 	tl := tools(t)
 	pool := dbtest.New(t)
@@ -99,10 +108,10 @@ func newRigOn(t *testing.T, open func(base string, mux *http.ServeMux) storage.S
 		t.Fatal(err)
 	}
 	q := queue.New(pool)
-	api := workerapi.New(q, workerapi.BuiltinKey("k"), stores.Fixed(store), contentkey.NewRing(keys), outputs.New(pool, q, stores.Fixed(store)))
+	api := workerapi.New(q, auth, stores.Fixed(store), contentkey.NewRing(keys), outputs.New(pool, q, stores.Fixed(store)))
 	mux.Handle("POST /worker/v1/", api.Handler())
 	delivery.New(pool, stores.Fixed(store), contentkey.NewRing(keys)).Register(mux)
-	return &rig{pool: pool, store: store, media: srv.URL, worker: &Worker{
+	return &rig{pool: pool, store: store, media: srv.URL, api: api, worker: &Worker{
 		Server: srv.URL, Key: "k", WorkDir: t.TempDir(), Tools: tl, HTTP: http.DefaultClient,
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Wait: time.Millisecond,
 	}}

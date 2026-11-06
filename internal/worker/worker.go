@@ -261,7 +261,19 @@ func (w *Worker) handle(ctx context.Context, job *workerapi.Job) error {
 	jobCtx, cancel := context.WithTimeout(ctx, maxJob)
 	defer cancel()
 	hb := w.startHeartbeat(jobCtx, cancel, job)
-	m, code, err := w.process(jobCtx, job, dir, hb.report)
+	// complete carries the output's manifest, or an uploaded source's parts.
+	var done map[string]any
+	var code string
+	var err error
+	if job.Kind == "upload_source" {
+		var parts []workerapi.SourcePart
+		parts, code, err = w.uploadSource(jobCtx, job, hb.report)
+		done = map[string]any{"source_parts": parts}
+	} else {
+		var m media.Manifest
+		m, code, err = w.process(jobCtx, job, dir, hb.report)
+		done = map[string]any{"manifest": m}
+	}
 	hb.stop()
 
 	switch {
@@ -278,9 +290,12 @@ func (w *Worker) handle(ctx context.Context, job *workerapi.Job) error {
 		return w.fail(ctx, job, permanent(code), code, err)
 	}
 	// complete is safe to retry: after a commit the server answers "stop".
-	if status, err := w.report(ctx, job, "complete", map[string]any{"manifest": m}); err != nil {
+	if status, err := w.report(ctx, job, "complete", done); err != nil {
 		code := codeCommit
-		if status == http.StatusConflict {
+		switch {
+		case status == http.StatusConflict && job.Kind == "upload_source":
+			code = codeUpload // the stored size wasn't the file's: upload again
+		case status == http.StatusConflict:
 			code = codeOutputInvalid
 		}
 		return w.fail(ctx, job, false, code, err)

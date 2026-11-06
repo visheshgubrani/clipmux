@@ -78,7 +78,7 @@ JOIN attempts a ON a.output_id = s.current_output_id
 WHERE a.agent_id = $1 AND s.status <> 'deleted';
 
 -- name: CreateAgentSource :one
-INSERT INTO agent_sources (id, project_id, agent_id, size) VALUES ($1, $2, $3, $4)
+INSERT INTO agent_sources (id, project_id, agent_id, size, upload_source) VALUES ($1, $2, $3, $4, $5)
 RETURNING *;
 
 -- name: GetAttachableAgentSource :one

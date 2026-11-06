@@ -76,9 +76,23 @@ func (q *Queue) CommitAttempt(ctx context.Context, token string, commit func(qs 
 		if err := qs.SetAttemptStatus(ctx, db.SetAttemptStatusParams{ID: l.attempt.ID, Status: "committed"}); err != nil {
 			return Verdict{}, err
 		}
-		return Verdict{}, qs.SucceedJob(ctx, l.job.ID)
+		if err := qs.SucceedJob(ctx, l.job.ID); err != nil {
+			return Verdict{}, err
+		}
+		if l.job.Kind == KindUploadSource {
+			return Verdict{}, nil
+		}
+		// A local source whose push asked for --upload-source goes to
+		// storage next, from the PC that holds it (D059).
+		_, err := qs.EnqueueSourceUpload(ctx, db.EnqueueSourceUploadParams{ID: ids.New(ids.Job), AssetID: l.job.AssetID})
+		return Verdict{}, err
 	})
 }
+
+// KindUploadSource is the job that uploads a local source from its PC
+// (D059). Its failure leaves the asset as it was: the source simply stays
+// on the PC.
+const KindUploadSource = "upload_source"
 
 // Error codes the queue itself assigns.
 const (
@@ -576,6 +590,9 @@ func (q *Queue) endJob(ctx context.Context, qs *db.Queries, job db.Job, code str
 	if err := qs.FailJob(ctx, db.FailJobParams{ID: job.ID, ErrorCode: text(code)}); err != nil {
 		return err
 	}
+	if job.Kind == KindUploadSource {
+		return nil // the asset plays on; its source stays on the PC
+	}
 	asset, err := qs.LockAsset(ctx, job.AssetID)
 	if err != nil {
 		return err
@@ -601,4 +618,50 @@ func hashToken(token string) []byte {
 
 func text(s string) pgtype.Text {
 	return pgtype.Text{String: s, Valid: s != ""}
+}
+
+// Job returns a job.
+func (q *Queue) Job(ctx context.Context, id string) (db.Job, error) {
+	return db.New(q.pool).GetJob(ctx, id)
+}
+
+// SourceUpload is an upload_source attempt's multipart upload of the source.
+type SourceUpload struct {
+	UploadID string
+	PartSize int64
+	// Size is the file's size, as its PC registered it.
+	Size int64
+}
+
+// ErrNotSourceUpload means the attempt's job isn't an upload_source.
+var ErrNotSourceUpload = errors.New("queue: the attempt doesn't upload a source")
+
+// SourceUpload returns a live upload_source attempt's multipart upload,
+// creating it once through create (under the attempt's lock, so two calls
+// can't start two uploads).
+func (q *Queue) SourceUpload(ctx context.Context, token string, create func(size int64) (SourceUpload, error)) (Verdict, db.Attempt, SourceUpload, error) {
+	var att db.Attempt
+	var up SourceUpload
+	v, err := q.withLiveAttempt(ctx, token, func(qs *db.Queries, l locked) (Verdict, error) {
+		att = l.attempt
+		if l.job.Kind != KindUploadSource {
+			return Verdict{}, ErrNotSourceUpload
+		}
+		size, err := qs.GetAssetAgentSourceSize(ctx, l.job.AssetID)
+		if err != nil {
+			return Verdict{}, err
+		}
+		if l.attempt.SourceMultipartID.Valid {
+			up = SourceUpload{UploadID: l.attempt.SourceMultipartID.String, PartSize: l.attempt.SourcePartSize.Int64, Size: size}
+			return Verdict{}, nil
+		}
+		if up, err = create(size); err != nil {
+			return Verdict{}, err
+		}
+		up.Size = size
+		return Verdict{}, qs.SetAttemptSourceMultipart(ctx, db.SetAttemptSourceMultipartParams{
+			ID: l.attempt.ID, SourceMultipartID: text(up.UploadID), SourcePartSize: pgtype.Int8{Int64: up.PartSize, Valid: true},
+		})
+	})
+	return v, att, up, err
 }

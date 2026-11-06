@@ -85,9 +85,10 @@ when you introduce or discover it; remove it when it is closed.
   upload format and the custom-domain call need a run against a real test
   zone before the Phase 2 exit (D037). The manual wrangler path has no CLI
   for adding R2 storage, switching delivery or printing `CONTENT_KEYS`.
-- `clipmux push --local --upload-source` isn't built: an asset whose source
-  stays on a PC re-encodes only on that PC, and only while the file is
-  unchanged.
+- An asset pushed with `--local` alone re-encodes only on its PC, and only
+  while the file is unchanged; `--upload-source` lifts that (D059). Each
+  upload_source attempt leaves an empty `writing` output row, because every
+  claim creates an output; nothing serves it and nothing cleans it up yet.
 - GPU encoding is proven on real hardware for VAAPI on AMD (a self-hosted
   runner) and for NVENC and `cuda-decode` on Modal (D051); Intel's iHD driver
   and Quick Sync have no test machine. A GPU stage's failure isn't

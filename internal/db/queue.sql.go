@@ -60,7 +60,7 @@ const createAttempt = `-- name: CreateAttempt :one
 INSERT INTO attempts (id, project_id, job_id, asset_id, attempt_number, output_id, executor, agent_id,
                       token_hash, lease_expires_at, worker_info, route_reason, dispatch_id)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now() + make_interval(secs => $13::double precision), $10, $11, $12)
-RETURNING id, project_id, job_id, asset_id, attempt_number, output_id, executor, agent_id, status, token_hash, lease_expires_at, phase, progress, worker_info, failure_kind, error_code, started_at, last_heartbeat_at, finished_at, signed_paths, route_reason, dispatch_id
+RETURNING id, project_id, job_id, asset_id, attempt_number, output_id, executor, agent_id, status, token_hash, lease_expires_at, phase, progress, worker_info, failure_kind, error_code, started_at, last_heartbeat_at, finished_at, signed_paths, route_reason, dispatch_id, source_multipart_id, source_part_size
 `
 
 type CreateAttemptParams struct {
@@ -119,6 +119,8 @@ func (q *Queries) CreateAttempt(ctx context.Context, arg CreateAttemptParams) (A
 		&i.SignedPaths,
 		&i.RouteReason,
 		&i.DispatchID,
+		&i.SourceMultipartID,
+		&i.SourcePartSize,
 	)
 	return i, err
 }
@@ -127,10 +129,10 @@ const createJob = `-- name: CreateJob :one
 
 INSERT INTO jobs (id, project_id, asset_id, kind, pinned_agent_id, routed_to, route_reason)
 SELECT $1, p.id, $2, $3::text, $4::text,
-       CASE WHEN $3::text NOT IN ('transcode', 'reencode') THEN NULL
+       CASE WHEN $3::text NOT IN ('transcode', 'reencode', 'upload_source') THEN NULL
             WHEN $4::text IS NOT NULL THEN 'agents'
             ELSE coalesce(t.executor, p.primary_executor) END,
-       CASE WHEN $3::text NOT IN ('transcode', 'reencode') THEN NULL
+       CASE WHEN $3::text NOT IN ('transcode', 'reencode', 'upload_source') THEN NULL
             WHEN $4::text IS NOT NULL THEN 'pinned'
             WHEN t.executor IS NOT NULL THEN 'setup_test'
             ELSE 'primary' END
@@ -244,6 +246,28 @@ func (q *Queries) DeleteWritingOutput(ctx context.Context, id string) error {
 	return err
 }
 
+const enqueueSourceUpload = `-- name: EnqueueSourceUpload :execrows
+INSERT INTO jobs (id, project_id, asset_id, kind, pinned_agent_id, routed_to, route_reason)
+SELECT $1, s.project_id, s.id, 'upload_source', g.agent_id, 'agents', 'pinned'
+FROM assets s JOIN agent_sources g ON g.id = s.agent_source_id
+WHERE s.id = $2 AND g.upload_source AND s.status <> 'deleted'
+`
+
+type EnqueueSourceUploadParams struct {
+	ID      string
+	AssetID string
+}
+
+// In the commit of a local source's encode: if its push asked for
+// --upload-source, the PC holding the file uploads it next (D059).
+func (q *Queries) EnqueueSourceUpload(ctx context.Context, arg EnqueueSourceUploadParams) (int64, error) {
+	result, err := q.db.Exec(ctx, enqueueSourceUpload, arg.ID, arg.AssetID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const failJob = `-- name: FailJob :exec
 UPDATE jobs SET status = 'failed', error_code = $2, finished_at = now() WHERE id = $1
 `
@@ -258,8 +282,19 @@ func (q *Queries) FailJob(ctx context.Context, arg FailJobParams) error {
 	return err
 }
 
+const getAssetAgentSourceSize = `-- name: GetAssetAgentSourceSize :one
+SELECT g.size FROM assets s JOIN agent_sources g ON g.id = s.agent_source_id WHERE s.id = $1
+`
+
+func (q *Queries) GetAssetAgentSourceSize(ctx context.Context, id string) (int64, error) {
+	row := q.db.QueryRow(ctx, getAssetAgentSourceSize, id)
+	var size int64
+	err := row.Scan(&size)
+	return size, err
+}
+
 const getAttempt = `-- name: GetAttempt :one
-SELECT id, project_id, job_id, asset_id, attempt_number, output_id, executor, agent_id, status, token_hash, lease_expires_at, phase, progress, worker_info, failure_kind, error_code, started_at, last_heartbeat_at, finished_at, signed_paths, route_reason, dispatch_id FROM attempts WHERE id = $1
+SELECT id, project_id, job_id, asset_id, attempt_number, output_id, executor, agent_id, status, token_hash, lease_expires_at, phase, progress, worker_info, failure_kind, error_code, started_at, last_heartbeat_at, finished_at, signed_paths, route_reason, dispatch_id, source_multipart_id, source_part_size FROM attempts WHERE id = $1
 `
 
 func (q *Queries) GetAttempt(ctx context.Context, id string) (Attempt, error) {
@@ -288,12 +323,14 @@ func (q *Queries) GetAttempt(ctx context.Context, id string) (Attempt, error) {
 		&i.SignedPaths,
 		&i.RouteReason,
 		&i.DispatchID,
+		&i.SourceMultipartID,
+		&i.SourcePartSize,
 	)
 	return i, err
 }
 
 const getAttemptByTokenHash = `-- name: GetAttemptByTokenHash :one
-SELECT id, project_id, job_id, asset_id, attempt_number, output_id, executor, agent_id, status, token_hash, lease_expires_at, phase, progress, worker_info, failure_kind, error_code, started_at, last_heartbeat_at, finished_at, signed_paths, route_reason, dispatch_id FROM attempts WHERE token_hash = $1
+SELECT id, project_id, job_id, asset_id, attempt_number, output_id, executor, agent_id, status, token_hash, lease_expires_at, phase, progress, worker_info, failure_kind, error_code, started_at, last_heartbeat_at, finished_at, signed_paths, route_reason, dispatch_id, source_multipart_id, source_part_size FROM attempts WHERE token_hash = $1
 `
 
 func (q *Queries) GetAttemptByTokenHash(ctx context.Context, tokenHash []byte) (Attempt, error) {
@@ -322,6 +359,8 @@ func (q *Queries) GetAttemptByTokenHash(ctx context.Context, tokenHash []byte) (
 		&i.SignedPaths,
 		&i.RouteReason,
 		&i.DispatchID,
+		&i.SourceMultipartID,
+		&i.SourcePartSize,
 	)
 	return i, err
 }
@@ -582,7 +621,7 @@ func (q *Queries) LockAsset(ctx context.Context, id string) (Asset, error) {
 }
 
 const lockAttempt = `-- name: LockAttempt :one
-SELECT attempts.id, attempts.project_id, attempts.job_id, attempts.asset_id, attempts.attempt_number, attempts.output_id, attempts.executor, attempts.agent_id, attempts.status, attempts.token_hash, attempts.lease_expires_at, attempts.phase, attempts.progress, attempts.worker_info, attempts.failure_kind, attempts.error_code, attempts.started_at, attempts.last_heartbeat_at, attempts.finished_at, attempts.signed_paths, attempts.route_reason, attempts.dispatch_id, (lease_expires_at < now())::boolean AS lease_expired
+SELECT attempts.id, attempts.project_id, attempts.job_id, attempts.asset_id, attempts.attempt_number, attempts.output_id, attempts.executor, attempts.agent_id, attempts.status, attempts.token_hash, attempts.lease_expires_at, attempts.phase, attempts.progress, attempts.worker_info, attempts.failure_kind, attempts.error_code, attempts.started_at, attempts.last_heartbeat_at, attempts.finished_at, attempts.signed_paths, attempts.route_reason, attempts.dispatch_id, attempts.source_multipart_id, attempts.source_part_size, (lease_expires_at < now())::boolean AS lease_expired
 FROM attempts WHERE id = $1 FOR UPDATE
 `
 
@@ -617,6 +656,8 @@ func (q *Queries) LockAttempt(ctx context.Context, id string) (LockAttemptRow, e
 		&i.Attempt.SignedPaths,
 		&i.Attempt.RouteReason,
 		&i.Attempt.DispatchID,
+		&i.Attempt.SourceMultipartID,
+		&i.Attempt.SourcePartSize,
 		&i.LeaseExpired,
 	)
 	return i, err
@@ -704,7 +745,7 @@ SELECT id, project_id, asset_id, kind, status, phase, progress, profile_id, prof
 WHERE jobs.project_id = $1
   AND jobs.status = 'queued'
   AND available_at <= now()
-  AND kind IN ('transcode', 'reencode')
+  AND kind IN ('transcode', 'reencode', 'upload_source')
   AND (pinned_agent_id IS NOT NULL OR routed_to = ANY ($2::text[]))
   AND job_claimable_by(asset_id, pinned_agent_id, $3::text, $4::boolean,
                        $5::boolean, $6::bigint)
@@ -722,7 +763,8 @@ type LockNextClaimableJobParams struct {
 	FreeDiskBytes pgtype.Int8
 }
 
-// Media work only: import, move and delete run in the control plane. A job
+// Worker work only: import, move and delete run in the control plane;
+// upload_source is always pinned to the PC that holds the file. A job
 // goes to a worker whose class it is routed to (pinned jobs are decided by
 // the pin alone), and job_claimable_by applies the per-worker rules.
 func (q *Queries) LockNextClaimableJob(ctx context.Context, arg LockNextClaimableJobParams) (Job, error) {
@@ -848,6 +890,22 @@ func (q *Queries) MarkAssetErrored(ctx context.Context, arg MarkAssetErroredPara
 	return version, err
 }
 
+const moveSourceToStorage = `-- name: MoveSourceToStorage :exec
+UPDATE assets SET source_uri = $2, agent_source_id = NULL, source_kept = true WHERE id = $1
+`
+
+type MoveSourceToStorageParams struct {
+	ID        string
+	SourceUri pgtype.Text
+}
+
+// The PC's upload landed: the source is in storage now, and the asset is
+// no longer tied to that PC (D059).
+func (q *Queries) MoveSourceToStorage(ctx context.Context, arg MoveSourceToStorageParams) error {
+	_, err := q.db.Exec(ctx, moveSourceToStorage, arg.ID, arg.SourceUri)
+	return err
+}
+
 const nextAttemptNumber = `-- name: NextAttemptNumber :one
 SELECT (coalesce(max(attempt_number), 0) + 1)::integer FROM attempts WHERE job_id = $1
 `
@@ -919,6 +977,21 @@ func (q *Queries) ReserveSignedPaths(ctx context.Context, arg ReserveSignedPaths
 	var signed_paths int32
 	err := row.Scan(&signed_paths)
 	return signed_paths, err
+}
+
+const setAttemptSourceMultipart = `-- name: SetAttemptSourceMultipart :exec
+UPDATE attempts SET source_multipart_id = $2, source_part_size = $3 WHERE id = $1
+`
+
+type SetAttemptSourceMultipartParams struct {
+	ID                string
+	SourceMultipartID pgtype.Text
+	SourcePartSize    pgtype.Int8
+}
+
+func (q *Queries) SetAttemptSourceMultipart(ctx context.Context, arg SetAttemptSourceMultipartParams) error {
+	_, err := q.db.Exec(ctx, setAttemptSourceMultipart, arg.ID, arg.SourceMultipartID, arg.SourcePartSize)
+	return err
 }
 
 const setAttemptStatus = `-- name: SetAttemptStatus :exec

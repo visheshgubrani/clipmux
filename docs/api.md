@@ -139,9 +139,18 @@ built-in worker's key. A serverless machine's one-time key starts with `cmxd_`
 dispatch's claim deadline, and its claim is `409 sandbox_required` unless the
 worker reports rlimits, `no_new_privs` and seccomp. A claim reports `free_disk_bytes`; a worker takes only
 uploads whose size, three times over, fits its scratch disk.
-| `POST /worker/v1/sources` | agent key: `{size}` → `201 {id, size}`, a file that stays on the agent (`push --local`) |
+| `POST /worker/v1/sources` | agent key: `{size, upload_source?}` → `201 {id, size, upload_source}`, a file that stays on the agent (`push --local`); with `upload_source`, the agent uploads it after its first encode (D059) |
 | `POST /worker/v1/sources/{id}/attach` | agent key: `{playback_policy?, passthrough?}` → `201` the asset, as the owner's upload (the Dashboard app), with a transcode job pinned to the agent |
 | `POST /worker/v1/sources/sync` | agent key: `{ids}` (≤ 1000) → `{gone}`: sources the agent may forget (asset deleted, unknown, or unattached for a day) |
+
+An `upload_source` job (D059) is claimed only by the agent holding the file. Its
+attempt calls `POST /worker/v1/attempts/{id}/source-parts` with `{parts: [n…]}`
+(at most 100; an empty list just starts the upload) → `{part_size, part_count,
+urls: {"n": url}, expires_at}`, PUTs each part, and finishes with `complete`
+carrying `{source_parts: [{number, etag}]}` instead of a manifest. The server
+completes the multipart upload into `uploads/{asset}/source`, checks its size
+against the file's (`409 source_invalid` otherwise), and moves the asset's
+source there, unpinned from the agent.
 
 A claim for a job on a local source carries `source: {agent_source_id, size}`
 instead of a URL. A job pinned to an agent waits for it, spending no retry
