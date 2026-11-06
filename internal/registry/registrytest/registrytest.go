@@ -7,6 +7,7 @@ package registrytest
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/pem"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -31,6 +32,9 @@ type Registry struct {
 	Client *http.Client
 	// Digest is the manifest's digest.
 	Digest string
+	// CertPEM is the server's certificate, for another process to trust
+	// (SSL_CERT_FILE).
+	CertPEM []byte
 }
 
 // New starts the fake for the test.
@@ -67,6 +71,7 @@ func New(t *testing.T) *Registry {
 	t.Cleanup(srv.Close)
 	r.Host = strings.TrimPrefix(srv.URL, "https://")
 	r.Client = srv.Client()
+	r.CertPEM = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw})
 	return r
 }
 

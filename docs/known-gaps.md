@@ -99,8 +99,10 @@ when you introduce or discover it; remove it when it is closed.
   the image works everywhere Docker does.
 - Phase 3's exit passed on the real binary (D050), and NVIDIA on Modal
   (D051); still by hand: a real suspend of the M4 Mac's Docker agent, and
-  registering the self-hosted GPU runner. The Workers and Jobs pages and the
-  connect page have no Playwright suite yet.
+  registering the self-hosted GPU runner. The pairing page
+  (`/workers/connect`) has no Playwright suite yet; the Workers and Jobs
+  pages do (D060). The Jobs page shows which provider ran an attempt, but not
+  its GPU or its estimated cost.
 - Disconnecting Cloudflare (back to built-in delivery) has no endpoint yet.
 - Provider spend (D055) is an estimate from the hourly rate set in Connect,
   not the provider's bill, and a machine that runs past its reservation

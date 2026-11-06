@@ -5,6 +5,7 @@ import { Button } from '../components/ui/button.tsx'
 import { Card, CardTitle, Muted } from '../components/ui/card.tsx'
 import { Input } from '../components/ui/input.tsx'
 import { Table, Td, Th } from '../components/ui/table.tsx'
+import { ProvidersCard, RoutingCard } from './routing.tsx'
 
 interface Agent {
   id: string
@@ -205,6 +206,7 @@ export function Workers() {
   }
   return (
     <>
+      <RoutingCard />
       <ConnectCard onConnected={load} />
       <Card className="grid gap-4">
         <CardTitle>Workers</CardTitle>
@@ -283,6 +285,7 @@ export function Workers() {
           </Table>
         )}
       </Card>
+      <ProvidersCard />
     </>
   )
 }

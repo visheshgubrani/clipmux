@@ -557,5 +557,17 @@ Decisions within the architecture's "Local sources" and D045, made in P4-T07 (a 
 - **Failure changes nothing visible.** A file that changed or vanished fails the job permanently (`source_changed`, `source_missing`), and a spent budget fails it too. `endJob` leaves an `upload_source` job's asset untouched and sends no webhook: the video plays on, and its source simply stays on the PC.
 - Tests: the commit queues the upload only when asked, and only the holding PC claims it; a failed upload sends no event and doesn't error the asset; a 70 MiB file uploads through the worker API into filesystem and S3 storage (three parts on S3) and matches byte for byte, with the asset unpinned; an edited file is refused and nothing is stored. On the real binary, `clipmux push --local --upload-source` through the agent's socket uploads the file and leaves the re-encode unpinned.
 
+## D060 Dashboard: routing, cloud GPUs and route reasons — accepted (2026-11-06)
+Made in P4-T08 (with Phase 3's missing Playwright suite, D052):
+- **The Workers page** gains two cards (`dashboard/src/pages/routing.tsx`):
+  - **Routing:** the primary, the fallback and the opt-in queue age, with whether this server's worker is online. A provider is offered only once `providers_ready` lists it, so the page can't propose what the API would refuse.
+  - **Cloud GPUs:** each connected provider's state (ready, or waiting for its setup test; backing off), its running machines against its limit, the month's estimated spend against the limit, the rate and the pinned image. Under them are a Connect RunPod and a Connect Modal form, each showing every step's result like Connect Cloudflare, and Disconnect. The forms take dollars; the API takes cents.
+  - The controls carry accessible names (`Primary executor`, `Fallback executor`, `Queue-age fallback`, `Connect RunPod`).
+- **The Jobs page** shows where a queued job is routed and why, in words, for each route reason (D053, D055), and each attempt's reason when it wasn't the primary. Executors are named "this server", "a PC", "RunPod" or "Modal".
+  - It used to refresh only while a job it showed was queued or running, so a job created after the page loaded (an upload, a setup test) never appeared. The browser suite found this. It now refreshes every 10 s when idle, and every 3 s while something runs.
+  - An attempt's GPU and estimated cost aren't shown (known gap).
+- **The browser fixture** (`TestPlayerFixture`) boots its main install against a fake RunPod API and a fake private registry, which serve trusts through `SSL_CERT_FILE`. It creates the owner and a connected PC, and publishes the owner's credentials in `/config`.
+- **`e2e/web/tests/workers.spec.ts`** runs after the other suites and puts routing back. It signs in, sees the PC online with its encoders and sandbox, rescopes it, saves "PCs, else this server, after 5 minutes" and finds it after a reload. It connects RunPod through the form, with every step passing, the image pinned by digest and the key never on the page. It sees on the Jobs page the setup test's sample routed to RunPod and not yet claimed, and revokes the PC after the confirm dialog.
+
 ## D007 Shaka Packager 3.9.3 — accepted (2026-11-05)
 Decision: pin v3.9.3 (`toolchain/versions.env`), the version clipmux-lms runs with AES-128 in production, which needs the init-segment workaround for Shaka issue 1616. Move to a release that fixes 1616 when one exists, re-running the Phase 1 player tests.
