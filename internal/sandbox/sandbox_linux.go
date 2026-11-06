@@ -106,7 +106,7 @@ func apply(p Policy, argv []string) (Status, error) {
 	}
 	st.LandlockABI = abi
 
-	if err := seccomp(); err != nil {
+	if err := seccomp(p.GPU); err != nil {
 		return st, fmt.Errorf("seccomp: %w", err)
 	}
 	st.Seccomp = true
@@ -258,6 +258,11 @@ const (
 	bpfJeqK   = 0x15 // BPF_JMP | BPF_JEQ | BPF_K
 	bpfJgeK   = 0x35 // BPF_JMP | BPF_JGE | BPF_K
 	bpfRetK   = 0x06 // BPF_RET | BPF_K
+	bpfAndK   = 0x54 // BPF_ALU | BPF_AND | BPF_K
+
+	afUnix        = 1
+	sockSeqpacket = 5
+	sockTypeMask  = 0xf // the type without SOCK_NONBLOCK and SOCK_CLOEXEC
 
 	retKill  = 0x80000000 // SECCOMP_RET_KILL_PROCESS
 	retErrno = 0x00050000
@@ -266,7 +271,12 @@ const (
 
 // filter is the seccomp program: kill on a foreign architecture (and x32 on
 // x86-64), return an errno for each denied syscall, allow the rest.
-func filter() []sockFilter {
+//
+// A GPU tool may also open AF_UNIX SOCK_SEQPACKET sockets: the CUDA driver
+// makes them for its own IPC during cuInit, which fails without them. No
+// network family is allowed, nor stream or datagram Unix sockets, the kind
+// local services (Docker, D-Bus) listen on.
+func filter(gpu bool) []sockFilter {
 	prog := []sockFilter{
 		{code: bpfLdWAbs, k: 4}, // seccomp_data.arch
 		{code: bpfJeqK, jt: 1, k: auditArch},
@@ -276,14 +286,26 @@ func filter() []sockFilter {
 	if x32Bit != 0 {
 		prog = append(prog, sockFilter{code: bpfJgeK, jt: 0, jf: 1, k: x32Bit}, sockFilter{code: bpfRetK, k: retKill})
 	}
+	if gpu {
+		prog = append(prog,
+			sockFilter{code: bpfJeqK, jt: 0, jf: 7, k: sysSocket},
+			sockFilter{code: bpfLdWAbs, k: 16}, // seccomp_data.args[0], low word: domain
+			sockFilter{code: bpfJeqK, jt: 0, jf: 4, k: afUnix},
+			sockFilter{code: bpfLdWAbs, k: 24}, // args[1], low word: type
+			sockFilter{code: bpfAndK, k: sockTypeMask},
+			sockFilter{code: bpfJeqK, jt: 0, jf: 1, k: sockSeqpacket},
+			sockFilter{code: bpfRetK, k: retAllow},
+			sockFilter{code: bpfRetK, k: retErrno | eacces},
+		)
+	}
 	for nr, errno := range denied {
 		prog = append(prog, sockFilter{code: bpfJeqK, jt: 0, jf: 1, k: nr}, sockFilter{code: bpfRetK, k: retErrno | errno})
 	}
 	return append(prog, sockFilter{code: bpfRetK, k: retAllow})
 }
 
-func seccomp() error {
-	prog := filter()
+func seccomp(gpu bool) error {
+	prog := filter(gpu)
 	fprog := sockFprog{len: uint16(len(prog)), filter: &prog[0]}
 	if _, _, errno := syscall.RawSyscall(syscall.SYS_PRCTL, prSetSeccomp, seccompModeFilt, uintptr(unsafe.Pointer(&fprog))); errno != 0 {
 		return errno

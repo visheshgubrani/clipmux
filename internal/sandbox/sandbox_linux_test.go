@@ -141,3 +141,25 @@ func probe(t *testing.T) Status {
 	_ = json.Unmarshal(out, &st)
 	return st
 }
+
+// A GPU tool may make the AF_UNIX SOCK_SEQPACKET sockets CUDA uses
+// internally, and nothing else: no network, no stream Unix sockets.
+func TestGPUToolsGetCUDAsIPCSocketsAndNoOthers(t *testing.T) {
+	need(t, "python3")
+	try := func(gpu bool, family, kind string) int {
+		code, _, _ := sandboxed(t, Policy{Write: t.TempDir(), GPU: gpu}, "python3", "-I", "-c",
+			"import socket; socket.socket(socket."+family+", socket."+kind+")")
+		return code
+	}
+	if code := try(true, "AF_UNIX", "SOCK_SEQPACKET"); code != 0 {
+		t.Fatalf("a GPU tool couldn't open CUDA's AF_UNIX SOCK_SEQPACKET socket (exit %d)", code)
+	}
+	for _, c := range [][2]string{{"AF_INET", "SOCK_STREAM"}, {"AF_INET6", "SOCK_DGRAM"}, {"AF_UNIX", "SOCK_STREAM"}, {"AF_UNIX", "SOCK_DGRAM"}, {"AF_NETLINK", "SOCK_RAW"}} {
+		if try(true, c[0], c[1]) == 0 {
+			t.Errorf("a GPU tool opened %s %s", c[0], c[1])
+		}
+	}
+	if try(false, "AF_UNIX", "SOCK_SEQPACKET") == 0 {
+		t.Error("a CPU tool opened a socket")
+	}
+}

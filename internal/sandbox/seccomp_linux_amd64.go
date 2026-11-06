@@ -2,6 +2,7 @@ package sandbox
 
 // auditArch is AUDIT_ARCH_X86_64; x32 syscalls (bit 30) are refused too.
 const (
+	sysSocket            = 41
 	auditArch            = 0xc000003e
 	x32Bit               = 0x40000000
 	sysSchedSetscheduler = 144

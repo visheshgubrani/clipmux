@@ -2,6 +2,7 @@ package sandbox
 
 // auditArch is AUDIT_ARCH_AARCH64; arm64 has no second syscall ABI.
 const (
+	sysSocket            = 198
 	auditArch            = 0xc00000b7
 	x32Bit               = 0
 	sysSchedSetscheduler = 119

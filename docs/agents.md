@@ -101,7 +101,9 @@ example `-v "$HOME/Videos:$HOME/Videos:ro"`.
 
 Every ffmpeg and packager run is confined: no network, writes only to the
 job's own directory, reads only system paths and the job's source, and
-CPU, memory and file limits. A GPU path may also open its own device nodes.
+CPU, memory and file limits. A GPU path may also open its own device nodes,
+and, for CUDA's internal IPC, local `SOCK_SEQPACKET` sockets; never a
+network socket.
 An agent where the sandbox can't hold (not Linux, an old kernel) refuses to
 start unless you pass `--unsandboxed`. It then takes only jobs pinned to it
 and your own uploads, never an app's public uploads.

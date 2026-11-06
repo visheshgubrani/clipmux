@@ -413,5 +413,19 @@ Made in P3-T09. `internal/e2e/agents_db_test.go` runs the real binary, with serv
 - CI runs these in the Linux exit job (timeouts raised to 45 and 55 minutes).
 Still open before Phase 3 is closed on hardware: the closed-lid suspend on the M4 Mac with the Docker agent (by hand), the Modal run of NVENC and `cuda-decode`, and registering the self-hosted GPU runner. The Workers and Jobs pages have no Playwright suite yet.
 
+## D051 NVIDIA proven on Modal; CUDA's IPC sockets — accepted (2026-11-06)
+Amends D027 and D046, from the Modal run of P3-T03:
+- **NVIDIA failed inside the sandbox at first.** The first run on an L4 and an A100 found no GPU path inside the sandbox, while the same probes passed unconfined. `strace` showed why: `cuInit` opens `socket(AF_UNIX, SOCK_SEQPACKET)` for the driver's own IPC, and seccomp refused every `socket()`, so CUDA reported `CUDA_ERROR_OPERATING_SYSTEM`.
+- **The narrowed rule:** a GPU stage's seccomp filter (`--gpu`) now allows exactly `socket(AF_UNIX, SOCK_SEQPACKET)`, matching the type without its flags.
+  - Every other family stays refused (INET, INET6, NETLINK…), and so do stream and datagram Unix sockets, the types local services such as Docker and D-Bus listen on.
+  - CPU tools still can't open any socket.
+  - `TestGPUToolsGetCUDAsIPCSocketsAndNoOthers` holds all three rules. AMD's VAAPI needed no socket and still passes.
+- **Proof** (`deploy/modal/gpu_test.py`, run with `uvx --from modal modal run deploy/modal/gpu_test.py`):
+  - It builds the pinned toolchain on Modal and runs the media test binary.
+  - NVENC accepts any of an L4, A10G or T4, whichever has capacity (the L4 queue stalled). On an A10 it was detected (`nvenc, cpu`), encoded the golden ladder sandboxed with keyframes aligned and segments decrypting, and scored an SSIM of 0.996 against the CPU encode.
+  - On an A100, NVENC correctly failed its probe and the card was offered as `cuda-decode`, at an SSIM of 0.998.
+  - The harness also prints each probe unconfined and sandboxed, plus the refused calls CUDA makes, for the next driver that needs something.
+- **Modal's sandbox:** it runs gVisor without Landlock (ABI 0, reported, not required). rlimits, `no_new_privs` and seccomp hold there.
+
 ## D007 Shaka Packager 3.9.3 — accepted (2026-11-05)
 Decision: pin v3.9.3 (`toolchain/versions.env`), the version clipmux-lms runs with AES-128 in production, which needs the init-segment workaround for Shaka issue 1616. Move to a release that fixes 1616 when one exists, re-running the Phase 1 player tests.

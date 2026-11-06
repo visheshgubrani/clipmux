@@ -87,16 +87,16 @@ when you introduce or discover it; remove it when it is closed.
 - `clipmux push --local --upload-source` isn't built: an asset whose source
   stays on a PC re-encodes only on that PC, and only while the file is
   unchanged.
-- GPU encoding is proven on real hardware for VAAPI on AMD only (D046).
-  NVENC and `cuda-decode` are covered by argument and fallback tests until
-  they run on Modal (an L4 and an A100); Intel's iHD driver and Quick Sync
-  have no test machine. A GPU stage's failure isn't classified, so any one
-  falls back to the next stage.
+- GPU encoding is proven on real hardware for VAAPI on AMD (a self-hosted
+  runner) and for NVENC and `cuda-decode` on Modal (D051); Intel's iHD driver
+  and Quick Sync have no test machine. A GPU stage's failure isn't
+  classified, so any one falls back to the next stage. GPU tools may open
+  AF_UNIX SOCK_SEQPACKET sockets, which CUDA needs.
 - No self-contained Linux tarball for agents yet (D049): a native agent
   needs an FFmpeg with the GPU encoders and the pinned packager installed;
   the image works everywhere Docker does.
-- Phase 3's exit passed on the real binary (D050); still by hand: a real
-  suspend of the M4 Mac's Docker agent, NVENC and `cuda-decode` on Modal, and
+- Phase 3's exit passed on the real binary (D050), and NVIDIA on Modal
+  (D051); still by hand: a real suspend of the M4 Mac's Docker agent, and
   registering the self-hosted GPU runner. The Workers and Jobs pages and the
   connect page have no Playwright suite yet.
 - Disconnecting Cloudflare (back to built-in delivery) has no endpoint yet.
