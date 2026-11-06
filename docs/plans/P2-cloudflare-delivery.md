@@ -11,6 +11,9 @@ feature gate, so built-in delivery stays fully supported.
 Starts only after the Phase 1 exit test passes, including the Safari,
 ExoPlayer and image CI jobs ([known-gaps.md](../known-gaps.md)).
 
+Next: [Phase 3 — PC agent](P3-pc-agent.md). The real-account run of this
+phase's exit test is its task T00 (D042).
+
 **Exit test:** app code is unchanged on the Worker, old filesystem assets still
 play, and a revoked ID stops within a minute.
 

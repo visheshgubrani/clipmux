@@ -308,5 +308,25 @@ Made in P2-T07:
 - The move job's late-write wait moved from the copy to the cleanup (D038). The exit test found it held every move for 16 minutes after the asset's last job, though a late PUT can't affect the copy.
 - Not covered here, and required before Phase 2 exits against Cloudflare: the setup test through the Worker (its media URL must resolve to the edge), the Chromium suites against the Worker hostname, and the same run on a real Cloudflare account (D037). These need a test zone, a scoped token and Workers Paid as repository secrets.
 
+## D042 Phase 3 scope — accepted (2026-11-06)
+Context: Phase 2 is merged (visheshgubrani/clipmux#3) with its exit proven on the harness only (D041). The owner chose the next phase and its scope; the plan is [plans/P3-pc-agent.md](plans/P3-pc-agent.md).
+Decision:
+- **Next phase:** Phase 3 (PC agent) follows the architecture's build order. The LMS migration and going public wait.
+- **Phase 2 real-account exit:** it becomes Phase 3's task T00, a parallel track. Phase 3 starts now, because it doesn't change delivery and the open run needs Cloudflare secrets, not code. The Phase 2 exit is recorded when T00 passes.
+- **Platforms:** agents run natively on Linux (amd64, arm64) or as the existing image in Docker. Windows and macOS use WSL2, Docker Desktop or a VM. Native Windows and macOS agents are out of this phase.
+- **Hardware encoding:**
+  - **Backends:** `nvenc`, `vaapi` (AMD and Intel on Linux), `cuda-decode` (NVIDIA cards without NVENC) and `cpu`.
+  - **Selection:** each backend is proved by a real probe encode.
+  - **Fallback:** an encoder failure falls back down that list to the CPU within the same attempt, recorded in the manifest.
+  - **Left out:** AMF, Quick Sync and VideoToolbox, which need native Windows or macOS or add nothing over VAAPI on Linux.
+- **Pairing:** a single-use pairing code in the Connect my PC command, exchanged for the agent's key in a 0600 config file. This amends the architecture's `--key KEY`, because a key never goes in argv (D012).
+- **CLI:** plain `clipmux push` and `clipmux listen --forward-to` land in this phase beside `push --local`.
+- **Proof on real hardware:**
+  - a self-hosted runner on the owner's Ubuntu machine with an AMD RX 6600 XT (VAAPI and CPU);
+  - Modal for NVIDIA (L4 for `nvenc`, A100 for `cuda-decode`);
+  - an M4 Mac running the Docker agent for arm64 and a real lid-close suspend.
+  - Intel hardware is unavailable, so its real run is a known gap.
+Consequence: `--sandbox` becomes the agent default. Unsandboxed agents take pinned and owner-uploaded jobs only, which needs the `agents` check constraint relaxed. No `Executor` interface is added before Phase 4 gives `Wake` a second implementation.
+
 ## D007 Shaka Packager 3.9.3 — accepted (2026-11-05)
 Decision: pin v3.9.3 (`toolchain/versions.env`), the version clipmux-lms runs with AES-128 in production, which needs the init-segment workaround for Shaka issue 1616. Move to a release that fixes 1616 when one exists, re-running the Phase 1 player tests.
