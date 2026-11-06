@@ -109,6 +109,12 @@ func (f *cfFake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // owner signs in as the owner with the setup token serve printed.
 func (in *instance) owner() *http.Client {
 	in.t.Helper()
+	return in.ownerAt(in.url)
+}
+
+// ownerAt signs in through base, such as a tunnel to this instance.
+func (in *instance) ownerAt(base string) *http.Client {
+	in.t.Helper()
 	m := regexp.MustCompile(`setup_token=(\S+)`).FindStringSubmatch(in.log())
 	if m == nil {
 		in.t.Fatalf("no setup token in the logs")
@@ -116,7 +122,7 @@ func (in *instance) owner() *http.Client {
 	jar, _ := cookiejar.New(nil)
 	c := &http.Client{Jar: jar}
 	body, _ := json.Marshal(map[string]string{"setup_token": m[1], "email": "owner@example.test", "password": "a long test password"})
-	res, err := c.Post(in.url+"/v1/setup/owner", "application/json", bytes.NewReader(body))
+	res, err := c.Post(base+"/v1/setup/owner", "application/json", bytes.NewReader(body))
 	if err != nil || res.StatusCode != http.StatusCreated {
 		in.t.Fatalf("create owner: %v %v", err, res)
 	}

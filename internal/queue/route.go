@@ -139,6 +139,19 @@ func decideRoute(f routeFacts) (to, reason string) {
 	return f.Fallback, ReasonPrimaryOffline
 }
 
+// attemptReason is why an attempt ran where it did, from its job's route
+// at the claim. The reasons a job waits on its primary for (the fallback
+// missing, barred, offline or full, or the primary at its own limit) explain
+// the wait, not the run: once the primary claims, it ran there as the
+// primary.
+func attemptReason(jobReason string) string {
+	switch jobReason {
+	case ReasonNoFallback, ReasonFallbackRefused, ReasonFallbackOffline, ReasonFallbackLimit, ReasonPrimaryLimit:
+		return ReasonPrimary
+	}
+	return jobReason
+}
+
 // up reports whether an executor class could take the job now: a pull
 // executor with an online worker that could claim it, or a verified provider
 // whose machines fit it (and only when this queue can wake one).

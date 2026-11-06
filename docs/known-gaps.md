@@ -109,14 +109,15 @@ when you introduce or discover it; remove it when it is closed.
 - Provider spend (D055) is an estimate from the hourly rate set in Connect,
   not the provider's bill, and a machine that runs past its reservation
   isn't stopped at the limit, so a month can overshoot by that much.
-- Modal (D057) is tested through a seam in front of its gRPC SDK; the SDK
-  itself, the assumption that a sandbox's command replaces the image's
-  entrypoint, and its cold start are proven only by the real-account run
-  (T10).
-- RunPod (D056) is tested against a fake REST API only; its real-account
-  run, and the cold start that sets the 10-minute claim deadline, come with
-  the Phase 4 exit (T10). Whether both providers accept a digest-only
-  image reference (D058) is also confirmed there.
+- Phase 4's exit passed in CI on the real binary against a fake RunPod
+  (D062), but not yet on real accounts: `exit-providers.yml` is written and
+  needs the secrets `RUNPOD_API_KEY`, `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET`
+  and `GHCR_PULL_TOKEN`. Until it runs, these are unproven: Modal's SDK
+  (D057, tested through a seam) and the assumption that a sandbox's command
+  replaces the image's entrypoint; RunPod's real REST API (D056); both
+  providers' cold starts against the 10-minute claim deadline; and whether
+  both accept a digest-only image reference (D058). Modal has no fake
+  provider in the CI exit, only RunPod.
 - Routing (D053) records the built-in worker's liveness per project, not per
   replica: with several serve replicas, any one worker's calls keep "the
   server" online. A job barred from the fallback because its file failed

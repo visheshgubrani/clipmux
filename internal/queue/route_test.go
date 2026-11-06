@@ -67,3 +67,18 @@ func TestEachWorkerClaimsOnlyItsClasses(t *testing.T) {
 		}
 	}
 }
+
+// An attempt records why it ran where it did: a job that waited on its
+// primary for the fallback's sake ran on the primary as the primary.
+func TestAnAttemptRecordsWhyItRanThere(t *testing.T) {
+	for job, want := range map[string]string{
+		"primary": "primary", "pinned": "pinned", "setup_test": "setup_test",
+		"primary_offline": "primary_offline", "queue_age": "queue_age",
+		"no_fallback": "primary", "fallback_refused": "primary", "fallback_offline": "primary",
+		"fallback_limit": "primary", "primary_limit": "primary",
+	} {
+		if got := attemptReason(job); got != want {
+			t.Errorf("a job routed for %s: its attempt records %s, want %s", job, got, want)
+		}
+	}
+}

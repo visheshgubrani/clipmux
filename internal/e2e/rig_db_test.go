@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -57,6 +58,7 @@ type instance struct {
 	dataDir string
 	env     []string
 	cmd     *exec.Cmd
+	pw      *io.PipeWriter
 	mu      sync.Mutex
 	logs    bytes.Buffer
 }
@@ -99,7 +101,9 @@ func boot(t *testing.T, pinned bool, extraEnv ...string) *instance {
 	in := &instance{t: t, pool: pool, url: fmt.Sprintf("http://127.0.0.1:%d", port), dataDir: t.TempDir()}
 	in.env = []string{
 		"PATH=" + os.Getenv("PATH"),
-		"DATABASE_URL=" + dbURL + sep + "search_path=" + schema,
+		// At most 8 connections each, so the Phase 4 tests' parallel
+		// instances fit Postgres's default 100 on any number of cores.
+		"DATABASE_URL=" + dbURL + sep + "search_path=" + schema + "&pool_max_conns=8",
 		"CLIPMUX_DATA_DIR=" + in.dataDir,
 		fmt.Sprintf("CLIPMUX_LISTEN=127.0.0.1:%d", port),
 	}
@@ -112,10 +116,27 @@ func boot(t *testing.T, pinned bool, extraEnv ...string) *instance {
 			in.env = append(in.env, k+"="+v)
 		}
 	}
+	t.Cleanup(func() {
+		in.halt(os.Interrupt)
+		if t.Failed() {
+			t.Logf("serve logs:\n%s", in.log())
+		}
+	})
+	in.launch()
+	return in
+}
+
+// launch starts serve and waits until it is ready.
+func (in *instance) launch() {
+	t := in.t
+	t.Helper()
 	in.cmd = exec.Command(bin, "serve")
 	in.cmd.Env = in.env
+	// Its own process group, so a crash takes the built-in worker with it,
+	// as it would in a container.
+	in.cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	pr, pw := io.Pipe()
-	in.cmd.Stdout, in.cmd.Stderr = pw, pw
+	in.cmd.Stdout, in.cmd.Stderr, in.pw = pw, pw, pw
 	go func() {
 		s := bufio.NewScanner(pr)
 		for s.Scan() {
@@ -127,20 +148,12 @@ func boot(t *testing.T, pinned bool, extraEnv ...string) *instance {
 	if err := in.cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() {
-		_ = in.cmd.Process.Signal(os.Interrupt)
-		_ = in.cmd.Wait()
-		pw.Close()
-		if t.Failed() {
-			t.Logf("serve logs:\n%s", in.log())
-		}
-	})
 	deadline := time.Now().Add(30 * time.Second)
 	for {
 		if res, err := http.Get(in.url + "/readyz"); err == nil {
 			res.Body.Close()
 			if res.StatusCode == 200 {
-				return in
+				return
 			}
 		}
 		if time.Now().After(deadline) {
@@ -148,6 +161,29 @@ func boot(t *testing.T, pinned bool, extraEnv ...string) *instance {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
+}
+
+// halt stops serve with sig and waits for it; os.Kill is a crash, which
+// kills its process group. It does nothing if serve isn't running.
+func (in *instance) halt(sig os.Signal) {
+	if in.cmd == nil || in.cmd.ProcessState != nil {
+		return
+	}
+	if sig == os.Kill {
+		_ = syscall.Kill(-in.cmd.Process.Pid, syscall.SIGKILL)
+	} else {
+		_ = in.cmd.Process.Signal(sig)
+	}
+	_ = in.cmd.Wait()
+	in.pw.Close()
+}
+
+// restart stops serve cleanly and starts it again on the same database,
+// data directory and port.
+func (in *instance) restart() {
+	in.t.Helper()
+	in.halt(os.Interrupt)
+	in.launch()
 }
 
 func (in *instance) log() string {
@@ -269,7 +305,10 @@ func (in *instance) waitReady(key, asset string, limit time.Duration) {
 	in.t.Helper()
 	deadline := time.Now().Add(limit)
 	for {
-		var a struct{ Status, ErrorCode string }
+		var a struct {
+			Status    string `json:"status"`
+			ErrorCode string `json:"error_code"`
+		}
 		in.call("GET", "/v1/assets/"+asset, key, nil, &a)
 		switch {
 		case a.Status == "ready":

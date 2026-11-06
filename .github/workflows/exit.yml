@@ -62,7 +62,7 @@ jobs:
         run: |
           docker compose -f deploy/compose.dev.yml up -d seaweedfs
           for i in $(seq 60); do curl -s -o /dev/null http://127.0.0.1:8333/ && exit 0; sleep 1; done; exit 1
-      - name: Real binary (Phase 1, 2 and 3 exit tests)
+      - name: Real binary (Phase 1 to 4 exit tests)
         env:
           CLIPMUX_REQUIRE_S3: "1"
           CLIPMUX_TEST_S3_ENDPOINT: http://127.0.0.1:8333

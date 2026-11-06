@@ -257,7 +257,7 @@ func (q *Queue) Claim(ctx context.Context, w Worker) (*Claim, error) {
 		attempt, err := qs.CreateAttempt(ctx, db.CreateAttemptParams{
 			ID: ids.New(ids.Attempt), ProjectID: job.ProjectID, JobID: job.ID, AssetID: job.AssetID,
 			AttemptNumber: n, OutputID: output.ID, Executor: w.Executor, AgentID: text(w.AgentID),
-			TokenHash: hash, WorkerInfo: info, LeaseSeconds: q.Lease.Seconds(), RouteReason: job.RouteReason,
+			TokenHash: hash, WorkerInfo: info, LeaseSeconds: q.Lease.Seconds(), RouteReason: text(attemptReason(job.RouteReason.String)),
 			DispatchID: text(w.DispatchID),
 		})
 		if err != nil {
