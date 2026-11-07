@@ -32,6 +32,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/modal"
 	"github.com/visheshgubrani/clipmux/internal/outputs"
 	"github.com/visheshgubrani/clipmux/internal/queue"
+	"github.com/visheshgubrani/clipmux/internal/retention"
 	"github.com/visheshgubrani/clipmux/internal/routes"
 	"github.com/visheshgubrani/clipmux/internal/runpod"
 	"github.com/visheshgubrani/clipmux/internal/secrets"
@@ -84,6 +85,10 @@ const WebhookInterval = 5 * time.Second
 // unpublishes and second passes.
 const ControlJobInterval = 15 * time.Second
 
+// RetentionInterval is how often rows past their windows are pruned
+// (D069).
+const RetentionInterval = time.Hour
+
 // SetupTestInterval is how often a queued setup test is picked up.
 const SetupTestInterval = 5 * time.Second
 
@@ -111,6 +116,7 @@ var passTimeouts = map[string]time.Duration{
 	"route_reconciler":     30 * time.Minute, // lists every route record
 	"webhooks":             5 * time.Minute,  // 10 s per delivery, 8 at a time
 	"setup_tests":          30 * time.Minute, // waits up to 15 minutes for its encode
+	"retention":            10 * time.Minute,
 }
 
 // Registrar adds an API's routes to the root mux.
@@ -401,6 +407,9 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 	loop(ControlJobInterval, "control_jobs", life.Run)
 	loop(ControlJobInterval, "imports", life.RunImports)
 	loop(SetupTestInterval, "setup_tests", tests.Run)
+	prune := retention.New(pool)
+	prune.Logger = logger
+	loop(RetentionInterval, "retention", prune.Run)
 	// Saving the URLs re-runs the setup test: a wrong hostname should fail
 	// here, not in an app.
 	mgmt.URLsSaved = func(settings.URLs) {

@@ -21,6 +21,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/config"
 	"github.com/visheshgubrani/clipmux/internal/db"
 	"github.com/visheshgubrani/clipmux/internal/ids"
+	"github.com/visheshgubrani/clipmux/internal/retention"
 	"github.com/visheshgubrani/clipmux/internal/secrets"
 	"github.com/visheshgubrani/clipmux/internal/settings"
 	"github.com/visheshgubrani/clipmux/internal/setuptest"
@@ -36,6 +37,8 @@ const adminUsage = `Usage:
   clipmux admin reset-password < new-password.txt
   clipmux admin setup-test [--wait] [--timeout 20m]
   clipmux admin migrate status | up | down-to VERSION --yes
+  clipmux admin prune [--dry-run]
+  clipmux admin outbox [--retry ID]
 
 Host-side administration until the dashboard exists. Reads DATABASE_URL, and
 for create-webhook CLIPMUX_DATA_DIR or CLIPMUX_SECRETS_KEY (the same key serve
@@ -59,6 +62,12 @@ migrate shows which migrations the database has (status), applies pending
 ones (up; serve and every other admin command do this too), or rolls back
 every migration above VERSION (down-to, which needs --yes and the binary
 that applied them). Migrations hold a lock, so they never run twice at once.
+
+prune deletes rows past their retention windows now, as serve does every
+hour, and prints what went; --dry-run counts without deleting. outbox lists
+route publications, wakes and stops still pending after an hour, which are
+retried forever; --retry ID makes one due at once.
+
 `
 
 const project = db.DefaultProjectID
@@ -67,6 +76,9 @@ const project = db.DefaultProjectID
 func admin(args []string, getenv func(string) string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) > 0 && args[0] == "migrate" {
 		return migrateCmd(args[1:], getenv, stdout, stderr)
+	}
+	if len(args) > 0 && (args[0] == "prune" || args[0] == "outbox") {
+		return retentionCmd(args[0], args[1:], getenv, stdout, stderr)
 	}
 	if len(args) == 0 || !slices.Contains([]string{"create-key", "create-signing-key", "create-webhook", "create-pairing", "reset-password", "setup-test"}, args[0]) {
 		fmt.Fprint(stderr, adminUsage)
@@ -351,6 +363,67 @@ func migrateCmd(args []string, getenv func(string) string, stdout, stderr io.Wri
 	if err != nil {
 		fmt.Fprintf(stderr, "clipmux admin: %v\n", err)
 		return 1
+	}
+	return 0
+}
+
+// retentionCmd runs clipmux admin prune and outbox.
+func retentionCmd(cmd string, args []string, getenv func(string) string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet(cmd, flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	dryRun := fs.Bool("dry-run", false, "count what would go without deleting it (prune)")
+	retry := fs.String("retry", "", "make this pending outbox row due now (outbox)")
+	if err := fs.Parse(args); err != nil || fs.NArg() > 0 {
+		fmt.Fprint(stderr, adminUsage)
+		return 2
+	}
+	ctx := context.Background()
+	pool, err := db.Open(ctx, getenv("DATABASE_URL"))
+	if err != nil {
+		fmt.Fprintf(stderr, "clipmux admin: %v\n", err)
+		return 1
+	}
+	defer pool.Close()
+	if err := db.Migrate(ctx, pool); err != nil {
+		fmt.Fprintf(stderr, "clipmux admin: %v\n", err)
+		return 1
+	}
+	r := retention.New(pool)
+	switch {
+	case cmd == "prune":
+		rules, err := r.Prune(ctx, *dryRun)
+		for _, rule := range rules {
+			fmt.Fprintf(stdout, "%-20s %d\n", rule.Name, rule.Deleted)
+		}
+		if err != nil {
+			fmt.Fprintf(stderr, "clipmux admin: %v\n", err)
+			return 1
+		}
+		if *dryRun {
+			fmt.Fprintln(stdout, "(dry run: nothing was deleted)")
+		}
+	case *retry != "":
+		ok, err := r.RetryNow(ctx, *retry)
+		if err != nil {
+			fmt.Fprintf(stderr, "clipmux admin: %v\n", err)
+			return 1
+		}
+		if !ok {
+			fmt.Fprintf(stderr, "clipmux admin: no pending outbox row %s\n", *retry)
+			return 1
+		}
+		fmt.Fprintf(stdout, "%s is due now\n", *retry)
+	default:
+		rows, err := r.Stuck(ctx)
+		if err != nil {
+			fmt.Fprintf(stderr, "clipmux admin: %v\n", err)
+			return 1
+		}
+		for _, row := range rows {
+			fmt.Fprintf(stdout, "%s  %-10s tries %-3d since %s  next %s  %s\n", row.ID, row.Kind, row.Attempts,
+				row.CreatedAt.Time.UTC().Format(time.RFC3339), row.AvailableAt.Time.UTC().Format(time.RFC3339), row.LastError)
+		}
+		fmt.Fprintf(stdout, "%d stuck (pending for over %s)\n", len(rows), retention.StuckAfter)
 	}
 	return 0
 }

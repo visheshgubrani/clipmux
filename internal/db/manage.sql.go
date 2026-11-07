@@ -539,15 +539,18 @@ func (q *Queries) ListSigningKeys(ctx context.Context, appID pgtype.Text) ([]Lis
 }
 
 const listWebhookEndpoints = `-- name: ListWebhookEndpoints :many
-SELECT id, url, created_at, disabled_at FROM webhook_endpoints
+SELECT id, url, created_at, disabled_at, consecutive_failures, circuit_open_until, pending_secret_at FROM webhook_endpoints
 WHERE app_id = $1 ORDER BY created_at DESC, id DESC
 `
 
 type ListWebhookEndpointsRow struct {
-	ID         string
-	Url        string
-	CreatedAt  pgtype.Timestamptz
-	DisabledAt pgtype.Timestamptz
+	ID                  string
+	Url                 string
+	CreatedAt           pgtype.Timestamptz
+	DisabledAt          pgtype.Timestamptz
+	ConsecutiveFailures int32
+	CircuitOpenUntil    pgtype.Timestamptz
+	PendingSecretAt     pgtype.Timestamptz
 }
 
 func (q *Queries) ListWebhookEndpoints(ctx context.Context, appID string) ([]ListWebhookEndpointsRow, error) {
@@ -564,6 +567,9 @@ func (q *Queries) ListWebhookEndpoints(ctx context.Context, appID string) ([]Lis
 			&i.Url,
 			&i.CreatedAt,
 			&i.DisabledAt,
+			&i.ConsecutiveFailures,
+			&i.CircuitOpenUntil,
+			&i.PendingSecretAt,
 		); err != nil {
 			return nil, err
 		}

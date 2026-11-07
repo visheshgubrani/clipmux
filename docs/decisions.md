@@ -675,5 +675,22 @@ Decisions within D063, made in P5-T05:
 - **`clipmux admin migrate status | up | down-to VERSION --yes`.** `status` lists every migration with when it was applied, `down-to` needs `--yes`. Other admin commands keep migrating at start, now under the lock (P5 open question 12: refusing while migrations are pending would change what operators run today, for no safety the lock doesn't already give).
 - `CLIPMUX_TOOL_MEMORY_MB` must be a positive number; serve and the worker stop at boot otherwise, where it used to be ignored.
 
+## D069 Row retention, stuck publications and webhook health — accepted (2026-11-07)
+Decisions within D063, made in P5-T06:
+- **`internal/retention` prunes rows past their windows**, an hourly leader loop (10-minute pass deadline). Each rule deletes at most 1,000 rows per statement and repeats until a pass comes up short, so no pass holds a long lock. The windows are constants because each follows from another rule:
+  - idempotency keys after 24 h (a client's retry window);
+  - dashboard sessions once expired or idle 7 days (the idle limit, D024);
+  - pairings a day after they expire;
+  - finished webhook deliveries after 30 days, then their events once no delivery points at them, which bounds `GET /v1/events` and `clipmux listen --since` to 30 days;
+  - other finished outbox rows after 7 days;
+  - all but the newest 20 finished setup tests;
+  - a dispatch's sealed one-time key once the dispatch ends (`key_sealed` became nullable).
+  Jobs, attempts and dispatches are kept as history and spend.
+- **`clipmux admin prune [--dry-run]`** runs the same rules now; the dry run applies them in a transaction it rolls back, so its counts are exact.
+- **No dead letter for route and key publications, wakes or stops.** Giving up would strand a revocation, an asset's readiness or a paid machine, so they keep their capped backoff. One pending for over an hour is "stuck": the retention pass logs an error, `clipmux_outbox_oldest_pending_seconds` shows it (and the shipped alert fires), and `clipmux admin outbox [--retry ID]` lists them and makes one due at once.
+- **A breaker per webhook endpoint.** After 5 failed tries in a row (`webhooks.BreakerAfter`) the endpoint is skipped for a minute, doubling with each further failure to at most an hour. A skipped delivery is neither claimed nor charged a try, and its 24-hour window doesn't move; a success closes the breaker. A delivery whose last try falls in an open window is tried once the breaker closes, and then fails if its window has passed. Endpoints list `consecutive_failures` and `skipped_until`.
+- **Two-step secret rotation** keeps D018's single signature header: `POST /v1/webhook-endpoints/{id}/secret` returns a new secret once, sealed apart (`webhook_endpoints_pending`), while deliveries stay signed with the old one; `…/secret/activate` switches signing to it from the next try.
+- **Redelivery:** `GET /v1/webhook-endpoints/{id}/deliveries` lists the latest 100, and `POST /v1/webhook-deliveries/{id}/redeliver` sends a delivery that gave up (`failed`) again with a fresh 24 hours; any other is `409 not_redeliverable`.
+
 ## D007 Shaka Packager 3.9.3 — accepted (2026-11-05)
 Decision: pin v3.9.3 (`toolchain/versions.env`), the version clipmux-lms runs with AES-128 in production, which needs the init-segment workaround for Shaka issue 1616. Move to a release that fixes 1616 when one exists, re-running the Phase 1 player tests.

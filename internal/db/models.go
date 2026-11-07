@@ -356,11 +356,15 @@ type WebhookDelivery struct {
 }
 
 type WebhookEndpoint struct {
-	ID              string
-	ProjectID       string
-	AppID           string
-	Url             string
-	SecretEncrypted []byte
-	CreatedAt       pgtype.Timestamptz
-	DisabledAt      pgtype.Timestamptz
+	ID                     string
+	ProjectID              string
+	AppID                  string
+	Url                    string
+	SecretEncrypted        []byte
+	CreatedAt              pgtype.Timestamptz
+	DisabledAt             pgtype.Timestamptz
+	ConsecutiveFailures    int32
+	CircuitOpenUntil       pgtype.Timestamptz
+	PendingSecretEncrypted []byte
+	PendingSecretAt        pgtype.Timestamptz
 }

@@ -2,13 +2,17 @@ package webhooks
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/visheshgubrani/clipmux/internal/db"
@@ -230,6 +234,12 @@ func TestFailedDeliveriesBackOffForADayThenStop(t *testing.T) {
 		if d.Status != "pending" {
 			break
 		}
+		if !d.Next.After(r.now) {
+			// Due but not tried: by its tenth failure the endpoint's breaker
+			// is open for 32 minutes, so the last try waits for it to close.
+			r.now = r.now.Add(time.Hour)
+			continue
+		}
 		offsets = append(offsets, d.Next.Sub(t0).String())
 		r.now = d.Next
 	}
@@ -336,5 +346,122 @@ func TestAClaimedDeliveryIsResentAfterItsLease(t *testing.T) {
 	}
 	if d := r.deliveries()[0]; d.Status != "delivered" {
 		t.Fatalf("stale result changed the delivery: %+v", d)
+	}
+}
+
+func TestAFailingEndpointIsSkippedUntilItsBreakerCloses(t *testing.T) {
+	r := newRig(t)
+	dead := newReceiver(t, 500, 500, 500, 500, 500, 200)
+	fine := newReceiver(t, 200)
+	deadID, _ := r.endpoint("app_dashboard", dead.URL)
+	r.endpoint("app_dashboard", fine.URL)
+	r.pub.Concurrency = 1 // tries in order, so the fifth failure is the fifth try
+	for i := range BreakerAfter {
+		r.event("app_dashboard", "ast_"+string(rune('a'+i)))
+	}
+	r.run()
+	if n := len(dead.requests()); n != BreakerAfter {
+		t.Fatalf("dead endpoint tried %d times, want %d", n, BreakerAfter)
+	}
+	var failures int
+	var open time.Time
+	if err := r.pool.QueryRow(context.Background(), `SELECT consecutive_failures, circuit_open_until FROM webhook_endpoints WHERE id = $1`, deadID).Scan(&failures, &open); err != nil {
+		t.Fatal(err)
+	}
+	if failures != BreakerAfter || !open.Equal(r.now.Add(time.Minute)) {
+		t.Fatalf("breaker: %d failures, open until %v; want %d and now + 1 min", failures, open, BreakerAfter)
+	}
+
+	r.event("app_dashboard", "ast_late")
+	r.run()
+	if n := len(dead.requests()); n != BreakerAfter {
+		t.Fatalf("an open breaker was tried: %d requests", n)
+	}
+	if n := len(fine.requests()); n != BreakerAfter+1 {
+		t.Fatalf("the healthy endpoint got %d, want %d: one endpoint's breaker must not hold up another", n, BreakerAfter+1)
+	}
+	var charged int
+	if err := r.pool.QueryRow(context.Background(), `SELECT d.attempts FROM webhook_deliveries d JOIN outbox e ON e.id = d.event_id WHERE d.endpoint_id = $1 AND e.asset_id = 'ast_late'`, deadID).Scan(&charged); err != nil {
+		t.Fatal(err)
+	}
+	if charged != 0 {
+		t.Fatalf("a skipped delivery was charged %d tries", charged)
+	}
+
+	r.now = r.now.Add(time.Minute + time.Second) // the breaker has closed; the probe succeeds
+	r.run()
+	if err := r.pool.QueryRow(context.Background(), `SELECT consecutive_failures, circuit_open_until IS NULL FROM webhook_endpoints WHERE id = $1`, deadID).Scan(&failures, new(bool)); err != nil {
+		t.Fatal(err)
+	}
+	if failures != 0 {
+		t.Fatalf("a success left %d failures counted", failures)
+	}
+}
+
+func TestASecretSignsOnlyOnceActivated(t *testing.T) {
+	r := newRig(t)
+	rc := newReceiver(t, 200)
+	id, old := r.endpoint("app_dashboard", rc.URL)
+	ctx := context.Background()
+	if err := ActivateSecret(ctx, r.q, r.box, "prj_default", id); !errors.Is(err, ErrNoPendingSecret) {
+		t.Fatalf("activate with nothing pending: %v", err)
+	}
+	fresh, err := RotateSecret(ctx, r.q, r.box, "prj_default", id)
+	if err != nil || !strings.HasPrefix(fresh, "whsec_") || fresh == old {
+		t.Fatalf("rotate: %q %v", fresh, err)
+	}
+	if _, err := RotateSecret(ctx, r.q, r.box, "prj_other", id); !errors.Is(err, ErrNoEndpoint) {
+		t.Fatal("another project rotated this endpoint")
+	}
+	signedWith := func() string {
+		got := rc.requests()
+		h := got[len(got)-1].header
+		ts, _ := strconv.ParseInt(h.Get("X-Webhook-Timestamp"), 10, 64)
+		for _, s := range []string{old, fresh} {
+			if Sign([]byte(s), ts, got[len(got)-1].body) == h.Get("X-Webhook-Signature") {
+				return s
+			}
+		}
+		return "neither"
+	}
+	r.event("app_dashboard", "ast_1")
+	r.run()
+	if signedWith() != old {
+		t.Fatal("a pending secret signed a delivery")
+	}
+	if err := ActivateSecret(ctx, r.q, r.box, "prj_default", id); err != nil {
+		t.Fatal(err)
+	}
+	r.event("app_dashboard", "ast_2")
+	r.run()
+	if signedWith() != fresh {
+		t.Fatal("the activated secret doesn't sign")
+	}
+}
+
+func TestOnlyAGivenUpDeliveryCanBeRedelivered(t *testing.T) {
+	r := newRig(t)
+	rc := newReceiver(t, 200)
+	r.endpoint("app_dashboard", rc.URL)
+	r.event("app_dashboard", "ast_1")
+	r.run()
+	var id string
+	if err := r.pool.QueryRow(context.Background(), `SELECT id FROM webhook_deliveries`).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	params := db.RedeliverWebhookParams{ID: id, ProjectID: "prj_default", Now: ts(r.now), GiveUpAt: ts(r.now.Add(RedeliverWindow))}
+	if _, err := r.q.RedeliverWebhook(context.Background(), params); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("redelivering a delivered event: %v, want refused", err)
+	}
+	r.exec(`UPDATE webhook_deliveries SET status = 'failed' WHERE id = $1`, id)
+	if _, err := r.q.RedeliverWebhook(context.Background(), db.RedeliverWebhookParams{ID: id, ProjectID: "prj_other", Now: params.Now, GiveUpAt: params.GiveUpAt}); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatal("another project redelivered it")
+	}
+	if _, err := r.q.RedeliverWebhook(context.Background(), params); err != nil {
+		t.Fatal(err)
+	}
+	r.run()
+	if d := r.deliveries()[0]; d.Status != "delivered" || d.Attempts != 1 || !d.GiveUp.Equal(r.now.Add(RedeliverWindow)) || len(rc.requests()) != 2 {
+		t.Fatalf("after redelivery: %+v with %d requests", d, len(rc.requests()))
 	}
 }

@@ -29,7 +29,7 @@ UPDATE signing_keys SET revoked_at = coalesce(revoked_at, now())
 WHERE project_id = $1 AND id = $2 AND app_id IS NOT NULL;
 
 -- name: ListWebhookEndpoints :many
-SELECT id, url, created_at, disabled_at FROM webhook_endpoints
+SELECT id, url, created_at, disabled_at, consecutive_failures, circuit_open_until, pending_secret_at FROM webhook_endpoints
 WHERE app_id = $1 ORDER BY created_at DESC, id DESC;
 
 -- name: DisableWebhookEndpoint :execrows

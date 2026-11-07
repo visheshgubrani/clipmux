@@ -130,6 +130,10 @@ means stop; `404` means the ID is unknown or revoked.
 | `GET`/`POST /v1/apps/{id}/api-keys` · `DELETE /v1/api-keys/{id}` | the secret (`key`) is in the create response only; `409 public_url_required` while the public URL is loopback |
 | `GET`/`POST /v1/apps/{id}/signing-keys` · `DELETE /v1/signing-keys/{kid}` | `private_key_pem` in the create response only |
 | `GET`/`POST /v1/apps/{id}/webhook-endpoints` · `DELETE /v1/webhook-endpoints/{id}` | `secret` in the create response only |
+| `POST /v1/webhook-endpoints/{id}/secret` | `201 {secret, active: false}`: a new secret, shown once; deliveries stay signed with the old one until it is activated (D069) |
+| `POST /v1/webhook-endpoints/{id}/secret/activate` | `{active: true}`: deliveries are signed with the new secret from the next try; `409 no_pending_secret` |
+| `GET /v1/webhook-endpoints/{id}/deliveries` | the latest 100: `{data: [{id, event_id, event_type, status, attempts, last_status, last_error, created_at, finished_at, next_attempt_at}]}`. Endpoints list `consecutive_failures` and `skipped_until`: after 5 failed tries in a row an endpoint is skipped for a minute, doubling to an hour, without spending its deliveries' tries |
+| `POST /v1/webhook-deliveries/{id}/redeliver` | `202`: a delivery that gave up (`failed`) is retried for a fresh 24 hours; `409 not_redeliverable` otherwise |
 | `GET /v1/library?app_id=&status=&cursor=&limit=` | every app's assets, newest first |
 | `POST /v1/assets/{id}/preview-token` | a one-hour `v` token signed with the server's internal key: `{playback_id, token, url, expires_at}` |
 | `GET /v1/cloudflare` | `{connected, hostname, bucket, account_id, worker_version, current_version, needs_redeploy, storage_ok}` |
