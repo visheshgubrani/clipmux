@@ -42,7 +42,8 @@ jobs:
       - name: gofmt
         run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
       - run: go vet ./...
-      - run: go test -race ./...
+      # The speech tests run real whisper.cpp on the runner's CPU, minutes each.
+      - run: go test -race -timeout 25m ./...
       - run: go build ./cmd/clipmux
   lint:
     runs-on: ubuntu-24.04

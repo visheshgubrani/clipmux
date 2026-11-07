@@ -197,7 +197,9 @@ func runFreshInstall(t *testing.T, tools media.Tools, speech *media.Speech) Test
 	}
 
 	r := New(pool, stores.Fixed(store), box, urls, upl, lifecycle.New(pool, stores.Fixed(store), committer), "")
-	r.EncodeTimeout = 3 * time.Minute
+	// A 4-vCPU CI runner gives whisper 2 threads while other packages
+	// transcribe too, so the 11 s sample can take minutes there.
+	r.EncodeTimeout = 8 * time.Minute
 	if _, err := r.Queue(ctx, "manual"); err != nil {
 		t.Fatal(err)
 	}
