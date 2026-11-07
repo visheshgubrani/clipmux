@@ -17,6 +17,27 @@ interface TrackDetail extends Track {
   chapters?: { start_ms: number; end_ms: number; title: string }[]
 }
 
+// The asset's job in progress, as the Jobs page shows it.
+interface ActiveJob {
+  kind: string
+  status: string
+  phase?: string
+  progress?: number
+}
+
+const jobLine = (j: ActiveJob) =>
+  j.status === 'queued'
+    ? `${j.kind} waiting for a worker`
+    : `${j.phase ?? j.kind}${j.progress != null ? ` ${Math.round(j.progress * 100)}%` : ''}`
+
+// Subtitles become part of the stream's master playlist; a player opened
+// before they were ready needs a reload to list them.
+const subtitlesKey = (a: Asset) =>
+  a.tracks
+    .filter((t) => t.kind === 'subtitles' && t.status === 'ready')
+    .map((t) => t.id)
+    .join(',')
+
 const busy = (a: Asset) =>
   a.status === 'waiting_upload' || a.status === 'processing' || a.tracks.some((t) => t.status === 'preparing')
 
@@ -25,11 +46,22 @@ export function AssetPage() {
   const [params] = useSearchParams()
   const app = params.get('app') ?? undefined
   const [asset, setAsset] = useState<Asset | null>(null)
+  const [job, setJob] = useState<ActiveJob | null>(null)
+  // The subtitles the player was opened with (null: not opened yet).
+  const [playerSubtitles, setPlayerSubtitles] = useState<string | null>(null)
   // A change made here polls again until its tracks settle.
   const [tick, setTick] = useState(0)
   const load = useCallback(async () => {
     const a = await api<Asset>(`/v1/assets/${id}`, app ? { app } : {})
     setAsset(a)
+    if (a.status === 'processing' || a.tracks.some((t) => t.status === 'preparing')) {
+      const jobs = await api<{ data: ActiveJob[] }>(
+        `/v1/jobs?asset_id=${encodeURIComponent(id)}&limit=5`,
+      ).catch(() => ({ data: [] }))
+      setJob(jobs.data.find((j) => j.status === 'running' || j.status === 'queued') ?? null)
+    } else {
+      setJob(null)
+    }
     return a
   }, [id, app])
   // biome-ignore lint/correctness/useExhaustiveDependencies: tick restarts the poll after a change
@@ -46,6 +78,8 @@ export function AssetPage() {
   }, [load, tick])
   if (!asset) return <Muted>Loading…</Muted>
   const chapters = asset.tracks.find((t) => t.kind === 'chapters' && t.status === 'ready')
+  const subtitles = subtitlesKey(asset)
+  if (asset.status === 'ready' && playerSubtitles === null) setPlayerSubtitles(subtitles)
   return (
     <>
       <Card className="grid gap-4">
@@ -55,6 +89,12 @@ export function AssetPage() {
           <dd>
             {asset.status}
             {asset.error_code ? ` (${asset.error_code})` : ''}
+            {job && asset.status === 'processing' && (
+              <span className="text-zinc-500" data-job-progress>
+                {' '}
+                — {jobLine(job)}
+              </span>
+            )}
           </dd>
           <dt className="text-zinc-500">Version</dt>
           <dd>{asset.version}</dd>
@@ -72,11 +112,24 @@ export function AssetPage() {
           <dd className="font-mono text-xs">{asset.base_url}</dd>
         </dl>
         {asset.status === 'ready' && (
-          <Preview assetId={asset.id} baseUrl={asset.base_url} chaptersTrack={chapters?.id} />
+          <Preview
+            key={playerSubtitles ?? ''}
+            assetId={asset.id}
+            baseUrl={asset.base_url}
+            chaptersTrack={chapters?.id}
+          />
+        )}
+        {asset.status === 'ready' && playerSubtitles !== null && subtitles !== playerSubtitles && (
+          <div className="flex items-center gap-3 text-sm">
+            <span>New subtitles are ready.</span>
+            <Button variant="outline" size="sm" onClick={() => setPlayerSubtitles(subtitles)}>
+              Reload the player
+            </Button>
+          </div>
         )}
       </Card>
       {asset.status !== 'deleted' && (
-        <TracksCard asset={asset} app={app} onChange={() => setTick((t) => t + 1)} />
+        <TracksCard asset={asset} app={app} job={job} onChange={() => setTick((t) => t + 1)} />
       )}
     </>
   )
@@ -94,10 +147,12 @@ const statusClass: Record<string, string> = {
 function TracksCard({
   asset,
   app,
+  job,
   onChange,
 }: {
   asset: Asset
   app?: string | undefined
+  job: ActiveJob | null
   onChange: () => void
 }) {
   const [error, setError] = useState('')
@@ -128,7 +183,11 @@ function TracksCard({
     <Card className="grid gap-4" aria-label="Tracks">
       <CardTitle>Subtitles and chapters</CardTitle>
       {asset.tracks.length === 0 ? (
-        <Muted>None yet. Make them from this video's audio:</Muted>
+        <Muted>
+          {asset.status === 'ready'
+            ? "None yet. Make them from this video's audio:"
+            : 'None yet. You can make them from the audio once the video is ready.'}
+        </Muted>
       ) : (
         <ul className="grid gap-2">
           {asset.tracks.map((t) => (
@@ -143,6 +202,9 @@ function TracksCard({
                 <span className={statusClass[t.status] ?? ''}>
                   {t.status}
                   {t.error_code ? ` (${t.error_code})` : ''}
+                  {t.status === 'preparing' && job && asset.status === 'ready' && (
+                    <span className="text-zinc-500"> — {jobLine(job)}</span>
+                  )}
                 </span>
                 <span className="font-mono text-xs text-zinc-500">{t.id}</span>
                 <span className="ml-auto flex gap-2">
@@ -210,7 +272,7 @@ function TrackBody({ asset, track, app }: { asset: Asset; track: Track; app?: st
   return (
     <section className="grid max-h-80 gap-1 overflow-y-auto" aria-label="Transcript">
       <Muted>
-        Language {transcript.language}, {transcript.segments.length} segments
+        {track.name ?? transcript.language}, {transcript.segments.length} segments
       </Muted>
       {transcript.segments.map((s) => (
         <p key={s.id}>

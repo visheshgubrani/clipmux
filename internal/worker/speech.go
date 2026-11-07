@@ -119,6 +119,12 @@ func SetupSpeech(ctx context.Context, tools media.Tools, mode SpeechMode, models
 			"cpus", runtime.NumCPU(), "min_cpus", AutoMinCPUs, "min_memory_bytes", AutoMinMemory)
 		return nil
 	}
+	// The first start downloads about 0.9 GB, which takes minutes; say so,
+	// or a missing subtitles track looks like a hang.
+	if fi, err := os.Stat(filepath.Join(modelsDir, media.SpeechModel.FileName())); err != nil || fi.Size() != media.SpeechModel.Size {
+		log.Info("speech: downloading the speech models; this worker transcribes once they are in place",
+			"model", media.SpeechModel.ID(), "bytes", media.SpeechModel.Size+media.VADModel.Size)
+	}
 	model, err := FetchModel(ctx, client, modelsDir, media.SpeechModel)
 	if err != nil {
 		log.Warn("speech: couldn't fetch the speech model; will try again at the next start", "err", err)

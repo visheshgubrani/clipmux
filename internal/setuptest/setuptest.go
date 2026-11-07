@@ -175,8 +175,13 @@ func (r *Runner) QueueThrough(ctx context.Context, trigger, executor string) (Te
 	return view(t), nil
 }
 
-// QueueFirst queues the first-boot test if no test has ever run.
+// QueueFirst queues the first-boot test if no test has ever run and the
+// URLs are confirmed. Unconfirmed, it would test the placeholder default;
+// saving the URLs queues the first test then.
 func (r *Runner) QueueFirst(ctx context.Context) error {
+	if !r.urls.URLs().Confirmed {
+		return nil
+	}
 	n, err := db.New(r.pool).CountSetupTests(ctx, r.projectID)
 	if err != nil || n > 0 {
 		return err
@@ -310,7 +315,7 @@ func (r *Runner) execute(ctx context.Context, testID string) []Check {
 	}
 	rs.checks = append(rs.checks, r.playbackChecks(ctx, assetID)...)
 	if !speech {
-		rs.skippedOK("nothing here can transcribe yet (a worker with speech, or a speech API)", TrackChecks...)
+		rs.skippedOK("nothing here can transcribe yet (a worker with speech, or a speech API); a new worker downloads its 0.9 GB speech models first, so run the test again in a few minutes", TrackChecks...)
 		return rs.checks
 	}
 	return append(rs.checks, r.trackChecks(ctx, assetID)...)

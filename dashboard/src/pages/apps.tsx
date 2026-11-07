@@ -111,7 +111,12 @@ export function AppDetail({ keysAllowed }: { keysAllowed: boolean }) {
       {error && <p className="text-sm text-red-600">{error}</p>}
       <Card className="grid gap-3">
         <CardTitle>API keys</CardTitle>
-        {!keysAllowed && <Muted>Set a public URL that isn't localhost before creating API keys.</Muted>}
+        {!keysAllowed && (
+          <Muted>
+            Set a public URL that isn't localhost before creating API keys. For local development, create one
+            on the host with <code>clipmux admin create-key --app NAME --allow-loopback</code>.
+          </Muted>
+        )}
         <Rows
           rows={keys}
           label={(k) => `${k.name} · ${k.scopes?.join(', ')}`}

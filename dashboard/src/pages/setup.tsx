@@ -1,6 +1,6 @@
 import { type FormEvent, useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router'
-import { type Asset, api, post, type Setup, type SetupTest } from '../api.ts'
+import { type Asset, api, post, type Setup, type SetupTest, type URLs } from '../api.ts'
 import { Button } from '../components/ui/button.tsx'
 import { Card, CardTitle, Muted } from '../components/ui/card.tsx'
 import { Input, Label } from '../components/ui/input.tsx'
@@ -75,11 +75,17 @@ function URLStep({ setup, onDone }: { setup: Setup; onDone: () => void }) {
     e.preventDefault()
     const f = new FormData(e.currentTarget)
     try {
-      await api('/v1/settings/urls', {
+      const { urls: saved } = await api<{ urls: URLs }>('/v1/settings/urls', {
         method: 'PUT',
         body: JSON.stringify({ public_url: f.get('public'), media_url: f.get('media') }),
       })
       setError('')
+      // The page's Content-Security-Policy names the media URL it was served
+      // with; a new media origin is reachable only after a reload.
+      if (saved.media_url !== location.origin && saved.media_url !== setup.urls.media_url) {
+        location.reload()
+        return
+      }
       onDone()
     } catch (err) {
       setError((err as Error).message)

@@ -36,7 +36,8 @@ export function Preview({
   return (
     <clipmux-player
       ref={ref}
-      muted
+      // Browsers only autoplay muted; a player the viewer starts has sound.
+      muted={autoplay || undefined}
       autoplay={autoplay}
       className="block overflow-hidden rounded-lg bg-black"
     />
@@ -48,7 +49,7 @@ declare module 'react' {
   namespace JSX {
     interface IntrinsicElements {
       'clipmux-player': React.DetailedHTMLProps<React.HTMLAttributes<HTMLElement>, HTMLElement> & {
-        muted?: boolean
+        muted?: boolean | undefined
         autoplay?: boolean | undefined
       }
     }

@@ -9,6 +9,10 @@ export function Library() {
   const [assets, setAssets] = useState<Asset[]>([])
   const [apps, setApps] = useState<Record<string, string>>({})
   const [next, setNext] = useState<string | undefined>()
+  // Deleted videos stay listed by the API (apps sync from it); here they
+  // only clutter the list unless asked for.
+  const [showDeleted, setShowDeleted] = useState(false)
+  const shown = showDeleted ? assets : assets.filter((a) => a.status !== 'deleted')
   const load = async (cursor?: string) => {
     const page = await api<{ data: Asset[]; next_cursor?: string }>(
       `/v1/library?limit=50${cursor ? `&cursor=${cursor}` : ''}`,
@@ -27,11 +31,17 @@ export function Library() {
     <Card className="grid gap-4">
       <div className="flex items-center justify-between">
         <CardTitle>Library</CardTitle>
-        <Button asChild>
-          <Link to="/upload">Upload</Link>
-        </Button>
+        <div className="flex items-center gap-4">
+          <label className="flex items-center gap-2 text-sm text-zinc-600">
+            <input type="checkbox" checked={showDeleted} onChange={(e) => setShowDeleted(e.target.checked)} />
+            Show deleted
+          </label>
+          <Button asChild>
+            <Link to="/upload">Upload</Link>
+          </Button>
+        </div>
       </div>
-      {assets.length === 0 ? (
+      {shown.length === 0 ? (
         <Muted>No videos yet.</Muted>
       ) : (
         <Table>
@@ -45,7 +55,7 @@ export function Library() {
             </tr>
           </thead>
           <tbody>
-            {assets.map((a) => (
+            {shown.map((a) => (
               <tr key={a.id}>
                 <Td>
                   <Link className="font-mono text-xs underline" to={`/assets/${a.id}?app=${a.app_id}`}>
@@ -54,7 +64,14 @@ export function Library() {
                 </Td>
                 <Td>{apps[a.app_id] ?? a.app_id}</Td>
                 <Td>{a.status}</Td>
-                <Td className="text-zinc-500">{a.passthrough}</Td>
+                <Td className="text-zinc-500">
+                  {a.passthrough}
+                  {a.passthrough === 'clipmux-setup-test' && (
+                    <span className="ml-2 rounded bg-zinc-100 px-1.5 py-0.5 text-xs text-zinc-600">
+                      setup test
+                    </span>
+                  )}
+                </Td>
                 <Td className="text-zinc-500">{new Date(a.created_at).toLocaleString()}</Td>
               </tr>
             ))}

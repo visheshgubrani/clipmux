@@ -187,6 +187,27 @@ test('the dashboard shows tracks, their transcript and chapters, and makes and d
   await noViolations()
 })
 
+test('the preview plays with sound and offers new subtitles without interrupting', async ({ page }) => {
+  const noViolations = await watchCSP(page)
+  const cfg = await config(page)
+  await signIn(page, cfg)
+  await page.goto(`${cfg.ops}/assets/${cfg.asset_id}?app=${cfg.app_id}`)
+  // Only an autoplaying preview (the setup wizard's) starts muted.
+  await expect
+    .poll(() =>
+      page.evaluate(() => (document.querySelector('hlsjs-video') as unknown as HTMLVideoElement | null)?.muted),
+    )
+    .toBe(false)
+  const tracks = page.getByLabel('Tracks')
+  await tracks.getByRole('button', { name: 'Regenerate subtitles' }).click()
+  // The open player keeps playing; once the new subtitles are ready the
+  // owner is offered a reload instead of having it happen under them.
+  await expect(page.getByText('New subtitles are ready.')).toBeVisible({ timeout: 60_000 })
+  await page.getByRole('button', { name: 'Reload the player' }).click()
+  await expect(page.getByText('New subtitles are ready.')).toHaveCount(0)
+  await noViolations()
+})
+
 test('the owner connects an LLM and sees which PCs can transcribe', async ({ page }) => {
   const noViolations = await watchCSP(page)
   const cfg = await config(page)

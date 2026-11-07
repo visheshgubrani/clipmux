@@ -152,7 +152,13 @@ export function Jobs() {
                 </Td>
                 <Td>
                   {j.attempts.length === 0 ? (
-                    <span className="text-xs text-zinc-500">not claimed yet</span>
+                    <span className="text-xs text-zinc-500">
+                      {j.status === 'queued' || j.status === 'running'
+                        ? 'not claimed yet'
+                        : j.status === 'succeeded'
+                          ? 'done by the server, no worker needed'
+                          : 'never ran on a worker'}
+                    </span>
                   ) : (
                     j.attempts.map((a) => <AttemptLine key={a.id} a={a} />)
                   )}

@@ -82,7 +82,7 @@ function Nav({ email, onSignOut }: { email: string; onSignOut: () => void }) {
     isActive ? 'font-semibold' : 'text-zinc-600 hover:text-zinc-900'
   return (
     <header className="border-b border-zinc-200 bg-white">
-      <nav className="mx-auto flex max-w-5xl items-center gap-6 px-6 py-3 text-sm">
+      <nav className="mx-auto flex max-w-5xl flex-wrap items-center gap-x-6 gap-y-2 px-6 py-3 text-sm">
         <Link to="/" className="font-bold">
           ClipMux
         </Link>

@@ -54,6 +54,7 @@ export function Upload() {
       <input
         type="file"
         accept="video/*"
+        aria-label="Video file"
         disabled={progress !== null}
         onChange={(e) => {
           const f = e.currentTarget.files?.[0]
