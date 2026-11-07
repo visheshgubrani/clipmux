@@ -25,6 +25,7 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/visheshgubrani/clipmux/internal/db"
 	"github.com/visheshgubrani/clipmux/internal/storage"
@@ -51,6 +52,32 @@ type Record struct {
 	// Denied is set while the ID's app is disabled: delivery answers 403
 	// rather than 404, as the built-in handler does (D016).
 	Denied bool `json:"denied,omitempty"`
+	// Tracks maps each track tracks/{id}.vtt may name (stored, ready, or
+	// retired within the window) to how delivery serves it. Omitted when
+	// empty, so records of assets without tracks, and their ETags, don't
+	// change (P5-T15).
+	Tracks map[string]Track `json:"tracks,omitempty"`
+}
+
+// Track is one track in a route record.
+type Track struct {
+	Kind       string `json:"kind"`
+	Language   string `json:"language"`
+	Name       string `json:"name"`
+	DurationMS int64  `json:"duration_ms"`
+	KeyVersion int32  `json:"key_version"`
+	// Listed: the master names it (a subtitles track being published or
+	// ready). Chapters and retired tracks are served but never listed.
+	Listed bool `json:"listed"`
+}
+
+// TrackOf is a servable track's record entry: delivery lists exactly
+// the tracks a record lists.
+func TrackOf(kind, status string, language, name pgtype.Text, durationMS pgtype.Int8, keyVersion pgtype.Int4) Track {
+	return Track{
+		Kind: kind, Language: language.String, Name: name.String, DurationMS: durationMS.Int64, KeyVersion: keyVersion.Int32,
+		Listed: kind == "subtitles" && (status == "publishing" || status == "ready"),
+	}
 }
 
 // Backends.
@@ -178,6 +205,16 @@ func Desired(ctx context.Context, q *db.Queries, playbackID, bucketID string) (*
 	}
 	for _, o := range outs {
 		r.Outputs[o.ID] = o.KeyVersion
+	}
+	trks, err := q.ListServableTracks(ctx, rt.AssetID)
+	if err != nil {
+		return nil, err
+	}
+	for _, t := range trks {
+		if r.Tracks == nil {
+			r.Tracks = map[string]Track{}
+		}
+		r.Tracks[t.ID] = TrackOf(t.Kind, t.Status, t.Language, t.Name, t.DurationMs, t.KeyVersion)
 	}
 	return r, nil
 }
@@ -321,6 +358,17 @@ func desiredAll(ctx context.Context, q *db.Queries, projectID, bucketID string) 
 		}
 		byAsset[o.AssetID][o.ID] = o.KeyVersion
 	}
+	trks, err := q.ListServableTracksForProject(ctx, projectID)
+	if err != nil {
+		return nil, err
+	}
+	tracksOf := map[string]map[string]Track{}
+	for _, t := range trks {
+		if tracksOf[t.AssetID] == nil {
+			tracksOf[t.AssetID] = map[string]Track{}
+		}
+		tracksOf[t.AssetID][t.ID] = TrackOf(t.Kind, t.Status, t.Language, t.Name, t.DurationMs, t.KeyVersion)
+	}
 	want := make(map[string][]byte, len(routes))
 	for _, rt := range routes {
 		outputs := byAsset[rt.AssetID]
@@ -330,6 +378,7 @@ func desiredAll(ctx context.Context, q *db.Queries, projectID, bucketID string) 
 		want[rt.PlaybackID] = encode(Record{
 			V: 1, AppID: rt.AppID, AssetID: rt.AssetID, OutputID: rt.CurrentOutputID.String, Policy: rt.Policy,
 			Backend: backend(rt.StorageID, bucketID), Outputs: outputs, Denied: rt.AppDisabled,
+			Tracks: tracksOf[rt.AssetID],
 		})
 	}
 	return want, nil

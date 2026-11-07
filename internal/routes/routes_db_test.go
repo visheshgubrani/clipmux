@@ -280,3 +280,36 @@ func TestTheReconcilerRepairsDriftAndThenChangesNothing(t *testing.T) {
 		t.Fatalf("second Reconcile = %+v, %v; want no changes", res, err)
 	}
 }
+
+// A record that drifted from its tracks (P5-T15): one written before its
+// asset's track was stored is rewritten with the track, and the tracks of
+// both builders, one ID's and the whole project's, agree byte for byte.
+func TestTheReconcilerRewritesARecordWhoseTracksDrifted(t *testing.T) {
+	r := newRig(t)
+	r.queueRoute("ast_r2")
+	r.queueRoute("ast_fs")
+	r.sync()
+	ctx := context.Background()
+	before, _ := r.object("_routes/pid_ast_r2.json")
+	r.exec(`INSERT INTO tracks (id, project_id, asset_id, kind, status, language, name, duration_ms, key_version)
+		VALUES ('trk_1', 'prj_default', 'ast_r2', 'subtitles', 'ready', 'hi', 'Hindi', 61000, 1)`)
+	d, bucketID, err := routes.ForProject(ctx, db.New(r.pool), r.set, db.DefaultProjectID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := routes.Reconcile(ctx, db.New(r.pool), d, bucketID, db.DefaultProjectID)
+	if err != nil || res.Written != 1 {
+		t.Fatalf("Reconcile = %+v, %v; want the drifted record rewritten", res, err)
+	}
+	after, _ := r.object("_routes/pid_ast_r2.json")
+	if strings.Contains(before, "tracks") || !strings.Contains(after, `"tracks":{"trk_1":{"kind":"subtitles","language":"hi","name":"Hindi","duration_ms":61000,"key_version":1,"listed":true}}`) {
+		t.Fatalf("record before %s\nafter %s", before, after)
+	}
+	one, err := routes.Desired(ctx, db.New(r.pool), "pid_ast_r2", bucketID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want, _ := json.Marshal(one); string(want) != after {
+		t.Fatalf("Desired %s\nReconcile %s", want, after)
+	}
+}

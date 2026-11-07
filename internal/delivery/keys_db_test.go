@@ -61,3 +61,48 @@ func TestDeliveryServesEveryVersionAnOutputUses(t *testing.T) {
 		t.Fatalf("an output's key under another version = %d, want 404", status)
 	}
 }
+
+func TestARevocationIsSeenAtTheNextRequestOnceInvalidated(t *testing.T) {
+	ctx := context.Background()
+	pool := dbtest.New(t)
+	exec := func(sql string) {
+		t.Helper()
+		if _, err := pool.Exec(ctx, sql); err != nil {
+			t.Fatal(err)
+		}
+	}
+	exec(`INSERT INTO assets (id, project_id, app_id, status, storage_id) VALUES ('ast_1', 'prj_default', 'app_dashboard', 'processing', 'sto_default');
+	      INSERT INTO outputs (id, project_id, asset_id, key_version, status, manifest) VALUES ('out_1', 'prj_default', 'ast_1', 1, 'committed', '{}');
+	      UPDATE assets SET status = 'ready', current_output_id = 'out_1' WHERE id = 'ast_1';
+	      INSERT INTO playback_ids (id, project_id, asset_id, policy) VALUES ('pid_1', 'prj_default', 'ast_1', 'public');`)
+	store, err := storage.OpenFilesystem(t.TempDir(), storage.FilesystemOptions{BaseURL: "http://unused"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	v1, _ := contentkey.FromHex(1, "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f")
+	h := New(pool, stores.Fixed(store), contentkey.NewRing(v1))
+	mux := http.NewServeMux()
+	h.Register(mux)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	status := func() int {
+		res, err := http.Get(srv.URL + "/p/pid_1/out_1/key/1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		res.Body.Close()
+		return res.StatusCode
+	}
+	if s := status(); s != 200 {
+		t.Fatalf("before: %d", s)
+	}
+	exec(`UPDATE playback_ids SET status = 'revoked', revoked_at = now() WHERE id = 'pid_1'`)
+	if s := status(); s != 200 {
+		t.Fatalf("the route wasn't cached: %d", s) // published changes invalidate; this one didn't publish
+	}
+	h.Invalidate("pid_1") // what confirming its unpublish does
+	if s := status(); s != 404 {
+		t.Fatalf("after the unpublish was confirmed: %d, want 404 at once", s)
+	}
+}

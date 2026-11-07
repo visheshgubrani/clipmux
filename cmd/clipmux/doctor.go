@@ -9,7 +9,9 @@ import (
 	"io/fs"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -81,6 +83,7 @@ func runDoctor(args []string, getenv func(string) string, out io.Writer) int {
 	if len(hw.Backends()) == 1 {
 		note("GPU", "none passed a test encode; in Docker, add --gpus all (NVIDIA) or --device /dev/dri with the render group (AMD, Intel)")
 	}
+	doctorSpeech(ctx, tools, getenv, work, check, note)
 	if free := worker.FreeDisk(os.TempDir()); free > 0 {
 		msg := fmt.Sprintf("%.1f GiB free in %s; a source needs about three times its size", float64(free)/(1<<30), os.TempDir())
 		if free < 10<<30 {
@@ -94,6 +97,45 @@ func runDoctor(args []string, getenv func(string) string, out io.Writer) int {
 	}
 	fmt.Fprintln(out, "\n  This PC is ready to encode.")
 	return 0
+}
+
+// doctorSpeech checks transcription (P5-T14). It is optional, so only a
+// probe that runs and fails is a ✗; anything missing is a note.
+func doctorSpeech(ctx context.Context, tools media.Tools, getenv func(string) string, work string, check func(bool, string, string), note func(string, string)) {
+	tools.Whisper = orEnv(getenv("CLIPMUX_WHISPER"), tools.Whisper)
+	if _, err := exec.LookPath(tools.Whisper); err != nil {
+		note("speech", "no whisper-cli, so this PC won't transcribe subtitles")
+		return
+	}
+	dir := orEnv(getenv("CLIPMUX_MODELS_DIR"), filepath.Join(agentDir(getenv), "models"))
+	model, vad := filepath.Join(dir, media.SpeechModel.FileName()), filepath.Join(dir, media.VADModel.FileName())
+	for _, m := range []struct {
+		path string
+		want media.Model
+	}{{model, media.SpeechModel}, {vad, media.VADModel}} {
+		if fi, err := os.Stat(m.path); err != nil || fi.Size() != m.want.Size {
+			note("speech", fmt.Sprintf("the %s model isn't in %s yet (%d MB); the worker downloads it at start", m.want.Name, dir, m.want.Size>>20))
+			return
+		}
+	}
+	backends := []media.SpeechBackend{media.SpeechCPU}
+	if nodes, _ := filepath.Glob("/dev/dri/renderD*"); len(nodes) > 0 {
+		backends = append([]media.SpeechBackend{media.SpeechVulkan}, backends...)
+	}
+	var failures []string
+	for _, b := range backends {
+		sp := media.Speech{Backend: b, Model: model, VAD: vad, Threads: max(runtime.NumCPU()/2, 1)}
+		if err := media.ProbeSpeech(ctx, tools, work, sp); err != nil {
+			failures = append(failures, string(b)+": "+err.Error())
+			continue
+		}
+		for _, f := range failures {
+			note("speech", "failed its probe on "+f)
+		}
+		check(true, "speech", fmt.Sprintf("whisper ran %s on %s", media.SpeechModel.Name, b))
+		return
+	}
+	check(false, "speech", strings.Join(failures, "; "))
 }
 
 // doctorConnection checks the saved connection, the server and the key.

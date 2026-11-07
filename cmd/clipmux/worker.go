@@ -17,7 +17,9 @@ import (
 	"time"
 
 	"github.com/visheshgubrani/clipmux/internal/dispatch"
+	"github.com/visheshgubrani/clipmux/internal/logging"
 	"github.com/visheshgubrani/clipmux/internal/media"
+	"github.com/visheshgubrani/clipmux/internal/queue"
 	"github.com/visheshgubrani/clipmux/internal/sandbox"
 	"github.com/visheshgubrani/clipmux/internal/worker"
 )
@@ -35,7 +37,7 @@ are always sandboxed.
 Claims and runs media jobs. A connected PC keeps its server and key in
 agent.json under CLIPMUX_AGENT_DIR (default: your config directory), so the
 key never shows up in a process listing. Tools are found on PATH, or set with
-CLIPMUX_FFMPEG, CLIPMUX_FFPROBE and CLIPMUX_PACKAGER.
+CLIPMUX_FFMPEG, CLIPMUX_FFPROBE, CLIPMUX_PACKAGER and CLIPMUX_WHISPER.
 `
 
 // runWorker runs `clipmux worker`.
@@ -55,6 +57,7 @@ func runWorker(args []string, getenv func(string) string, stderr io.Writer) int 
 	pair := fs.String("pair", "", "connect this PC with a code from the dashboard's Workers page")
 	name := fs.String("name", "", "what to call this PC on the Workers page (default: its hostname)")
 	encoder := fs.String("encoder", orEnv(getenv("CLIPMUX_ENCODER"), "auto"), "first encoder to try: auto, nvenc, vaapi, cuda-decode or cpu; the CPU always backs it up")
+	speechFlag := fs.String("speech", orEnv(getenv("CLIPMUX_SPEECH"), "auto"), "transcribe subtitles: auto (a GPU, or a CPU with 4+ cores and 6 GiB), off, cpu or vulkan")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -89,8 +92,13 @@ func runWorker(args []string, getenv func(string) string, stderr io.Writer) int 
 	tools.FFmpeg = orEnv(getenv("CLIPMUX_FFMPEG"), tools.FFmpeg)
 	tools.FFprobe = orEnv(getenv("CLIPMUX_FFPROBE"), tools.FFprobe)
 	tools.Packager = orEnv(getenv("CLIPMUX_PACKAGER"), tools.Packager)
+	tools.Whisper = orEnv(getenv("CLIPMUX_WHISPER"), tools.Whisper)
 
-	logger := slog.New(slog.NewTextHandler(stderr, nil))
+	logger, err := logging.FromEnv(getenv, stderr)
+	if err != nil {
+		logger.Error("invalid configuration", "err", err)
+		return 1
+	}
 	if err := os.MkdirAll(*workDir, 0o750); err != nil {
 		logger.Error("work dir", "err", err)
 		return 1
@@ -111,7 +119,13 @@ func runWorker(args []string, getenv func(string) string, stderr io.Writer) int 
 				"Run the agent in Docker, WSL2 or a VM, or pass --unsandboxed to take only your own jobs", "err", err)
 			return 1
 		}
-		mem, _ := strconv.ParseUint(getenv("CLIPMUX_TOOL_MEMORY_MB"), 10, 64)
+		var mem uint64
+		if v := getenv("CLIPMUX_TOOL_MEMORY_MB"); v != "" {
+			if mem, err = strconv.ParseUint(v, 10, 64); err != nil || mem == 0 {
+				logger.Error("invalid configuration", "err", fmt.Sprintf("CLIPMUX_TOOL_MEMORY_MB %q must be a positive number of MiB", v))
+				return 1
+			}
+		}
 		w.Tools.Sandbox = &media.Sandbox{Exec: self, MemoryMB: mem}
 		w.Sandbox = st.String()
 		logger.Info("media tools are sandboxed", "sandbox", w.Sandbox)
@@ -125,6 +139,12 @@ func runWorker(args []string, getenv func(string) string, stderr io.Writer) int 
 		logger.Error("encoder", "err", err)
 		return 2
 	}
+	speechMode, err := worker.ParseSpeechMode(*speechFlag)
+	if err != nil {
+		logger.Error("speech", "err", err)
+		return 2
+	}
+	modelsDir := orEnv(getenv("CLIPMUX_MODELS_DIR"), filepath.Join(agentDir(getenv), "models"))
 	// Prove each GPU path with a real encode, under the same sandbox jobs
 	// use, before offering it.
 	var driverEnv []string
@@ -145,6 +165,30 @@ func runWorker(args []string, getenv func(string) string, stderr io.Writer) int 
 		logger.Warn("the requested encoder failed its test encode; using the others", "encoder", prefer)
 	}
 	logger.Info("encoders", "order", w.Tools.HW.Describe())
+	// Each claim loop clears its own scratch directory at start, so the
+	// media and speech loops never share one.
+	speech := &worker.SpeechSlot{}
+	w.Speech = speech
+	sw := *w
+	sw.WorkDir, sw.Kinds = filepath.Join(*workDir, "speech"), []string{"transcribe"}
+	w.WorkDir = filepath.Join(*workDir, "media")
+	for _, d := range []string{w.WorkDir, sw.WorkDir} {
+		if err := os.MkdirAll(d, 0o750); err != nil {
+			logger.Error("work dir", "err", err)
+			return 1
+		}
+	}
+	setupSpeech := func(ctx context.Context) *media.Speech {
+		sp := worker.SetupSpeech(ctx, w.Tools, speechMode, modelsDir, *workDir, w.HTTP, logger)
+		speech.Set(sp)
+		return sp
+	}
+	if *once {
+		// One job, of any kind this machine can run: prove speech first.
+		if setupSpeech(ctx) != nil {
+			w.Kinds = append(append([]string{}, queue.MediaKinds...), "transcribe")
+		}
+	}
 	logger.Info("clipmux worker started", "server", *server, "once", *once)
 	if agent {
 		// push --local hands this agent files over a socket only this user
@@ -167,6 +211,9 @@ func runWorker(args []string, getenv func(string) string, stderr io.Writer) int 
 			}
 		})
 		wg.Go(func() { syncSources(ctx, w, local, logger) })
+		if !*once {
+			wg.Go(func() { runSpeech(ctx, &sw, setupSpeech, logger) })
+		}
 		return runLoop(ctx, w, *once, logger, getenv)
 	}
 	if dispatched {
@@ -176,7 +223,27 @@ func runWorker(args []string, getenv func(string) string, stderr io.Writer) int 
 		}
 		return 0
 	}
+	if !*once {
+		var wg sync.WaitGroup
+		defer wg.Wait()
+		ctx, cancel := context.WithCancel(ctx)
+		defer cancel()
+		wg.Go(func() { runSpeech(ctx, &sw, setupSpeech, logger) })
+		return runLoop(ctx, w, *once, logger, getenv)
+	}
 	return runLoop(ctx, w, *once, logger, getenv)
+}
+
+// runSpeech proves speech off the start path (fetching the models can take
+// minutes the first time, and the media loop shouldn't wait for it), then
+// runs the speech claim loop until ctx ends.
+func runSpeech(ctx context.Context, sw *worker.Worker, setup func(context.Context) *media.Speech, logger *slog.Logger) {
+	if setup(ctx) == nil {
+		return
+	}
+	if err := sw.Run(ctx); err != nil && !errors.Is(err, worker.ErrKeyRefused) {
+		logger.Error("speech worker", "err", err)
+	}
 }
 
 // syncSources forgets local sources whose assets were deleted: at start,

@@ -25,6 +25,9 @@ Phase 3 exited on the real binary (D050), and NVIDIA was proven on Modal
 (D051). Its by-hand checks and Phase 2's real-account run carry into T00, a
 parallel track (D052).
 
+Next: [Phase 5 — Production ready, with subtitles and chapters](P5-production.md).
+This phase's real-account run carries into its task T00 (D063).
+
 **Exit test:** fallback follows the routing table, and a corrupt source never
 hits fallback.
 

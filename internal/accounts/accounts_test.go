@@ -1,9 +1,7 @@
 package accounts
 
 import (
-	"net/netip"
 	"testing"
-	"time"
 )
 
 // Computed with Python: hashlib.pbkdf2_hmac('sha256', b'correct horse
@@ -31,34 +29,5 @@ func TestPasswordHashMatchesWorkedExample(t *testing.T) {
 		if ok, _ := checkPassword(bad, "x"); ok {
 			t.Errorf("malformed hash %q matched", bad)
 		}
-	}
-}
-
-func TestLoginsAreLimitedPerAddressAndOverall(t *testing.T) {
-	now := time.Unix(1700000000, 0)
-	l := newLimiter(func() time.Time { return now })
-	a, b := netip.MustParseAddr("203.0.113.1"), netip.MustParseAddr("203.0.113.2")
-	for range 5 {
-		if ok, _ := l.allow(a); !ok {
-			t.Fatal("the first five failures are allowed")
-		}
-		l.fail(a)
-	}
-	ok, wait := l.allow(a)
-	if ok || wait <= 0 || wait > 15*time.Minute {
-		t.Fatalf("sixth try: allow %v, wait %v; want refused for up to 15 min", ok, wait)
-	}
-	if ok, _ := l.allow(b); !ok {
-		t.Fatal("another address is not limited by a's failures")
-	}
-	now = now.Add(15*time.Minute + time.Second)
-	if ok, _ := l.allow(a); !ok {
-		t.Fatal("failures older than the window no longer count")
-	}
-	for i := range 20 {
-		l.fail(netip.AddrFrom4([4]byte{198, 51, 100, byte(i)}))
-	}
-	if ok, _ := l.allow(netip.MustParseAddr("192.0.2.9")); ok {
-		t.Fatal("20 failures from anywhere in the window lock logins for everyone")
 	}
 }

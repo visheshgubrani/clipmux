@@ -301,7 +301,8 @@ Every retry gets a fresh attempt and output, so a failed run can't leave partial
 | `POST /worker/v1/claim` | Long-polls for work, then creates an attempt and lease |
 | `POST /worker/v1/attempts/{id}/heartbeat` | Reports phase and progress, extends the lease, and can tell the worker to stop |
 | `POST /worker/v1/attempts/{id}/sign` | Returns presigned URLs for a batch of output paths, source parts for an import, or a fresh source GET URL |
-| `POST /worker/v1/attempts/{id}/complete` | Submits the manifest for commit |
+| `POST /worker/v1/attempts/{id}/complete` | Submits the manifest for commit, or a transcription's canonical transcript (`{transcript}`), which serve validates, renders to WebVTT, encrypts and stores |
+| `GET /worker/v1/attempts/{id}/audio` | A transcription's input: the output's audio rendition decrypted by serve, as one fragmented MP4 (P5-T14) |
 | `POST /worker/v1/attempts/{id}/fail` | Reports a transient or permanent failure |
 
 ### Job payload
@@ -320,6 +321,8 @@ Every retry gets a fresh attempt and output, so a failed run can't leave partial
 ```
 
 The payload holds no storage credentials, and the attempt token works for this attempt only. A pinned job replaces `url` with `agent_source_id`.
+
+A claim names the job kinds it takes (`kinds`; absent means the media kinds) and, from a worker whose start-up probe proved whisper, `speech: {backends, model}`. A transcription's payload carries `speech: {input_output_id, duration_seconds, model}` instead of a source, an output and a key: the worker reads the audio from `GET …/audio` and never writes a file (D078, D079).
 
 The content key is derived at claim time, like the URLs, and opens only this attempt's output. The worker already holds the plaintext source, so the key shows it nothing new.
 
@@ -416,7 +419,7 @@ Public: https://media.domain.com/p/{playback_id}/master.m3u8
 
 The project has one media hostname, chosen at first boot. The API returns it as `base_url`, and it doesn't change when storage or delivery does, so apps store only the playback ID.
 
-Delivery generates `master.m3u8` on each request. It reads the stored master of the route's current output and puts `{output_id}/` in front of each video and audio playlist URI, so `720p/index.m3u8` becomes `{output_id}/720p/index.m3u8`. The player resolves that against the master's URL and lands on `.../{playback_id}/{output_id}/720p/index.m3u8` with no redirect. That pins a session to one output, because a re-encode can change segment boundaries and keys. Because the master is generated, captions and extra audio tracks can later be added to it without a new output.
+Delivery generates `master.m3u8` on each request. It reads the stored master of the route's current output and puts `{output_id}/` in front of each video and audio playlist URI, so `720p/index.m3u8` becomes `{output_id}/720p/index.m3u8`. The player resolves that against the master's URL and lands on `.../{playback_id}/{output_id}/720p/index.m3u8` with no redirect. That pins a session to one output, because a re-encode can change segment boundaries and keys. Because the master is generated, captions and extra audio tracks can later be added to it without a new output. Subtitles are added this way (P5-T15, D081): each subtitles track being published or ready gets an `#EXT-X-MEDIA:TYPE=SUBTITLES` line pointing at `tracks/{track_id}.m3u8`, a one-segment playlist of `tracks/{track_id}.vtt`, which delivery decrypts from `media/{asset_id}/tracks/{track_id}.vtt`. The same VTT URL is the sidecar a player loads directly; chapters are a VTT at the same path, never listed.
 
 ### Route records
 
@@ -680,6 +683,11 @@ The built-in worker is a separate process that holds only an attempt token. It h
 | Secrets read from the database | Adapter secrets, the internal signing key and the content key secret encrypted with a key held outside Postgres |
 | Cloudflare token stolen | The app forgets the raw token after setup and keeps only the ID and hash its S3 credentials need. A stolen token can still deploy a Worker that reads Worker secrets, so revoke it and rotate the content key secret |
 | Forged webhooks | HMAC signature with a timestamp |
+| Subtitles or chapters read from storage | Each track's VTT sealed with AES-128-GCM under a key derived per track from the content key secret, with the storage key as associated data, so a tampered or moved object doesn't open; the Cloudflare Worker caches the ciphertext and decrypts after its cache (D079, D081) |
+| A thumbnail token reads a transcript | `t` tokens get 403 on `tracks/`; the transcript API needs an API key or the owner's session |
+| Transcript text sent to the chapters LLM, or audio to a speech API | Off until the owner connects one; the Connect card and docs say what leaves; only the transcript (chapters) or the output's audio (speech) is sent, never a source, a key or another asset's data (D075, D083) |
+| Speech tells the LLM to ignore its rules (prompt injection) | The transcript goes as delimited data with its `<` and `>` replaced, the rules only in the system prompt, a strict schema, and every boundary and time checked and derived locally; the worst a hostile transcript can do is name its own chapters |
+| A speech API or LLM key leaked | Sealed in `ai_connections` with the secrets key, opened only in serve for each job, never sent to a worker, logged or returned; disconnecting forgets it |
 
 ## First run and packaging
 
@@ -761,7 +769,7 @@ The terms name the Developer Platform as an example of a required Paid Service, 
 
 ### Open decisions
 
-- [ ] Choose the project name and licence, including how the image complies with ffmpeg's licence when it bundles a GPL build. Shaka Packager is BSD-licensed and adds no such constraint.
+- [x] Choose the project name and licence, including how the image complies with ffmpeg's licence when it bundles a GPL build. Shaka Packager is BSD-licensed and adds no such constraint. *(ClipMux, D006; AGPL-3.0 core with MIT player, uploader and Worker, D086)*
 - [ ] Choose a native sandbox for Windows and macOS agents. Until then, v1 requires Docker, WSL2 or a VM there.
 - [ ] Decide whether to serve encrypted segments from an R2 custom domain on a bucket without sources, with delivery generating variant playlists that point there. Only playlists and keys would run through the Worker, cutting its requests by more than 99%, but revoking a playback ID would then stop key fetches rather than segment fetches.
 - [ ] Choose which languages get an SDK for signing tokens.
@@ -770,13 +778,13 @@ The terms name the Developer Platform as an example of a required Paid Service, 
 
 Smaller items raised by the audit and not yet designed:
 
-- [ ] If `serve` runs as more than one replica, elect one leader with `pg_try_advisory_lock` for the sweepers, dispatcher and outbox publisher.
-- [ ] Ship one set of test vectors for the Go handler and the Worker, mapping a URL, token and route to an expected status, plus vectors for key derivation.
+- [x] If `serve` runs as more than one replica, elect one leader with `pg_try_advisory_lock` for the sweepers, dispatcher and outbox publisher. *(D035)*
+- [x] Ship one set of test vectors for the Go handler and the Worker, mapping a URL, token and route to an expected status, plus vectors for key derivation. *(D015, D036)*
 - [ ] Give the `vid` claim somewhere to be logged, such as Logpush or Analytics Engine, or drop it from the threats table.
-- [ ] For SSRF, pin the resolved IP for each connection, and also block IPv6 ULA and IPv4-mapped ranges.
+- [x] For SSRF, pin the resolved IP for each connection, and also block IPv6 ULA and IPv4-mapped ranges. *(`internal/publicnet`, D039)*
 - [ ] Time out jobs pinned to an agent that never returns, and tell the agent when its source's asset is deleted.
-- [ ] Cache routes in the built-in handler, and document its revocation delay.
-- [ ] Document backups for Postgres, the key that encrypts adapter secrets, and the content key secret, because losing that secret makes every output unplayable. The `manifest.json` in each output makes a rebuild-from-storage tool possible.
+- [x] Cache routes in the built-in handler, and document its revocation delay. *(D072)*
+- [x] Document backups for Postgres, the key that encrypts adapter secrets, and the content key secret, because losing that secret makes every output unplayable. The `manifest.json` in each output makes a rebuild-from-storage tool possible. *(docs/operations.md, D073; no rebuild tool)*
 
 ## Sources
 

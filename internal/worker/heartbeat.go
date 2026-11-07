@@ -46,7 +46,7 @@ func (w *Worker) startHeartbeat(ctx context.Context, cancel context.CancelFunc, 
 			status, err := w.post(ctx, "/worker/v1/attempts/"+job.AttemptID+"/heartbeat", job.AttemptToken, body, &v)
 			switch {
 			case err != nil && ctx.Err() == nil:
-				w.Logger.Warn("heartbeat failed", "attempt", job.AttemptID, "err", err)
+				w.Logger.Warn("heartbeat failed", "job", job.JobID, "attempt", job.AttemptID, "kind", job.Kind, "err", err)
 			case status == http.StatusOK && v.Action == "stop":
 				hb.mu.Lock()
 				hb.why = v.Reason

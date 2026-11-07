@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -28,6 +29,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/storage"
 	"github.com/visheshgubrani/clipmux/internal/stores"
 	"github.com/visheshgubrani/clipmux/internal/tokens"
+	"github.com/visheshgubrani/clipmux/internal/tracks"
 )
 
 var (
@@ -49,6 +51,7 @@ type vectors struct {
 	Assets                  []vAsset           `json:"assets"`
 	Outputs                 []vOutput          `json:"outputs"`
 	PlaybackIDs             []vPlaybackID      `json:"playback_ids"`
+	Tracks                  []vTrack           `json:"tracks,omitempty"`
 	Files                   map[string]string  `json:"files"`
 	TokenClaims             map[string]vClaims `json:"token_claims"`
 	Tokens                  map[string]string  `json:"tokens,omitempty"`
@@ -98,6 +101,22 @@ type vPlaybackID struct {
 	Status  string `json:"status"`
 }
 
+// vTrack is a track row and its file: VTT is the plaintext delivery must
+// serve, SealedHex what storage holds (sealed once by -update, then fixed,
+// so the Worker's tests decrypt the same bytes).
+type vTrack struct {
+	ID         string `json:"id"`
+	AssetID    string `json:"asset_id"`
+	Kind       string `json:"kind"`
+	Status     string `json:"status"`
+	Language   string `json:"language"`
+	Name       string `json:"name"`
+	DurationMS int64  `json:"duration_ms"`
+	KeyVersion int32  `json:"key_version"`
+	VTT        string `json:"vtt,omitempty"`
+	SealedHex  string `json:"sealed_hex,omitempty"`
+}
+
 type vClaims struct {
 	Kid string `json:"kid"`
 	Sub string `json:"sub"`
@@ -109,7 +128,9 @@ type vClaims struct {
 }
 
 type vCase struct {
-	Name         string `json:"name"`
+	Name string `json:"name"`
+	// Method is GET unless set (HEAD).
+	Method       string `json:"method,omitempty"`
 	Path         string `json:"path"`
 	Status       int    `json:"status"`
 	ContentType  string `json:"content_type,omitempty"`
@@ -186,6 +207,20 @@ func regenerate(t *testing.T, v *vectors) {
 	sv.Sub(elliptic.P256().Params().N, sv)
 	sv.FillBytes(raw[32:])
 	v.Tokens["alt_form"] = parts[0] + "." + parts[1] + "." + base64.RawURLEncoding.EncodeToString(raw)
+	secret, err := contentkey.FromHex(v.ContentKeyVersion, v.ContentKeySecretHex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, tr := range v.Tracks {
+		if tr.VTT == "" || tr.SealedHex != "" {
+			continue
+		}
+		sealed, err := contentkey.SealTrack(secret, tr.AssetID, tr.ID, tracks.StorageKey(tr.AssetID, tr.ID), []byte(tr.VTT))
+		if err != nil {
+			t.Fatal(err)
+		}
+		v.Tracks[i].SealedHex = hex.EncodeToString(sealed)
+	}
 	out, _ := json.MarshalIndent(v, "", "  ")
 	if err := os.WriteFile(vectorsFile, append(out, '\n'), 0o644); err != nil {
 		t.Fatal(err)
@@ -259,6 +294,21 @@ func TestVectors(t *testing.T) {
 			exec(`UPDATE playback_ids SET status = 'revoked', revoked_at = now() WHERE id = $1`, p.ID)
 		}
 	}
+	for _, tr := range v.Tracks {
+		exec(`INSERT INTO tracks (id, project_id, asset_id, kind, status, language, name, duration_ms, key_version, error_code, retired_at, deleted_at)
+			VALUES ($1, 'prj_default', $2, $3, $4, nullif($5, ''), nullif($6, ''), $7, $8,
+				CASE WHEN $4 = 'errored' THEN 'transcribe_failed' END, CASE WHEN $4 = 'retired' THEN now() END, CASE WHEN $4 = 'deleted' THEN now() END)`,
+			tr.ID, tr.AssetID, tr.Kind, tr.Status, tr.Language, tr.Name, tr.DurationMS, tr.KeyVersion)
+		if tr.SealedHex != "" {
+			sealed, err := hex.DecodeString(tr.SealedHex)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := store.Put(ctx, tracks.StorageKey(tr.AssetID, tr.ID), strings.NewReader(string(sealed))); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
 
 	// The Worker has no Postgres: it reads what the route publisher writes.
 	// Build that projection from this same database, so the Worker's copy of
@@ -276,13 +326,24 @@ func TestVectors(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	for _, c := range v.Cases {
-		t.Run(c.Name, func(t *testing.T) {
+	// Twice: the second pass is answered from the route cache (D072), and
+	// must answer the same.
+	for pass, c := range append(slices.Clone(v.Cases), v.Cases...) {
+		name := c.Name
+		if pass >= len(v.Cases) {
+			name += "/cached"
+		}
+		t.Run(name, func(t *testing.T) {
 			p := c.Path
 			for name, tok := range v.Tokens {
 				p = strings.ReplaceAll(p, "{"+name+"}", tok)
 			}
-			res, err := http.Get(srv.URL + p)
+			method := c.Method
+			if method == "" {
+				method = http.MethodGet
+			}
+			req, _ := http.NewRequest(method, srv.URL+p, nil)
+			res, err := http.DefaultClient.Do(req)
 			if err != nil {
 				t.Fatal(err)
 			}

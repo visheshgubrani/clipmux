@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"syscall"
 	"testing"
@@ -45,19 +44,33 @@ func TestPlayerFixture(t *testing.T) {
 	in := start(t, "CLIPMUX_RUNPOD_API="+rp.URL, "CLIPMUX_EXECUTORS_ALLOW_PRIVATE_URL=true",
 		"SSL_CERT_FILE="+certFile, "CLIPMUX_WORKER_IMAGE="+reg.Image())
 	key, kid, priv := in.credentials("Browser suites")
-	asset, pid := in.upload(key, fixture(t, 30, 1280, 720))
+	// The owner connects a fake speech API and a fake LLM, so the video gets
+	// subtitles and chapters (P5-T18) without whisper on this machine.
+	ownerClient := in.owner()
+	ai := newAIFakes(t)
+	in.connectSpeech(ownerClient, ai, "api")
+	in.connectLLM(ownerClient, ai)
+	asset, pid := in.uploadWith(key, fixture(t, 30, 1280, 720), map[string]any{"generate": map[string]bool{"chapters": true}})
 	in.waitReady(key, asset, 5*time.Minute)
+	trks := in.waitTracks(key, asset, 2*time.Minute)
+	if trks["subtitles"].Status != "ready" || trks["chapters"].Status != "ready" {
+		t.Fatalf("tracks = %+v", trks)
+	}
+	var appID string
+	if err := in.pool.QueryRow(context.Background(), `SELECT app_id FROM assets WHERE id = $1`, asset).Scan(&appID); err != nil {
+		t.Fatal(err)
+	}
 	// A second, fresh install for the dashboard's first-boot suite: its URLs
 	// aren't pinned, so the owner chooses them in the wizard.
 	fresh := startUnpinned(t)
-	setupToken := regexp.MustCompile(`setup_token=(\S+)`).FindStringSubmatch(fresh.log())
+	setupToken := setupTokenLine.FindStringSubmatch(fresh.log())
 	if setupToken == nil {
 		t.Fatalf("the fresh install printed no setup token:\n%s", fresh.log())
 	}
-	// The Workers suite signs in as the owner and finds a connected PC.
-	in.owner()
+	// The Workers suite signs in as the owner and finds a connected PC, one
+	// that can transcribe.
 	if _, err := in.pool.Exec(context.Background(), `INSERT INTO agents (id, project_id, name, key_hash, status, sandboxed, hostname, platform, capabilities, last_seen_at)
-		VALUES ('agt_studio', 'prj_default', 'studio-pc', 'fixture', 'approved', true, 'studio', 'linux/amd64', '{"encoders": ["h264_vaapi", "libx264"]}', now() + interval '1 day')`); err != nil {
+		VALUES ('agt_studio', 'prj_default', 'studio-pc', 'fixture', 'approved', true, 'studio', 'linux/amd64', '{"encoders": ["h264_vaapi", "libx264"], "speech": {"backends": ["vulkan", "cpu"], "model": "large-v3-turbo-q8_0"}}', now() + interval '1 day')`); err != nil {
 		t.Fatal(err)
 	}
 	signer, err := tokens.ParsePrivateKey(priv)
@@ -73,8 +86,10 @@ func TestPlayerFixture(t *testing.T) {
 	mux.Handle("GET /", http.FileServer(http.Dir(pages)))
 	mux.HandleFunc("GET /config", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]string{
+		_ = json.NewEncoder(w).Encode(map[string]any{
 			"base_url": in.url, "playback_id": pid, "api": in.url,
+			"asset_id": asset, "app_id": appID, "subtitles_track": trks["subtitles"].ID, "chapters_track": trks["chapters"].ID,
+			"cue_text": cueText, "cue_start": cueStart, "llm_url": ai.llm.URL + "/v1", "llm_key": llmKey,
 			"dashboard": fresh.url, "setup_token": setupToken[1],
 			"ops": in.url, "ops_email": "owner@example.test", "ops_password": "a long test password",
 			"runpod_key": runpodtest.Key, "registry_username": registrytest.Username, "registry_password": registrytest.Password,

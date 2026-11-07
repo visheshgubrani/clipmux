@@ -27,3 +27,19 @@ larger of 2 × the video's duration or 4 hours. iOS 17.1+ plays through hls.js
 
 For another player, `rewriteTokenUrl`, `TokenSession` and `createRefreshLoader`
 (an hls.js `loader`) are exported without the UI.
+
+## Subtitles and chapters
+
+Subtitles listed in the master playlist show in the player's captions menu;
+hls.js loads their playlist and VTT through the same refresh loader as the
+video, so a refreshed token keeps them loading. Chapters are never listed in
+the master: name the asset's ready chapters track and the player fetches its
+VTT with the playback token and marks the chapters on the time slider.
+
+```html
+<clipmux-player base-url="…" playback-id="pid_…" chapters-track="trk_…"></clipmux-player>
+```
+
+`player.chapters` holds them in seconds once `clipmux-chapters` fires. For
+another player, `trackUrl` gives a track's sidecar VTT URL, `fetchTrack` loads
+it with a `TokenSession`, and `parseChapters` reads a chapters VTT.

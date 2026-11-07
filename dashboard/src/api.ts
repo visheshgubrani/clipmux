@@ -57,6 +57,15 @@ export interface PlaybackID {
   playable: boolean
   status: string
 }
+export interface Track {
+  id: string
+  kind: 'subtitles' | 'chapters'
+  source: string
+  status: 'preparing' | 'ready' | 'errored'
+  language?: string
+  name?: string
+  error_code?: string
+}
 export interface Asset {
   id: string
   app_id: string
@@ -65,9 +74,16 @@ export interface Asset {
   passthrough?: string
   error_code?: string
   base_url: string
+  duration_seconds: number | null
   playback_ids: PlaybackID[]
+  tracks: Track[]
   created_at: string
   updated_at: string
+}
+export interface Step {
+  name: string
+  ok: boolean
+  detail?: string
 }
 export interface App {
   id: string

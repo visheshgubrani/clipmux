@@ -4,8 +4,11 @@
 -- name: LockActiveUploadForAsset :one
 SELECT * FROM uploads WHERE asset_id = $1 AND status = 'active' FOR UPDATE;
 
--- name: GetActiveJobForAsset :one
-SELECT * FROM jobs WHERE asset_id = $1 AND status IN ('queued', 'running');
+-- name: GetActiveJobForAsset :many
+-- The asset's active jobs of the kinds given: one family (outputs or
+-- tracks, at most one job each) or both. Move and delete belong to both.
+SELECT * FROM jobs WHERE asset_id = $1 AND status IN ('queued', 'running') AND kind = ANY (sqlc.arg(kinds)::text[])
+ORDER BY id;
 
 -- name: MarkAssetDeleted :one
 UPDATE assets SET status = 'deleted', error_code = NULL, version = version + 1, updated_at = now()
@@ -17,13 +20,14 @@ UPDATE playback_ids SET status = 'revoking' WHERE asset_id = $1 AND status = 'ac
 RETURNING id;
 
 -- name: ClaimControlJob :one
--- serve runs delete and move jobs itself; workers never claim them. A claim leases the
--- job by pushing available_at out, so a crashed pass is picked up again.
+-- serve runs delete, move and chapters jobs itself, each loop its own kinds;
+-- workers never claim them. A claim leases the job by pushing available_at
+-- out, so a crashed pass is picked up again.
 UPDATE jobs SET status = 'running', started_at = coalesce(started_at, now()),
     available_at = now() + make_interval(secs => sqlc.arg(lease_seconds)::double precision)
 WHERE id = (
     SELECT c.id FROM jobs c
-    WHERE c.kind IN ('delete', 'move') AND c.status IN ('queued', 'running') AND c.available_at <= now()
+    WHERE c.kind = ANY (sqlc.arg(kinds)::text[]) AND c.status IN ('queued', 'running') AND c.available_at <= now()
       AND (sqlc.narg(job_id)::text IS NULL OR c.id = sqlc.narg(job_id))
     ORDER BY c.available_at, c.id
     LIMIT 1
@@ -88,7 +92,7 @@ UPDATE assets SET storage_id = sqlc.arg(target)::text, version = version + 1, up
 WHERE id = sqlc.arg(id) AND storage_id = sqlc.arg(source)::text;
 
 -- name: ListServableOutputIDs :many
-SELECT id FROM outputs WHERE asset_id = $1 AND status IN ('committed', 'retired') ORDER BY id;
+SELECT id FROM outputs WHERE asset_id = $1 AND status IN ('committed', 'retired') AND purged_at IS NULL ORDER BY id;
 
 -- name: MoveProgress :one
 SELECT

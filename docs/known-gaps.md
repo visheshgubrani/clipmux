@@ -10,67 +10,72 @@ when you introduce or discover it; remove it when it is closed.
   only; Firefox isn't in CI. The dashboard is minimal: no
   share links, no playback-ID management in the UI, and a sample preview
   that waits for Play rather than autoplaying.
-- Superseded and failed re-encodes leave their writing outputs and files in
-  place, like lost attempts (cleanup is the 7-day / 30-minute gap below).
-- Delivery reads Postgres on every request (route, output, signing key);
-  there is no route cache yet, so revocation is immediate but every segment
-  costs a few queries.
+- Built-in delivery caches routes, signing keys and outputs for 30 s
+  (D072). On one node every published change is seen at the next request;
+  a change that publishes nothing (the project's maximum token lifetime)
+  takes up to 30 s, and so does another replica's.
 - Serving playback from the same origin as the API and dashboard is the
   default; set `CLIPMUX_MEDIA_URL` to a separate registrable domain in
   production so a hostile stored file can't reach dashboard cookies.
-- Retired outputs and files from failed or lost attempts are not deleted yet
-  (the 7-day retire window and 30-minute cleanup from the architecture).
+- File retention (D070) checks 500 assets an hour for orphaned output
+  prefixes, so a full pass over a large library takes days; retired and
+  replaced outputs go on schedule regardless. Abandoned multipart uploads on
+  R2/S3 (a failed abort) are left to a bucket lifecycle rule, which Connect
+  doesn't set.
 - The media tool sandbox (D027) gives the CPU a priority, not a quota:
   `SCHED_IDLE` yields to the API, and only compose `cpus:` caps it. Landlock
   is best effort: on kernels before 5.13 (or with it disabled) the tools can
   read any file the worker's user can. Agents off Linux have no sandbox.
 - Imports have no known source size, so the claim's free-disk check passes
   them; a full disk fails the attempt (transient).
-- Agent pairing codes are 8 characters (about 39 bits) with no per-address
-  limit on redeeming; they last 15 minutes and work once.
+- Agent pairing codes are 8 characters (about 39 bits); wrong codes are
+  limited per address and overall (D067), and a code lasts 15 minutes and
+  works once.
 - Content key secrets live in Postgres sealed with the secrets key (D022).
   Back up Postgres and the secrets key together: losing either makes every
-  output unplayable. There is no command to rotate the content key secret.
+  output unplayable (docs/operations.md). Rotating the content key secret
+  (D071) doesn't re-encode existing outputs; each keeps its version.
 - Sign caps file count per attempt, not total bytes; a presigned filesystem
   PUT is capped at 5 GiB per object. `GET /v1/assets` looks up by
   `passthrough` or lists changes `updated_since`; the owner's `GET
-  /v1/library` lists every app's assets. Listing loads each asset's playback IDs with one
-  query per asset.
-- Idempotency keys are kept forever; a cleanup window (e.g. 24 h) is not
-  enforced yet.
+  /v1/library` lists every app's assets.
 - If the create transaction fails after storage started a multipart upload,
-  the abort is best effort; a failed abort leaves an orphaned staging
-  directory that nothing sweeps.
-- No rate limiting on the upload endpoints yet. The queue, `/worker/v1/{claim,heartbeat,fail}` and the
-  lost-lease sweeper run, but nothing enqueues jobs until T05 and no worker
-  process exists until T06. Claim payloads carry no source URL or content key
-  until T04/T08.
+  the abort is best effort; on the filesystem a staging directory left that
+  way is swept after 7 days without writes (D070).
+- Rate limits (D067), including the sign-in, setup and pairing windows,
+  live in one serve process: a second replica doubles every budget. The
+  request and loop counters behind `/metrics` (D066) are per process too;
+  the job, outbox and dispatch counts come from Postgres.
 - Filesystem storage preallocates uploads as sparse files, so disk space is
   not reserved up front; a full disk fails the part write. Abandoned
   multipart uploads are cleaned up by the upload sweeper (T05), and `tmp/`
-  leftovers from a crash are not swept yet.
+  leftovers after 24 hours (D070).
 - Storage configs other than the filesystem can be added only from code
   (`stores.AddS3`) until Connect Cloudflare (P2-T04); there is no API or
   dashboard form for a generic S3 bucket, and no way to remove a config or
   rotate its credentials.
-- One replica runs the background loops (advisory-lock leader, D035), but
-  the sign-in limiter, setup token and storage signer are per process.
-  Saving new URLs updates the storage signer of the serve that saved them
-  only; another replica keeps the old public URL until it restarts.
-- The owner can't turn on TOTP yet. The sign-in limiter and the setup token
-  live in one serve's memory (one replica assumed); expired sessions are
-  never pruned.
-- Webhooks: an endpoint's secret can't be rotated (create a new endpoint and
-  disable the old one). No per-endpoint circuit breaker, so a dead endpoint costs up to 10 s per
-  delivery for a day. Outbox and delivery rows are never pruned. Owner-set
-  endpoint URLs are not filtered for private addresses (D018). A failed
-  re-encode is visible only through its webhook, not through catch-up.
-- The secrets key (D017) can't be rotated yet. Webhook secrets, the internal
-  signing key and the content key secrets are sealed with it; adapter
-  secrets join them with R2/S3 in Phase 2.
-- `clipmux admin` has create-key, create-signing-key and create-webhook.
-  `clipmux listen` reads events from the outbox, which is never pruned; once
-  it is, `--since` can reach back only as far as rows are kept. `clipmux push` keeps an
+- Phase 5 exited in CI (D085). Still to run: `exit-llm.yml` and the
+  providers' speech run on real accounts, Safari and ExoPlayer showing
+  subtitles, and on the real binary the retention, backup-and-restore and
+  key-rotation drills, TOTP in a browser, the Cloudflare edge's revoked
+  track and a move to R2 with subtitles, and RunPod as a transcription's
+  fallback. The drain check doesn't yet cover a throttled segment GET or a
+  part PUT finishing.
+- One serve replica is the supported shape (D063). One replica runs the
+  background loops (advisory-lock leader, D035), but the rate limits, the
+  sign-in and setup limits, the setup token, the drain flag, the route
+  cache and the storage signer are per process. Saving new URLs updates the
+  storage signer of the serve that saved them only; another replica keeps
+  the old public URL until it restarts.
+- No audit log (D071): owner actions and key operations log at info with
+  their request IDs, but nothing durable records who did what. No
+  OpenTelemetry tracing (D066).
+- Webhooks: owner-set endpoint URLs are not filtered for private addresses
+  (D018). A failed re-encode is visible only through its webhook, not
+  through catch-up. When an endpoint's breaker closes, every delivery that
+  came due meanwhile is tried at once (D069).
+- `clipmux listen --since` and `GET /v1/events` reach back 30 days, the
+  webhook retention window (D069). `clipmux push` keeps an
   unfinished push's upload token in a 0600 state file under the user's cache
   directory until it completes.
 - The image is ~575 MB and built from source on a cache miss (~20 min). CI
@@ -124,19 +129,66 @@ when you introduce or discover it; remove it when it is closed.
   waits for the primary without a bound, shown as `fallback_refused`.
 - The content key secret can't be rotated; when it can, rotation must
   redeploy the Worker's ring through Connect before new outputs use it.
-- No captions, chapters or transcripts. The LMS depends on them, so they gate
-  the LMS migration (plans/lms-migration.md); OSS-V2 leaves them as an open
-  roadmap decision.
+- Subtitles, transcripts and chapters exist (Phase 5, D076–D084) and meet
+  the LMS's needs by contract test (D085); the cutover itself is the next
+  step (plans/lms-migration.md). What they don't do yet: uploaded caption
+  files (`source: uploaded` is reserved), more than one language per asset,
+  a language hint, translation, or editing a transcript. Word timings come
+  from whisper.cpp's tokens, coarser than clipmux-lms's whisperX alignment,
+  and with a speech API from whatever the provider returns (a sentence per
+  cue when it gives no word times). Cues follow the encoded output's
+  timeline, which starts at zero; a source whose audio started late relative
+  to its video (an A/V offset) keeps that offset dropped by the encode, as
+  every output does. Language detection on the owner's own English, Hindi
+  and Hinglish recordings is still unmeasured (they aren't recorded yet), as
+  is NVIDIA speech on Modal's L4 (D077).
+- Chapters send the transcript's text to the connected LLM provider on
+  every generation; there is no spend estimate for them either. A Claude
+  refusal is final (no fallback model, by design, D083).
+- The setup test proves subtitles only when something can transcribe as it
+  starts, so a first boot's test usually skips them, and a provider's setup
+  test doesn't prove its speech (D084); `exit-providers.yml` does, once
+  T00's secrets exist.
+- The speech API (D075) has no spend cap or estimate: every transcription a
+  project in `api` or `local_then_api` mode sends is billed by the provider.
+  Chunks are cut at segment boundaries without overlap, so a word spoken
+  across a boundary (about every 25 minutes) can be split or lost. Whether a
+  provider accepts fragmented MP4 is proven only at Connect. serve sends one
+  transcription to the API at a time (D080), so a burst of uploads in `api`
+  mode queues behind it.
+- Phase 5 exited in CI (D085). Still to run: `exit-llm.yml` and the
+  providers' speech run on real accounts, Safari and ExoPlayer showing
+  subtitles, and on the real binary the retention, backup-and-restore and
+  key-rotation drills, TOTP in a browser, the Cloudflare edge's revoked
+  track and a move to R2 with subtitles, and RunPod as a transcription's
+  fallback. The drain check doesn't yet cover a throttled segment GET or a
+  part PUT finishing.
+- One serve replica is the supported shape (D063): rate limits, the route
+  cache, the speech and chapters runners and the drain flag live in one
+  process. High availability, and OpenTelemetry tracing, are not built.
+  Jobs, attempts and dispatches are kept forever as history and spend, so
+  those tables only grow. Owner-configured URLs (webhook endpoints, the
+  speech API, the chapters LLM) aren't filtered for private addresses, by
+  design (D018).
+- Background loops' log lines carry job and attempt IDs where they log them
+  by hand; only request lines and the worker's attempt lines carry them
+  throughout. Each `/metrics` scrape counts finished attempts with a scan of
+  `attempts`, cached for 10 s, and attempts are kept as history. There is no
+  counter per rate limit, only 429s by route (D066, D067).
+- The drain (D065) waits up to 20 s for the built-in worker and gives
+  requests 15 s; an upload part or segment still running after that is cut.
+  A PC agent whose server is unreachable while it stops can't hand its
+  attempt back, and its lease lapses as before. Streams no longer use
+  sendfile, which costs some CPU on large filesystem transfers.
 
 ## Open decisions carried from architecture.md
 
-- Licence and ffmpeg GPL compliance (gated on going public, D005).
 - Native sandbox for Windows/macOS agents (v1 requires Docker, WSL2 or a VM).
 - Serving segments from an R2 custom domain with only playlists/keys through the Worker.
-- Token-signing SDK languages.
+- Token-signing SDK languages (P6 open question 2).
 - When captions, storyboards and viewer analytics enter the roadmap.
 - Confirm defaults: 7-day max token lifetime, retry budgets 5/3, 15-minute
-  reconciler, per-output keys derived from one secret.
-- Audit leftovers: shared Go/Worker test vectors; where the `vid` claim is logged; timeouts for jobs
-  pinned to an agent that never returns; route caching in the built-in handler;
-  backup docs for Postgres, the secrets-encryption key and the content key secret.
+  reconciler, per-output keys derived from one secret (P6 open question 7).
+- Audit leftovers: where the `vid` claim is logged. (The shared Go/Worker
+  vectors are D015/D036, pinned-job timeouts D045, the route cache D072 and
+  the backup docs docs/operations.md.)

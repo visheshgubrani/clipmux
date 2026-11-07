@@ -7,10 +7,13 @@
 package stores
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
+	"slices"
 	"sync"
 
 	"github.com/jackc/pgx/v5"
@@ -70,6 +73,14 @@ func Fixed(s storage.Storage) *Set { return &Set{fixed: s} }
 
 // Get returns the store a config ID names.
 func (s *Set) Get(ctx context.Context, id string) (storage.Storage, error) {
+	return s.GetIn(ctx, db.New(s.pool), id)
+}
+
+// GetIn is Get reading through q, a caller's transaction. Inside a
+// transaction, a lookup through the pool would need a second connection
+// while holding one, and a burst of such requests larger than the pool
+// would wait on each other forever.
+func (s *Set) GetIn(ctx context.Context, q *db.Queries, id string) (storage.Storage, error) {
 	if s.fixed != nil {
 		return s.fixed, nil
 	}
@@ -79,7 +90,7 @@ func (s *Set) Get(ctx context.Context, id string) (storage.Storage, error) {
 	if ok {
 		return st, nil
 	}
-	row, err := db.New(s.pool).GetStorageConfig(ctx, id)
+	row, err := q.GetStorageConfig(ctx, id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, fmt.Errorf("%w: %s", ErrUnknown, id)
 	}
@@ -101,14 +112,20 @@ func (s *Set) Get(ctx context.Context, id string) (storage.Storage, error) {
 
 // ForAsset returns the store holding an asset's source and outputs.
 func (s *Set) ForAsset(ctx context.Context, assetID string) (storage.Storage, error) {
+	return s.ForAssetIn(ctx, db.New(s.pool), assetID)
+}
+
+// ForAssetIn is ForAsset reading through q, a caller's transaction (see
+// GetIn).
+func (s *Set) ForAssetIn(ctx context.Context, q *db.Queries, assetID string) (storage.Storage, error) {
 	if s.fixed != nil {
 		return s.fixed, nil
 	}
-	id, err := db.New(s.pool).AssetStorageID(ctx, assetID)
+	id, err := q.AssetStorageID(ctx, assetID)
 	if err != nil {
 		return nil, fmt.Errorf("storage of %s: %w", assetID, err)
 	}
-	return s.Get(ctx, id)
+	return s.GetIn(ctx, q, id)
 }
 
 // Default returns the project's default store, which new assets use.
@@ -162,6 +179,39 @@ func options(cfg S3Config, sec S3Secret) storage.S3Options {
 		Endpoint: cfg.Endpoint, PublicEndpoint: cfg.PublicEndpoint, Region: cfg.Region, Bucket: cfg.Bucket,
 		AccessKeyID: sec.AccessKeyID, SecretAccessKey: sec.SecretAccessKey,
 	}
+}
+
+// Origins are the origins browsers reach this project's S3 and R2 buckets
+// at (their public endpoints), for the dashboard's Content-Security-Policy:
+// uploads PUT their parts there. The filesystem store is the public URL.
+func (s *Set) Origins(ctx context.Context, projectID string) ([]string, error) {
+	rows, err := db.New(s.pool).ListStorageConfigs(ctx, projectID)
+	if err != nil {
+		return nil, fmt.Errorf("list storage configs: %w", err)
+	}
+	var out []string
+	for _, row := range rows {
+		if row.Kind == KindFilesystem {
+			continue
+		}
+		var cfg S3Config
+		if err := json.Unmarshal(row.Config, &cfg); err != nil {
+			return nil, fmt.Errorf("storage config %s: %w", row.ID, err)
+		}
+		if o := origin(cmp.Or(cfg.PublicEndpoint, cfg.Endpoint)); o != "" && !slices.Contains(out, o) {
+			out = append(out, o)
+		}
+	}
+	return out, nil
+}
+
+// origin is a URL's scheme and host, or "" if it has neither.
+func origin(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return ""
+	}
+	return u.Scheme + "://" + u.Host
 }
 
 // AddS3 checks an r2 or s3 config against its bucket (list, write, read,

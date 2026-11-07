@@ -45,23 +45,25 @@ UPDATE jobs SET status = 'running', started_at = coalesce(started_at, now()),
     available_at = now() + make_interval(secs => $1::double precision)
 WHERE id = (
     SELECT c.id FROM jobs c
-    WHERE c.kind IN ('delete', 'move') AND c.status IN ('queued', 'running') AND c.available_at <= now()
-      AND ($2::text IS NULL OR c.id = $2)
+    WHERE c.kind = ANY ($2::text[]) AND c.status IN ('queued', 'running') AND c.available_at <= now()
+      AND ($3::text IS NULL OR c.id = $3)
     ORDER BY c.available_at, c.id
     LIMIT 1
     FOR UPDATE SKIP LOCKED)
-RETURNING id, project_id, asset_id, kind, status, phase, progress, profile_id, profile_version, pinned_agent_id, lost_count, failed_count, error_code, routed_to, route_reason, available_at, created_at, started_at, finished_at, source_storage_id, target_storage_id, import_url
+RETURNING id, project_id, asset_id, kind, status, phase, progress, profile_id, profile_version, pinned_agent_id, lost_count, failed_count, error_code, routed_to, route_reason, available_at, created_at, started_at, finished_at, source_storage_id, target_storage_id, import_url, track_id
 `
 
 type ClaimControlJobParams struct {
 	LeaseSeconds float64
+	Kinds        []string
 	JobID        pgtype.Text
 }
 
-// serve runs delete and move jobs itself; workers never claim them. A claim leases the
-// job by pushing available_at out, so a crashed pass is picked up again.
+// serve runs delete, move and chapters jobs itself, each loop its own kinds;
+// workers never claim them. A claim leases the job by pushing available_at
+// out, so a crashed pass is picked up again.
 func (q *Queries) ClaimControlJob(ctx context.Context, arg ClaimControlJobParams) (Job, error) {
-	row := q.db.QueryRow(ctx, claimControlJob, arg.LeaseSeconds, arg.JobID)
+	row := q.db.QueryRow(ctx, claimControlJob, arg.LeaseSeconds, arg.Kinds, arg.JobID)
 	var i Job
 	err := row.Scan(
 		&i.ID,
@@ -86,6 +88,7 @@ func (q *Queries) ClaimControlJob(ctx context.Context, arg ClaimControlJobParams
 		&i.SourceStorageID,
 		&i.TargetStorageID,
 		&i.ImportUrl,
+		&i.TrackID,
 	)
 	return i, err
 }
@@ -144,38 +147,60 @@ func (q *Queries) DeferJob(ctx context.Context, arg DeferJobParams) error {
 	return err
 }
 
-const getActiveJobForAsset = `-- name: GetActiveJobForAsset :one
-SELECT id, project_id, asset_id, kind, status, phase, progress, profile_id, profile_version, pinned_agent_id, lost_count, failed_count, error_code, routed_to, route_reason, available_at, created_at, started_at, finished_at, source_storage_id, target_storage_id, import_url FROM jobs WHERE asset_id = $1 AND status IN ('queued', 'running')
+const getActiveJobForAsset = `-- name: GetActiveJobForAsset :many
+SELECT id, project_id, asset_id, kind, status, phase, progress, profile_id, profile_version, pinned_agent_id, lost_count, failed_count, error_code, routed_to, route_reason, available_at, created_at, started_at, finished_at, source_storage_id, target_storage_id, import_url, track_id FROM jobs WHERE asset_id = $1 AND status IN ('queued', 'running') AND kind = ANY ($2::text[])
+ORDER BY id
 `
 
-func (q *Queries) GetActiveJobForAsset(ctx context.Context, assetID string) (Job, error) {
-	row := q.db.QueryRow(ctx, getActiveJobForAsset, assetID)
-	var i Job
-	err := row.Scan(
-		&i.ID,
-		&i.ProjectID,
-		&i.AssetID,
-		&i.Kind,
-		&i.Status,
-		&i.Phase,
-		&i.Progress,
-		&i.ProfileID,
-		&i.ProfileVersion,
-		&i.PinnedAgentID,
-		&i.LostCount,
-		&i.FailedCount,
-		&i.ErrorCode,
-		&i.RoutedTo,
-		&i.RouteReason,
-		&i.AvailableAt,
-		&i.CreatedAt,
-		&i.StartedAt,
-		&i.FinishedAt,
-		&i.SourceStorageID,
-		&i.TargetStorageID,
-		&i.ImportUrl,
-	)
-	return i, err
+type GetActiveJobForAssetParams struct {
+	AssetID string
+	Kinds   []string
+}
+
+// The asset's active jobs of the kinds given: one family (outputs or
+// tracks, at most one job each) or both. Move and delete belong to both.
+func (q *Queries) GetActiveJobForAsset(ctx context.Context, arg GetActiveJobForAssetParams) ([]Job, error) {
+	rows, err := q.db.Query(ctx, getActiveJobForAsset, arg.AssetID, arg.Kinds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Job{}
+	for rows.Next() {
+		var i Job
+		if err := rows.Scan(
+			&i.ID,
+			&i.ProjectID,
+			&i.AssetID,
+			&i.Kind,
+			&i.Status,
+			&i.Phase,
+			&i.Progress,
+			&i.ProfileID,
+			&i.ProfileVersion,
+			&i.PinnedAgentID,
+			&i.LostCount,
+			&i.FailedCount,
+			&i.ErrorCode,
+			&i.RoutedTo,
+			&i.RouteReason,
+			&i.AvailableAt,
+			&i.CreatedAt,
+			&i.StartedAt,
+			&i.FinishedAt,
+			&i.SourceStorageID,
+			&i.TargetStorageID,
+			&i.ImportUrl,
+			&i.TrackID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const getPlaybackIDOfAsset = `-- name: GetPlaybackIDOfAsset :one
@@ -266,7 +291,7 @@ func (q *Queries) ListAssetsToMove(ctx context.Context, arg ListAssetsToMovePara
 }
 
 const listServableOutputIDs = `-- name: ListServableOutputIDs :many
-SELECT id FROM outputs WHERE asset_id = $1 AND status IN ('committed', 'retired') ORDER BY id
+SELECT id FROM outputs WHERE asset_id = $1 AND status IN ('committed', 'retired') AND purged_at IS NULL ORDER BY id
 `
 
 func (q *Queries) ListServableOutputIDs(ctx context.Context, assetID string) ([]string, error) {
@@ -499,7 +524,7 @@ func (q *Queries) MoveProgress(ctx context.Context, projectID string) (MoveProgr
 const queueMoveJob = `-- name: QueueMoveJob :one
 INSERT INTO jobs (id, project_id, asset_id, kind, source_storage_id, target_storage_id)
 VALUES ($1, $2, $3, 'move', $4, $5)
-RETURNING id, project_id, asset_id, kind, status, phase, progress, profile_id, profile_version, pinned_agent_id, lost_count, failed_count, error_code, routed_to, route_reason, available_at, created_at, started_at, finished_at, source_storage_id, target_storage_id, import_url
+RETURNING id, project_id, asset_id, kind, status, phase, progress, profile_id, profile_version, pinned_agent_id, lost_count, failed_count, error_code, routed_to, route_reason, available_at, created_at, started_at, finished_at, source_storage_id, target_storage_id, import_url, track_id
 `
 
 type QueueMoveJobParams struct {
@@ -543,6 +568,7 @@ func (q *Queries) QueueMoveJob(ctx context.Context, arg QueueMoveJobParams) (Job
 		&i.SourceStorageID,
 		&i.TargetStorageID,
 		&i.ImportUrl,
+		&i.TrackID,
 	)
 	return i, err
 }

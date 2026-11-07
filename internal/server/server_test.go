@@ -102,6 +102,21 @@ func TestWorkerRoutesAreMounted(t *testing.T) {
 	}
 }
 
+func TestReadyzFailsWhileDraining(t *testing.T) {
+	drain, startDrain := context.WithCancel(context.Background())
+	h := Handler(Deps{DB: fakeDB{}, Drain: drain})
+	if rec := get(t, h, "/readyz"); rec.Code != http.StatusOK {
+		t.Fatalf("before the drain: %d", rec.Code)
+	}
+	startDrain()
+	if rec := get(t, h, "/readyz"); rec.Code != http.StatusServiceUnavailable || !strings.Contains(rec.Body.String(), "draining") {
+		t.Fatalf("draining: %d %q", rec.Code, rec.Body.String())
+	}
+	if rec := get(t, h, "/healthz"); rec.Code != http.StatusOK {
+		t.Fatalf("healthz must stay up while draining: %d", rec.Code)
+	}
+}
+
 func TestStorageRoutesAreMountedBesideTheDashboard(t *testing.T) {
 	store := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusTeapot) })
 	h := Handler(Deps{DB: fakeDB{}, Storage: store})

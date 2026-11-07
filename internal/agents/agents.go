@@ -37,6 +37,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/ids"
 	"github.com/visheshgubrani/clipmux/internal/lifecycle"
 	"github.com/visheshgubrani/clipmux/internal/queue"
+	"github.com/visheshgubrani/clipmux/internal/ratelimit"
 )
 
 const (
@@ -67,11 +68,34 @@ type Service struct {
 	// nil refuses attach.
 	Life   *lifecycle.Service
 	Logger *slog.Logger
+
+	// Limits on the routes anyone can reach (D067): wrong pairing codes per
+	// address and overall, which bound guessing a 39-bit code; pairings an
+	// address may start; and how fast it may poll.
+	redeems *ratelimit.Failures
+	starts  *ratelimit.Buckets
+	polls   *ratelimit.Buckets
 }
+
+// Limits for the pairing routes: 10 wrong codes per address and 100 overall
+// in 15 minutes, 20 pairings per address an hour, 2 polls a second (the
+// agent polls every 2 s).
+const (
+	redeemWindow  = 15 * time.Minute
+	redeemPerAddr = 10
+	redeemAll     = 100
+	startsPerHour = 20
+	pollsPerSec   = 2
+)
 
 // New returns the agent service.
 func New(pool *pgxpool.Pool, q *queue.Queue, acct *accounts.Service, projectID string, publicURL func() string) *Service {
-	return &Service{pool: pool, queue: q, accounts: acct, projectID: projectID, PublicURL: publicURL, Logger: slog.New(slog.DiscardHandler)}
+	return &Service{
+		pool: pool, queue: q, accounts: acct, projectID: projectID, PublicURL: publicURL, Logger: slog.New(slog.DiscardHandler),
+		redeems: ratelimit.NewFailures(redeemWindow, redeemPerAddr, redeemAll),
+		starts:  ratelimit.NewBuckets(startsPerHour/3600.0, startsPerHour),
+		polls:   ratelimit.NewBuckets(pollsPerSec, 2*pollsPerSec),
+	}
 }
 
 // newCode returns a code such as KXFT-9M2Q (about 39 bits).

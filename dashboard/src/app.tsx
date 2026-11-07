@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useState } from 'react'
 import { BrowserRouter, Link, Navigate, NavLink, Route, Routes, useLocation, useNavigate } from 'react-router'
 import { api, type Setup } from './api.ts'
+import { Account } from './pages/account.tsx'
 import { AppDetail, Apps } from './pages/apps.tsx'
 import { AssetPage } from './pages/asset.tsx'
+import { Captions } from './pages/captions.tsx'
 import { Delivery } from './pages/delivery.tsx'
 import { Jobs } from './pages/jobs.tsx'
 import { Library } from './pages/library.tsx'
@@ -46,8 +48,10 @@ export function App() {
               <Route path="/apps/:id" element={<AppDetail keysAllowed={setup.keys_allowed} />} />
               <Route path="/delivery" element={<Delivery />} />
               <Route path="/workers" element={<Workers />} />
+              <Route path="/captions" element={<Captions />} />
               <Route path="/jobs" element={<Jobs />} />
               <Route path="/workers/connect" element={<ConnectPC />} />
+              <Route path="/account" element={<Account />} />
             </>
           ) : (
             <Route path="*" element={setup.owner_exists ? <ToSignIn /> : <Navigate to="/setup" />} />
@@ -78,7 +82,7 @@ function Nav({ email, onSignOut }: { email: string; onSignOut: () => void }) {
     isActive ? 'font-semibold' : 'text-zinc-600 hover:text-zinc-900'
   return (
     <header className="border-b border-zinc-200 bg-white">
-      <nav className="mx-auto flex max-w-5xl items-center gap-6 px-6 py-3 text-sm">
+      <nav className="mx-auto flex max-w-5xl flex-wrap items-center gap-x-6 gap-y-2 px-6 py-3 text-sm">
         <Link to="/" className="font-bold">
           ClipMux
         </Link>
@@ -100,10 +104,15 @@ function Nav({ email, onSignOut }: { email: string; onSignOut: () => void }) {
         <NavLink to="/workers" className={link} end>
           Workers
         </NavLink>
+        <NavLink to="/captions" className={link}>
+          Captions
+        </NavLink>
         <NavLink to="/setup" className={link}>
           Setup
         </NavLink>
-        <span className="ml-auto text-zinc-500">{email}</span>
+        <NavLink to="/account" className={({ isActive }) => `ml-auto ${link({ isActive })}`}>
+          {email}
+        </NavLink>
         <button
           type="button"
           className="text-zinc-600 hover:text-zinc-900"

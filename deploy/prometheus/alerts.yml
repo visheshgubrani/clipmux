@@ -1,0 +1,70 @@
+# Alerts for one ClipMux install (docs/operations.md, "Monitoring").
+# Check with: promtool check rules deploy/prometheus/alerts.yml
+groups:
+  - name: clipmux
+    rules:
+      - alert: ClipMuxDown
+        expr: up{job="clipmux"} == 0
+        for: 2m
+        labels: { severity: page }
+        annotations:
+          summary: "serve isn't answering its metrics listener"
+
+      - alert: ClipMuxNoLeader
+        expr: max(clipmux_leader) == 0
+        for: 2m
+        labels: { severity: page }
+        annotations:
+          summary: "no serve replica runs the background loops: routes, webhooks and sweeps have stopped"
+
+      - alert: ClipMuxServerErrors
+        expr: sum(rate(clipmux_http_requests_total{code=~"5.."}[5m])) / sum(rate(clipmux_http_requests_total[5m])) > 0.02
+        for: 10m
+        labels: { severity: page }
+        annotations:
+          summary: "more than 2% of requests answer 5xx; find them in the logs by request_id"
+
+      - alert: ClipMuxLoopFailing
+        expr: increase(clipmux_sweeper_errors_total[30m]) > 3
+        labels: { severity: warn }
+        annotations:
+          summary: "background loop {{ $labels.sweeper }} keeps failing"
+
+      - alert: ClipMuxLoopPanics
+        expr: increase(clipmux_sweeper_panics_total[1h]) > 0
+        labels: { severity: warn }
+        annotations:
+          summary: "background loop {{ $labels.sweeper }} panicked; the stack is in the logs"
+
+      - alert: ClipMuxOutboxStuck
+        expr: max by (kind) (clipmux_outbox_oldest_pending_seconds{kind!="webhook"}) > 3600
+        labels: { severity: page }
+        annotations:
+          summary: "{{ $labels.kind }} rows have been pending over an hour: run clipmux admin outbox"
+
+      - alert: ClipMuxQueueBacklog
+        expr: max by (kind) (clipmux_job_queue_oldest_seconds) > 1800
+        for: 10m
+        labels: { severity: warn }
+        annotations:
+          summary: "a {{ $labels.kind }} job has waited over 30 minutes: is a worker online?"
+
+      - alert: ClipMuxNoWorkers
+        expr: sum(clipmux_workers_online) == 0 and sum(clipmux_jobs{status="queued"}) > 0
+        for: 5m
+        labels: { severity: warn }
+        annotations:
+          summary: "jobs are queued and no worker has been seen in the last minute"
+
+      - alert: ClipMuxWebhooksFailing
+        expr: increase(clipmux_webhook_deliveries{status="failed"}[1h]) > 0
+        labels: { severity: warn }
+        annotations:
+          summary: "webhook deliveries gave up after 24 hours; redeliver them from the dashboard or the API"
+
+      - alert: ClipMuxPoolSaturated
+        expr: clipmux_db_pool_acquired_conns / clipmux_db_pool_max_conns > 0.9
+        for: 10m
+        labels: { severity: warn }
+        annotations:
+          summary: "the Postgres pool is nearly full; raise pool_max_conns in DATABASE_URL"

@@ -38,8 +38,10 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/ids"
 	"github.com/visheshgubrani/clipmux/internal/outbox"
 	"github.com/visheshgubrani/clipmux/internal/queue"
+	"github.com/visheshgubrani/clipmux/internal/ratelimit"
 	"github.com/visheshgubrani/clipmux/internal/storage"
 	"github.com/visheshgubrani/clipmux/internal/stores"
+	"github.com/visheshgubrani/clipmux/internal/tracks"
 )
 
 // Error codes the upload API returns or records on assets.
@@ -68,12 +70,15 @@ type Service struct {
 	// IdleExpiry is how long an upload may go without activity.
 	IdleExpiry time.Duration
 	Logger     *slog.Logger
+	// tokens rate each upload token's requests: 10 a second with bursts of
+	// 50, ample for a browser signing parts in batches of 100 (D067).
+	tokens *ratelimit.Buckets
 }
 
 // New returns a Service with the architecture's defaults.
 func New(pool *pgxpool.Pool, set *stores.Set) *Service {
 	return &Service{
-		pool: pool, stores: set, Auth: apikeys.NewAuthenticator(pool),
+		pool: pool, stores: set, Auth: apikeys.NewAuthenticator(pool), tokens: ratelimit.NewBuckets(10, 50),
 		MaxSize:    storage.PartSize * storage.MaxParts,
 		PartURLTTL: time.Hour,
 		IdleExpiry: 24 * time.Hour,
@@ -102,6 +107,9 @@ type CreateRequest struct {
 	Size           int64  `json:"size"`
 	PlaybackPolicy string `json:"playback_policy"`
 	Passthrough    string `json:"passthrough"`
+	// Generate asks for subtitles and chapters (P5-T16); chapters imply
+	// subtitles. They are made after the video is ready.
+	Generate tracks.Generate `json:"generate,omitzero"`
 }
 
 // Created is the response to POST /v1/uploads.
@@ -164,7 +172,10 @@ func (s *Service) Create(ctx context.Context, key apikeys.Key, req CreateRequest
 		if err != nil {
 			return err
 		}
-		store, err := s.stores.Get(ctx, st.ID)
+		if _, err := tracks.Create(ctx, q, key.ProjectID, asset.ID, req.Generate); err != nil {
+			return err
+		}
+		store, err := s.stores.GetIn(ctx, q, st.ID)
 		if err != nil {
 			return err
 		}
@@ -183,7 +194,7 @@ func (s *Service) Create(ctx context.Context, key apikeys.Key, req CreateRequest
 		}
 		out = Created{
 			UploadID: up.ID, AssetID: asset.ID, PartSize: up.PartSize, PartCount: partCount(up),
-			PlaybackIDs: []assets.PlaybackID{{ID: pid.ID, Policy: pid.Policy}},
+			PlaybackIDs: []assets.PlaybackID{{ID: pid.ID, Policy: pid.Policy, Status: pid.Status}},
 		}
 		stored, _ := json.Marshal(out) // without the token
 		if err := claim.Save(ctx, http.StatusCreated, stored); err != nil {
@@ -480,7 +491,7 @@ func (s *Service) sweepOne(ctx context.Context, id string) (bool, error) {
 		if err != nil || up.Status != "active" {
 			return err // cancelled, expired or completed since listing: never touch it
 		}
-		store, err := s.stores.ForAsset(ctx, up.AssetID)
+		store, err := s.stores.ForAssetIn(ctx, q, up.AssetID)
 		if err != nil {
 			return err
 		}
@@ -563,7 +574,7 @@ func (s *Service) respond(w http.ResponseWriter, op string, status int, v any, e
 	case errors.Is(err, storage.ErrTooLarge):
 		httpjson.Error(w, http.StatusRequestEntityTooLarge, "too_large", "the upload is too large for this storage")
 	default:
-		s.Logger.Error("upload api", "op", op, "err", err)
+		s.Logger.Error("upload api", "op", op, "request_id", w.Header().Get("X-Request-Id"), "err", err)
 		httpjson.Error(w, http.StatusInternalServerError, "internal", "internal error")
 	}
 }
@@ -595,6 +606,12 @@ func (s *Service) upload(w http.ResponseWriter, r *http.Request) (db.Upload, boo
 	}
 	if up.ID != r.PathValue("id") {
 		httpjson.Error(w, http.StatusForbidden, "upload_mismatch", "the token belongs to another upload")
+		return db.Upload{}, false
+	}
+	if ok, wait := s.tokens.Take(up.ID); !ok {
+		cors(w) // the browser must be able to read the 429 and its wait
+		w.Header().Set("Access-Control-Expose-Headers", "Retry-After")
+		ratelimit.Refuse(w, wait)
 		return db.Upload{}, false
 	}
 	return up, true

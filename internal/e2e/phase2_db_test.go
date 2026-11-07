@@ -17,7 +17,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -115,7 +114,7 @@ func (in *instance) owner() *http.Client {
 // ownerAt signs in through base, such as a tunnel to this instance.
 func (in *instance) ownerAt(base string) *http.Client {
 	in.t.Helper()
-	m := regexp.MustCompile(`setup_token=(\S+)`).FindStringSubmatch(in.log())
+	m := setupTokenLine.FindStringSubmatch(in.log())
 	if m == nil {
 		in.t.Fatalf("no setup token in the logs")
 	}

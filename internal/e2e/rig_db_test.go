@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"os"
@@ -110,6 +111,13 @@ func boot(t *testing.T, pinned bool, extraEnv ...string) *instance {
 	if pinned {
 		in.env = append(in.env, "CLIPMUX_PUBLIC_URL="+in.url)
 	}
+	// Every real-binary run logs JSON at debug, and its logs are checked
+	// for credentials when it ends (D064): every request, playback included,
+	// is in them.
+	in.env = append(in.env, "CLIPMUX_LOG_FORMAT=json", "CLIPMUX_LOG_LEVEL=debug")
+	// Transcription is off unless a test turns it on: each instance's data
+	// directory is new, and the speech models are 0.9 GB.
+	in.env = append(in.env, "CLIPMUX_SPEECH=off")
 	in.env = append(in.env, extraEnv...)
 	for _, k := range []string{"CLIPMUX_PACKAGER", "CLIPMUX_UNSANDBOXED_WORKER"} {
 		if v := os.Getenv(k); v != "" {
@@ -118,6 +126,7 @@ func boot(t *testing.T, pinned bool, extraEnv ...string) *instance {
 	}
 	t.Cleanup(func() {
 		in.halt(os.Interrupt)
+		checkLogs(t, "serve", in.log())
 		if t.Failed() {
 			t.Logf("serve logs:\n%s", in.log())
 		}
@@ -256,6 +265,13 @@ func fixture(t *testing.T, seconds, w, h int) string {
 // a browser would, and returns the asset and its signed playback ID.
 func (in *instance) upload(key, path string) (asset, pid string) {
 	in.t.Helper()
+	return in.uploadWith(key, path, nil)
+}
+
+// uploadWith is upload with more fields in the create request, such as
+// generate.
+func (in *instance) uploadWith(key, path string, extra map[string]any) (asset, pid string) {
+	in.t.Helper()
 	data, err := os.ReadFile(path)
 	if err != nil {
 		in.t.Fatal(err)
@@ -268,7 +284,9 @@ func (in *instance) upload(key, path string) (asset, pid string) {
 		UploadToken string                `json:"upload_token"`
 		PlaybackIDs []struct{ ID string } `json:"playback_ids"`
 	}
-	if s := in.call("POST", "/v1/uploads", key, map[string]any{"size": len(data), "playback_policy": "signed"}, &created); s != 201 {
+	body := map[string]any{"size": len(data), "playback_policy": "signed"}
+	maps.Copy(body, extra)
+	if s := in.call("POST", "/v1/uploads", key, body, &created); s != 201 {
 		in.t.Fatalf("create upload: %d", s)
 	}
 	numbers := make([]int, created.PartCount)
@@ -319,5 +337,38 @@ func (in *instance) waitReady(key, asset string, limit time.Duration) {
 			in.t.Fatalf("asset still %s after %s", a.Status, limit)
 		}
 		time.Sleep(time.Second)
+	}
+}
+
+// setupTokenLine finds the setup token serve prints, in JSON or text.
+var setupTokenLine = regexp.MustCompile(`setup_token(?:=|":")([A-Z2-7]+)`)
+
+// leaks are what a credential looks like in a log: API, agent and dispatch
+// keys, webhook secrets, a JWT (in a /v/ path or anywhere), and a URL's
+// signature. Redacted values read REDACTED, which none of these match.
+var leaks = regexp.MustCompile(`\bcmx[ad]?_[A-Z2-7]{6}|whsec_[A-Za-z0-9]{6}|eyJ[A-Za-z0-9_-]{8,}\.|X-Amz-Signature=[0-9a-f]|[?&]sig=[0-9a-f]|[?&]token=[A-Za-z0-9]`)
+
+// checkLogs fails the test if any line of a run's log isn't a JSON object
+// with time, level and msg, or holds something that looks like a
+// credential. The setup token is printed on purpose until an owner exists.
+func checkLogs(t *testing.T, name, logs string) {
+	t.Helper()
+	for i, line := range strings.Split(strings.TrimRight(logs, "\n"), "\n") {
+		if line == "" {
+			continue
+		}
+		var rec map[string]any
+		if err := json.Unmarshal([]byte(line), &rec); err != nil {
+			t.Errorf("%s log line %d isn't JSON: %.200s", name, i+1, line)
+			continue
+		}
+		for _, k := range []string{"time", "level", "msg"} {
+			if _, ok := rec[k]; !ok {
+				t.Errorf("%s log line %d has no %s: %.200s", name, i+1, k, line)
+			}
+		}
+		if m := leaks.FindString(line); m != "" {
+			t.Errorf("%s log line %d holds a credential (%q): %.300s", name, i+1, m, line)
+		}
 	}
 }

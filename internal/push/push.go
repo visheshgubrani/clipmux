@@ -19,7 +19,6 @@ import (
 	"maps"
 	"math/rand/v2"
 	"net/http"
-	neturl "net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -27,6 +26,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/visheshgubrani/clipmux/internal/logging"
 )
 
 const (
@@ -480,7 +481,7 @@ func (c *Client) put(ctx context.Context, f *os.File, p part, urlFor func(force 
 		res, err := c.client().Do(req)
 		if err != nil {
 			if ctx.Err() != nil || try >= maxTries {
-				return "", redact(err)
+				return "", logging.RedactError(err)
 			}
 			if err := c.sleep(ctx, wait(try, "")); err != nil {
 				return "", err
@@ -509,21 +510,6 @@ func (c *Client) put(ctx context.Context, f *os.File, p part, urlFor func(force 
 		}
 		return "", fmt.Errorf("storage refused the part: HTTP %d", res.StatusCode)
 	}
-}
-
-// redact drops a signed URL's query from an error, so it never reaches a
-// terminal or a log.
-func redact(err error) error {
-	var ue *neturl.Error
-	if !errors.As(err, &ue) {
-		return err
-	}
-	u, perr := neturl.Parse(ue.URL)
-	if perr != nil {
-		return fmt.Errorf("%s: %w", ue.Op, ue.Err)
-	}
-	u.RawQuery = ""
-	return fmt.Errorf("%s %s: %w", ue.Op, u.String(), ue.Err)
 }
 
 // AttachLocal creates the asset for a file a PC agent registered for push

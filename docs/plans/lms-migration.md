@@ -24,7 +24,7 @@ met. Then `clipmux-lms` retires.
 | Signed HLS, renewable in the player | App backend signs ES256 tokens; `@clipmux/player` (Video.js) `getToken()` | Phase 1 — LMS signs tokens itself instead of calling `/playback-token`, and swaps its vendored Vidstack player for the Video.js one |
 | Webhook trigger + re-fetch | Outbox webhooks + `GET /v1/assets/{id}` | Phase 1 |
 | Delete a video | `DELETE /v1/assets/{id}` | Phase 1 |
-| Auto subtitles, chapters, transcript VTT (feed AI summary/quiz/chat) | **Not designed** | Decide: add to ClipMux before migration, or move transcription into the LMS |
+| Auto subtitles, chapters, transcript VTT (feed AI summary/quiz/chat) | `"generate": {"subtitles", "chapters"}` at upload; whisper.cpp subtitles as a track (HLS and sidecar VTT); transcript JSON with ms segments; LLM chapters | Phase 5 ([P5-production.md](P5-production.md), D063), proven by a parity contract test |
 | Edge delivery at today's scale | Cloudflare Worker + R2 | Phase 2 |
 | Existing library | Import from URL from clipmux-lms R2 (or a one-off copy job) | Phase 2 |
 
@@ -34,5 +34,6 @@ met. Then `clipmux-lms` retires.
 2. Add a second adapter in the LMS behind the same interface; new uploads go to ClipMux.
 3. Import the existing library; map old video IDs to new asset/playback IDs by `passthrough`.
 4. Switch playback; keep clipmux-lms read-only for a rollback window; then retire it
-   and move `clipmux.com` hostnames as planned in launch.md.
+   and move `clipmux.com` hostnames as planned in [P6-launch.md](P6-launch.md)
+   (T19, before the public launch, D087).
 5. Update the LMS `vendor/manifest.json` source URLs (they still name the old repo).

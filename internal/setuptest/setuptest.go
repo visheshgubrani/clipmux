@@ -5,6 +5,9 @@
 // through the media URL with tokens from the server's internal key. A valid
 // v token must play and fetch the key, a t token must get only the poster,
 // no token must be refused, and the segment in storage must be ciphertext.
+// When something can transcribe, the sample's speech must also come back as
+// subtitles that play at the right time, stay out of a t token's reach and
+// sit encrypted in storage (P5-T19).
 //
 // Every request goes over HTTP to the URLs the owner configured, so a wrong
 // hostname, proxy or certificate fails here rather than in an app.
@@ -15,8 +18,6 @@ package setuptest
 import (
 	"bytes"
 	"context"
-	"crypto/aes"
-	"crypto/cipher"
 	_ "embed"
 	"encoding/binary"
 	"encoding/hex"
@@ -40,21 +41,34 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/db"
 	"github.com/visheshgubrani/clipmux/internal/ids"
 	"github.com/visheshgubrani/clipmux/internal/lifecycle"
+	"github.com/visheshgubrani/clipmux/internal/media"
 	"github.com/visheshgubrani/clipmux/internal/secrets"
 	"github.com/visheshgubrani/clipmux/internal/settings"
 	"github.com/visheshgubrani/clipmux/internal/signingkeys"
 	"github.com/visheshgubrani/clipmux/internal/stores"
 	"github.com/visheshgubrani/clipmux/internal/tokens"
+	"github.com/visheshgubrani/clipmux/internal/tracks"
+	"github.com/visheshgubrani/clipmux/internal/transcripts"
 	"github.com/visheshgubrani/clipmux/internal/uploads"
 )
 
-// sample is 8 s of synthetic video and audio (toolchain/make_sample.sh).
+// sample is 11 s of synthetic video with real speech
+// (toolchain/make_sample.sh).
 //
 //go:embed sample.mp4
 var sample []byte
 
 // Passthrough marks the sample's assets in the library.
 const Passthrough = "clipmux-setup-test"
+
+// The sample's speech: "Americans" is heard from 1.22 s to 1.98 s
+// (whisper.cpp large-v3-turbo). A cue holding the word must cover
+// expectedAtMS within cueSlackMS, whoever transcribed it.
+const (
+	expectedWord = "americans"
+	expectedAtMS = 1600
+	cueSlackMS   = 500
+)
 
 // Check is one result. Details never hold a URL or a token.
 type Check struct {
@@ -161,8 +175,13 @@ func (r *Runner) QueueThrough(ctx context.Context, trigger, executor string) (Te
 	return view(t), nil
 }
 
-// QueueFirst queues the first-boot test if no test has ever run.
+// QueueFirst queues the first-boot test if no test has ever run and the
+// URLs are confirmed. Unconfirmed, it would test the placeholder default;
+// saving the URLs queues the first test then.
 func (r *Runner) QueueFirst(ctx context.Context) error {
+	if !r.urls.URLs().Confirmed {
+		return nil
+	}
 	n, err := db.New(r.pool).CountSetupTests(ctx, r.projectID)
 	if err != nil || n > 0 {
 		return err
@@ -263,20 +282,43 @@ var PlaybackChecks = []string{
 	"no_token_refused", "stored_segment_encrypted",
 }
 
+// TrackChecks are the subtitles checks, in order. They run when something
+// can transcribe as the test starts (a worker or PC with speech, or a speech
+// API in use) and pass as skipped otherwise.
+var TrackChecks = []string{"subtitles_ready", "play_subtitles", "thumbnail_token_refused_track", "stored_track_encrypted"}
+
+// skippedOK records checks that don't apply here; they don't fail the test.
+func (rs *results) skippedOK(why string, names ...string) {
+	for _, n := range names {
+		rs.checks = append(rs.checks, Check{Name: n, OK: true, Detail: "skipped: " + why})
+	}
+}
+
 func (r *Runner) execute(ctx context.Context, testID string) []Check {
 	rs := &results{}
 	r.deleteEarlierSamples(ctx, testID)
-	assetID, err := r.upload(ctx, testID)
+	speech, err := db.New(r.pool).ProjectCanTranscribe(ctx, db.ProjectCanTranscribeParams{OnlineSeconds: 60, ProjectID: r.projectID})
+	if err != nil {
+		r.Logger.Warn("can the project transcribe", "err", err)
+	}
+	assetID, err := r.upload(ctx, testID, speech)
 	if !rs.add("upload", err) {
 		rs.skip("encode")
 		rs.skip(PlaybackChecks...)
+		rs.skip(TrackChecks...)
 		return rs.checks
 	}
 	if !rs.add("encode", r.waitReady(ctx, assetID)) {
 		rs.skip(PlaybackChecks...)
+		rs.skip(TrackChecks...)
 		return rs.checks
 	}
-	return append(rs.checks, r.playbackChecks(ctx, assetID)...)
+	rs.checks = append(rs.checks, r.playbackChecks(ctx, assetID)...)
+	if !speech {
+		rs.skippedOK("nothing here can transcribe yet (a worker with speech, or a speech API); a new worker downloads its 0.9 GB speech models first, so run the test again in a few minutes", TrackChecks...)
+		return rs.checks
+	}
+	return append(rs.checks, r.trackChecks(ctx, assetID)...)
 }
 
 // deleteEarlierSamples removes the samples of earlier tests, so the latest
@@ -306,14 +348,17 @@ func (r *Runner) deleteEarlierSamples(ctx context.Context, testID string) {
 // upload creates the sample's upload in-process, as an app's backend would,
 // then does what a browser does over HTTP: sign parts, PUT them to their
 // URLs on the public URL, and complete.
-func (r *Runner) upload(ctx context.Context, testID string) (string, error) {
+func (r *Runner) upload(ctx context.Context, testID string, subtitles bool) (string, error) {
 	q := db.New(r.pool)
 	app, err := q.GetBuiltinApp(ctx, r.projectID)
 	if err != nil {
 		return "", err
 	}
 	key := apikeys.Key{ProjectID: r.projectID, AppID: app.ID, Scopes: []string{apikeys.UploadsWrite}, Owner: true}
-	up, err := r.uploads.Create(ctx, key, uploads.CreateRequest{Size: int64(len(sample)), PlaybackPolicy: "signed", Passthrough: Passthrough}, "")
+	up, err := r.uploads.Create(ctx, key, uploads.CreateRequest{
+		Size: int64(len(sample)), PlaybackPolicy: "signed", Passthrough: Passthrough,
+		Generate: tracks.Generate{Subtitles: subtitles},
+	}, "")
 	if err != nil {
 		return "", fmt.Errorf("create upload: %w", err)
 	}
@@ -433,22 +478,13 @@ func (r *Runner) waitReady(parent context.Context, assetID string) error {
 // playbackChecks plays a ready signed asset through the media URL.
 func (r *Runner) playbackChecks(ctx context.Context, assetID string) []Check {
 	rs := &results{}
-	pid, err := r.signedPlaybackID(ctx, assetID)
-	signer, serr := signingkeys.Internal(ctx, r.pool, r.box, r.projectID)
-	if err == nil {
-		err = serr
-	}
+	pid, signedBase, thumbBase, err := r.bases(ctx, assetID)
 	if err != nil {
 		rs.add("play_master", err)
 		rs.skip(PlaybackChecks[1:]...)
 		return rs.checks
 	}
-	now := time.Now().Unix()
-	v, _ := signer.Sign(tokens.Claims{Sub: pid, Aud: tokens.AudiencePlayback, Iat: now, Exp: now + 600})
-	t, _ := signer.Sign(tokens.Claims{Sub: pid, Aud: tokens.AudienceThumbnail, Iat: now, Exp: now + 600})
 	media := r.urls.MediaURL()
-	signedBase := media + "/v/" + v + "/" + pid + "/"
-	thumbBase := media + "/v/" + t + "/" + pid + "/"
 
 	// The master names a video playlist; that names the key and a segment.
 	var keyRel, segRel string
@@ -499,6 +535,156 @@ func (r *Runner) playbackChecks(ctx context.Context, assetID string) []Check {
 	rs.add("no_token_refused", wantStatus(r.get(ctx, media+"/p/"+pid+"/master.m3u8"))(http.StatusForbidden))
 	rs.add("stored_segment_encrypted", r.storedEncrypted(ctx, assetID, segRel))
 	return rs.checks
+}
+
+// bases are the sample's signed URL prefixes on the media URL: one with a
+// v token, one with a t token.
+func (r *Runner) bases(ctx context.Context, assetID string) (pid, signed, thumb string, err error) {
+	pid, err = r.signedPlaybackID(ctx, assetID)
+	if err != nil {
+		return "", "", "", err
+	}
+	signer, err := signingkeys.Internal(ctx, r.pool, r.box, r.projectID)
+	if err != nil {
+		return "", "", "", err
+	}
+	now := time.Now().Unix()
+	v, _ := signer.Sign(tokens.Claims{Sub: pid, Aud: tokens.AudiencePlayback, Iat: now, Exp: now + 600})
+	t, _ := signer.Sign(tokens.Claims{Sub: pid, Aud: tokens.AudienceThumbnail, Iat: now, Exp: now + 600})
+	media := r.urls.MediaURL()
+	return pid, media + "/v/" + v + "/" + pid + "/", media + "/v/" + t + "/" + pid + "/", nil
+}
+
+// trackChecks waits for the sample's subtitles and plays them through the
+// media URL: listed in the master, a cue with the sample's word at its
+// time, refused to a t token, and ciphertext in storage.
+func (r *Runner) trackChecks(ctx context.Context, assetID string) []Check {
+	rs := &results{}
+	trackID, err := r.waitSubtitles(ctx, assetID)
+	if !rs.add("subtitles_ready", err) {
+		rs.skip(TrackChecks[1:]...)
+		return rs.checks
+	}
+	_, signedBase, thumbBase, err := r.bases(ctx, assetID)
+	if err == nil {
+		err = r.playSubtitles(ctx, signedBase, trackID)
+	}
+	rs.add("play_subtitles", err)
+	rs.failed = "" // the refusal and storage checks stand on their own
+	rs.add("thumbnail_token_refused_track", wantStatus(r.get(ctx, thumbBase+"tracks/"+trackID+".vtt"))(http.StatusForbidden))
+	rs.add("stored_track_encrypted", r.storedTrackEncrypted(ctx, assetID, trackID))
+	return rs.checks
+}
+
+// waitSubtitles waits for the sample's subtitles track to be ready.
+func (r *Runner) waitSubtitles(parent context.Context, assetID string) (string, error) {
+	ctx, cancel := context.WithTimeout(parent, r.EncodeTimeout)
+	defer cancel()
+	q := db.New(r.pool)
+	for {
+		ts, err := q.ListTracksForAsset(ctx, assetID)
+		if err != nil && ctx.Err() == nil {
+			return "", err
+		}
+		for _, t := range ts {
+			switch {
+			case t.Kind != tracks.Subtitles:
+			case t.Status == tracks.Ready:
+				return t.ID, nil
+			case t.Status == tracks.Errored:
+				return "", fmt.Errorf("the transcription failed: %s", t.ErrorCode.String)
+			}
+		}
+		select {
+		case <-ctx.Done():
+			if err := parent.Err(); err != nil {
+				return "", fmt.Errorf("stopped before the subtitles were ready: %w", err)
+			}
+			return "", fmt.Errorf("no subtitles after %s; is a worker with speech running?", r.EncodeTimeout)
+		case <-time.After(r.Poll):
+		}
+	}
+}
+
+// playSubtitles follows the master to the subtitles playlist and its VTT,
+// and finds the sample's word in a cue at its time.
+func (r *Runner) playSubtitles(ctx context.Context, signedBase, trackID string) error {
+	status, master, err := r.get(ctx, signedBase+"master.m3u8")
+	if err != nil {
+		return err
+	}
+	playlist := "tracks/" + trackID + ".m3u8"
+	if status != http.StatusOK || !strings.Contains(string(master), `TYPE=SUBTITLES`) || !strings.Contains(string(master), `URI="`+playlist+`"`) {
+		return fmt.Errorf("the master (HTTP %d) doesn't list the subtitles", status)
+	}
+	status, body, err := r.get(ctx, signedBase+playlist)
+	if err == nil && (status != http.StatusOK || !strings.Contains(string(body), trackID+".vtt")) {
+		err = fmt.Errorf("subtitles playlist: HTTP %d", status)
+	}
+	if err != nil {
+		return err
+	}
+	status, vtt, err := r.get(ctx, signedBase+"tracks/"+trackID+".vtt")
+	if err == nil && (status != http.StatusOK || !bytes.HasPrefix(vtt, []byte("WEBVTT"))) {
+		err = fmt.Errorf("subtitles VTT: HTTP %d", status)
+	}
+	if err != nil {
+		return err
+	}
+	for _, c := range cues(string(vtt)) {
+		if strings.Contains(strings.ToLower(c.Text), expectedWord) && c.StartMS <= expectedAtMS+cueSlackMS && c.EndMS >= expectedAtMS-cueSlackMS {
+			return nil
+		}
+	}
+	return fmt.Errorf("no cue says %q at %.1f s ± %.1f s: the subtitles are out of time or not of the sample's speech", expectedWord, float64(expectedAtMS)/1000, float64(cueSlackMS)/1000)
+}
+
+// cues reads the cues of a WebVTT file serve wrote.
+func cues(vtt string) []transcripts.Cue {
+	var out []transcripts.Cue
+	lines := strings.Split(vtt, "\n")
+	for i, l := range lines {
+		from, to, ok := strings.Cut(l, " --> ")
+		if !ok || i+1 >= len(lines) {
+			continue
+		}
+		start, err1 := parseVTTTime(from)
+		end, err2 := parseVTTTime(to)
+		if err1 == nil && err2 == nil {
+			out = append(out, transcripts.Cue{StartMS: start, EndMS: end, Text: lines[i+1]})
+		}
+	}
+	return out
+}
+
+func parseVTTTime(s string) (int64, error) {
+	var h, m, sec, ms int64
+	if _, err := fmt.Sscanf(strings.TrimSpace(s), "%d:%d:%d.%d", &h, &m, &sec, &ms); err != nil {
+		return 0, err
+	}
+	return ((h*60+m)*60+sec)*1000 + ms, nil
+}
+
+// storedTrackEncrypted reads the subtitles straight from storage: they must
+// not be WebVTT.
+func (r *Runner) storedTrackEncrypted(ctx context.Context, assetID, trackID string) error {
+	store, err := r.stores.ForAsset(ctx, assetID)
+	if err != nil {
+		return err
+	}
+	rc, err := store.Get(ctx, tracks.StorageKey(assetID, trackID))
+	if err != nil {
+		return fmt.Errorf("read the stored subtitles: %w", err)
+	}
+	defer rc.Close()
+	body, err := io.ReadAll(io.LimitReader(rc, 1<<20))
+	if err != nil {
+		return err
+	}
+	if bytes.Contains(body, []byte("WEBVTT")) || bytes.Contains(bytes.ToLower(body), []byte(expectedWord)) {
+		return errors.New("the stored subtitles are plain WebVTT, not ciphertext")
+	}
+	return nil
 }
 
 func wantStatus(status int, _ []byte, err error) func(int) error {
@@ -618,13 +804,11 @@ func attr(list, name string) string {
 // fragmentAfterDecrypt reports whether AES-128-CBC with key and iv turns seg
 // into an fMP4 fragment.
 func fragmentAfterDecrypt(key, iv, seg []byte) bool {
-	block, err := aes.NewCipher(key)
-	if err != nil || len(seg) == 0 || len(seg)%aes.BlockSize != 0 {
+	if len(key) != 16 || len(iv) != 16 {
 		return false
 	}
-	plain := make([]byte, len(seg))
-	cipher.NewCBCDecrypter(block, iv).CryptBlocks(plain, seg)
-	return isFragment(plain)
+	plain, err := media.DecryptSegment([16]byte(key), [16]byte(iv), seg)
+	return err == nil && isFragment(plain)
 }
 
 // isFragment walks the leading top-level MP4 boxes (styp, sidx, …) and

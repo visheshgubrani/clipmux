@@ -7,12 +7,33 @@ package db
 
 import (
 	"context"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
+
+const acceptTOTPStep = `-- name: AcceptTOTPStep :execrows
+UPDATE owners SET totp_last_step = $1
+WHERE id = $2 AND (totp_last_step IS NULL OR totp_last_step < $1)
+`
+
+type AcceptTOTPStepParams struct {
+	Step pgtype.Int8
+	ID   string
+}
+
+// Fenced on the last step, so the same code can't sign in twice.
+func (q *Queries) AcceptTOTPStep(ctx context.Context, arg AcceptTOTPStepParams) (int64, error) {
+	result, err := q.db.Exec(ctx, acceptTOTPStep, arg.Step, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
 
 const createOwner = `-- name: CreateOwner :one
 INSERT INTO owners (id, project_id, email, password_hash) VALUES ($1, $2, $3, $4)
 ON CONFLICT (project_id) DO NOTHING
-RETURNING id, project_id, email, password_hash, created_at, password_changed_at
+RETURNING id, project_id, email, password_hash, created_at, password_changed_at, totp_secret_encrypted, totp_enabled_at, totp_last_step
 `
 
 type CreateOwnerParams struct {
@@ -37,6 +58,9 @@ func (q *Queries) CreateOwner(ctx context.Context, arg CreateOwnerParams) (Owner
 		&i.PasswordHash,
 		&i.CreatedAt,
 		&i.PasswordChangedAt,
+		&i.TotpSecretEncrypted,
+		&i.TotpEnabledAt,
+		&i.TotpLastStep,
 	)
 	return i, err
 }
@@ -63,6 +87,20 @@ func (q *Queries) CreateOwnerSession(ctx context.Context, arg CreateOwnerSession
 	return err
 }
 
+const deleteOtherOwnerSessions = `-- name: DeleteOtherOwnerSessions :exec
+DELETE FROM owner_sessions WHERE owner_id = $1 AND token_hash <> $2
+`
+
+type DeleteOtherOwnerSessionsParams struct {
+	OwnerID   string
+	TokenHash []byte
+}
+
+func (q *Queries) DeleteOtherOwnerSessions(ctx context.Context, arg DeleteOtherOwnerSessionsParams) error {
+	_, err := q.db.Exec(ctx, deleteOtherOwnerSessions, arg.OwnerID, arg.TokenHash)
+	return err
+}
+
 const deleteOwnerSession = `-- name: DeleteOwnerSession :exec
 DELETE FROM owner_sessions WHERE token_hash = $1
 `
@@ -84,8 +122,46 @@ func (q *Queries) DeleteOwnerSessions(ctx context.Context, ownerID string) (int6
 	return result.RowsAffected(), nil
 }
 
+const deleteRecoveryCodes = `-- name: DeleteRecoveryCodes :exec
+DELETE FROM owner_recovery_codes WHERE owner_id = $1
+`
+
+func (q *Queries) DeleteRecoveryCodes(ctx context.Context, ownerID string) error {
+	_, err := q.db.Exec(ctx, deleteRecoveryCodes, ownerID)
+	return err
+}
+
+const disableOwnerTOTP = `-- name: DisableOwnerTOTP :execrows
+UPDATE owners SET totp_secret_encrypted = NULL, totp_enabled_at = NULL, totp_last_step = NULL WHERE project_id = $1
+`
+
+func (q *Queries) DisableOwnerTOTP(ctx context.Context, projectID string) (int64, error) {
+	result, err := q.db.Exec(ctx, disableOwnerTOTP, projectID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const enableOwnerTOTP = `-- name: EnableOwnerTOTP :execrows
+UPDATE owners SET totp_enabled_at = now(), totp_last_step = $2 WHERE id = $1 AND totp_secret_encrypted IS NOT NULL
+`
+
+type EnableOwnerTOTPParams struct {
+	ID           string
+	TotpLastStep pgtype.Int8
+}
+
+func (q *Queries) EnableOwnerTOTP(ctx context.Context, arg EnableOwnerTOTPParams) (int64, error) {
+	result, err := q.db.Exec(ctx, enableOwnerTOTP, arg.ID, arg.TotpLastStep)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const getOwner = `-- name: GetOwner :one
-SELECT id, project_id, email, password_hash, created_at, password_changed_at FROM owners WHERE project_id = $1
+SELECT id, project_id, email, password_hash, created_at, password_changed_at, totp_secret_encrypted, totp_enabled_at, totp_last_step FROM owners WHERE project_id = $1
 `
 
 func (q *Queries) GetOwner(ctx context.Context, projectID string) (Owner, error) {
@@ -98,12 +174,15 @@ func (q *Queries) GetOwner(ctx context.Context, projectID string) (Owner, error)
 		&i.PasswordHash,
 		&i.CreatedAt,
 		&i.PasswordChangedAt,
+		&i.TotpSecretEncrypted,
+		&i.TotpEnabledAt,
+		&i.TotpLastStep,
 	)
 	return i, err
 }
 
 const getOwnerByEmail = `-- name: GetOwnerByEmail :one
-SELECT id, project_id, email, password_hash, created_at, password_changed_at FROM owners WHERE project_id = $1 AND lower(email) = lower($2)
+SELECT id, project_id, email, password_hash, created_at, password_changed_at, totp_secret_encrypted, totp_enabled_at, totp_last_step FROM owners WHERE project_id = $1 AND lower(email) = lower($2)
 `
 
 type GetOwnerByEmailParams struct {
@@ -121,6 +200,9 @@ func (q *Queries) GetOwnerByEmail(ctx context.Context, arg GetOwnerByEmailParams
 		&i.PasswordHash,
 		&i.CreatedAt,
 		&i.PasswordChangedAt,
+		&i.TotpSecretEncrypted,
+		&i.TotpEnabledAt,
+		&i.TotpLastStep,
 	)
 	return i, err
 }
@@ -157,6 +239,46 @@ func (q *Queries) GetOwnerSession(ctx context.Context, arg GetOwnerSessionParams
 	return i, err
 }
 
+const getOwnerTOTP = `-- name: GetOwnerTOTP :one
+SELECT id, password_hash, totp_secret_encrypted, totp_enabled_at, totp_last_step FROM owners WHERE id = $1
+`
+
+type GetOwnerTOTPRow struct {
+	ID                  string
+	PasswordHash        string
+	TotpSecretEncrypted []byte
+	TotpEnabledAt       pgtype.Timestamptz
+	TotpLastStep        pgtype.Int8
+}
+
+func (q *Queries) GetOwnerTOTP(ctx context.Context, id string) (GetOwnerTOTPRow, error) {
+	row := q.db.QueryRow(ctx, getOwnerTOTP, id)
+	var i GetOwnerTOTPRow
+	err := row.Scan(
+		&i.ID,
+		&i.PasswordHash,
+		&i.TotpSecretEncrypted,
+		&i.TotpEnabledAt,
+		&i.TotpLastStep,
+	)
+	return i, err
+}
+
+const insertRecoveryCode = `-- name: InsertRecoveryCode :exec
+INSERT INTO owner_recovery_codes (project_id, owner_id, code_hash) VALUES ($1, $2, $3)
+`
+
+type InsertRecoveryCodeParams struct {
+	ProjectID string
+	OwnerID   string
+	CodeHash  []byte
+}
+
+func (q *Queries) InsertRecoveryCode(ctx context.Context, arg InsertRecoveryCodeParams) error {
+	_, err := q.db.Exec(ctx, insertRecoveryCode, arg.ProjectID, arg.OwnerID, arg.CodeHash)
+	return err
+}
+
 const ownerExists = `-- name: OwnerExists :one
 
 SELECT EXISTS (SELECT 1 FROM owners WHERE project_id = $1)
@@ -184,6 +306,21 @@ func (q *Queries) SetOwnerPassword(ctx context.Context, arg SetOwnerPasswordPara
 	return err
 }
 
+const setOwnerTOTPSecret = `-- name: SetOwnerTOTPSecret :exec
+UPDATE owners SET totp_secret_encrypted = $2, totp_enabled_at = NULL, totp_last_step = NULL WHERE id = $1
+`
+
+type SetOwnerTOTPSecretParams struct {
+	ID                  string
+	TotpSecretEncrypted []byte
+}
+
+// A secret being enrolled: kept until a code proves the authenticator has it.
+func (q *Queries) SetOwnerTOTPSecret(ctx context.Context, arg SetOwnerTOTPSecretParams) error {
+	_, err := q.db.Exec(ctx, setOwnerTOTPSecret, arg.ID, arg.TotpSecretEncrypted)
+	return err
+}
+
 const touchOwnerSession = `-- name: TouchOwnerSession :exec
 UPDATE owner_sessions SET last_seen_at = now() WHERE token_hash = $1
 `
@@ -191,4 +328,21 @@ UPDATE owner_sessions SET last_seen_at = now() WHERE token_hash = $1
 func (q *Queries) TouchOwnerSession(ctx context.Context, tokenHash []byte) error {
 	_, err := q.db.Exec(ctx, touchOwnerSession, tokenHash)
 	return err
+}
+
+const useRecoveryCode = `-- name: UseRecoveryCode :execrows
+UPDATE owner_recovery_codes SET used_at = now() WHERE owner_id = $1 AND code_hash = $2 AND used_at IS NULL
+`
+
+type UseRecoveryCodeParams struct {
+	OwnerID  string
+	CodeHash []byte
+}
+
+func (q *Queries) UseRecoveryCode(ctx context.Context, arg UseRecoveryCodeParams) (int64, error) {
+	result, err := q.db.Exec(ctx, useRecoveryCode, arg.OwnerID, arg.CodeHash)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }

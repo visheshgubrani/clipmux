@@ -24,6 +24,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/accounts"
 	"github.com/visheshgubrani/clipmux/internal/apikeys"
 	"github.com/visheshgubrani/clipmux/internal/assets"
+	"github.com/visheshgubrani/clipmux/internal/chapters"
 	"github.com/visheshgubrani/clipmux/internal/cloudflare"
 	"github.com/visheshgubrani/clipmux/internal/db"
 	"github.com/visheshgubrani/clipmux/internal/httpjson"
@@ -36,6 +37,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/settings"
 	"github.com/visheshgubrani/clipmux/internal/setuptest"
 	"github.com/visheshgubrani/clipmux/internal/signingkeys"
+	"github.com/visheshgubrani/clipmux/internal/speechapi"
 	"github.com/visheshgubrani/clipmux/internal/tokens"
 	"github.com/visheshgubrani/clipmux/internal/webhooks"
 )
@@ -63,8 +65,15 @@ type API struct {
 	RunPod *runpod.Connector
 	// Modal runs Connect Modal; nil leaves its routes 404.
 	Modal *modal.Connector
+	// Speech connects a speech API and sets the speech mode (D075); nil
+	// leaves its routes 404.
+	Speech *speechapi.Service
+	// Chapters is the chapters LLM's Connect (P5-T17).
+	Chapters *chapters.Service
 	// Life queues library moves; nil leaves their routes 404.
-	Life   *lifecycle.Service
+	Life *lifecycle.Service
+	// Keys rotates the content key secret; nil leaves its route 404.
+	Keys   *ContentKeys
 	Now    func() time.Time
 	Logger *slog.Logger
 }
@@ -108,6 +117,13 @@ func (m *API) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/executors/runpod/connect", m.owned(m.connectRunPod))
 	mux.HandleFunc("POST /v1/executors/modal/connect", m.owned(m.connectModal))
 	mux.HandleFunc("DELETE /v1/executors/{kind}", m.owned(m.disconnectExecutor))
+	mux.HandleFunc("GET /v1/settings/speech", m.owned(m.getSpeech))
+	mux.HandleFunc("PUT /v1/settings/speech", m.owned(m.setSpeechMode))
+	mux.HandleFunc("POST /v1/settings/speech/connect", m.owned(m.connectSpeech))
+	mux.HandleFunc("DELETE /v1/settings/speech/connect", m.owned(m.disconnectSpeech))
+	mux.HandleFunc("GET /v1/settings/chapters", m.owned(m.getChapters))
+	mux.HandleFunc("POST /v1/settings/chapters/connect", m.owned(m.connectChapters))
+	mux.HandleFunc("DELETE /v1/settings/chapters/connect", m.owned(m.disconnectChapters))
 	mux.HandleFunc("GET /v1/apps", m.owned(m.listApps))
 	mux.HandleFunc("POST /v1/apps", m.owned(m.createApp))
 	mux.HandleFunc("POST /v1/apps/{id}/disable", m.owned(m.setDisabled(true)))
@@ -121,12 +137,17 @@ func (m *API) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/apps/{id}/webhook-endpoints", m.owned(m.listEndpoints))
 	mux.HandleFunc("POST /v1/apps/{id}/webhook-endpoints", m.owned(m.createEndpoint))
 	mux.HandleFunc("DELETE /v1/webhook-endpoints/{id}", m.owned(m.disableEndpoint))
+	mux.HandleFunc("POST /v1/webhook-endpoints/{id}/secret", m.owned(m.rotateEndpointSecret))
+	mux.HandleFunc("POST /v1/webhook-endpoints/{id}/secret/activate", m.owned(m.activateEndpointSecret))
+	mux.HandleFunc("GET /v1/webhook-endpoints/{id}/deliveries", m.owned(m.listDeliveries))
+	mux.HandleFunc("POST /v1/webhook-deliveries/{id}/redeliver", m.owned(m.redeliver))
 	mux.HandleFunc("GET /v1/library", m.owned(m.library))
 	mux.HandleFunc("POST /v1/assets/{id}/preview-token", m.owned(m.previewToken))
 	mux.HandleFunc("POST /v1/setup-test", m.owned(m.startSetupTest))
 	mux.HandleFunc("GET /v1/setup-test/latest", m.owned(m.latestSetupTest))
 	mux.HandleFunc("GET /v1/cloudflare", m.owned(m.cloudflareStatus))
 	mux.HandleFunc("POST /v1/cloudflare/connect", m.owned(m.connectCloudflare))
+	mux.HandleFunc("POST /v1/content-keys/rotate", m.owned(m.rotateContentKey))
 	mux.HandleFunc("GET /v1/jobs", m.owned(m.listJobs))
 	mux.HandleFunc("GET /v1/jobs/{id}", m.owned(m.getJob))
 	mux.HandleFunc("POST /v1/agents/{id}/reencode", m.owned(m.reencodeAgentOutputs))
@@ -251,7 +272,7 @@ func (m *API) owned(h ownedHandler) http.HandlerFunc {
 			err = h(w, r, owner)
 		}
 		if err != nil && !errors.Is(err, errWritten) && !httpjson.WriteProblem(w, err) {
-			m.Logger.Error("manage api", "path", r.URL.Path, "err", err)
+			m.Logger.ErrorContext(r.Context(), "manage api", "route", r.Pattern, "err", err)
 			httpjson.Error(w, http.StatusInternalServerError, "internal", "internal error")
 		}
 	}
@@ -274,7 +295,7 @@ var errWritten = errors.New("manage: response already written")
 func (m *API) setup(w http.ResponseWriter, r *http.Request) {
 	exists, err := db.New(m.pool).OwnerExists(r.Context(), m.urlsProject())
 	if err != nil {
-		m.Logger.Error("manage api", "path", r.URL.Path, "err", err)
+		m.Logger.ErrorContext(r.Context(), "manage api", "route", r.Pattern, "err", err)
 		httpjson.Error(w, http.StatusInternalServerError, "internal", "internal error")
 		return
 	}
@@ -568,10 +589,18 @@ func (m *API) listEndpoints(w http.ResponseWriter, r *http.Request, o accounts.O
 		URL      string     `json:"url"`
 		Created  time.Time  `json:"created_at"`
 		Disabled *time.Time `json:"disabled_at,omitempty"`
+		// The breaker (D069): failures in a row, and until when the
+		// endpoint is skipped.
+		Failures      int32      `json:"consecutive_failures"`
+		SkippedUntil  *time.Time `json:"skipped_until,omitempty"`
+		PendingSecret *time.Time `json:"pending_secret_since,omitempty"`
 	}
 	out := make([]view, 0, len(rows))
 	for _, e := range rows {
-		out = append(out, view{ID: e.ID, URL: e.Url, Created: e.CreatedAt.Time.UTC(), Disabled: optTime(e.DisabledAt)})
+		out = append(out, view{
+			ID: e.ID, URL: e.Url, Created: e.CreatedAt.Time.UTC(), Disabled: optTime(e.DisabledAt),
+			Failures: e.ConsecutiveFailures, SkippedUntil: optTime(e.CircuitOpenUntil), PendingSecret: optTime(e.PendingSecretAt),
+		})
 	}
 	httpjson.Write(w, http.StatusOK, map[string]any{"data": out})
 	return nil
@@ -602,6 +631,87 @@ func (m *API) createEndpoint(w http.ResponseWriter, r *http.Request, o accounts.
 func (m *API) disableEndpoint(w http.ResponseWriter, r *http.Request, o accounts.Owner) error {
 	n, err := db.New(m.pool).DisableWebhookEndpoint(r.Context(), db.DisableWebhookEndpointParams{ProjectID: o.ProjectID, ID: r.PathValue("id")})
 	return noContent(w, n, err)
+}
+
+// rotateEndpointSecret makes a new secret, shown once; deliveries stay
+// signed with the old one until it is activated.
+func (m *API) rotateEndpointSecret(w http.ResponseWriter, r *http.Request, o accounts.Owner) error {
+	secret, err := webhooks.RotateSecret(r.Context(), db.New(m.pool), m.box, o.ProjectID, r.PathValue("id"))
+	if errors.Is(err, webhooks.ErrNoEndpoint) {
+		return httpjson.Fail(http.StatusNotFound, "not_found", "no such enabled endpoint")
+	}
+	if err != nil {
+		return err
+	}
+	httpjson.Write(w, http.StatusCreated, map[string]any{"secret": secret, "active": false})
+	return nil
+}
+
+func (m *API) activateEndpointSecret(w http.ResponseWriter, r *http.Request, o accounts.Owner) error {
+	err := webhooks.ActivateSecret(r.Context(), db.New(m.pool), m.box, o.ProjectID, r.PathValue("id"))
+	switch {
+	case errors.Is(err, webhooks.ErrNoEndpoint):
+		return httpjson.Fail(http.StatusNotFound, "not_found", "no such endpoint")
+	case errors.Is(err, webhooks.ErrNoPendingSecret):
+		return httpjson.Fail(http.StatusConflict, "no_pending_secret", "create a new secret first")
+	case err != nil:
+		return err
+	}
+	httpjson.Write(w, http.StatusOK, map[string]any{"active": true})
+	return nil
+}
+
+// listDeliveries shows an endpoint's latest 100 deliveries.
+func (m *API) listDeliveries(w http.ResponseWriter, r *http.Request, o accounts.Owner) error {
+	q := db.New(m.pool)
+	if ep, err := q.GetWebhookEndpoint(r.Context(), r.PathValue("id")); err != nil || ep.ProjectID != o.ProjectID {
+		return httpjson.Fail(http.StatusNotFound, "not_found", "no such endpoint")
+	}
+	rows, err := q.ListEndpointDeliveries(r.Context(), r.PathValue("id"))
+	if err != nil {
+		return err
+	}
+	type view struct {
+		ID         string     `json:"id"`
+		EventID    string     `json:"event_id"`
+		EventType  string     `json:"event_type"`
+		Status     string     `json:"status"`
+		Attempts   int32      `json:"attempts"`
+		LastStatus *int32     `json:"last_status,omitempty"`
+		LastError  string     `json:"last_error,omitempty"`
+		Created    time.Time  `json:"created_at"`
+		Finished   *time.Time `json:"finished_at,omitempty"`
+		Next       *time.Time `json:"next_attempt_at,omitempty"`
+	}
+	out := make([]view, 0, len(rows))
+	for _, d := range rows {
+		v := view{ID: d.ID, EventID: d.EventID, EventType: d.EventType, Status: d.Status, Attempts: d.Attempts,
+			LastError: d.LastError.String, Created: d.CreatedAt.Time.UTC(), Finished: optTime(d.FinishedAt), Next: optTime(d.NextAttemptAt)}
+		if d.LastStatus.Valid {
+			v.LastStatus = &d.LastStatus.Int32
+		}
+		out = append(out, v)
+	}
+	httpjson.Write(w, http.StatusOK, map[string]any{"data": out})
+	return nil
+}
+
+// redeliver sends a delivery that gave up again, with a fresh window.
+func (m *API) redeliver(w http.ResponseWriter, r *http.Request, o accounts.Owner) error {
+	now := time.Now()
+	row, err := db.New(m.pool).RedeliverWebhook(r.Context(), db.RedeliverWebhookParams{
+		ID: r.PathValue("id"), ProjectID: o.ProjectID,
+		Now:      pgtype.Timestamptz{Time: now, Valid: true},
+		GiveUpAt: pgtype.Timestamptz{Time: now.Add(webhooks.RedeliverWindow), Valid: true},
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return httpjson.Fail(http.StatusConflict, "not_redeliverable", "only a delivery that gave up (failed) can be sent again")
+	}
+	if err != nil {
+		return err
+	}
+	httpjson.Write(w, http.StatusAccepted, map[string]any{"id": row.ID, "endpoint_id": row.EndpointID, "status": "pending"})
+	return nil
 }
 
 // --- library and preview ---

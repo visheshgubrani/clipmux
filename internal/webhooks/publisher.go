@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"runtime/debug"
 	"strconv"
 	"sync"
 	"time"
@@ -138,6 +139,13 @@ func (p *Publisher) Deliver(ctx context.Context) (int, error) {
 		sem <- struct{}{}
 		wg.Go(func() {
 			defer func() { <-sem }()
+			// A panic in one delivery mustn't stop serve; its lease lapses
+			// and it is tried again.
+			defer func() {
+				if v := recover(); v != nil {
+					p.Logger.Error("webhook delivery panicked", "delivery", d.ID, "panic", v, "stack", string(debug.Stack()))
+				}
+			}()
 			p.deliver(ctx, d)
 		})
 	}
@@ -216,6 +224,7 @@ func (p *Publisher) send(ctx context.Context, d db.ClaimWebhookDeliveriesRow, se
 // failed once the window has passed. It reports whether the result was kept;
 // a sender whose lease ran out and was overtaken records nothing.
 func (p *Publisher) record(ctx context.Context, d db.ClaimWebhookDeliveriesRow, status int, code string) bool {
+	p.trip(ctx, d.EndpointID, code == "")
 	if code == "" {
 		return p.finish(ctx, d, "delivered", status, "")
 	}
@@ -256,3 +265,30 @@ func (p *Publisher) finish(ctx context.Context, d db.ClaimWebhookDeliveriesRow, 
 }
 
 func optStatus(s int) pgtype.Int4 { return pgtype.Int4{Int32: int32(s), Valid: s != 0} }
+
+// BreakerAfter is how many tries in a row an endpoint may fail before it is
+// skipped: for a minute, doubling with each further failure to an hour
+// (D069). A skipped delivery isn't charged a try and its 24-hour window
+// doesn't move, so a dead endpoint costs little and a revived one catches
+// up.
+const BreakerAfter = 5
+
+// trip records a try's outcome on its endpoint's breaker.
+func (p *Publisher) trip(ctx context.Context, endpointID string, ok bool) {
+	q := db.New(p.pool)
+	if ok {
+		if err := q.WebhookEndpointSucceeded(ctx, endpointID); err != nil {
+			p.Logger.Error("reset webhook breaker", "endpoint", endpointID, "err", err)
+		}
+		return
+	}
+	row, err := q.WebhookEndpointFailed(ctx, db.WebhookEndpointFailedParams{ID: endpointID, BreakerAfter: BreakerAfter, Now: ts(p.Now())})
+	if err != nil {
+		p.Logger.Error("record webhook breaker", "endpoint", endpointID, "err", err)
+		return
+	}
+	if row.CircuitOpenUntil.Valid && row.ConsecutiveFailures >= BreakerAfter {
+		p.Logger.Warn("webhook endpoint keeps failing; skipping it for now", "endpoint", endpointID,
+			"failures", row.ConsecutiveFailures, "until", row.CircuitOpenUntil.Time)
+	}
+}

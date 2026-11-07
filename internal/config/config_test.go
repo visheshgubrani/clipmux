@@ -114,3 +114,43 @@ func TestTrustedProxiesAreAddressRanges(t *testing.T) {
 		t.Fatal("a hostname is not an address range")
 	}
 }
+
+type envCase struct {
+	env map[string]string
+	ok  bool
+}
+
+func checkEnv(t *testing.T, cases []envCase) {
+	t.Helper()
+	for _, c := range cases {
+		get := func(k string) string {
+			if v, ok := c.env[k]; ok {
+				return v
+			}
+			if k == "DATABASE_URL" {
+				return "postgres://x"
+			}
+			return ""
+		}
+		if _, err := FromEnv(get); (err == nil) != c.ok {
+			t.Errorf("%v: err %v, want ok=%v", c.env, err, c.ok)
+		}
+	}
+}
+
+func TestMetricsAndPProfAreChecked(t *testing.T) {
+	checkEnv(t, []envCase{
+		{map[string]string{"CLIPMUX_METRICS_ADDR": "127.0.0.1:9090", "CLIPMUX_PPROF": "true"}, true},
+		{map[string]string{"CLIPMUX_METRICS_ADDR": "9090"}, false},
+		{map[string]string{"CLIPMUX_PPROF": "true"}, false}, // pprof only on the metrics listener
+		{map[string]string{"CLIPMUX_PPROF": "yes"}, false},
+	})
+}
+
+func TestToolMemoryIsChecked(t *testing.T) {
+	checkEnv(t, []envCase{
+		{map[string]string{"CLIPMUX_TOOL_MEMORY_MB": "4096"}, true},
+		{map[string]string{"CLIPMUX_TOOL_MEMORY_MB": "4G"}, false},
+		{map[string]string{"CLIPMUX_TOOL_MEMORY_MB": "0"}, false},
+	})
+}

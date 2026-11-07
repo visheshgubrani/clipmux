@@ -10,12 +10,15 @@ export function Upload() {
   const navigate = useNavigate()
   const [progress, setProgress] = useState<number | null>(null)
   const [error, setError] = useState('')
+  const [subtitles, setSubtitles] = useState(false)
+  const [chapters, setChapters] = useState(false)
   const start = async (file: File) => {
     setError('')
     try {
       const created = await post<CreatedUpload & { asset_id: string }>('/v1/uploads', {
         size: file.size,
         playback_policy: 'signed',
+        ...(subtitles || chapters ? { generate: { subtitles: subtitles || chapters, chapters } } : {}),
       })
       setProgress(0)
       await new ClipMuxUpload(file, {
@@ -33,9 +36,25 @@ export function Upload() {
     <Card className="grid gap-4">
       <CardTitle>Upload a video</CardTitle>
       <Muted>It goes to the Dashboard app with a signed playback ID.</Muted>
+      <fieldset className="grid gap-1 text-sm" disabled={progress !== null}>
+        <label className="flex items-center gap-2">
+          <input
+            type="checkbox"
+            checked={subtitles || chapters}
+            onChange={(e) => setSubtitles(e.target.checked)}
+          />
+          Generate subtitles
+        </label>
+        <label className="flex items-center gap-2">
+          <input type="checkbox" checked={chapters} onChange={(e) => setChapters(e.target.checked)} />
+          Generate chapters (needs subtitles and a connected LLM; see Captions)
+        </label>
+        <Muted>The video is ready first; subtitles and chapters follow.</Muted>
+      </fieldset>
       <input
         type="file"
         accept="video/*"
+        aria-label="Video file"
         disabled={progress !== null}
         onChange={(e) => {
           const f = e.currentTarget.files?.[0]

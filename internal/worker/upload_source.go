@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/visheshgubrani/clipmux/internal/logging"
 	"github.com/visheshgubrani/clipmux/internal/media"
 	"github.com/visheshgubrani/clipmux/internal/workerapi"
 )
@@ -109,7 +110,7 @@ func (w *Worker) putPart(ctx context.Context, url string, body *io.SectionReader
 		res, err := w.httpClient().Do(req)
 		watch.stop()
 		if err != nil {
-			last = redact(err)
+			last = logging.RedactError(err)
 			continue
 		}
 		res.Body.Close()

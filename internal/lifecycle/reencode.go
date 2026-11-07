@@ -14,6 +14,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/idempotency"
 	"github.com/visheshgubrani/clipmux/internal/queue"
 	"github.com/visheshgubrani/clipmux/internal/storage"
+	"github.com/visheshgubrani/clipmux/internal/tracks"
 )
 
 // JobView is a job as the API returns it.
@@ -78,7 +79,7 @@ func (s *Service) Reencode(ctx context.Context, key apikeys.Key, assetID string,
 			if claim != nil && claim.Replay != nil {
 				return json.Unmarshal(claim.Replay, &out)
 			}
-			_, job, asset, err := lockForChange(ctx, q, assetID)
+			_, jobs, asset, err := lockForChange(ctx, q, assetID, tracks.OutputJobs)
 			if err != nil {
 				return err
 			}
@@ -90,7 +91,8 @@ func (s *Service) Reencode(ctx context.Context, key apikeys.Key, assetID string,
 			case !sourceKept:
 				return httpjson.Fail(http.StatusConflict, "source_missing", "the asset's source was not kept, so it can't be re-encoded")
 			}
-			if job != nil {
+			if len(jobs) > 0 {
+				job := jobs[0]
 				if !req.Supersede {
 					p := httpjson.Fail(http.StatusConflict, "job_active", "another job is running on this asset; pass supersede to cancel it")
 					p.Details = map[string]string{"job_id": job.ID}
@@ -139,7 +141,7 @@ func (s *Service) respond(w http.ResponseWriter, op string, status int, v any, e
 		httpjson.Error(w, http.StatusNotFound, "not_found", "not found")
 	case httpjson.WriteProblem(w, err):
 	default:
-		s.Logger.Error("lifecycle api", "op", op, "err", err)
+		s.Logger.Error("lifecycle api", "op", op, "request_id", w.Header().Get("X-Request-Id"), "err", err)
 		httpjson.Error(w, http.StatusInternalServerError, "internal", "internal error")
 	}
 }

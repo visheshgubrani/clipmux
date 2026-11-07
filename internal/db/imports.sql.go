@@ -20,7 +20,7 @@ WHERE id = (
     ORDER BY c.available_at, c.id
     LIMIT 1
     FOR UPDATE SKIP LOCKED)
-RETURNING id, project_id, asset_id, kind, status, phase, progress, profile_id, profile_version, pinned_agent_id, lost_count, failed_count, error_code, routed_to, route_reason, available_at, created_at, started_at, finished_at, source_storage_id, target_storage_id, import_url
+RETURNING id, project_id, asset_id, kind, status, phase, progress, profile_id, profile_version, pinned_agent_id, lost_count, failed_count, error_code, routed_to, route_reason, available_at, created_at, started_at, finished_at, source_storage_id, target_storage_id, import_url, track_id
 `
 
 // serve fetches imports itself; a claim leases the job for the fetch.
@@ -50,6 +50,7 @@ func (q *Queries) ClaimImportJob(ctx context.Context, leaseSeconds float64) (Job
 		&i.SourceStorageID,
 		&i.TargetStorageID,
 		&i.ImportUrl,
+		&i.TrackID,
 	)
 	return i, err
 }
@@ -57,7 +58,7 @@ func (q *Queries) ClaimImportJob(ctx context.Context, leaseSeconds float64) (Job
 const createImportJob = `-- name: CreateImportJob :one
 INSERT INTO jobs (id, project_id, asset_id, kind, import_url)
 VALUES ($1, $2, $3, 'import', $4)
-RETURNING id, project_id, asset_id, kind, status, phase, progress, profile_id, profile_version, pinned_agent_id, lost_count, failed_count, error_code, routed_to, route_reason, available_at, created_at, started_at, finished_at, source_storage_id, target_storage_id, import_url
+RETURNING id, project_id, asset_id, kind, status, phase, progress, profile_id, profile_version, pinned_agent_id, lost_count, failed_count, error_code, routed_to, route_reason, available_at, created_at, started_at, finished_at, source_storage_id, target_storage_id, import_url, track_id
 `
 
 type CreateImportJobParams struct {
@@ -98,6 +99,7 @@ func (q *Queries) CreateImportJob(ctx context.Context, arg CreateImportJobParams
 		&i.SourceStorageID,
 		&i.TargetStorageID,
 		&i.ImportUrl,
+		&i.TrackID,
 	)
 	return i, err
 }

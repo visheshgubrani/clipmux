@@ -13,6 +13,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/visheshgubrani/clipmux/internal/logging"
 )
 
 // AgentConfig is what a paired agent keeps on disk: the server it belongs
@@ -108,7 +110,7 @@ func call(ctx context.Context, client *http.Client, server, path string, body, o
 	req.Header.Set("Content-Type", "application/json")
 	res, err := client.Do(req)
 	if err != nil {
-		return redact(err)
+		return logging.RedactError(err)
 	}
 	defer res.Body.Close()
 	data, err := io.ReadAll(io.LimitReader(res.Body, 1<<20))

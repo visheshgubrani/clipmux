@@ -38,9 +38,15 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      - name: Cache whisper.cpp and the speech models
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ runner.temp }}/whisper
+          key: whisper-${{ runner.os }}-${{ hashFiles('toolchain/versions.env', 'toolchain/build_whisper.sh', 'toolchain/whisper-vad-token-times.patch', 'toolchain/fetch_speech_models.sh') }}
       - name: Media tools (ffmpeg, pinned Shaka Packager)
         # Each apt attempt is bounded and retried (toolchain/ci_media_tools.sh).
-        timeout-minutes: 20
+        timeout-minutes: 45
         run: toolchain/ci_media_tools.sh
       - name: gofmt
         run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
@@ -135,6 +141,15 @@ jobs:
         run: docker compose -f deploy/compose.yml exec -T app clipmux admin setup-test --wait --timeout 15m
       - name: Health through Caddy
         run: curl -fsS http://localhost/healthz
+      - name: Metrics stay on the compose network
+        run: |
+          if curl -fsS --max-time 3 http://localhost:9090/metrics; then
+            echo "the metrics port is published" >&2; exit 1
+          fi
+          docker compose -f deploy/compose.yml exec -T caddy wget -qO- http://app:9090/metrics | grep -q '^clipmux_build_info{'
+          if curl -fsS http://localhost/metrics | grep -q clipmux_; then
+            echo "metrics are served through Caddy" >&2; exit 1
+          fi
       - name: The binary names its own image
         run: |
           docker run --rm --entrypoint grep clipmux:local -aqF "$IMAGE" /usr/local/bin/clipmux
@@ -144,6 +159,14 @@ jobs:
           echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
           docker tag clipmux:local "$IMAGE"
           docker push "$IMAGE"
+      - name: A stop drains within the grace period
+        run: |
+          start=$(date +%s)
+          docker compose -f deploy/compose.yml stop app
+          took=$(( $(date +%s) - start ))
+          code=$(docker inspect -f '{{.State.ExitCode}}' "$(docker compose -f deploy/compose.yml ps -aq app)")
+          echo "stopped in ${took}s with exit code ${code}"
+          [ "$code" = 0 ] && [ "$took" -lt 40 ]
       - name: Logs
         if: failure()
         # No deploy/.env means the stack never started (e.g. the build failed).

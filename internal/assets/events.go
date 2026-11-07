@@ -36,6 +36,11 @@ func (a *API) events(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	release, ok := a.Auth.Limits.EventPoll(w, key)
+	if !ok {
+		return
+	}
+	defer release()
 	since := time.Now()
 	if s := r.URL.Query().Get("since"); s != "" {
 		t, err := time.Parse(time.RFC3339Nano, s)
@@ -67,6 +72,10 @@ func (a *API) events(w http.ResponseWriter, r *http.Request) {
 		wait = time.Duration(n) * time.Second
 	}
 	deadline := time.Now().Add(wait)
+	var drain <-chan struct{}
+	if a.Drain != nil {
+		drain = a.Drain.Done()
+	}
 	for {
 		rows, err := db.New(a.pool).ListAppEvents(r.Context(), db.ListAppEventsParams{
 			AppID: pgtype.Text{String: key.AppID, Valid: true}, Since: pgtype.Timestamptz{Time: since, Valid: true}, MaxEvents: maxEvents,
@@ -92,6 +101,8 @@ func (a *API) events(w http.ResponseWriter, r *http.Request) {
 		select {
 		case <-r.Context().Done():
 			return
+		case <-drain:
+			deadline, drain = time.Now(), nil // answer now with what there is
 		case <-time.After(eventsPollEvery):
 		}
 	}

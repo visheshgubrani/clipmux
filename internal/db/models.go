@@ -64,6 +64,20 @@ type AgentSource struct {
 	UploadSource bool
 }
 
+type AiConnection struct {
+	ID             string
+	ProjectID      string
+	Purpose        string
+	Provider       string
+	BaseUrl        pgtype.Text
+	Model          string
+	ResponseFormat pgtype.Text
+	KeySealed      []byte
+	VerifiedAt     pgtype.Timestamptz
+	CreatedAt      pgtype.Timestamptz
+	UpdatedAt      pgtype.Timestamptz
+}
+
 type App struct {
 	ID         string
 	ProjectID  string
@@ -98,7 +112,7 @@ type Attempt struct {
 	JobID             string
 	AssetID           string
 	AttemptNumber     int32
-	OutputID          string
+	OutputID          pgtype.Text
 	Executor          string
 	AgentID           pgtype.Text
 	Status            string
@@ -117,6 +131,7 @@ type Attempt struct {
 	DispatchID        pgtype.Text
 	SourceMultipartID pgtype.Text
 	SourcePartSize    pgtype.Int8
+	InputOutputID     pgtype.Text
 }
 
 type CloudflareConnection struct {
@@ -138,6 +153,7 @@ type ContentKeySecret struct {
 	Version         int32
 	SecretEncrypted []byte
 	CreatedAt       pgtype.Timestamptz
+	UsableAt        pgtype.Timestamptz
 }
 
 type Dispatch struct {
@@ -213,6 +229,7 @@ type Job struct {
 	SourceStorageID pgtype.Text
 	TargetStorageID pgtype.Text
 	ImportUrl       pgtype.Text
+	TrackID         pgtype.Text
 }
 
 type Outbox struct {
@@ -241,15 +258,27 @@ type Output struct {
 	CreatedAt    pgtype.Timestamptz
 	CommittedAt  pgtype.Timestamptz
 	RetiredAt    pgtype.Timestamptz
+	PurgedAt     pgtype.Timestamptz
 }
 
 type Owner struct {
-	ID                string
-	ProjectID         string
-	Email             string
-	PasswordHash      string
-	CreatedAt         pgtype.Timestamptz
-	PasswordChangedAt pgtype.Timestamptz
+	ID                  string
+	ProjectID           string
+	Email               string
+	PasswordHash        string
+	CreatedAt           pgtype.Timestamptz
+	PasswordChangedAt   pgtype.Timestamptz
+	TotpSecretEncrypted []byte
+	TotpEnabledAt       pgtype.Timestamptz
+	TotpLastStep        pgtype.Int8
+}
+
+type OwnerRecoveryCode struct {
+	ProjectID string
+	OwnerID   string
+	CodeHash  []byte
+	CreatedAt pgtype.Timestamptz
+	UsedAt    pgtype.Timestamptz
 }
 
 type OwnerSession struct {
@@ -287,6 +316,15 @@ type Project struct {
 	QueueAgeFallbackMinutes pgtype.Int4
 	BuiltinSeenAt           pgtype.Timestamptz
 	BuiltinFreeDiskBytes    pgtype.Int8
+	BuiltinSpeech           bool
+	SpeechMode              string
+}
+
+type RetentionCursor struct {
+	ProjectID string
+	Name      string
+	Value     string
+	UpdatedAt pgtype.Timestamptz
 }
 
 type SetupTest struct {
@@ -324,6 +362,36 @@ type StorageConfig struct {
 	CreatedAt        pgtype.Timestamptz
 }
 
+type Track struct {
+	ID         string
+	ProjectID  string
+	AssetID    string
+	Kind       string
+	Source     string
+	Status     string
+	Language   pgtype.Text
+	Name       pgtype.Text
+	ErrorCode  pgtype.Text
+	KeyVersion pgtype.Int4
+	DurationMs pgtype.Int8
+	Chapters   []byte
+	OutputID   pgtype.Text
+	Version    int64
+	CreatedAt  pgtype.Timestamptz
+	UpdatedAt  pgtype.Timestamptz
+	ReadyAt    pgtype.Timestamptz
+	RetiredAt  pgtype.Timestamptz
+	DeletedAt  pgtype.Timestamptz
+}
+
+type Transcript struct {
+	TrackID   string
+	ProjectID string
+	AssetID   string
+	Body      []byte
+	CreatedAt pgtype.Timestamptz
+}
+
 type Upload struct {
 	ID             string
 	ProjectID      string
@@ -356,11 +424,15 @@ type WebhookDelivery struct {
 }
 
 type WebhookEndpoint struct {
-	ID              string
-	ProjectID       string
-	AppID           string
-	Url             string
-	SecretEncrypted []byte
-	CreatedAt       pgtype.Timestamptz
-	DisabledAt      pgtype.Timestamptz
+	ID                     string
+	ProjectID              string
+	AppID                  string
+	Url                    string
+	SecretEncrypted        []byte
+	CreatedAt              pgtype.Timestamptz
+	DisabledAt             pgtype.Timestamptz
+	ConsecutiveFailures    int32
+	CircuitOpenUntil       pgtype.Timestamptz
+	PendingSecretEncrypted []byte
+	PendingSecretAt        pgtype.Timestamptz
 }

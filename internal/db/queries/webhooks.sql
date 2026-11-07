@@ -29,6 +29,9 @@ FROM outbox e, webhook_endpoints w, apps a
 WHERE d.id IN (
         SELECT p.id FROM webhook_deliveries p
         WHERE p.status = 'pending' AND p.next_attempt_at <= sqlc.arg(now)
+          -- an endpoint whose breaker is open is skipped, not charged a try
+          AND NOT EXISTS (SELECT 1 FROM webhook_endpoints o
+                          WHERE o.id = p.endpoint_id AND o.circuit_open_until > sqlc.arg(now))
         ORDER BY p.next_attempt_at, p.id
         LIMIT sqlc.arg(max_deliveries)
         FOR UPDATE SKIP LOCKED)
@@ -48,3 +51,45 @@ WHERE id = sqlc.arg(id) AND attempts = sqlc.arg(attempts) AND status = 'pending'
 UPDATE webhook_deliveries
 SET next_attempt_at = sqlc.arg(next_attempt_at), last_status = sqlc.narg(last_status), last_error = sqlc.narg(last_error)
 WHERE id = sqlc.arg(id) AND attempts = sqlc.arg(attempts) AND status = 'pending';
+
+-- name: WebhookEndpointSucceeded :exec
+UPDATE webhook_endpoints SET consecutive_failures = 0, circuit_open_until = NULL
+WHERE id = $1 AND (consecutive_failures <> 0 OR circuit_open_until IS NOT NULL);
+
+-- name: WebhookEndpointFailed :one
+-- After breaker_after failures in a row the endpoint is skipped for a
+-- minute, doubling with each further failure to at most an hour.
+UPDATE webhook_endpoints SET
+    consecutive_failures = consecutive_failures + 1,
+    circuit_open_until = CASE WHEN consecutive_failures + 1 >= sqlc.arg(breaker_after)::integer
+        THEN sqlc.arg(now)::timestamptz + least(interval '1 hour',
+             interval '1 minute' * power(2, consecutive_failures + 1 - sqlc.arg(breaker_after)::integer))
+        ELSE circuit_open_until END
+WHERE id = sqlc.arg(id)
+RETURNING consecutive_failures, circuit_open_until;
+
+-- name: GetWebhookEndpoint :one
+SELECT * FROM webhook_endpoints WHERE id = $1;
+
+-- name: SetPendingWebhookSecret :execrows
+UPDATE webhook_endpoints SET pending_secret_encrypted = $2, pending_secret_at = now()
+WHERE id = $1 AND disabled_at IS NULL;
+
+-- name: ActivateWebhookSecret :execrows
+UPDATE webhook_endpoints SET secret_encrypted = $2, pending_secret_encrypted = NULL, pending_secret_at = NULL
+WHERE id = $1 AND pending_secret_encrypted IS NOT NULL;
+
+-- name: ListEndpointDeliveries :many
+SELECT d.id, d.event_id, (e.payload->>'type')::text AS event_type, d.status, d.attempts, d.last_status,
+       d.last_error, d.created_at, d.finished_at, d.next_attempt_at
+FROM webhook_deliveries d JOIN outbox e ON e.id = d.event_id
+WHERE d.endpoint_id = $1
+ORDER BY d.created_at DESC, d.id DESC
+LIMIT 100;
+
+-- name: RedeliverWebhook :one
+-- Only a delivery that gave up can be sent again, with a fresh window.
+UPDATE webhook_deliveries SET status = 'pending', attempts = 0, next_attempt_at = sqlc.arg(now),
+    give_up_at = sqlc.arg(give_up_at), finished_at = NULL, last_status = NULL, last_error = NULL
+WHERE id = sqlc.arg(id) AND project_id = sqlc.arg(project_id) AND status = 'failed'
+RETURNING id, endpoint_id;

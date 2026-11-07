@@ -115,7 +115,7 @@ func (q *Queries) ListPublishedKeys(ctx context.Context, projectID string) ([]Li
 
 const listServableOutputs = `-- name: ListServableOutputs :many
 SELECT id, key_version FROM outputs
-WHERE asset_id = $1 AND status IN ('committed', 'retired')
+WHERE asset_id = $1 AND status IN ('committed', 'retired') AND purged_at IS NULL
 ORDER BY id
 `
 
@@ -148,7 +148,7 @@ func (q *Queries) ListServableOutputs(ctx context.Context, assetID string) ([]Li
 const listServableOutputsForProject = `-- name: ListServableOutputsForProject :many
 SELECT o.asset_id, o.id, o.key_version FROM outputs o
 JOIN assets a ON a.id = o.asset_id
-WHERE a.project_id = $1 AND o.status IN ('committed', 'retired')
+WHERE a.project_id = $1 AND o.status IN ('committed', 'retired') AND o.purged_at IS NULL
 ORDER BY o.asset_id, o.id
 `
 

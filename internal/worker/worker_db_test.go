@@ -7,6 +7,7 @@ package worker
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -30,6 +31,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/storage/s3test"
 	"github.com/visheshgubrani/clipmux/internal/stores"
 	"github.com/visheshgubrani/clipmux/internal/tokens"
+	"github.com/visheshgubrani/clipmux/internal/tracks"
 	"github.com/visheshgubrani/clipmux/internal/workerapi"
 )
 
@@ -108,9 +110,14 @@ func newRigOn(t *testing.T, auth workerapi.WorkerAuth, open func(base string, mu
 		t.Fatal(err)
 	}
 	q := queue.New(pool)
-	api := workerapi.New(q, auth, stores.Fixed(store), contentkey.NewRing(keys), outputs.New(pool, q, stores.Fixed(store)))
+	committer := outputs.New(pool, q, stores.Fixed(store))
+	api := workerapi.New(q, auth, stores.Fixed(store), contentkey.NewRing(keys), committer)
+	api.Tracks = &tracks.Publisher{Stores: stores.Fixed(store), Keys: contentkey.NewRing(keys)}
 	mux.Handle("POST /worker/v1/", api.Handler())
-	delivery.New(pool, stores.Fixed(store), contentkey.NewRing(keys)).Register(mux)
+	mux.Handle("GET /worker/v1/attempts/", api.Handler())
+	playback := delivery.New(pool, stores.Fixed(store), contentkey.NewRing(keys))
+	committer.OnPublished, committer.OnKeys = playback.Invalidate, playback.InvalidateKeys // as serve wires them
+	playback.Register(mux)
 	return &rig{pool: pool, store: store, media: srv.URL, api: api, worker: &Worker{
 		Server: srv.URL, Key: "k", WorkDir: t.TempDir(), Tools: tl, HTTP: http.DefaultClient,
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Wait: time.Millisecond,
@@ -232,6 +239,32 @@ func TestACancelledJobStopsTheWorkerWithoutReportingAFailure(t *testing.T) {
 	objs, _, _ := r.store.List(ctx, "media/", "")
 	if len(objs) != 0 {
 		t.Fatalf("a stopped attempt uploaded %d files", len(objs))
+	}
+}
+
+func TestAWorkerShuttingDownHandsItsAttemptBack(t *testing.T) {
+	r := newRig(t)
+	r.uploaded(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	job, err := r.worker.claim(ctx)
+	if err != nil || job == nil {
+		t.Fatalf("claim: %v, %v", job, err)
+	}
+	time.AfterFunc(300*time.Millisecond, cancel) // SIGINT mid-encode
+	if err := r.worker.handle(ctx, job); !errors.Is(err, context.Canceled) {
+		t.Fatalf("handle: %v, want context.Canceled", err)
+	}
+	var status, code, jobStatus string
+	var lost, failures int
+	if err := r.pool.QueryRow(context.Background(),
+		`SELECT a.status, coalesce(a.error_code, ''), j.status, j.lost_count, j.failed_count FROM attempts a JOIN jobs j ON j.id = a.job_id`,
+	).Scan(&status, &code, &jobStatus, &lost, &failures); err != nil {
+		t.Fatal(err)
+	}
+	if status != "lost" || code != "worker_stopped" || jobStatus != "queued" || lost != 1 || failures != 0 {
+		t.Fatalf("attempt %s/%s, job %s lost %d failed %d; want lost/worker_stopped, queued, 1, 0",
+			status, code, jobStatus, lost, failures)
 	}
 }
 

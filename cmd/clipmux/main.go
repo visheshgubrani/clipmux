@@ -6,7 +6,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -15,6 +14,7 @@ import (
 	"time"
 
 	"github.com/visheshgubrani/clipmux/internal/config"
+	"github.com/visheshgubrani/clipmux/internal/logging"
 	"github.com/visheshgubrani/clipmux/internal/sandbox"
 	"github.com/visheshgubrani/clipmux/internal/server"
 )
@@ -78,12 +78,17 @@ func run(args []string, stdout, stderr io.Writer) int {
 }
 
 func serve(stderr io.Writer) int {
-	logger := slog.New(slog.NewTextHandler(stderr, nil))
+	logger, err := logging.FromEnv(os.Getenv, stderr)
+	if err != nil {
+		logger.Error("invalid configuration", "err", err)
+		return 1
+	}
 	cfg, err := config.FromEnv(os.Getenv)
 	if err != nil {
 		logger.Error("invalid configuration", "err", err)
 		return 1
 	}
+	cfg.Version = version
 	if cfg.WorkerImage == "" {
 		cfg.WorkerImage = workerImage
 	}

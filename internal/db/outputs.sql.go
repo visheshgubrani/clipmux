@@ -60,7 +60,7 @@ func (q *Queries) CountPendingRoutesForOutput(ctx context.Context, arg CountPend
 
 const getOutput = `-- name: GetOutput :one
 
-SELECT id, project_id, asset_id, prefix, status, manifest, output_format, key_version, created_at, committed_at, retired_at FROM outputs WHERE id = $1
+SELECT id, project_id, asset_id, prefix, status, manifest, output_format, key_version, created_at, committed_at, retired_at, purged_at FROM outputs WHERE id = $1
 `
 
 // Commit and route publication (docs/architecture.md, "Commit").
@@ -79,6 +79,7 @@ func (q *Queries) GetOutput(ctx context.Context, id string) (Output, error) {
 		&i.CreatedAt,
 		&i.CommittedAt,
 		&i.RetiredAt,
+		&i.PurgedAt,
 	)
 	return i, err
 }

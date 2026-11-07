@@ -21,22 +21,47 @@ Scopes: `uploads:write`, `assets:read`, `assets:write`. No API key can reach the
 management API. A cookie request that changes state from another site is
 refused (`403 cross_origin`).
 
+## Limits
+
+A refused request is `429 rate_limited` with `Retry-After` (seconds) and
+`retry_after` in the error details; wait that long and retry (D067). Limits
+are per serve process.
+
+| Surface | Counted by | Limit |
+| --- | --- | --- |
+| Integration API (API key, or the owner's session acting as an app) | key | 20 requests a second, bursts of 200; of those, writes (`POST`, `DELETE`) 2 a second, bursts of 60 |
+| `GET /v1/events` | key | 4 long-polls at once |
+| `/v1/uploads/{id}/*` with an upload token | upload | 10 requests a second, bursts of 50 |
+| `POST /v1/session` | address, and overall | 5 failed sign-ins per address and 20 overall in 15 minutes (`too_many_attempts`) |
+| `POST /v1/setup/owner` | address, and overall | 5 wrong setup tokens per address and 20 overall in 15 minutes |
+| `POST /worker/v1/pair` | address, and overall | 10 wrong codes per address and 100 overall in 15 minutes |
+| `POST /worker/v1/pairings` | address | 20 an hour (and at most 10 waiting at once, `too_many_pairings`) |
+| `POST /worker/v1/pairings/poll` | address | 2 a second, bursts of 4 |
+| Playback (`/v/`, `/p/`) | address | only refusals count: after 300 answers of 401, 403 or 404 in 5 minutes, every playback request from that address gets 429 until they age out; successful requests are never limited |
+
+An address is the client's as `CLIPMUX_TRUSTED_PROXIES` (Caddy) reports it;
+IPv6 addresses are grouped by their /64.
+
 ## Integration API
 
 | Route | Scope | Notes |
 | --- | --- | --- |
-| `POST /v1/uploads` | `uploads:write` | `{size, playback_policy: "signed"\|"public", passthrough}` → `201 {upload_id, asset_id, part_size, part_count, upload_token, playback_ids}` |
+| `POST /v1/uploads` | `uploads:write` | `{size, playback_policy: "signed"\|"public", passthrough, generate?: {subtitles?, chapters?}}` → `201 {upload_id, asset_id, part_size, part_count, upload_token, playback_ids}` |
 | `POST /v1/uploads/{id}/parts` | upload token | `{part_numbers: [1…]}` (≤ 100) → `{parts: [{part_number, url}], expires_at}`; PUT each part to its URL and keep its `ETag` |
 | `GET /v1/uploads/{id}/parts` | upload token | `{parts: [{part_number, etag, size}]}` — what storage holds, for resuming |
 | `POST /v1/uploads/{id}/complete` | upload token | `{parts: [{part_number, etag}]}` → the asset, `processing` |
 | `POST /v1/uploads/{id}/cancel` | upload token or `uploads:write` | the asset becomes `errored` / `upload_cancelled` |
-| `POST /v1/assets` | `assets:write` | `{agent_source_id, playback_policy?, passthrough?}` → `201` the asset, `processing`, on a file a PC agent registered for `clipmux push --local`; its jobs run only on that agent. `404 agent_source_not_found` once attached; `409 source_unavailable` if the agent was revoked. Or `{url, playback_policy?, passthrough?}` → `201` the asset, `processing`; serve fetches the public http(s) URL and transcodes it. `400 import_url_refused` for a non-public or credentialed URL; a fetch that fails ends `errored` with `import_url_refused`, `import_failed` or `import_too_large` |
+| `POST /v1/assets` | `assets:write` | `{agent_source_id, playback_policy?, passthrough?, generate?}` → `201` the asset, `processing`, on a file a PC agent registered for `clipmux push --local`; its jobs run only on that agent. `404 agent_source_not_found` once attached; `409 source_unavailable` if the agent was revoked. Or `{url, playback_policy?, passthrough?}` → `201` the asset, `processing`; serve fetches the public http(s) URL and transcodes it. `400 import_url_refused` for a non-public or credentialed URL; a fetch that fails ends `errored` with `import_url_refused`, `import_failed` or `import_too_large` |
 | `GET /v1/assets/{id}` | `assets:read` | the asset (below) |
 | `GET /v1/events?since=&after=&wait=` | `assets:read` | the app's webhook events created at or after `since` (default now), oldest first, ≤ 100: `{data: [{id, created_at, body}]}`, `body` being exactly what an endpoint receives. Long-polls up to `wait` seconds (≤ 25) until one is newer than `after`. For `clipmux listen` |
 | `GET /v1/assets?passthrough=` | `assets:read` | the app's assets with that reference, newest first |
 | `GET /v1/assets?updated_since=&cursor=&limit=` | `assets:read` | every change since an RFC 3339 time, oldest first, deleted included, ≤ 100 per page, `next_cursor` |
 | `DELETE /v1/assets/{id}` | `assets:write` | playback stops at once; `200` once files are gone, `202` while the delete job runs |
 | `POST /v1/assets/{id}/reencode` | `assets:write` | `{supersede?}` → `202 {id, kind, status}`; `409 job_active` (`job_id`), `source_missing`, `asset_not_ready`, `asset_deleted` |
+| `GET /v1/assets/{id}/tracks/{track_id}` | `assets:read` | a track: `{id, kind, source, status, language?, name?, error_code?, duration_ms?, chapters?: [{start_ms, end_ms, title}]}`; chapters once a chapters track is ready |
+| `GET /v1/assets/{id}/tracks/{track_id}/transcript?words=` | `assets:read` | a subtitles track's transcript, the moment it reads `ready`: `{track_id, language, duration_ms, text, segments: [{id, start_ms, end_ms, text, words?: [{id, start_ms, end_ms, text}]}]}` (words with `words=true`); `409 track_not_ready` before |
+| `POST /v1/assets/{id}/tracks` | `assets:write` | `{kind: "subtitles"\|"chapters", supersede?}` → `202 {track, job}`; a new track is made and the old one keeps playing until it is ready. `409 asset_not_ready`, `no_audio`, `subtitles_not_ready` (chapters), `chapters_not_connected`, `job_active` (`job_id`; `supersede` cancels a transcription or chapters job), `asset_deleted`; idempotent with `Idempotency-Key` |
+| `DELETE /v1/assets/{id}/tracks/{track_id}` | `assets:write` | the asset; `200` once no route lists the track, `202` while it is unpublished; its file and transcript go at once |
 | `POST /v1/assets/{id}/playback-ids` | `assets:write` | `{policy}` → `201 {id, policy, playable, status}` |
 | `DELETE /v1/assets/{id}/playback-ids/{pid}` | `assets:write` | `200 revoked` once unpublished, `202 revoking` before |
 
@@ -46,8 +71,24 @@ An asset:
 {"id": "ast_…", "app_id": "app_…", "status": "ready", "version": 4, "passthrough": "lesson-42",
  "error_code": "…", "base_url": "https://media.example.net",
  "playback_ids": [{"id": "pid_…", "policy": "signed", "playable": true, "status": "active"}],
+ "duration_seconds": 1830.4,
+ "tracks": [{"id": "trk_…", "kind": "subtitles", "source": "generated", "status": "ready", "language": "hi", "name": "Hindi"}],
  "created_at": "…", "updated_at": "…"}
 ```
+
+`generate` on an upload, an import or an agent's attach asks for subtitles
+and chapters; chapters imply subtitles. Tracks are made after the video is
+ready and never hold it up. A track's `status` is `preparing`, `ready` or
+`errored` (`error_code`: `no_audio`, `transcribe_failed`, `transcript_invalid`,
+`transcribe_unavailable`, `speech_api_rejected`, and for chapters
+`subtitles_failed`, `llm_not_connected`, `llm_unavailable` (the model kept
+failing for now through three tries), `model_rejected`, `model_refused`,
+`invalid_model_output` (still invalid after one corrective re-prompt) and
+`transcript_too_large` (a prompt over 512 KB, never truncated)); retired and deleted tracks aren't listed. A ready
+subtitles track plays in the master as an HLS subtitles rendition, and its
+VTT is at `{base_url}/v/{token}/{playback_id}/tracks/{track_id}.vtt` (or
+`/p/…`), the sidecar URL; a chapters track's VTT is at the same path.
+`duration_seconds` is null until the first output.
 
 `status` is `waiting_upload`, `processing`, `ready`, `errored` or `deleted`.
 `version` rises on every change; keep the highest you have seen.
@@ -56,7 +97,9 @@ An asset:
 
 Each app's endpoints receive its assets' events: `video.asset.ready`,
 `video.asset.updated`, `video.asset.errored`, `video.asset.reencode_failed`,
-`video.asset.deleted`. Delivery is at least once and unordered; dedupe on
+`video.asset.deleted`, and for tracks `video.asset.track.ready`,
+`video.asset.track.errored` and `video.asset.track.deleted`, which carry
+`track: {id, kind, error_code?}` beside the asset. Delivery is at least once and unordered; dedupe on
 `X-Webhook-Id`. Retries back off for 24 hours; after that, catch up with
 `updated_since`.
 
@@ -96,10 +139,21 @@ means stop; `404` means the ID is unknown or revoked.
 | --- | --- |
 | `GET /v1/setup` | no session needed: `{owner_exists, urls: {public_url, media_url, confirmed, pinned}, keys_allowed}` |
 | `POST /v1/setup/owner` | `{setup_token, email, password}` → `201`, signed in; `409 registration_closed` once an owner exists |
-| `POST /v1/session` · `GET /v1/session` · `DELETE /v1/session` | sign in (`429` with `Retry-After` after repeated failures), who am I, sign out |
+| `POST /v1/session` · `GET /v1/session` · `DELETE /v1/session` | sign in (`429` with `Retry-After` after repeated failures), who am I (`{email, totp_enabled}`), sign out. With two-factor sign-in on, signing in also takes `code` (from the authenticator) or `recovery_code`; without one it is `401 totp_required`, and a wrong or reused one `401 invalid_code`, counted as a failed sign-in (D071) |
+| `POST /v1/session/totp` | `{password}` → `201 {secret, otpauth_url}`: a new authenticator secret, waiting for a code |
+| `POST /v1/session/totp/enable` | `{code}` → `{enabled: true, recovery_codes: [10]}`, shown once; ends every other session |
+| `POST /v1/session/totp/disable` | `{password}` → `{enabled: false}`. A locked-out owner runs `clipmux admin reset-totp` on the host |
+| `POST /v1/content-keys/rotate` | `{cloudflare_token?}` → `{version, usable, current, steps}`: a new content key secret version for new outputs. With Cloudflare delivery the token is required (`409 cloudflare_token_required`): the Worker is redeployed with the new version before any output uses it; if that fails, `502` with the steps and the version stays unused (D071) |
 | `PUT /v1/settings/urls` | `{public_url, media_url?}`; `409 pinned` when the environment sets them |
 | `GET /v1/settings/routing` | `{primary_executor, fallback_executor, queue_age_fallback_minutes, builtin_worker: {last_seen_at, online}, providers_ready}` (D053); `providers_ready` lists the providers connected and verified by a setup test |
 | `PUT /v1/settings/routing` | `{primary_executor: workers \| agents \| builtin, fallback_executor?: builtin, queue_age_fallback_minutes?: 1–1440}`; a fallback can't be part of the primary, and queue age needs a fallback (`400 invalid_request`); a provider (`modal`, `runpod`) is `409 executor_not_connected` until it is connected and its setup test passed |
+| `GET /v1/settings/speech` | `{mode: local \| api \| local_then_api, connection: {base_url, model, has_key, verified_at} \| null}`: where transcriptions run (D075). `local` is whisper.cpp on the project's executors; `api` sends every transcription to the connected speech API; `local_then_api` uses it when no worker that can transcribe is online, or after the queue-age setting. The key is never returned |
+| `PUT /v1/settings/speech` | `{mode}`; `api` and `local_then_api` are `409 speech_not_connected` until a speech API is connected; queued transcriptions move to match |
+| `POST /v1/settings/speech/connect` | `{base_url, model, api_key?}`, any OpenAI-compatible `/audio/transcriptions` with `verbose_json` timestamps (OpenAI `whisper-1`, Groq `whisper-large-v3-turbo`, or a server on your network such as Speaches; the key may be empty for one that needs none) → `{connected, steps}`: `credentials` (`GET {base_url}/models`), `transcription` (11 s of sample speech sent exactly as transcriptions send audio), `saved`. **Audio leaves your infrastructure** for this provider once a mode uses it |
+| `DELETE /v1/settings/speech/connect` | Forgets the connection and returns the mode to `local`; `404` when none is connected |
+| `GET /v1/settings/chapters` | `{connection: {provider, base_url?, model, response_format?, has_key, verified_at} \| null}`: the LLM that makes chapters. The key is never returned |
+| `POST /v1/settings/chapters/connect` | `{provider: "openai_compatible" \| "anthropic", base_url?, model?, api_key?}` → `{connected, steps}`. `openai_compatible` is any `/chat/completions` API (OpenAI, Ollama, vLLM, Groq, OpenRouter) and needs `base_url` and `model`; its key may be empty for a server that needs none. `anthropic` is Claude through Anthropic's SDK and needs `api_key`; `model` defaults to `claude-opus-5-5`. Steps: `credentials` (`GET {base_url}/models`, or reading the Claude model), `structured_output` (chapters of a fixed three-segment transcript; an OpenAI-compatible server without strict JSON schemas falls back to JSON mode), `saved`. **Transcript text leaves your infrastructure** for this provider whenever chapters are made |
+| `DELETE /v1/settings/chapters/connect` | Forgets the connection; chapters already queued end `llm_not_connected`, ready ones keep playing. `404` when none is connected |
 | `GET /v1/executors` | `{data: [{kind, connected, verified, verified_at, config, max_concurrent, monthly_limit_cents, rate_cents_per_hour, disk_bytes, month_cents, machines, backoff_until}]}`: every provider ever connected, with this month's estimated spend (D055, D056) |
 | `POST /v1/executors/runpod/connect` | `{api_key, image?, registry_username?, registry_password?, gpu_type_ids?, disk_gb?, max_concurrent?, monthly_limit_cents, rate_cents_per_hour}` → `{connected, steps: [{name, ok, detail}]}`; steps `credentials`, `public_url`, `image` (resolved to its digest with the registry credentials), `registry`, `saved`, `setup_test`, stopping at the first failure; connecting again rotates the key (docs/executors.md) |
 | `POST /v1/executors/modal/connect` | `{token_id, token_secret, environment?, image?, registry_username?, registry_password?, gpu?, cpu?, memory_mib?, disk_gb?, max_concurrent?, monthly_limit_cents, rate_cents_per_hour}` → `{connected, steps}`; steps `credentials`, `public_url`, `image`, `saved`, `setup_test` (D057) |
@@ -109,6 +163,10 @@ means stop; `404` means the ID is unknown or revoked.
 | `GET`/`POST /v1/apps/{id}/api-keys` · `DELETE /v1/api-keys/{id}` | the secret (`key`) is in the create response only; `409 public_url_required` while the public URL is loopback |
 | `GET`/`POST /v1/apps/{id}/signing-keys` · `DELETE /v1/signing-keys/{kid}` | `private_key_pem` in the create response only |
 | `GET`/`POST /v1/apps/{id}/webhook-endpoints` · `DELETE /v1/webhook-endpoints/{id}` | `secret` in the create response only |
+| `POST /v1/webhook-endpoints/{id}/secret` | `201 {secret, active: false}`: a new secret, shown once; deliveries stay signed with the old one until it is activated (D069) |
+| `POST /v1/webhook-endpoints/{id}/secret/activate` | `{active: true}`: deliveries are signed with the new secret from the next try; `409 no_pending_secret` |
+| `GET /v1/webhook-endpoints/{id}/deliveries` | the latest 100: `{data: [{id, event_id, event_type, status, attempts, last_status, last_error, created_at, finished_at, next_attempt_at}]}`. Endpoints list `consecutive_failures` and `skipped_until`: after 5 failed tries in a row an endpoint is skipped for a minute, doubling to an hour, without spending its deliveries' tries |
+| `POST /v1/webhook-deliveries/{id}/redeliver` | `202`: a delivery that gave up (`failed`) is retried for a fresh 24 hours; `409 not_redeliverable` otherwise |
 | `GET /v1/library?app_id=&status=&cursor=&limit=` | every app's assets, newest first |
 | `POST /v1/assets/{id}/preview-token` | a one-hour `v` token signed with the server's internal key: `{playback_id, token, url, expires_at}` |
 | `GET /v1/cloudflare` | `{connected, hostname, bucket, account_id, worker_version, current_version, needs_redeploy, storage_ok}` |

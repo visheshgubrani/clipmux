@@ -1,6 +1,7 @@
 package accounts
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -10,10 +11,12 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/visheshgubrani/clipmux/internal/db/dbtest"
+	"github.com/visheshgubrani/clipmux/internal/secrets"
 )
 
 const goodPassword = "correct horse battery staple"
@@ -209,5 +212,114 @@ func TestSessionsEndWhenIdleAndOnPasswordReset(t *testing.T) {
 	}
 	if res := r.do("POST", "/v1/session", map[string]string{"email": "owner@example.com", "password": "a brand new long password"}, nil, nil); res.StatusCode != http.StatusOK {
 		t.Fatalf("login with the new password = %d", res.StatusCode)
+	}
+}
+
+func TestTheSixthWrongSetupTokenIsThrottled(t *testing.T) {
+	r := newRig(t, "http://localhost:8080")
+	for i := range 5 {
+		res := r.do("POST", "/v1/setup/owner", map[string]string{"setup_token": "wrong", "email": "owner@example.com", "password": goodPassword}, nil, nil)
+		if res.StatusCode != http.StatusForbidden {
+			t.Fatalf("wrong token %d = %d, want 403", i+1, res.StatusCode)
+		}
+	}
+	token, _, err := r.svc.SetupToken(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := r.do("POST", "/v1/setup/owner", map[string]string{"setup_token": token, "email": "owner@example.com", "password": goodPassword}, nil, nil)
+	if res.StatusCode != http.StatusTooManyRequests || res.Header.Get("Retry-After") == "" {
+		t.Fatalf("sixth try = %d (Retry-After %q), want 429 even with the right token", res.StatusCode, res.Header.Get("Retry-After"))
+	}
+}
+
+func TestTheSecondFactorAtSignIn(t *testing.T) {
+	r := newRig(t, "http://localhost:8080")
+	box, err := secrets.NewBox(1, bytes.Repeat([]byte{9}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.svc.Box = box
+	now := time.Now().Truncate(30 * time.Second) // the setup token is fresh, the step exact
+	r.svc.Now = func() time.Time { return now }
+	cookie := r.register()
+	decode := func(res *http.Response) map[string]any {
+		var out map[string]any
+		_ = json.NewDecoder(res.Body).Decode(&out)
+		return out
+	}
+	if res := r.do("POST", "/v1/session/totp", map[string]string{"password": "wrong password!"}, cookie, nil); res.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("start with a wrong password: %d", res.StatusCode)
+	}
+	res := r.do("POST", "/v1/session/totp", map[string]string{"password": goodPassword}, cookie, nil)
+	start := decode(res)
+	if res.StatusCode != http.StatusCreated || !strings.HasPrefix(start["otpauth_url"].(string), "otpauth://totp/ClipMux:owner@example.com?") {
+		t.Fatalf("start: %d %v", res.StatusCode, start)
+	}
+	secret, err := b32.DecodeString(start["secret"].(string))
+	if err != nil {
+		t.Fatal(err)
+	}
+	code := func() string { return totpCode(secret, now.Unix()/30) }
+	res = r.do("POST", "/v1/session/totp/enable", map[string]string{"code": code()}, cookie, nil)
+	enabled := decode(res)
+	codes, _ := enabled["recovery_codes"].([]any)
+	if res.StatusCode != http.StatusOK || len(codes) != 10 {
+		t.Fatalf("enable: %d %v", res.StatusCode, enabled)
+	}
+	login := func(extra map[string]string) (int, string) {
+		body := map[string]string{"email": "owner@example.com", "password": goodPassword}
+		for k, v := range extra {
+			body[k] = v
+		}
+		res := r.do("POST", "/v1/session", body, nil, nil)
+		out := decode(res)
+		e, _ := out["error"].(map[string]any)
+		code, _ := e["code"].(string)
+		return res.StatusCode, code
+	}
+	if status, c := login(nil); status != 401 || c != "totp_required" {
+		t.Fatalf("no code: %d %s", status, c)
+	}
+	// The enrolment code was this step's, so it can't sign in again.
+	if status, c := login(map[string]string{"code": code()}); status != 401 || c != "invalid_code" {
+		t.Fatalf("a used code: %d %s", status, c)
+	}
+	now = now.Add(30 * time.Second)
+	if status, c := login(map[string]string{"code": code()}); status != 200 {
+		t.Fatalf("a fresh code: %d %s", status, c)
+	}
+	if status, _ := login(map[string]string{"code": code()}); status != 401 {
+		t.Fatal("the same code worked twice")
+	}
+	if status, c := login(map[string]string{"recovery_code": codes[3].(string)}); status != 200 {
+		t.Fatalf("a recovery code: %d %s", status, c)
+	}
+	if status, c := login(map[string]string{"recovery_code": codes[3].(string)}); status != 401 || c != "invalid_code" {
+		t.Fatalf("a recovery code twice: %d %s", status, c)
+	}
+	var sessions int
+	_ = r.pool.QueryRow(context.Background(), `SELECT count(*) FROM owner_sessions`).Scan(&sessions)
+	if sessions != 3 { // the enrolling one, and the two sign-ins since
+		t.Fatalf("sessions = %d", sessions)
+	}
+}
+
+func TestASetupTokenWorksForADay(t *testing.T) {
+	r := newRig(t, "http://localhost:8080")
+	now := time.Now()
+	r.svc.Now = func() time.Time { return now }
+	old, _, _ := r.svc.SetupToken(context.Background())
+	now = now.Add(SetupTokenLifetime + time.Minute)
+	res := r.do("POST", "/v1/setup/owner", map[string]string{"setup_token": old, "email": "owner@example.com", "password": goodPassword}, nil, nil)
+	if res.StatusCode != http.StatusForbidden {
+		t.Fatalf("a day-old token: %d, want 403", res.StatusCode)
+	}
+	fresh, open, _ := r.svc.SetupToken(context.Background())
+	if fresh == old || !open {
+		t.Fatal("an expired token must be replaced")
+	}
+	if res := r.do("POST", "/v1/setup/owner", map[string]string{"setup_token": fresh, "email": "owner@example.com", "password": goodPassword}, nil, nil); res.StatusCode != http.StatusCreated {
+		t.Fatalf("the new token: %d", res.StatusCode)
 	}
 }

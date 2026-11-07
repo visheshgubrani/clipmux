@@ -11,6 +11,24 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const activateWebhookSecret = `-- name: ActivateWebhookSecret :execrows
+UPDATE webhook_endpoints SET secret_encrypted = $2, pending_secret_encrypted = NULL, pending_secret_at = NULL
+WHERE id = $1 AND pending_secret_encrypted IS NOT NULL
+`
+
+type ActivateWebhookSecretParams struct {
+	ID              string
+	SecretEncrypted []byte
+}
+
+func (q *Queries) ActivateWebhookSecret(ctx context.Context, arg ActivateWebhookSecretParams) (int64, error) {
+	result, err := q.db.Exec(ctx, activateWebhookSecret, arg.ID, arg.SecretEncrypted)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const claimWebhookDeliveries = `-- name: ClaimWebhookDeliveries :many
 UPDATE webhook_deliveries d
 SET attempts = d.attempts + 1, next_attempt_at = $1
@@ -18,6 +36,9 @@ FROM outbox e, webhook_endpoints w, apps a
 WHERE d.id IN (
         SELECT p.id FROM webhook_deliveries p
         WHERE p.status = 'pending' AND p.next_attempt_at <= $2
+          -- an endpoint whose breaker is open is skipped, not charged a try
+          AND NOT EXISTS (SELECT 1 FROM webhook_endpoints o
+                          WHERE o.id = p.endpoint_id AND o.circuit_open_until > $2)
         ORDER BY p.next_attempt_at, p.id
         LIMIT $3
         FOR UPDATE SKIP LOCKED)
@@ -85,7 +106,7 @@ const createWebhookEndpoint = `-- name: CreateWebhookEndpoint :one
 
 INSERT INTO webhook_endpoints (id, project_id, app_id, url, secret_encrypted)
 VALUES ($1, $2, $3, $4, $5)
-RETURNING id, project_id, app_id, url, secret_encrypted, created_at, disabled_at
+RETURNING id, project_id, app_id, url, secret_encrypted, created_at, disabled_at, consecutive_failures, circuit_open_until, pending_secret_encrypted, pending_secret_at
 `
 
 type CreateWebhookEndpointParams struct {
@@ -114,6 +135,10 @@ func (q *Queries) CreateWebhookEndpoint(ctx context.Context, arg CreateWebhookEn
 		&i.SecretEncrypted,
 		&i.CreatedAt,
 		&i.DisabledAt,
+		&i.ConsecutiveFailures,
+		&i.CircuitOpenUntil,
+		&i.PendingSecretEncrypted,
+		&i.PendingSecretAt,
 	)
 	return i, err
 }
@@ -148,6 +173,29 @@ func (q *Queries) FinishWebhookDelivery(ctx context.Context, arg FinishWebhookDe
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const getWebhookEndpoint = `-- name: GetWebhookEndpoint :one
+SELECT id, project_id, app_id, url, secret_encrypted, created_at, disabled_at, consecutive_failures, circuit_open_until, pending_secret_encrypted, pending_secret_at FROM webhook_endpoints WHERE id = $1
+`
+
+func (q *Queries) GetWebhookEndpoint(ctx context.Context, id string) (WebhookEndpoint, error) {
+	row := q.db.QueryRow(ctx, getWebhookEndpoint, id)
+	var i WebhookEndpoint
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.AppID,
+		&i.Url,
+		&i.SecretEncrypted,
+		&i.CreatedAt,
+		&i.DisabledAt,
+		&i.ConsecutiveFailures,
+		&i.CircuitOpenUntil,
+		&i.PendingSecretEncrypted,
+		&i.PendingSecretAt,
+	)
+	return i, err
 }
 
 const insertWebhookDelivery = `-- name: InsertWebhookDelivery :exec
@@ -201,6 +249,59 @@ func (q *Queries) ListEnabledEndpointsForApp(ctx context.Context, appID string) 
 	return items, nil
 }
 
+const listEndpointDeliveries = `-- name: ListEndpointDeliveries :many
+SELECT d.id, d.event_id, (e.payload->>'type')::text AS event_type, d.status, d.attempts, d.last_status,
+       d.last_error, d.created_at, d.finished_at, d.next_attempt_at
+FROM webhook_deliveries d JOIN outbox e ON e.id = d.event_id
+WHERE d.endpoint_id = $1
+ORDER BY d.created_at DESC, d.id DESC
+LIMIT 100
+`
+
+type ListEndpointDeliveriesRow struct {
+	ID            string
+	EventID       string
+	EventType     string
+	Status        string
+	Attempts      int32
+	LastStatus    pgtype.Int4
+	LastError     pgtype.Text
+	CreatedAt     pgtype.Timestamptz
+	FinishedAt    pgtype.Timestamptz
+	NextAttemptAt pgtype.Timestamptz
+}
+
+func (q *Queries) ListEndpointDeliveries(ctx context.Context, endpointID string) ([]ListEndpointDeliveriesRow, error) {
+	rows, err := q.db.Query(ctx, listEndpointDeliveries, endpointID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListEndpointDeliveriesRow{}
+	for rows.Next() {
+		var i ListEndpointDeliveriesRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.EventID,
+			&i.EventType,
+			&i.Status,
+			&i.Attempts,
+			&i.LastStatus,
+			&i.LastError,
+			&i.CreatedAt,
+			&i.FinishedAt,
+			&i.NextAttemptAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const lockPendingWebhookEvents = `-- name: LockPendingWebhookEvents :many
 SELECT id, project_id, app_id FROM outbox
 WHERE kind = 'webhook' AND done_at IS NULL AND available_at <= now()
@@ -235,6 +336,38 @@ func (q *Queries) LockPendingWebhookEvents(ctx context.Context, limit int32) ([]
 	return items, nil
 }
 
+const redeliverWebhook = `-- name: RedeliverWebhook :one
+UPDATE webhook_deliveries SET status = 'pending', attempts = 0, next_attempt_at = $1,
+    give_up_at = $2, finished_at = NULL, last_status = NULL, last_error = NULL
+WHERE id = $3 AND project_id = $4 AND status = 'failed'
+RETURNING id, endpoint_id
+`
+
+type RedeliverWebhookParams struct {
+	Now       pgtype.Timestamptz
+	GiveUpAt  pgtype.Timestamptz
+	ID        string
+	ProjectID string
+}
+
+type RedeliverWebhookRow struct {
+	ID         string
+	EndpointID string
+}
+
+// Only a delivery that gave up can be sent again, with a fresh window.
+func (q *Queries) RedeliverWebhook(ctx context.Context, arg RedeliverWebhookParams) (RedeliverWebhookRow, error) {
+	row := q.db.QueryRow(ctx, redeliverWebhook,
+		arg.Now,
+		arg.GiveUpAt,
+		arg.ID,
+		arg.ProjectID,
+	)
+	var i RedeliverWebhookRow
+	err := row.Scan(&i.ID, &i.EndpointID)
+	return i, err
+}
+
 const retryWebhookDelivery = `-- name: RetryWebhookDelivery :execrows
 UPDATE webhook_deliveries
 SET next_attempt_at = $1, last_status = $2, last_error = $3
@@ -261,4 +394,63 @@ func (q *Queries) RetryWebhookDelivery(ctx context.Context, arg RetryWebhookDeli
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const setPendingWebhookSecret = `-- name: SetPendingWebhookSecret :execrows
+UPDATE webhook_endpoints SET pending_secret_encrypted = $2, pending_secret_at = now()
+WHERE id = $1 AND disabled_at IS NULL
+`
+
+type SetPendingWebhookSecretParams struct {
+	ID                     string
+	PendingSecretEncrypted []byte
+}
+
+func (q *Queries) SetPendingWebhookSecret(ctx context.Context, arg SetPendingWebhookSecretParams) (int64, error) {
+	result, err := q.db.Exec(ctx, setPendingWebhookSecret, arg.ID, arg.PendingSecretEncrypted)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const webhookEndpointFailed = `-- name: WebhookEndpointFailed :one
+UPDATE webhook_endpoints SET
+    consecutive_failures = consecutive_failures + 1,
+    circuit_open_until = CASE WHEN consecutive_failures + 1 >= $1::integer
+        THEN $2::timestamptz + least(interval '1 hour',
+             interval '1 minute' * power(2, consecutive_failures + 1 - $1::integer))
+        ELSE circuit_open_until END
+WHERE id = $3
+RETURNING consecutive_failures, circuit_open_until
+`
+
+type WebhookEndpointFailedParams struct {
+	BreakerAfter int32
+	Now          pgtype.Timestamptz
+	ID           string
+}
+
+type WebhookEndpointFailedRow struct {
+	ConsecutiveFailures int32
+	CircuitOpenUntil    pgtype.Timestamptz
+}
+
+// After breaker_after failures in a row the endpoint is skipped for a
+// minute, doubling with each further failure to at most an hour.
+func (q *Queries) WebhookEndpointFailed(ctx context.Context, arg WebhookEndpointFailedParams) (WebhookEndpointFailedRow, error) {
+	row := q.db.QueryRow(ctx, webhookEndpointFailed, arg.BreakerAfter, arg.Now, arg.ID)
+	var i WebhookEndpointFailedRow
+	err := row.Scan(&i.ConsecutiveFailures, &i.CircuitOpenUntil)
+	return i, err
+}
+
+const webhookEndpointSucceeded = `-- name: WebhookEndpointSucceeded :exec
+UPDATE webhook_endpoints SET consecutive_failures = 0, circuit_open_until = NULL
+WHERE id = $1 AND (consecutive_failures <> 0 OR circuit_open_until IS NOT NULL)
+`
+
+func (q *Queries) WebhookEndpointSucceeded(ctx context.Context, id string) error {
+	_, err := q.db.Exec(ctx, webhookEndpointSucceeded, id)
+	return err
 }

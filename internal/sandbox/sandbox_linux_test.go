@@ -17,6 +17,9 @@ func TestMain(m *testing.M) {
 	if len(os.Args) > 1 && os.Args[1] == "sandbox-exec" {
 		os.Exit(Main(os.Args[2:], os.Stdout, os.Stderr))
 	}
+	if len(os.Args) > 1 && os.Args[1] == "die-with-parent-helper" {
+		dieWithParentHelper()
+	}
 	os.Exit(m.Run())
 }
 

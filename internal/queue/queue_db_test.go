@@ -157,7 +157,7 @@ func TestClaimCreatesAttemptLeaseAndFreshOutput(t *testing.T) {
 	if c.Attempt.AttemptNumber != 1 || c.Attempt.Executor != "builtin" || c.Attempt.Status != "running" {
 		t.Fatalf("attempt = %+v", c.Attempt)
 	}
-	if c.Output.AssetID != "ast_1" || c.Output.Status != "writing" || c.Attempt.OutputID != c.Output.ID {
+	if c.Output.AssetID != "ast_1" || c.Output.Status != "writing" || c.Attempt.OutputID.String != c.Output.ID {
 		t.Fatalf("output = %+v", c.Output)
 	}
 	if lease := time.Until(c.Attempt.LeaseExpiresAt.Time); lease < 80*time.Second || lease > 100*time.Second {
@@ -371,6 +371,36 @@ func TestTransientFailuresBackOffAndStopAfterThree(t *testing.T) {
 	}
 	if status, code, _ := f.assetRow("ast_1"); status != "errored" || code != "processing_failed" {
 		t.Fatalf("asset = %s/%s", status, code)
+	}
+}
+
+func TestAStoppedWorkerHandsItsJobBackAtOnce(t *testing.T) {
+	f := newFixture(t)
+	job := f.enqueue(f.asset("ast_1", false), "transcode")
+	c := f.claim(builtin)
+	if _, err := f.q.Fail(context.Background(), c.Token, queue.Failure{Code: "worker_stopped"}); err != nil {
+		t.Fatal(err)
+	}
+	if s := f.attemptStatus(c.Attempt.ID); s != "lost" {
+		t.Fatalf("attempt = %q, want lost", s)
+	}
+	j := f.job(job.ID)
+	if j.Status != "queued" || j.LostCount != 1 || j.FailedCount != 0 || j.AvailableAt.Time.After(time.Now()) {
+		t.Fatalf("job = %q lost %d failed %d available %v, want queued now with one lost lease",
+			j.Status, j.LostCount, j.FailedCount, j.AvailableAt.Time)
+	}
+	next := f.claim(builtin)
+	if next == nil || next.Attempt.AttemptNumber != 2 {
+		t.Fatalf("the job wasn't claimable again at once: %+v", next)
+	}
+	// It spends the lost-lease budget, so a worker that keeps stopping
+	// mid-job can't hold a job forever.
+	f.exec(`UPDATE jobs SET lost_count = 4 WHERE id = $1`, job.ID)
+	if _, err := f.q.Fail(context.Background(), next.Token, queue.Failure{Code: "worker_stopped"}); err != nil {
+		t.Fatal(err)
+	}
+	if j := f.job(job.ID); j.Status != "failed" || j.ErrorCode.String != "worker_lost" {
+		t.Fatalf("job = %q %q, want failed worker_lost", j.Status, j.ErrorCode.String)
 	}
 }
 

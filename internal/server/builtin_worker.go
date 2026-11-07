@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/visheshgubrani/clipmux/internal/logging"
 	"github.com/visheshgubrani/clipmux/internal/media"
 	"github.com/visheshgubrani/clipmux/internal/sandbox"
 	"github.com/visheshgubrani/clipmux/internal/worker"
@@ -22,8 +23,11 @@ type builtinWorker struct {
 	server  string // loopback URL of this serve
 	key     string
 	workDir string
-	tools   media.Tools
-	logger  *slog.Logger
+	// modelsDir keeps the speech models across restarts (the work
+	// directory is cleared at each one).
+	modelsDir string
+	tools     media.Tools
+	logger    *slog.Logger
 	// unsandboxed runs the tools unconfined (CLIPMUX_UNSANDBOXED_WORKER).
 	unsandboxed bool
 }
@@ -52,6 +56,8 @@ func (b *builtinWorker) childEnv() []string {
 		"CLIPMUX_FFMPEG=" + b.tools.FFmpeg,
 		"CLIPMUX_FFPROBE=" + b.tools.FFprobe,
 		"CLIPMUX_PACKAGER=" + b.tools.Packager,
+		"CLIPMUX_WHISPER=" + b.tools.Whisper,
+		"CLIPMUX_MODELS_DIR=" + b.modelsDir,
 	}
 	if mem := os.Getenv("CLIPMUX_TOOL_MEMORY_MB"); mem != "" {
 		env = append(env, "CLIPMUX_TOOL_MEMORY_MB="+mem)
@@ -60,7 +66,13 @@ func (b *builtinWorker) childEnv() []string {
 		env = append(env, "TMPDIR="+tmp)
 	}
 	// A GPU on the server host encodes for the built-in worker too.
-	for _, name := range append([]string{"CLIPMUX_ENCODER", "CLIPMUX_VAAPI_DEVICE"}, sandbox.EnvAllowed...) {
+	// The child logs like serve, to the same stream.
+	for _, name := range []string{logging.EnvFormat, logging.EnvLevel} {
+		if v := os.Getenv(name); v != "" {
+			env = append(env, name+"="+v)
+		}
+	}
+	for _, name := range append([]string{"CLIPMUX_ENCODER", "CLIPMUX_VAAPI_DEVICE", "CLIPMUX_SPEECH"}, sandbox.EnvAllowed...) {
 		if v := os.Getenv(name); v != "" {
 			env = append(env, name+"="+v)
 		}
@@ -116,6 +128,7 @@ func (b *builtinWorker) run(ctx context.Context) {
 		cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr
 		cmd.Cancel = func() error { return cmd.Process.Signal(os.Interrupt) }
 		cmd.WaitDelay = 30 * time.Second
+		sandbox.DieWithParent(cmd)
 		b.logger.Info("built-in worker starting", "server", b.server)
 		err := cmd.Run()
 		if ctx.Err() != nil {

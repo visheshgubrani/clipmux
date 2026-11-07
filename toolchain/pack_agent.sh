@@ -9,7 +9,8 @@
 #
 # Layout of clipmux-agent-linux-{arch}.tar.gz:
 #   clipmux-agent/clipmux            launcher: points clipmux at the tools below
-#   clipmux-agent/libexec/           clipmux, ffmpeg, ffprobe, packager, lib/, dri/
+#   clipmux-agent/libexec/           clipmux, ffmpeg, ffprobe, packager, lib/, dri/,
+#                                    whisper/ (whisper-cli, its libraries and backends)
 #   clipmux-agent/licenses/          GPL notices, the toolchain manifest, copyrights
 #   clipmux-agent/SHA256SUMS
 #
@@ -42,6 +43,18 @@ bundle_deps() {
 
 bundle_deps "$lx/ffmpeg"
 bundle_deps "$lx/ffprobe"
+# whisper.cpp keeps its own directory: ggml loads its backends (the CPU
+# variants, Vulkan) from beside the executable, so their dependencies go
+# there too. Vulkan drivers stay the host's (mesa's or NVIDIA's ICD); a host
+# without one transcribes on the CPU.
+cp -a /usr/local/libexec/clipmux-whisper "$lx/whisper"
+for f in "$lx"/whisper/*; do
+  [ -L "$f" ] && continue
+  ldd "$f" | awk '/=> \// { print $3 }' | while read -r lib; do
+    system_lib "$lib" && continue
+    [ -e "$lx/whisper/$(basename "$lib")" ] || cp -L "$lib" "$lx/whisper/"
+  done
+done
 # The VAAPI drivers libva loads at run time: radeonsi (AMD) everywhere,
 # iHD (Intel) where Ubuntu ships it.
 for drv in radeonsi_drv_video.so iHD_drv_video.so; do
@@ -59,6 +72,7 @@ done
 patchelf --force-rpath --set-rpath '$ORIGIN/lib' "$lx/ffmpeg" "$lx/ffprobe"
 for f in "$lx"/lib/*.so*; do patchelf --force-rpath --set-rpath '$ORIGIN' "$f"; done
 for f in "$lx"/dri/*.so; do patchelf --force-rpath --set-rpath '$ORIGIN/../lib' "$f"; done
+find "$lx/whisper" -type f -exec patchelf --force-rpath --set-rpath '$ORIGIN' {} \;
 
 cat >"$root/clipmux" <<'LAUNCHER'
 #!/bin/sh
@@ -67,6 +81,7 @@ here=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
 export CLIPMUX_FFMPEG="${CLIPMUX_FFMPEG:-$here/libexec/ffmpeg}"
 export CLIPMUX_FFPROBE="${CLIPMUX_FFPROBE:-$here/libexec/ffprobe}"
 export CLIPMUX_PACKAGER="${CLIPMUX_PACKAGER:-$here/libexec/packager}"
+export CLIPMUX_WHISPER="${CLIPMUX_WHISPER:-$here/libexec/whisper/whisper-cli}"
 export LIBVA_DRIVERS_PATH="${LIBVA_DRIVERS_PATH:-$here/libexec/dri}"
 exec "$here/libexec/clipmux" "$@"
 LAUNCHER
@@ -76,14 +91,17 @@ chmod 0755 "$root/clipmux"
 # and the copyright file of every Ubuntu package a bundled file came from.
 cp -r /usr/local/share/doc/clipmux-ffmpeg "$root/licenses/ffmpeg"
 cp /usr/local/share/clipmux/toolchain.json "$root/licenses/ffmpeg/"
+cp -r /usr/local/share/doc/clipmux-whisper "$root/licenses/whisper"
+cp /usr/local/share/clipmux/whisper.json "$root/licenses/whisper/"
 cat >"$root/licenses/README" <<'README'
 FFmpeg here is built from source under the GPL (see ffmpeg/: its licence,
 the GPLv2 and LGPLv2.1 texts, and the exact sources it was built from).
-Shaka Packager is BSD-licensed. Every other library comes from an Ubuntu
-package, whose copyright file is in packages/.
+Shaka Packager is BSD-licensed. whisper.cpp is MIT-licensed (see whisper/;
+its models are fetched at run time and are MIT too). Every other library
+comes from an Ubuntu package, whose copyright file is in packages/.
 README
 mkdir -p "$root/licenses/packages"
-for f in "$lx"/lib/*.so* "$lx"/dri/*.so; do
+for f in "$lx"/lib/*.so* "$lx"/dri/*.so "$lx"/whisper/*.so*; do
   src=$(find /usr/lib /lib -name "$(basename "$f")" -print -quit 2>/dev/null || true)
   [ -n "$src" ] || continue
   pkg=$(dpkg -S "$(readlink -f "$src")" 2>/dev/null | head -1 | cut -d: -f1 || true)

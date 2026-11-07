@@ -1,4 +1,5 @@
 import { expect, type Page, test } from '@playwright/test'
+import { watchCSP } from './csp.ts'
 
 // The Workers and Jobs pages (D047, D053–D058), against the real serve the
 // fixture boots: its owner signs in, finds a connected PC, chooses routing,
@@ -27,6 +28,7 @@ test('the owner routes jobs, connects RunPod and sees why each job went where it
   page,
   request,
 }) => {
+  const noViolations = await watchCSP(page)
   const cfg = (await (await request.get('/config')).json()) as Config
   await signIn(page, cfg)
   await page.goto(`${cfg.ops}/workers`)
@@ -108,6 +110,7 @@ test('the owner routes jobs, connects RunPod and sees why each job went where it
   await page.getByLabel('Queue-age fallback', { exact: true }).uncheck()
   await page.getByRole('button', { name: 'Save routing' }).click()
   await expect(page.getByText('Saved.')).toBeVisible()
+  await noViolations()
 })
 
 // The sample's job: queued, not claimed yet.

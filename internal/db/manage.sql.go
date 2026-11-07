@@ -85,7 +85,7 @@ func (q *Queries) GetAssetInProject(ctx context.Context, arg GetAssetInProjectPa
 }
 
 const getJobInProject = `-- name: GetJobInProject :one
-SELECT j.id, j.project_id, j.asset_id, j.kind, j.status, j.phase, j.progress, j.profile_id, j.profile_version, j.pinned_agent_id, j.lost_count, j.failed_count, j.error_code, j.routed_to, j.route_reason, j.available_at, j.created_at, j.started_at, j.finished_at, j.source_storage_id, j.target_storage_id, j.import_url, s.app_id, s.passthrough FROM jobs j
+SELECT j.id, j.project_id, j.asset_id, j.kind, j.status, j.phase, j.progress, j.profile_id, j.profile_version, j.pinned_agent_id, j.lost_count, j.failed_count, j.error_code, j.routed_to, j.route_reason, j.available_at, j.created_at, j.started_at, j.finished_at, j.source_storage_id, j.target_storage_id, j.import_url, j.track_id, s.app_id, s.passthrough FROM jobs j
 JOIN assets s ON s.id = j.asset_id
 WHERE j.project_id = $1 AND j.id = $2
 `
@@ -118,6 +118,7 @@ type GetJobInProjectRow struct {
 	SourceStorageID pgtype.Text
 	TargetStorageID pgtype.Text
 	ImportUrl       pgtype.Text
+	TrackID         pgtype.Text
 	AppID           string
 	Passthrough     pgtype.Text
 }
@@ -148,6 +149,7 @@ func (q *Queries) GetJobInProject(ctx context.Context, arg GetJobInProjectParams
 		&i.SourceStorageID,
 		&i.TargetStorageID,
 		&i.ImportUrl,
+		&i.TrackID,
 		&i.AppID,
 		&i.Passthrough,
 	)
@@ -289,7 +291,7 @@ type ListJobAttemptsRow struct {
 	StartedAt       pgtype.Timestamptz
 	FinishedAt      pgtype.Timestamptz
 	LastHeartbeatAt pgtype.Timestamptz
-	OutputID        string
+	OutputID        pgtype.Text
 	Encoder         []byte
 }
 
@@ -334,7 +336,7 @@ func (q *Queries) ListJobAttempts(ctx context.Context, jobIds []string) ([]ListJ
 }
 
 const listJobs = `-- name: ListJobs :many
-SELECT j.id, j.project_id, j.asset_id, j.kind, j.status, j.phase, j.progress, j.profile_id, j.profile_version, j.pinned_agent_id, j.lost_count, j.failed_count, j.error_code, j.routed_to, j.route_reason, j.available_at, j.created_at, j.started_at, j.finished_at, j.source_storage_id, j.target_storage_id, j.import_url, s.app_id, s.passthrough FROM jobs j
+SELECT j.id, j.project_id, j.asset_id, j.kind, j.status, j.phase, j.progress, j.profile_id, j.profile_version, j.pinned_agent_id, j.lost_count, j.failed_count, j.error_code, j.routed_to, j.route_reason, j.available_at, j.created_at, j.started_at, j.finished_at, j.source_storage_id, j.target_storage_id, j.import_url, j.track_id, s.app_id, s.passthrough FROM jobs j
 JOIN assets s ON s.id = j.asset_id
 WHERE j.project_id = $1
   AND ($2::text IS NULL OR j.status = $2)
@@ -379,6 +381,7 @@ type ListJobsRow struct {
 	SourceStorageID pgtype.Text
 	TargetStorageID pgtype.Text
 	ImportUrl       pgtype.Text
+	TrackID         pgtype.Text
 	AppID           string
 	Passthrough     pgtype.Text
 }
@@ -424,6 +427,7 @@ func (q *Queries) ListJobs(ctx context.Context, arg ListJobsParams) ([]ListJobsR
 			&i.SourceStorageID,
 			&i.TargetStorageID,
 			&i.ImportUrl,
+			&i.TrackID,
 			&i.AppID,
 			&i.Passthrough,
 		); err != nil {
@@ -539,15 +543,18 @@ func (q *Queries) ListSigningKeys(ctx context.Context, appID pgtype.Text) ([]Lis
 }
 
 const listWebhookEndpoints = `-- name: ListWebhookEndpoints :many
-SELECT id, url, created_at, disabled_at FROM webhook_endpoints
+SELECT id, url, created_at, disabled_at, consecutive_failures, circuit_open_until, pending_secret_at FROM webhook_endpoints
 WHERE app_id = $1 ORDER BY created_at DESC, id DESC
 `
 
 type ListWebhookEndpointsRow struct {
-	ID         string
-	Url        string
-	CreatedAt  pgtype.Timestamptz
-	DisabledAt pgtype.Timestamptz
+	ID                  string
+	Url                 string
+	CreatedAt           pgtype.Timestamptz
+	DisabledAt          pgtype.Timestamptz
+	ConsecutiveFailures int32
+	CircuitOpenUntil    pgtype.Timestamptz
+	PendingSecretAt     pgtype.Timestamptz
 }
 
 func (q *Queries) ListWebhookEndpoints(ctx context.Context, appID string) ([]ListWebhookEndpointsRow, error) {
@@ -564,6 +571,9 @@ func (q *Queries) ListWebhookEndpoints(ctx context.Context, appID string) ([]Lis
 			&i.Url,
 			&i.CreatedAt,
 			&i.DisabledAt,
+			&i.ConsecutiveFailures,
+			&i.CircuitOpenUntil,
+			&i.PendingSecretAt,
 		); err != nil {
 			return nil, err
 		}
@@ -573,6 +583,28 @@ func (q *Queries) ListWebhookEndpoints(ctx context.Context, appID string) ([]Lis
 		return nil, err
 	}
 	return items, nil
+}
+
+const retireOtherSigningKeys = `-- name: RetireOtherSigningKeys :execrows
+UPDATE signing_keys k SET retired_at = now() + make_interval(secs => p.max_token_lifetime_seconds)
+FROM projects p
+WHERE p.id = k.project_id AND k.app_id = $1 AND k.id <> $2
+  AND k.revoked_at IS NULL AND (k.retired_at IS NULL OR k.retired_at > now() + make_interval(secs => p.max_token_lifetime_seconds))
+`
+
+type RetireOtherSigningKeysParams struct {
+	AppID  pgtype.Text
+	KeepID string
+}
+
+// A rotation: the app's other live keys stop at the end of the longest
+// token they may have signed, so sessions in progress finish.
+func (q *Queries) RetireOtherSigningKeys(ctx context.Context, arg RetireOtherSigningKeysParams) (int64, error) {
+	result, err := q.db.Exec(ctx, retireOtherSigningKeys, arg.AppID, arg.KeepID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const revokeAPIKey = `-- name: RevokeAPIKey :execrows

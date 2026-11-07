@@ -12,12 +12,14 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/visheshgubrani/clipmux/internal/db"
 	"github.com/visheshgubrani/clipmux/internal/httpjson"
 	"github.com/visheshgubrani/clipmux/internal/ids"
+	"github.com/visheshgubrani/clipmux/internal/ratelimit"
 )
 
 // Scopes an integration key can carry.
@@ -104,6 +106,71 @@ type Authenticator struct {
 	// Session resolves a request without a bearer token; nil means only
 	// API keys are accepted.
 	Session func(r *http.Request) (Key, error)
+	// Limits rate each key's requests; nil limits nothing. serve shares one
+	// across the APIs, so a key's budget is the same wherever it calls.
+	Limits *Limits
+}
+
+// Limits are the integration API's rates per key (D067): 20 requests a
+// second with bursts of 200, and of those, 2 writes a second with bursts of
+// 60 (creating uploads, imports, re-encodes, playback IDs, deletes). At
+// most 4 event long-polls run at once per key.
+type Limits struct {
+	all, writes *ratelimit.Buckets
+	events      *ratelimit.Slots
+}
+
+// Per-key limits.
+const (
+	ReadsPerSecond, ReadBurst   = 20, 200
+	WritesPerSecond, WriteBurst = 2, 60
+	EventPolls                  = 4
+)
+
+// NewLimits returns the shipped limits.
+func NewLimits() *Limits {
+	return &Limits{
+		all:    ratelimit.NewBuckets(ReadsPerSecond, ReadBurst),
+		writes: ratelimit.NewBuckets(WritesPerSecond, WriteBurst),
+		events: ratelimit.NewSlots(EventPolls),
+	}
+}
+
+// limitKey is what a key's requests count against: the API key, or the
+// owner's session acting as an app.
+func (k Key) limitKey() string {
+	if k.ID != "" {
+		return k.ID
+	}
+	return "session:" + k.AppID
+}
+
+// take spends one request of k's budget, writing the 429 if it is spent.
+func (l *Limits) take(w http.ResponseWriter, r *http.Request, k Key) bool {
+	if l == nil {
+		return true
+	}
+	ok, wait := l.all.Take(k.limitKey())
+	if ok && r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodOptions {
+		ok, wait = l.writes.Take(k.limitKey())
+	}
+	if !ok {
+		ratelimit.Refuse(w, wait)
+	}
+	return ok
+}
+
+// EventPoll takes one of k's event long-poll slots; release gives it back.
+// Refused, it has written the 429.
+func (l *Limits) EventPoll(w http.ResponseWriter, k Key) (release func(), ok bool) {
+	if l == nil {
+		return func() {}, true
+	}
+	release, ok = l.events.Acquire(k.limitKey())
+	if !ok {
+		ratelimit.Refuse(w, time.Second)
+	}
+	return release, ok
 }
 
 // NewAuthenticator accepts API keys only, until Session is set.
@@ -130,6 +197,9 @@ func (a *Authenticator) Require(w http.ResponseWriter, r *http.Request, scope st
 	}
 	if !key.Can(scope) {
 		httpjson.Error(w, http.StatusForbidden, "insufficient_scope", "this key lacks "+scope)
+		return Key{}, false
+	}
+	if !a.Limits.take(w, r, key) {
 		return Key{}, false
 	}
 	return key, true

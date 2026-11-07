@@ -122,3 +122,42 @@ func TestBootRefusesWhenAnOutputsKeyVersionIsMissing(t *testing.T) {
 		t.Fatalf("Load = %v, want a refusal naming version 3", err)
 	}
 }
+
+func TestARotatedVersionIsUsedOnlyOnceUsableAndEveryCopySeesIt(t *testing.T) {
+	ctx := context.Background()
+	pool, box, dir := dbtest.New(t), newBox(t), t.TempDir()
+	ring, err := Load(ctx, pool, box, "prj_default", dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	held := ring // what the worker API, delivery and Connect hold
+	v, err := AddVersion(ctx, pool, box, "prj_default")
+	if err != nil || v != 2 {
+		t.Fatalf("AddVersion = %d, %v; want 2", v, err)
+	}
+	reloaded, err := Load(ctx, pool, box, "prj_default", dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ring.Replace(reloaded)
+	if held.Current().Version != 1 {
+		t.Fatalf("a pending version is current: %d", held.Current().Version)
+	}
+	if _, ok := held.Get(2); !ok || !strings.Contains(held.WorkerSecret(), `"2":`) {
+		t.Fatal("a pending version must be in the ring, so the Worker can be given it")
+	}
+	if err := MakeUsable(ctx, pool, "prj_default"); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err = Load(ctx, pool, box, "prj_default", dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ring.Replace(reloaded)
+	if held.Current().Version != 2 {
+		t.Fatalf("after MakeUsable current = %d, want 2 in every copy", held.Current().Version)
+	}
+	if one, _ := held.Get(1); one.Derive("ast_1", "out_1") == held.Current().Derive("ast_1", "out_1") {
+		t.Fatal("a new version must derive different keys")
+	}
+}

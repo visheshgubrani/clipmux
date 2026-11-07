@@ -669,3 +669,61 @@ func writeStorageError(w http.ResponseWriter, err error) {
 		http.Error(w, "storage error", http.StatusInternalServerError)
 	}
 }
+
+// SweepStale deletes what a crash or a failed abort left behind (D070):
+// files in tmp/ older than tmpAge, and multipart directories nothing has
+// written to for stagingAge. An upload in progress writes its parts there,
+// and one idle for a day expires and is aborted, so a directory quiet for
+// stagingAge has no upload. It is a filesystem chore, not part of Storage.
+func (f *Filesystem) SweepStale(now time.Time, tmpAge, stagingAge time.Duration) (int, error) {
+	n := 0
+	tmp, err := fs.ReadDir(f.root.FS(), "tmp")
+	if err != nil {
+		return 0, fmt.Errorf("list tmp: %w", err)
+	}
+	for _, e := range tmp {
+		info, err := e.Info()
+		if err != nil || now.Sub(info.ModTime()) < tmpAge {
+			continue
+		}
+		if err := f.root.Remove("tmp/" + e.Name()); err == nil {
+			n++
+		}
+	}
+	uploads, err := fs.ReadDir(f.root.FS(), "multipart")
+	if err != nil {
+		return n, fmt.Errorf("list multipart: %w", err)
+	}
+	for _, e := range uploads {
+		if !e.IsDir() {
+			continue
+		}
+		newest, err := newestWrite(f.root.FS(), "multipart/"+e.Name())
+		if err != nil || now.Sub(newest) < stagingAge {
+			continue
+		}
+		if err := f.root.RemoveAll("multipart/" + e.Name()); err == nil {
+			n++
+		}
+	}
+	return n, nil
+}
+
+// newestWrite is the latest modification time under dir.
+func newestWrite(fsys fs.FS, dir string) (time.Time, error) {
+	var newest time.Time
+	err := fs.WalkDir(fsys, dir, func(_ string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		if info.ModTime().After(newest) {
+			newest = info.ModTime()
+		}
+		return nil
+	})
+	return newest, err
+}

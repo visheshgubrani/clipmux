@@ -56,6 +56,12 @@ const (
 	DefaultCPUSeconds = 6 * 3600
 )
 
+// CPUBudget is the CPU time a tool may use: DefaultCPUSeconds for each CPU
+// it can run on. RLIMIT_CPU counts every thread of the process, so a flat
+// 6 hours would kill an 8-thread encode after 45 minutes of wall time; the
+// wall clock itself is bounded by the attempt's own timeout.
+func CPUBudget(cpus int) uint64 { return DefaultCPUSeconds * uint64(max(cpus, 1)) }
+
 // Status is what the platform enforces.
 type Status struct {
 	Rlimits     bool `json:"rlimits"`
@@ -115,8 +121,11 @@ func Args(p Policy, argv ...string) []string {
 }
 
 // EnvAllowed are the driver variables a tool may receive: they pick a VAAPI
-// driver or a GPU, and carry no secrets.
-var EnvAllowed = []string{"LIBVA_DRIVER_NAME", "LIBVA_DRIVERS_PATH", "CUDA_VISIBLE_DEVICES", "CUDA_DEVICE_ORDER"}
+// driver, a Vulkan driver (whisper.cpp) or a GPU, and carry no secrets.
+var EnvAllowed = []string{
+	"LIBVA_DRIVER_NAME", "LIBVA_DRIVERS_PATH", "CUDA_VISIBLE_DEVICES", "CUDA_DEVICE_ORDER",
+	"VK_ICD_FILENAMES", "VK_DRIVER_FILES", "MESA_VK_DEVICE_SELECT", "GGML_VK_VISIBLE_DEVICES",
+}
 
 // Env keeps the NAME=VALUE pairs whose name is in EnvAllowed.
 func Env(pairs []string) []string {

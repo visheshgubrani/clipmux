@@ -18,7 +18,12 @@ interface Agent {
   platform: string
   last_ip?: string
   last_seen_at: string | null
-  capabilities: { ffmpeg_version?: string; packager_version?: string; encoders?: string[] }
+  capabilities: {
+    ffmpeg_version?: string
+    packager_version?: string
+    encoders?: string[]
+    speech?: { backends?: string[]; model?: string }
+  }
 }
 
 interface Invitation {
@@ -228,6 +233,7 @@ export function Workers() {
                 <Th>PC</Th>
                 <Th>Status</Th>
                 <Th>Encoders</Th>
+                <Th>Speech</Th>
                 <Th>Sandbox</Th>
                 <Th>Takes</Th>
                 <Th />
@@ -252,6 +258,11 @@ export function Workers() {
                     )}
                   </Td>
                   <Td className="text-xs">{a.capabilities.encoders?.join(', ') ?? '—'}</Td>
+                  <Td className="text-xs" title={a.capabilities.speech?.model ?? ''}>
+                    {a.capabilities.speech?.backends?.length
+                      ? a.capabilities.speech.backends.join(', ')
+                      : '—'}
+                  </Td>
                   <Td className="text-xs">{a.sandboxed ? 'sandboxed' : 'not sandboxed'}</Td>
                   <Td>
                     {a.status !== 'revoked' && (

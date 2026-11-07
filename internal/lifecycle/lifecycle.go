@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -37,6 +38,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/queue"
 	"github.com/visheshgubrani/clipmux/internal/storage"
 	"github.com/visheshgubrani/clipmux/internal/stores"
+	"github.com/visheshgubrani/clipmux/internal/tracks"
 )
 
 var (
@@ -91,6 +93,8 @@ func (s *Service) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/assets", s.handleImport)
 	mux.HandleFunc("DELETE /v1/assets/{id}", s.handleDelete)
 	mux.HandleFunc("POST /v1/assets/{id}/reencode", s.handleReencode)
+	mux.HandleFunc("POST /v1/assets/{id}/tracks", s.handleRegenerateTrack)
+	mux.HandleFunc("DELETE /v1/assets/{id}/tracks/{track}", s.handleDeleteTrack)
 	mux.HandleFunc("POST /v1/assets/{id}/playback-ids", s.handleAddPlaybackID)
 	mux.HandleFunc("DELETE /v1/assets/{id}/playback-ids/{pid}", s.handleRevokePlaybackID)
 }
@@ -108,7 +112,7 @@ func (s *Service) handleDelete(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, errNotFound):
 		httpjson.Error(w, http.StatusNotFound, "not_found", "no such asset")
 	case err != nil:
-		s.Logger.Error("delete asset", "asset", r.PathValue("id"), "err", err)
+		s.Logger.ErrorContext(r.Context(), "delete asset", "asset", r.PathValue("id"), "err", err)
 		httpjson.Error(w, http.StatusInternalServerError, "internal", "internal error")
 	case done:
 		httpjson.Write(w, http.StatusOK, view)
@@ -129,9 +133,9 @@ func (s *Service) Delete(ctx context.Context, key apikeys.Key, assetID string) (
 	}
 	q := db.New(s.pool)
 	if s.Inline > 0 {
-		if job, err := q.GetActiveJobForAsset(ctx, assetID); err == nil && job.Kind == "delete" {
+		if jobs, err := q.GetActiveJobForAsset(ctx, db.GetActiveJobForAssetParams{AssetID: assetID, Kinds: []string{"delete"}}); err == nil && len(jobs) == 1 {
 			ictx, cancel := context.WithTimeout(ctx, s.Inline)
-			_, err := s.runNext(ictx, pgtype.Text{String: job.ID, Valid: true})
+			_, err := s.runNext(ictx, pgtype.Text{String: jobs[0].ID, Valid: true})
 			cancel()
 			if err != nil {
 				// Committed; Run finishes the job.
@@ -154,7 +158,9 @@ func (s *Service) markDeleted(ctx context.Context, tx pgx.Tx, key apikeys.Key, a
 	} else if err != nil {
 		return err
 	}
-	up, job, asset, err := lockForChange(ctx, q, assetID)
+	// Both families: the encode or import and the transcription stop. A
+	// cancelled job's attempt is fenced: its next call is told to stop.
+	up, jobs, asset, err := lockForChange(ctx, q, assetID, tracks.AllJobs)
 	if err != nil || asset.Status == "deleted" {
 		return err
 	}
@@ -164,12 +170,15 @@ func (s *Service) markDeleted(ctx context.Context, tx pgx.Tx, key apikeys.Key, a
 			return err
 		}
 	}
-	if job != nil {
+	for _, job := range jobs {
 		if err := q.CancelJob(ctx, job.ID); err != nil {
 			return err
 		}
 	}
 	if asset, err = q.MarkAssetDeleted(ctx, assetID); err != nil {
+		return err
+	}
+	if err := tracks.DeleteAll(ctx, q, assetID); err != nil {
 		return err
 	}
 	revoking, err := q.MarkPlaybackIDsRevoking(ctx, assetID)
@@ -185,12 +194,13 @@ func (s *Service) markDeleted(ctx context.Context, tx pgx.Tx, key apikeys.Key, a
 	return err
 }
 
-// lockForChange locks an asset's active upload, then its active job, then
-// the asset itself: the order every other writer uses, so a change never
-// deadlocks with a commit or an upload completing. Every writer that creates
-// a job locks the asset first, so once it is locked the active job can't
-// change; if it did while we waited, errChanged retries the transaction.
-func lockForChange(ctx context.Context, q *db.Queries, assetID string) (*db.Upload, *db.Job, db.Asset, error) {
+// lockForChange locks an asset's active upload, then its active jobs of
+// the given kinds (one family, or both), then the asset itself: the order
+// every other writer uses, so a change never deadlocks with a commit or an
+// upload completing. Every writer that creates a job locks the asset first,
+// so once it is locked the active jobs can't change; if they did while we
+// waited, errChanged retries the transaction.
+func lockForChange(ctx context.Context, q *db.Queries, assetID string, kinds []string) (*db.Upload, []db.Job, db.Asset, error) {
 	var up *db.Upload
 	switch u, err := q.LockActiveUploadForAsset(ctx, assetID); {
 	case err == nil:
@@ -198,37 +208,40 @@ func lockForChange(ctx context.Context, q *db.Queries, assetID string) (*db.Uplo
 	case !errors.Is(err, pgx.ErrNoRows):
 		return nil, nil, db.Asset{}, err
 	}
-	var job *db.Job
-	switch j, err := q.GetActiveJobForAsset(ctx, assetID); {
-	case err == nil:
+	active, err := q.GetActiveJobForAsset(ctx, db.GetActiveJobForAssetParams{AssetID: assetID, Kinds: kinds})
+	if err != nil {
+		return nil, nil, db.Asset{}, err
+	}
+	var jobs []db.Job
+	for _, j := range active {
 		if j, err = q.LockJob(ctx, j.ID); err != nil {
 			return nil, nil, db.Asset{}, err
 		}
 		if j.Status == "queued" || j.Status == "running" {
-			job = &j
+			jobs = append(jobs, j)
 		}
-	case !errors.Is(err, pgx.ErrNoRows):
-		return nil, nil, db.Asset{}, err
 	}
 	asset, err := q.LockAsset(ctx, assetID)
 	if err != nil {
 		return nil, nil, db.Asset{}, err
 	}
-	active, err := q.GetActiveJobForAsset(ctx, assetID)
-	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+	now, err := q.GetActiveJobForAsset(ctx, db.GetActiveJobForAssetParams{AssetID: assetID, Kinds: kinds})
+	if err != nil {
 		return nil, nil, db.Asset{}, err
 	}
-	if locked := jobID(job); active.ID != locked {
+	if jobIDs(now) != jobIDs(jobs) {
 		return nil, nil, db.Asset{}, errChanged
 	}
-	return up, job, asset, nil
+	return up, jobs, asset, nil
 }
 
-func jobID(j *db.Job) string {
-	if j == nil {
-		return ""
+// jobIDs names a set of jobs, in ID order, for comparing.
+func jobIDs(jobs []db.Job) string {
+	ids := make([]string, len(jobs))
+	for i, j := range jobs {
+		ids[i] = j.ID
 	}
-	return j.ID
+	return strings.Join(ids, ",")
 }
 
 // Run takes due control-plane jobs one at a time, up to ten per pass, and
@@ -250,19 +263,28 @@ func (s *Service) Run(ctx context.Context) (int, error) {
 	return n, errors.Join(errs...)
 }
 
+// controlKinds are the jobs this loop runs; chapters have a loop of their
+// own (internal/chapters), so a slow model never holds up a delete.
+var controlKinds = []string{"delete", "move"}
+
 // runNext claims a due control job (the given one, if set) and runs it. It
 // reports whether there was one.
 func (s *Service) runNext(ctx context.Context, only pgtype.Text) (bool, error) {
-	job, err := db.New(s.pool).ClaimControlJob(ctx, db.ClaimControlJobParams{LeaseSeconds: s.Lease.Seconds(), JobID: only})
+	job, err := db.New(s.pool).ClaimControlJob(ctx, db.ClaimControlJobParams{LeaseSeconds: s.Lease.Seconds(), JobID: only, Kinds: controlKinds})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}
 	if err != nil {
 		return false, fmt.Errorf("claim control job: %w", err)
 	}
-	run := s.runDelete
-	if job.Kind == "move" {
+	var run func(context.Context, db.Job) error
+	switch job.Kind {
+	case "delete":
+		run = s.runDelete
+	case "move":
 		run = s.runMove
+	default:
+		return true, fmt.Errorf("control job %s has kind %q, which serve doesn't run", job.ID, job.Kind)
 	}
 	if err := run(ctx, job); err != nil {
 		return true, fmt.Errorf("%s job %s: %w", job.Kind, job.ID, err)

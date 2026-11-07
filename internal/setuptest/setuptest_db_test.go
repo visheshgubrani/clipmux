@@ -22,6 +22,8 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/signingkeys"
 	"github.com/visheshgubrani/clipmux/internal/storage"
 	"github.com/visheshgubrani/clipmux/internal/stores"
+	"github.com/visheshgubrani/clipmux/internal/tracks"
+	"github.com/visheshgubrani/clipmux/internal/transcripts"
 )
 
 const master = `#EXTM3U
@@ -177,6 +179,37 @@ func TestOnlyOneSetupTestRunsAtATime(t *testing.T) {
 	}
 }
 
+// A fresh install whose owner hasn't chosen the URLs yet would only test
+// the placeholder default and greet the owner with a failed run; saving the
+// URLs queues the first test instead.
+func TestFirstBootWaitsForTheURLs(t *testing.T) {
+	ctx := context.Background()
+	pool := dbtest.New(t)
+	urls, err := settings.Load(ctx, pool, "prj_default", config.Config{PublicURL: "http://localhost:8080"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := New(pool, nil, nil, urls, nil, nil, "")
+	if err := runner.QueueFirst(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	_ = pool.QueryRow(ctx, `SELECT count(*) FROM setup_tests`).Scan(&n)
+	if n != 0 {
+		t.Fatalf("setup tests before the URLs are chosen = %d, want 0", n)
+	}
+	if _, err := urls.Set(ctx, "https://video.example.com", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := runner.QueueFirst(ctx); err != nil {
+		t.Fatal(err)
+	}
+	_ = pool.QueryRow(ctx, `SELECT count(*) FROM setup_tests WHERE trigger = 'first_boot'`).Scan(&n)
+	if n != 1 {
+		t.Fatalf("first-boot tests once the URLs are confirmed = %d, want 1", n)
+	}
+}
+
 func TestWaitingForTheSampleReportsAShutdownAsAShutdown(t *testing.T) {
 	r := newRig(t, "", true)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -184,5 +217,69 @@ func TestWaitingForTheSampleReportsAShutdownAsAShutdown(t *testing.T) {
 	err := r.runner.waitReady(ctx, "ast_never")
 	if err == nil || strings.Contains(err.Error(), "not ready after") || !strings.Contains(err.Error(), "stopped before the sample was ready") {
 		t.Fatalf("waitReady after shutdown = %v, want a shutdown error rather than the encode timeout", err)
+	}
+}
+
+// withSubtitles gives ast_1 a ready subtitles track whose VTT holds cue,
+// sealed as serve stores it (or plain, when sealed is false).
+func (r *rig) withSubtitles(cue string, sealed bool) {
+	r.t.Helper()
+	ctx := context.Background()
+	if _, err := r.pool.Exec(ctx, `INSERT INTO tracks (id, project_id, asset_id, kind, status, language, name, duration_ms, key_version, output_id, ready_at)
+		VALUES ('trk_1', 'prj_default', 'ast_1', 'subtitles', 'ready', 'en', 'English', 11000, 1, 'out_1', now())`); err != nil {
+		r.t.Fatal(err)
+	}
+	body := []byte("WEBVTT\n" + transcripts.TimestampMap + "\n\n1\n" + cue + "\n\n")
+	key := tracks.StorageKey("ast_1", "trk_1")
+	if sealed {
+		var err error
+		if body, err = contentkey.SealTrack(r.ring.Current(), "ast_1", "trk_1", key, body); err != nil {
+			r.t.Fatal(err)
+		}
+	}
+	if err := r.store.Put(ctx, key, bytes.NewReader(body)); err != nil {
+		r.t.Fatal(err)
+	}
+}
+
+func TestTrackChecksPlayTheSamplesWordAtItsTime(t *testing.T) {
+	r := newRig(t, "", true)
+	r.withSubtitles("00:00:00.300 --> 00:00:03.500\nAnd so, my fellow Americans, ask not", true)
+	got := names(r.runner.trackChecks(context.Background(), "ast_1"))
+	want := []string{"subtitles_ready=ok", "play_subtitles=ok", "thumbnail_token_refused_track=ok", "stored_track_encrypted=ok"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("checks =\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+}
+
+func TestTrackChecksFailOnSubtitlesOutOfTime(t *testing.T) {
+	r := newRig(t, "", true)
+	// The word, but 3.4 s late: past the half-second allowed.
+	r.withSubtitles("00:00:02.600 --> 00:00:05.000\nmy fellow Americans", true)
+	got := names(r.runner.trackChecks(context.Background(), "ast_1"))
+	if !strings.HasPrefix(got[1], `play_subtitles=no cue says "americans" at 1.6 s ± 0.5 s`) || got[2] != "thumbnail_token_refused_track=ok" {
+		t.Fatalf("checks = %v", got)
+	}
+}
+
+func TestTrackChecksFailOnPlainStoredSubtitles(t *testing.T) {
+	r := newRig(t, "", true)
+	r.withSubtitles("00:00:00.300 --> 00:00:03.500\nmy fellow Americans", false)
+	got := names(r.runner.trackChecks(context.Background(), "ast_1"))
+	if got[3] != "stored_track_encrypted=the stored subtitles are plain WebVTT, not ciphertext" {
+		t.Fatalf("checks = %v", got)
+	}
+}
+
+func TestTrackChecksWaitThenFailOnAnErroredTranscription(t *testing.T) {
+	r := newRig(t, "", true)
+	if _, err := r.pool.Exec(context.Background(), `INSERT INTO tracks (id, project_id, asset_id, kind, status, error_code) VALUES ('trk_1', 'prj_default', 'ast_1', 'subtitles', 'errored', 'transcribe_failed')`); err != nil {
+		t.Fatal(err)
+	}
+	got := names(r.runner.trackChecks(context.Background(), "ast_1"))
+	want := []string{"subtitles_ready=the transcription failed: transcribe_failed", "play_subtitles=skipped: subtitles_ready failed",
+		"thumbnail_token_refused_track=skipped: subtitles_ready failed", "stored_track_encrypted=skipped: subtitles_ready failed"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("checks = %v", got)
 	}
 }

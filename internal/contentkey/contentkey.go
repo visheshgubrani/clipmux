@@ -21,6 +21,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 
 	"github.com/visheshgubrani/clipmux/internal/db"
 	"github.com/visheshgubrani/clipmux/internal/secrets"
@@ -30,6 +31,9 @@ import (
 type Secret struct {
 	Version int32
 	key     []byte
+	// pending is a version outputs may not use yet: the Cloudflare Worker
+	// doesn't hold it (D071). Delivery still derives its keys.
+	pending bool
 }
 
 // Derive returns the content key for one output of one asset.
@@ -59,32 +63,48 @@ func rowID(projectID string, version int32) string {
 }
 
 // Ring holds every version of a project's content key secret that an output
-// still uses. New outputs use the newest.
-type Ring struct {
+// still uses; new outputs use the newest usable one. Copies share it, so
+// when Replace loads a rotated ring, every holder (claims, delivery, Connect
+// Cloudflare) sees the new one at once.
+type Ring struct{ st *atomic.Pointer[ringState] }
+
+type ringState struct {
 	current  Secret
 	versions map[int32]Secret
 }
 
-// NewRing returns a ring of secrets; the highest version is current.
+// NewRing builds a ring whose current secret is the newest usable version.
 func NewRing(secrets ...Secret) Ring {
-	r := Ring{versions: make(map[int32]Secret, len(secrets))}
+	st := &ringState{versions: make(map[int32]Secret, len(secrets))}
 	for _, s := range secrets {
-		r.versions[s.Version] = s
-		if s.Version > r.current.Version {
-			r.current = s
+		st.versions[s.Version] = s
+		if !s.pending && s.Version > st.current.Version {
+			st.current = s
 		}
 	}
+	r := Ring{st: &atomic.Pointer[ringState]{}}
+	r.st.Store(st)
 	return r
 }
 
-// Current is the version new outputs are encrypted with.
-func (r Ring) Current() Secret { return r.current }
+func (r Ring) state() *ringState {
+	if r.st == nil {
+		return &ringState{}
+	}
+	return r.st.Load()
+}
+
+// Current is the version new outputs use.
+func (r Ring) Current() Secret { return r.state().current }
 
 // Get returns one version.
 func (r Ring) Get(version int32) (Secret, bool) {
-	s, ok := r.versions[version]
+	s, ok := r.state().versions[version]
 	return s, ok
 }
+
+// Replace makes this ring, and every copy of it, hold other's secrets.
+func (r Ring) Replace(other Ring) { r.st.Store(other.state()) }
 
 // Load reads a project's content key secrets from Postgres, sealed with the
 // secrets key. On first boot it imports dir/content.key, the file earlier
@@ -123,7 +143,7 @@ func Load(ctx context.Context, conn db.DBTX, box *secrets.Box, projectID, dir st
 		if err != nil {
 			return Ring{}, fmt.Errorf("open content key secret v%d: %w", row.Version, err)
 		}
-		all = append(all, Secret{Version: row.Version, key: key})
+		all = append(all, Secret{Version: row.Version, key: key, pending: !row.Usable})
 	}
 	ring := NewRing(all...)
 	if file.key != nil {
@@ -181,10 +201,36 @@ func FromHex(version int32, h string) (Secret, error) {
 // {"<version>": "<hex>"}. It is the content key secret itself, so it goes
 // only to Cloudflare as a Worker secret, never to a log or a response.
 func (r Ring) WorkerSecret() string {
-	m := make(map[string]string, len(r.versions))
-	for v, s := range r.versions {
+	st := r.state()
+	m := make(map[string]string, len(st.versions))
+	for v, s := range st.versions {
 		m[strconv.Itoa(int(v))] = hex.EncodeToString(s.key)
 	}
 	b, _ := json.Marshal(m) // strings only; can't fail
 	return string(b)
+}
+
+// AddVersion seals a fresh secret as the next version, pending: claims keep
+// using the current one until MakeUsable, so a version the Cloudflare Worker
+// lacks is never used for an output it would have to serve (D071).
+func AddVersion(ctx context.Context, conn db.DBTX, box *secrets.Box, projectID string) (int32, error) {
+	key := make([]byte, 32)
+	_, _ = rand.Read(key) // crypto/rand.Read never fails
+	q := db.New(conn)
+	// The version is chosen in the statement; sealing needs it, so seal a
+	// placeholder first, then the real value once the version is known.
+	v, err := q.InsertPendingContentKeySecret(ctx, db.InsertPendingContentKeySecretParams{ProjectID: projectID, SecretEncrypted: []byte{0}})
+	if err != nil {
+		return 0, fmt.Errorf("add content key secret: %w", err)
+	}
+	if err := q.SetContentKeySecret(ctx, db.SetContentKeySecretParams{ProjectID: projectID, Version: v, SecretEncrypted: box.Seal(sealedTable, rowID(projectID, v), key)}); err != nil {
+		return 0, fmt.Errorf("seal content key secret v%d: %w", v, err)
+	}
+	return v, nil
+}
+
+// MakeUsable lets new outputs use every pending version.
+func MakeUsable(ctx context.Context, conn db.DBTX, projectID string) error {
+	_, err := db.New(conn).MakeContentKeysUsable(ctx, projectID)
+	return err
 }

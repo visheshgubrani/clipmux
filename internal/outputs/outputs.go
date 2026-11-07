@@ -39,6 +39,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/routes"
 	"github.com/visheshgubrani/clipmux/internal/storage"
 	"github.com/visheshgubrani/clipmux/internal/stores"
+	"github.com/visheshgubrani/clipmux/internal/tracks"
 )
 
 // InvalidError means the output failed verification and was not committed.
@@ -58,6 +59,10 @@ type Committer struct {
 	queue  *queue.Queue
 	stores *stores.Set
 	Logger *slog.Logger
+	// OnPublished and OnKeys run after route records or _keys.json are
+	// confirmed, so built-in delivery drops what it cached (D072).
+	OnPublished func(pids ...string)
+	OnKeys      func()
 
 	// publishInline publishes routes right after the commit; tests turn it
 	// off to stand in for a crash between the two steps.
@@ -99,7 +104,7 @@ func (c *Committer) Commit(ctx context.Context, token string, m media.Manifest) 
 
 // verify checks the stored output against the manifest and the rules above.
 func (c *Committer) verify(ctx context.Context, att db.Attempt, m media.Manifest) error {
-	out, err := db.New(c.pool).GetOutput(ctx, att.OutputID)
+	out, err := db.New(c.pool).GetOutput(ctx, att.OutputID.String)
 	if err != nil {
 		return err
 	}
@@ -126,7 +131,7 @@ func (c *Committer) verify(ctx context.Context, att db.Attempt, m media.Manifest
 	if err != nil {
 		return err
 	}
-	prefix := "media/" + att.AssetID + "/" + att.OutputID + "/"
+	prefix := "media/" + att.AssetID + "/" + att.OutputID.String + "/"
 	stored := map[string]int64{}
 	for cursor := ""; ; {
 		objs, next, err := store.List(ctx, prefix, cursor)
@@ -230,6 +235,8 @@ type route struct {
 	OutputID   string `json:"output_id,omitempty"`
 	Policy     string `json:"policy,omitempty"`
 	Backend    string `json:"backend,omitempty"`
+	// TrackID is set with Op "track": the stored track the row publishes.
+	TrackID string `json:"track_id,omitempty"`
 }
 
 const opUnpublish = "unpublish"
@@ -271,15 +278,15 @@ func commit(ctx context.Context, qs *db.Queries, a db.Attempt, manifest []byte) 
 	if asset.Status == "deleted" {
 		return invalid("the asset was deleted")
 	}
-	n, err := qs.CommitOutput(ctx, db.CommitOutputParams{ID: a.OutputID, Manifest: manifest})
+	n, err := qs.CommitOutput(ctx, db.CommitOutputParams{ID: a.OutputID.String, Manifest: manifest})
 	if err != nil {
 		return err
 	}
 	if n != 1 {
-		return invalid("output %s is not being written", a.OutputID)
+		return invalid("output %s is not being written", a.OutputID.String)
 	}
 	previous := asset.CurrentOutputID
-	if asset, err = qs.MoveCurrentOutput(ctx, db.MoveCurrentOutputParams{ID: asset.ID, CurrentOutputID: pgtype.Text{String: a.OutputID, Valid: true}}); err != nil {
+	if asset, err = qs.MoveCurrentOutput(ctx, db.MoveCurrentOutputParams{ID: asset.ID, CurrentOutputID: pgtype.Text{String: a.OutputID.String, Valid: true}}); err != nil {
 		return err
 	}
 	if previous.Valid {
@@ -287,17 +294,32 @@ func commit(ctx context.Context, qs *db.Queries, a db.Attempt, manifest []byte) 
 			return err
 		}
 	}
+	// Subtitles asked for at upload start now, reading this output's audio;
+	// the video doesn't wait for them.
+	var m struct {
+		Audio    bool    `json:"audio"`
+		Duration float64 `json:"duration_seconds"`
+	}
+	if err := json.Unmarshal(manifest, &m); err != nil {
+		return invalid("manifest: %v", err)
+	}
+	if err := qs.SetAssetDuration(ctx, db.SetAssetDurationParams{ID: asset.ID, DurationSeconds: pgtype.Float8{Float64: m.Duration, Valid: m.Duration > 0}}); err != nil {
+		return err
+	}
+	if err := tracks.QueueTranscriptions(ctx, qs, asset, m.Audio); err != nil {
+		return err
+	}
 	pids, err := activePlaybackIDs(ctx, qs, asset.ID)
 	if err != nil {
 		return err
 	}
 	for _, p := range pids {
-		if err := QueueRoute(ctx, qs, asset, p, a.OutputID); err != nil {
+		if err := QueueRoute(ctx, qs, asset, p, a.OutputID.String); err != nil {
 			return err
 		}
 	}
 	if len(pids) == 0 {
-		return finishPublication(ctx, qs, asset.ID, a.OutputID)
+		return finishPublication(ctx, qs, asset.ID, a.OutputID.String)
 	}
 	return nil
 }
@@ -312,8 +334,10 @@ func activePlaybackIDs(ctx context.Context, qs *db.Queries, assetID string) ([]d
 // confirmed, and rewrites _keys.json where a key changed. It returns how many
 // rows it confirmed. Safe to run concurrently (SKIP LOCKED) and repeatedly.
 func (c *Committer) SyncRoutes(ctx context.Context, limit int) (int, error) {
-	published := 0
+	published, keysPublished := 0, 0
+	var pids []string
 	err := pgx.BeginFunc(ctx, c.pool, func(tx pgx.Tx) error {
+		pids, keysPublished = pids[:0], 0
 		qs := db.New(tx)
 		rows, err := qs.LockPendingRouteSyncs(ctx, int32(limit))
 		if err != nil {
@@ -323,6 +347,7 @@ func (c *Committer) SyncRoutes(ctx context.Context, limit int) (int, error) {
 		type key struct{ asset, output string }
 		touched := map[key]bool{}
 		revokedFrom := map[string]bool{}
+		tracksDone := map[string]bool{}
 		for _, row := range rows {
 			var r route
 			if err := json.Unmarshal(row.Payload, &r); err != nil {
@@ -345,6 +370,7 @@ func (c *Committer) SyncRoutes(ctx context.Context, limit int) (int, error) {
 				return err
 			}
 			published++
+			pids = append(pids, r.PlaybackID)
 			switch r.Op {
 			case opUnpublish:
 				n, err := qs.RevokePlaybackID(ctx, r.PlaybackID)
@@ -355,6 +381,8 @@ func (c *Committer) SyncRoutes(ctx context.Context, limit int) (int, error) {
 					revokedFrom[r.AssetID] = true
 				}
 			case routes.OpRefresh:
+			case routes.OpTrack:
+				tracksDone[r.TrackID] = true
 			default:
 				touched[key{r.AssetID, r.OutputID}] = true
 			}
@@ -369,10 +397,26 @@ func (c *Committer) SyncRoutes(ctx context.Context, limit int) (int, error) {
 				return err
 			}
 		}
+		for trackID := range tracksDone {
+			if err := tracks.FinishPublication(ctx, qs, trackID); err != nil {
+				return err
+			}
+		}
 		n, err := c.syncKeys(ctx, qs, adapters)
 		published += n
+		keysPublished = n
 		return err
 	})
+	// Only once committed: a cache refilled before then would read the
+	// old state back.
+	if err == nil {
+		if len(pids) > 0 && c.OnPublished != nil {
+			c.OnPublished(pids...)
+		}
+		if keysPublished > 0 && c.OnKeys != nil {
+			c.OnKeys()
+		}
+	}
 	return published, err
 }
 
@@ -474,7 +518,11 @@ func finishPublication(ctx context.Context, qs *db.Queries, assetID, outputID st
 		if _, err := qs.MarkAssetReady(ctx, assetID); err != nil {
 			return err
 		}
-		return outbox.AssetEvent(ctx, qs, assetID, outbox.AssetReady, nil)
+		if err := outbox.AssetEvent(ctx, qs, assetID, outbox.AssetReady, nil); err != nil {
+			return err
+		}
+		// Tracks stored before the video was ready wait for it.
+		return tracks.FinishPublishing(ctx, qs, assetID)
 	case "ready":
 		return outbox.AssetEvent(ctx, qs, assetID, outbox.AssetUpdated, nil)
 	}

@@ -9,6 +9,7 @@ import (
 	"io"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -33,6 +34,8 @@ var ErrUnsupportedSource = errors.New("media: unsupported or corrupt source")
 // Tools are the binaries the pipeline runs.
 type Tools struct {
 	FFmpeg, FFprobe, Packager string
+	// Whisper is whisper-cli, or "" on a worker that doesn't transcribe.
+	Whisper string
 	// Sandbox, when set, confines every tool (internal/sandbox).
 	Sandbox *Sandbox
 	// HW is what this worker's GPUs proved they can do; the zero value
@@ -71,7 +74,9 @@ func (t Tools) In(dir string, read ...string) Tools {
 }
 
 // DefaultTools finds the binaries on PATH.
-func DefaultTools() Tools { return Tools{FFmpeg: "ffmpeg", FFprobe: "ffprobe", Packager: "packager"} }
+func DefaultTools() Tools {
+	return Tools{FFmpeg: "ffmpeg", FFprobe: "ffprobe", Packager: "packager", Whisper: "whisper-cli"}
+}
 
 // Versions reports the tool versions, e.g. "8.0.1-3ubuntu2" and "v3.9.3".
 func (t Tools) Versions(ctx context.Context) (ToolVersions, error) {
@@ -105,7 +110,8 @@ func (t Tools) run(ctx context.Context, bin string, args []string, dir string, s
 		}
 		policy := sandbox.Policy{
 			Write: t.Sandbox.Dir, Read: t.Sandbox.Read, MemoryMB: t.Sandbox.MemoryMB,
-			GPU: t.Sandbox.GPU, Devices: t.Sandbox.Devices, Env: t.Env,
+			CPUSeconds: sandbox.CPUBudget(runtime.NumCPU()),
+			GPU:        t.Sandbox.GPU, Devices: t.Sandbox.Devices, Env: t.Env,
 		}
 		args, bin = sandbox.Args(policy, append([]string{abs}, args...)...), t.Sandbox.Exec
 	}
@@ -116,6 +122,7 @@ func (t Tools) run(ctx context.Context, bin string, args []string, dir string, s
 	var stderr tail
 	cmd.Stderr = &stderr
 	cmd.WaitDelay = 5 * time.Second
+	sandbox.DieWithParent(cmd)
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("%s: %w: %s", name, err, strings.TrimSpace(stderr.String()))
 	}

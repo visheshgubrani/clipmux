@@ -112,7 +112,7 @@ func (ps *pods) run(ctx context.Context, p runpodtest.Pod) {
 		return
 	}
 	defer os.RemoveAll(home)
-	env := []string{"PATH=" + os.Getenv("PATH"), "HOME=" + home, "TMPDIR=" + home, "CLIPMUX_ENCODER=cpu"}
+	env := []string{"PATH=" + os.Getenv("PATH"), "HOME=" + home, "TMPDIR=" + home, "CLIPMUX_ENCODER=cpu", "CLIPMUX_SPEECH=off"}
 	if v := os.Getenv("CLIPMUX_PACKAGER"); v != "" {
 		env = append(env, "CLIPMUX_PACKAGER="+v)
 	}

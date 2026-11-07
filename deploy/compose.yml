@@ -26,6 +26,27 @@ services:
       CLIPMUX_TRUSTED_PROXIES: 172.16.0.0/12,192.168.0.0/16,10.0.0.0/8
       # The setup test reaches the public hostnames through Caddy.
       CLIPMUX_SELF_DIAL: caddy
+      # One JSON object per line, for whatever collects container logs.
+      CLIPMUX_LOG_FORMAT: json
+      # Prometheus metrics on the compose network only (port 9090 is never
+      # published): scrape app:9090 from a container on this network.
+      CLIPMUX_METRICS_ADDR: :9090
+    # The drain (D065): up to 20 s for the built-in worker to hand its job
+    # back, then 15 s for requests in flight.
+    stop_grace_period: 40s
+    logging:
+      driver: json-file
+      options:
+        max-size: 50m
+        max-file: "5"
+    healthcheck:
+      test: ["CMD", "clipmux", "healthcheck"]
+      interval: 15s
+      timeout: 5s
+      start_period: 90s
+      retries: 3
+    expose:
+      - "9090"
     volumes:
       - data:/var/lib/clipmux/data
     read_only: true
@@ -69,8 +90,20 @@ services:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data
       - caddy-config:/config
+    logging:
+      driver: json-file
+      options:
+        max-size: 50m
+        max-file: "5"
+    healthcheck:
+      # Caddy's admin API answers on localhost inside its container only.
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:2019/config/"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
     depends_on:
-      - app
+      app:
+        condition: service_healthy
 
 volumes:
   data:

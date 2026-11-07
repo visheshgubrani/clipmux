@@ -25,7 +25,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/visheshgubrani/clipmux/internal/logging"
 	"github.com/visheshgubrani/clipmux/internal/media"
+	"github.com/visheshgubrani/clipmux/internal/transcripts"
 	"github.com/visheshgubrani/clipmux/internal/workerapi"
 )
 
@@ -60,6 +62,13 @@ type Worker struct {
 	// Local holds this agent's push --local files; nil for a worker that
 	// has none (the built-in one).
 	Local *Sources
+	// Kinds are the job kinds this worker's claims ask for; nil asks for
+	// the media kinds (the server's default). A speech loop asks for
+	// ["transcribe"].
+	Kinds []string
+	// Speech is how this worker transcribes, once proven; shared by its
+	// claim loops, which report it. nil or empty: it doesn't.
+	Speech *SpeechSlot
 }
 
 func orNone(s string) string {
@@ -102,6 +111,9 @@ const (
 	codeTimeout       = "job_timeout"
 	codeSourceMissing = "source_missing"
 	codeSourceChanged = "source_changed"
+	// codeStopped: this worker is shutting down and hands its attempt back,
+	// so the job is claimable at once rather than after its lease expires.
+	codeStopped = "worker_stopped"
 )
 
 // localCode is the failure code for a local source that can't be used.
@@ -221,7 +233,7 @@ func (w *Worker) claim(ctx context.Context) (*workerapi.Job, error) {
 		wait = 25 * time.Second
 	}
 	var job workerapi.Job
-	status, err := w.post(ctx, "/worker/v1/claim", w.Key, map[string]any{
+	body := map[string]any{
 		"contract_versions": []int{workerapi.ContractVersion},
 		"ffmpeg_version":    versions.FFmpeg,
 		"packager_version":  versions.Packager,
@@ -230,7 +242,14 @@ func (w *Worker) claim(ctx context.Context) (*workerapi.Job, error) {
 		"wait_seconds":      wait.Seconds(),
 		"sandbox":           orNone(w.Sandbox),
 		"free_disk_bytes":   FreeDisk(w.WorkDir),
-	}, &job)
+	}
+	if w.Kinds != nil {
+		body["kinds"] = w.Kinds
+	}
+	if sp := w.Speech.Get(); sp != nil {
+		body["speech"] = workerapi.Speech{Backends: []string{string(sp.Backend)}, Model: sp.ModelName}
+	}
+	status, err := w.post(ctx, "/worker/v1/claim", w.Key, body, &job)
 	switch {
 	case err != nil:
 		return nil, err
@@ -251,6 +270,7 @@ var validID = regexp.MustCompile(`^att_[0-9a-z]{26}$`)
 
 // handle runs one attempt to its end and reports the outcome.
 func (w *Worker) handle(ctx context.Context, job *workerapi.Job) error {
+	log := w.Logger.With("job", job.JobID, "attempt", job.AttemptID, "kind", job.Kind)
 	dir := filepath.Join(w.WorkDir, job.AttemptID)
 	defer os.RemoveAll(dir)
 
@@ -265,11 +285,16 @@ func (w *Worker) handle(ctx context.Context, job *workerapi.Job) error {
 	var done map[string]any
 	var code string
 	var err error
-	if job.Kind == "upload_source" {
+	switch job.Kind {
+	case "upload_source":
 		var parts []workerapi.SourcePart
 		parts, code, err = w.uploadSource(jobCtx, job, hb.report)
 		done = map[string]any{"source_parts": parts}
-	} else {
+	case "transcribe":
+		var tr *transcripts.Transcript
+		tr, code, err = w.transcribe(jobCtx, job, dir, hb.report)
+		done = map[string]any{"transcript": tr}
+	default:
 		var m media.Manifest
 		m, code, err = w.process(jobCtx, job, dir, hb.report)
 		done = map[string]any{"manifest": m}
@@ -278,15 +303,24 @@ func (w *Worker) handle(ctx context.Context, job *workerapi.Job) error {
 
 	switch {
 	case hb.stopped() || errors.Is(err, errStopped):
-		w.Logger.Info("attempt stopped by the server", "attempt", job.AttemptID, "reason", hb.reason())
+		log.Info("attempt stopped by the server", "reason", hb.reason())
 		return nil
 	case ctx.Err() != nil:
-		return ctx.Err() // shutting down; the lease will lapse and the job retries
+		// Shutting down: hand the attempt back, on a context of its own
+		// since ctx is done. If that fails, the lease lapses as before.
+		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		defer cancel()
+		if ferr := w.fail(rctx, job, false, codeStopped, errors.New("the worker is shutting down")); ferr != nil {
+			log.Warn("couldn't hand the attempt back; its lease will lapse", "err", ferr)
+		} else {
+			log.Info("handed the attempt back: shutting down")
+		}
+		return ctx.Err()
 	case errors.Is(jobCtx.Err(), context.DeadlineExceeded):
 		code, err = codeTimeout, fmt.Errorf("attempt exceeded %s", maxJob)
 		fallthrough
 	case err != nil:
-		w.Logger.Error("attempt failed", "attempt", job.AttemptID, "code", code, "err", err)
+		log.Error("attempt failed", "code", code, "err", err)
 		return w.fail(ctx, job, permanent(code), code, err)
 	}
 	// complete is safe to retry: after a commit the server answers "stop".
@@ -295,6 +329,10 @@ func (w *Worker) handle(ctx context.Context, job *workerapi.Job) error {
 		switch {
 		case status == http.StatusConflict && job.Kind == "upload_source":
 			code = codeUpload // the stored size wasn't the file's: upload again
+		case status == http.StatusConflict && job.Kind == "transcribe":
+			// The converter only makes valid transcripts: one serve refuses
+			// won't pass on a retry either.
+			return w.fail(ctx, job, true, codeTranscriptInvalid, err)
 		case status == http.StatusConflict:
 			code = codeOutputInvalid
 		}
@@ -434,7 +472,7 @@ func (w *Worker) download(ctx context.Context, job *workerapi.Job, dst string) e
 		res, err := w.httpClient().Do(req)
 		if err != nil {
 			watch.stop()
-			lastErr = redact(err)
+			lastErr = logging.RedactError(err)
 			continue
 		}
 		switch {
@@ -464,7 +502,7 @@ func (w *Worker) download(ctx context.Context, job *workerapi.Job, dst string) e
 		_, err = io.Copy(f, watch.reader(io.LimitReader(res.Body, job.Source.Size+1)))
 		res.Body.Close()
 		watch.stop()
-		lastErr = redact(err)
+		lastErr = logging.RedactError(err)
 		if size, _ := f.Seek(0, io.SeekEnd); size > job.Source.Size {
 			return fmt.Errorf("download: got %d bytes, the source has %d", size, job.Source.Size)
 		}
@@ -577,7 +615,7 @@ func (w *Worker) putFile(ctx context.Context, url, path string) error {
 	req.Header.Set("If-None-Match", "*")
 	res, err := w.httpClient().Do(req)
 	if err != nil {
-		return redact(err)
+		return logging.RedactError(err)
 	}
 	res.Body.Close()
 	switch res.StatusCode {
@@ -622,32 +660,6 @@ func DefaultHTTPClient() *http.Client {
 	}}
 }
 
-// redact drops the query (which carries a signature) from URL errors, so
-// signed URLs never reach logs or failure reports.
-func redact(err error) error {
-	var ue *neturl.Error
-	if err == nil || !errors.As(err, &ue) {
-		return err
-	}
-	u, perr := neturl.Parse(ue.URL)
-	if perr != nil {
-		return fmt.Errorf("%s: %w", ue.Op, ue.Err)
-	}
-	u.RawQuery = ""
-	u.Path = redactPath(u.Path)
-	return fmt.Errorf("%s %s: %w", ue.Op, u.String(), ue.Err)
-}
-
-// redactPath hides a playback token embedded in a /v/{token}/ path.
-func redactPath(p string) string {
-	if rest, ok := strings.CutPrefix(p, "/v/"); ok {
-		if _, after, ok := strings.Cut(rest, "/"); ok {
-			return "/v/REDACTED/" + after
-		}
-	}
-	return p
-}
-
 // sign asks the server for PUT URLs or a fresh source URL. A stop verdict
 // becomes errStopped.
 func (w *Worker) sign(ctx context.Context, job *workerapi.Job, paths []string, source bool) (workerapi.SignResponse, error) {
@@ -688,7 +700,7 @@ func (w *Worker) send(ctx context.Context, path, bearer string, body, out any, c
 	req.Header.Set("Authorization", "Bearer "+bearer)
 	res, err := w.httpClient().Do(req)
 	if err != nil {
-		return 0, redact(err)
+		return 0, logging.RedactError(err)
 	}
 	defer res.Body.Close()
 	if out != nil && (res.StatusCode == http.StatusOK || (created && res.StatusCode == http.StatusCreated)) {

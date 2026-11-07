@@ -503,3 +503,18 @@ func TestAnUploadThatKeepsFailingCantStarveTheSweeper(t *testing.T) {
 		t.Fatalf("healthy idle upload = %v after two passes, want expired", s)
 	}
 }
+
+// The playback IDs an upload returns read as GET /v1/assets shows them:
+// active, not yet playable.
+func TestCreatedUploadShowsItsPlaybackIDActive(t *testing.T) {
+	e := newEnv(t)
+	code, out, _ := e.call("POST", "/v1/uploads", e.key, map[string]any{"size": 20, "playback_policy": "public"}, nil)
+	pids, _ := out["playback_ids"].([]any)
+	if code != http.StatusCreated || len(pids) != 1 {
+		t.Fatalf("create: %d %v", code, out)
+	}
+	pid := pids[0].(map[string]any)
+	if str(pid, "status") != "active" || pid["playable"] != false || str(pid, "policy") != "public" {
+		t.Fatalf("playback ID = %v, want active, not playable, public", pid)
+	}
+}

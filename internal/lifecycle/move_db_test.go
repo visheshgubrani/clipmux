@@ -129,6 +129,11 @@ func (r *moveRig) run() {
 func TestMovingAnAssetCopiesItSwitchesItsRoutesThenCleansUp(t *testing.T) {
 	r := newMoveRig(t)
 	ctx := context.Background()
+	// A track's file moves with the outputs (P5-T15).
+	if err := r.fs.Put(ctx, "media/ast_1/tracks/trk_1.vtt", strings.NewReader("sealed track")); err != nil {
+		t.Fatal(err)
+	}
+	r.segments["media/ast_1/tracks/trk_1.vtt"] = "sealed track"
 	if got, _ := r.read(r.r2, "_routes/pid_1.json"); !strings.Contains(got, `"backend":"origin"`) {
 		t.Fatalf("route before the move = %s, want origin", got)
 	}

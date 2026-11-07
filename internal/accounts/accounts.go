@@ -12,13 +12,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"math"
-	"net"
 	"net/http"
 	"net/netip"
 	"net/url"
-	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -27,6 +25,8 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/db"
 	"github.com/visheshgubrani/clipmux/internal/httpjson"
 	"github.com/visheshgubrani/clipmux/internal/ids"
+	"github.com/visheshgubrani/clipmux/internal/ratelimit"
+	"github.com/visheshgubrani/clipmux/internal/secrets"
 )
 
 const (
@@ -53,26 +53,36 @@ type Owner struct {
 
 // Service registers the owner, signs them in and checks their sessions.
 type Service struct {
-	pool       *pgxpool.Pool
-	projectID  string
-	setupToken string
-	publicURL  func() string
-	limiter    *limiter
-	cop        http.CrossOriginProtection
-	check      func(hash, password string) (ok, rehash bool)
+	pool      *pgxpool.Pool
+	projectID string
+	// setupMu guards the setup token, which is replaced once it is a day old.
+	setupMu     sync.Mutex
+	setupToken  string
+	setupIssued time.Time
+	publicURL   func() string
+	// limiter counts failed sign-ins and setup counts wrong setup tokens:
+	// five per address and twenty overall in 15 minutes, checked before
+	// anything is hashed or compared.
+	limiter, setup *ratelimit.Failures
+	cop            http.CrossOriginProtection
+	check          func(hash, password string) (ok, rehash bool)
 
 	// TrustedProxies are the addresses whose X-Forwarded-For is believed
 	// when limiting logins (CLIPMUX_TRUSTED_PROXIES).
 	TrustedProxies []netip.Prefix
-	Logger         *slog.Logger
+	// Box seals the owner's TOTP secret; without it the second factor
+	// can't be turned on.
+	Box    *secrets.Box
+	Now    func() time.Time
+	Logger *slog.Logger
 }
 
 // New returns the service with a fresh setup token. publicURL decides the
 // cookie: a Secure, __Host- prefixed one when the public URL is https.
 func New(pool *pgxpool.Pool, projectID string, publicURL func() string) *Service {
 	return &Service{
-		pool: pool, projectID: projectID, setupToken: rand.Text(), publicURL: publicURL,
-		limiter: newLimiter(time.Now), check: checkPassword, Logger: slog.New(slog.DiscardHandler),
+		pool: pool, projectID: projectID, setupToken: rand.Text(), setupIssued: time.Now(), publicURL: publicURL,
+		limiter: ratelimit.NewFailures(limitWindow, limitPerIP, limitAll), setup: ratelimit.NewFailures(limitWindow, limitPerIP, limitAll), check: checkPassword, Logger: slog.New(slog.DiscardHandler),
 	}
 }
 
@@ -83,7 +93,26 @@ func (s *Service) SetupToken(ctx context.Context) (string, bool, error) {
 	if err != nil {
 		return "", false, err
 	}
+	s.setupMu.Lock()
+	defer s.setupMu.Unlock()
 	return s.setupToken, !exists, nil
+}
+
+// SetupTokenLifetime is how long a setup token works (D071). An install left
+// unregistered for a day gets a fresh token in its log, so one copied from
+// an old log can't claim it.
+const SetupTokenLifetime = 24 * time.Hour
+
+// currentSetupToken returns the setup token, replacing it (and logging the
+// new one) once it has expired.
+func (s *Service) currentSetupToken() string {
+	s.setupMu.Lock()
+	defer s.setupMu.Unlock()
+	if s.now().Sub(s.setupIssued) >= SetupTokenLifetime {
+		s.setupToken, s.setupIssued = rand.Text(), s.now()
+		s.Logger.Info("the setup token expired; create the owner account with this new one", "setup_token", s.setupToken)
+	}
+	return s.setupToken
 }
 
 func validEmail(e string) bool {
@@ -100,7 +129,7 @@ func validPassword(p string) bool {
 // session token. Registration closes at once: the database allows one owner
 // per project.
 func (s *Service) CreateOwner(ctx context.Context, setupToken, email, password string) (Owner, string, error) {
-	if subtle.ConstantTimeCompare([]byte(setupToken), []byte(s.setupToken)) != 1 {
+	if subtle.ConstantTimeCompare([]byte(setupToken), []byte(s.currentSetupToken())) != 1 {
 		return Owner{}, "", errBadSetupToken
 	}
 	switch {
@@ -127,12 +156,14 @@ func (s *Service) CreateOwner(ctx context.Context, setupToken, email, password s
 	return owner, token, err
 }
 
-// Login checks the owner's email and password and returns a new session
-// token. Attempts are limited per address before anything is hashed.
-func (s *Service) Login(ctx context.Context, ip netip.Addr, email, password string) (Owner, string, error) {
-	if ok, wait := s.limiter.allow(ip); !ok {
+// Login checks the owner's email and password, and once TOTP is on a code
+// or a recovery code, and returns a new session token. Attempts are limited
+// per address before anything is hashed.
+func (s *Service) Login(ctx context.Context, ip netip.Addr, email, password, code, recovery string) (Owner, string, error) {
+	key := ratelimit.AddrKey(ip)
+	if ok, wait := s.limiter.Allow(key); !ok {
 		p := httpjson.Fail(http.StatusTooManyRequests, "too_many_attempts", "too many failed sign-ins; try again later")
-		p.Details = map[string]string{"retry_after": strconv.Itoa(int(math.Ceil(wait.Seconds())))}
+		p.Details = map[string]string{"retry_after": ratelimit.RetryAfter(wait)}
 		return Owner{}, "", p
 	}
 	q := db.New(s.pool)
@@ -146,10 +177,16 @@ func (s *Service) Login(ctx context.Context, ip netip.Addr, email, password stri
 	}
 	ok, rehash := s.check(hash, password)
 	if !ok || row.ID == "" {
-		s.limiter.fail(ip)
+		s.limiter.Fail(key)
 		return Owner{}, "", errBadCredentials
 	}
-	s.limiter.reset(ip)
+	if err := s.checkSecondFactor(ctx, q, row.ID, code, recovery); err != nil {
+		if errors.Is(err, errBadCode) {
+			s.limiter.Fail(key) // a wrong code is a failed sign-in
+		}
+		return Owner{}, "", err
+	}
+	s.limiter.Reset(key)
 	if rehash {
 		if err := q.SetOwnerPassword(ctx, db.SetOwnerPasswordParams{ID: row.ID, PasswordHash: HashPassword(password)}); err != nil {
 			return Owner{}, "", err
@@ -259,32 +296,7 @@ func (s *Service) ClientIP(r *http.Request) netip.Addr { return s.clientIP(r) }
 // forwarding chain's first untrusted hop when the connection is a trusted
 // proxy (Caddy).
 func (s *Service) clientIP(r *http.Request) netip.Addr {
-	host, _, _ := net.SplitHostPort(r.RemoteAddr)
-	addr, _ := netip.ParseAddr(host)
-	if !s.trusted(addr) {
-		return addr
-	}
-	hops := strings.Split(r.Header.Get("X-Forwarded-For"), ",")
-	for i := len(hops) - 1; i >= 0; i-- {
-		hop, err := netip.ParseAddr(strings.TrimSpace(hops[i]))
-		if err != nil {
-			break
-		}
-		if !s.trusted(hop) {
-			return hop
-		}
-		addr = hop
-	}
-	return addr
-}
-
-func (s *Service) trusted(a netip.Addr) bool {
-	for _, p := range s.TrustedProxies {
-		if p.Contains(a.Unmap()) {
-			return true
-		}
-	}
-	return false
+	return ratelimit.ClientIP(r, s.TrustedProxies)
 }
 
 // --- HTTP ---
@@ -295,12 +307,19 @@ func (s *Service) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/session", s.handleLogin)
 	mux.HandleFunc("GET /v1/session", s.handleSession)
 	mux.HandleFunc("DELETE /v1/session", s.handleLogout)
+	mux.HandleFunc("POST /v1/session/totp", s.handleStartTOTP)
+	mux.HandleFunc("POST /v1/session/totp/enable", s.handleEnableTOTP)
+	mux.HandleFunc("POST /v1/session/totp/disable", s.handleDisableTOTP)
 }
 
 type credentials struct {
 	SetupToken string `json:"setup_token"`
 	Email      string `json:"email"`
 	Password   string `json:"password"`
+	// The second factor, once the owner turned it on: a code from the
+	// authenticator, or one recovery code.
+	Code         string `json:"code"`
+	RecoveryCode string `json:"recovery_code"`
 }
 
 func (s *Service) fail(w http.ResponseWriter, op string, err error) {
@@ -309,7 +328,7 @@ func (s *Service) fail(w http.ResponseWriter, op string, err error) {
 		w.Header().Set("Retry-After", p.Details["retry_after"])
 	}
 	if !httpjson.WriteProblem(w, err) {
-		s.Logger.Error("accounts", "op", op, "err", err)
+		s.Logger.Error("accounts", "op", op, "request_id", w.Header().Get("X-Request-Id"), "err", err)
 		httpjson.Error(w, http.StatusInternalServerError, "internal", "internal error")
 	}
 }
@@ -329,7 +348,18 @@ func (s *Service) handleCreateOwner(w http.ResponseWriter, r *http.Request) {
 	if s.crossOrigin(w, r) || !httpjson.Decode(w, r, &c) {
 		return
 	}
+	// Wrong setup tokens are limited like sign-ins: the token is all that
+	// stands between a fresh install and whoever reaches it first.
+	key := ratelimit.AddrKey(s.clientIP(r))
+	if ok, wait := s.setup.Allow(key); !ok {
+		w.Header().Set("Retry-After", ratelimit.RetryAfter(wait))
+		httpjson.WriteProblem(w, ratelimit.Problem(wait))
+		return
+	}
 	owner, token, err := s.CreateOwner(r.Context(), c.SetupToken, c.Email, c.Password)
+	if errors.Is(err, errBadSetupToken) {
+		s.setup.Fail(key)
+	}
 	if err != nil {
 		s.fail(w, "create_owner", err)
 		return
@@ -344,7 +374,7 @@ func (s *Service) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if s.crossOrigin(w, r) || !httpjson.Decode(w, r, &c) {
 		return
 	}
-	owner, token, err := s.Login(r.Context(), s.clientIP(r), c.Email, c.Password)
+	owner, token, err := s.Login(r.Context(), s.clientIP(r), c.Email, c.Password, c.Code, c.RecoveryCode)
 	if err != nil {
 		s.fail(w, "login", err)
 		return
@@ -359,7 +389,12 @@ func (s *Service) handleSession(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, "session", err)
 		return
 	}
-	httpjson.Write(w, http.StatusOK, map[string]string{"email": owner.Email})
+	row, err := db.New(s.pool).GetOwnerTOTP(r.Context(), owner.ID)
+	if err != nil {
+		s.fail(w, "session", err)
+		return
+	}
+	httpjson.Write(w, http.StatusOK, map[string]any{"email": owner.Email, "totp_enabled": row.TotpEnabledAt.Valid})
 }
 
 func (s *Service) handleLogout(w http.ResponseWriter, r *http.Request) {
