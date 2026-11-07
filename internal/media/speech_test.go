@@ -101,7 +101,9 @@ func transcribe(t *testing.T, tools Tools, sp Speech, audio string) *transcripts
 
 var notLetters = regexp.MustCompile(`[^a-z]+`)
 
-func words(s string) string { return strings.TrimSpace(notLetters.ReplaceAllString(strings.ToLower(s), " ")) }
+func words(s string) string {
+	return strings.TrimSpace(notLetters.ReplaceAllString(strings.ToLower(s), " "))
+}
 
 // firstWord finds the word whose letters are w, and returns when it starts.
 func firstWord(t *testing.T, tr *transcripts.Transcript, w string) int64 {
