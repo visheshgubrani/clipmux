@@ -742,5 +742,14 @@ P5-T01 to T10 are done (D064–D073). What their tests prove:
 - By hand on the real binary: a SIGTERM mid-encode drained cleanly, and `/metrics` passed `promtool check metrics` on a live serve.
 Left for the phase exit (P5-T20), as planned: the soak run, the Playwright suites under the enforced CSP and TOTP in a browser, a backup-and-restore drill and rotation on the real binary (including the content key through the fake Cloudflare), and CI's compose checks on a real runner. T00's real-account runs still wait for their secrets.
 
+## D075 Online speech beside local whisper — accepted (2026-11-07)
+Amends D063, whose "no remote speech API is added this phase" the owner reversed while planning track B: ClipMux is local-first, but an owner without a GPU, or who prefers it, can send transcription to a speech API. The design is in [plans/P5-production.md](plans/P5-production.md) ("Speech API") and lands as P5-T14b.
+Decision:
+- **Three speech modes per project** (`projects.speech_mode`): `local`, the default, transcribes with whisper.cpp on the project's executors exactly as planned; `api` sends every transcription to the connected speech API; `local_then_api` keeps the primary and uses the API as the transcriptions' fallback (replacing the media fallback for them), when no worker that can transcribe is online or after the queue-age setting. `api` and `local_then_api` need a verified connection; disconnecting returns the project to `local`.
+- **One adapter:** any OpenAI-compatible `POST /audio/transcriptions` with `verbose_json` segment and word timestamps, on the standard library. That covers OpenAI, Groq, Together, Fireworks and DeepInfra, and self-hosted Speaches, LocalAI or vLLM, so "local" also includes a speech server on the owner's own LAN.
+- **It runs in serve,** as an executor class `speech_api` that the router already knows how to route to. serve claims, leases and fails attempts through the same queue calls workers use, with no HTTP hop, so the key never reaches a worker; it reads the committed output's audio rendition decrypted, in chunks of whole segments under 24 MiB, with no ffmpeg in serve.
+- **Off until connected.** Audio leaves the owner's infrastructure only when the owner connects an API and picks a mode that uses it; the Connect card and the docs say so. The connection's key is sealed in `ai_connections`, which also holds the chapters LLM's.
+Consequence: the router gains a class and transcriptions a fallback that isn't a machine; chunk boundaries can split a word, the API has no spend cap this phase, and whether a provider accepts fragmented MP4 is proven at Connect (known gaps).
+
 ## D007 Shaka Packager 3.9.3 — accepted (2026-11-05)
 Decision: pin v3.9.3 (`toolchain/versions.env`), the version clipmux-lms runs with AES-128 in production, which needs the init-segment workaround for Shaka issue 1616. Move to a release that fixes 1616 when one exists, re-running the Phase 1 player tests.

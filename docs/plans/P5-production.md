@@ -11,9 +11,10 @@ product that can be run in production and that the LMS can migrate to:
   database timeouts and a migration lock; retention of rows and files; key
   rotation and TOTP; a route cache in built-in delivery; operator docs.
 - **Track B, subtitles, transcripts and chapters:** whisper.cpp on workers as a
-  routed `transcribe` job, a canonical transcript, WebVTT rendered and
-  encrypted by serve, subtitles in the generated master and as a sidecar URL,
-  and chapters from an LLM the owner connects (any OpenAI-compatible API, or
+  routed `transcribe` job, or a speech API the owner connects (D075), a
+  canonical transcript, WebVTT rendered and encrypted by serve, subtitles in
+  the generated master and as a sidecar URL, and chapters from an LLM the
+  owner connects (any OpenAI-compatible API, local like Ollama or online, or
   Claude through its Go SDK).
 - **LMS parity:** every need in [lms-migration.md](lms-migration.md) is met
   and proven by a contract test. The cutover itself comes after this phase.
@@ -128,6 +129,13 @@ retention is exercised by backdating rows in Postgres (D033's rule).
     and failed; the transcript can be fetched the moment its track reads
     ready; the sidecar VTT loads; chapters convert to seconds; every stage
     change sends a webhook; delete leaves nothing.
+20. **Online speech.** Against a fake OpenAI-compatible speech server: a
+    project in `api` mode with no worker that can transcribe gets subtitles
+    routed `speech_api`; `local_then_api` sends a transcription there with
+    `primary_offline` while only workers without speech are online and keeps
+    it local once one with speech is; a SIGTERM mid-request hands the attempt
+    back `worker_stopped`; the API key appears in no row, response or log.
+    `exit-llm.yml` transcribes the English sample through a real speech API.
 
 ## Design notes
 
@@ -361,7 +369,8 @@ The windows are constants, because each follows from another rule:
   `transcript_invalid`, `transcribe_unavailable` (no worker claimed it within
   24 h, matching the LMS's own limit), and for chapters `subtitles_failed`,
   `llm_not_connected`, `model_rejected`, `model_refused`,
-  `invalid_model_output`, `transcript_too_large`.
+  `invalid_model_output`, `transcript_too_large`; through a speech API
+  `speech_api_unavailable` (a capacity code) and `speech_api_rejected`.
 
 ### Two job families
 
@@ -420,6 +429,54 @@ The windows are constants, because each follows from another rule:
   would slow every serverless cold start.
 - **The transcript comes back in `complete`.** No new file type is written by
   a worker, so the path grammar and the commit checks are unchanged.
+
+### Speech API (D075)
+
+- **Three modes per project,** `projects.speech_mode`: `local` (the default,
+  whisper.cpp as above), `api` (every transcription to the connected API) and
+  `local_then_api` (the primary first, the API as the transcriptions'
+  fallback). `PUT /v1/settings/speech {mode}` refuses the last two with 409
+  `speech_not_connected` without a verified connection; disconnecting resets
+  the mode to `local` and the router moves queued jobs back.
+- **Routing.** A class `speech_api`, valid only for `transcribe`.
+  `decideRoute` is unchanged; `Route` feeds it, for transcriptions:
+
+  | mode | Primary | Fallback |
+  | --- | --- | --- |
+  | `local` | the project's primary | the project's fallback |
+  | `api` | `speech_api` | none |
+  | `local_then_api` | the project's primary | `speech_api` (queue age applies) |
+
+  `speech_api` is up when a verified connection exists and always has room.
+  The family-scoped fallback bar applies. `attempts.executor` gains
+  `speech_api`; `projects.fallback_executor` stays a machine.
+- **The runner lives in serve** (`internal/speechapi`): a leader loop claims
+  `speech_api` jobs through `queue.Claim`, `Heartbeat`, `Fail` and
+  `CommitAttempt`, with no HTTP hop, so the key never reaches a worker. At
+  the drain it hands its attempt back `worker_stopped`.
+- **Audio** comes from the reader behind `/worker/v1/attempts/{id}/audio`:
+  the input output's audio rendition decrypted, grouped as `init.mp4` plus
+  whole segments into chunks of at most 24 MiB (about 25 minutes at 128
+  kb/s), each starting at the playlist's summed `EXTINF`. No ffmpeg in serve.
+- **Request:** multipart `POST {base}/audio/transcriptions` with `model`,
+  `response_format=verbose_json`, `timestamp_granularities[]` `segment` and
+  `word`, `temperature=0` and `file=chunk.m4a`; later chunks carry the first
+  chunk's detected `language` and the previous chunk's last ~200 characters
+  as `prompt`. 408, 409, 429, 5xx and network errors retry 4 times (2/4/8 s or
+  `Retry-After` capped at 60 s), then `speech_api_unavailable`, a capacity
+  code; other 4xx `speech_api_rejected`; an unreadable body
+  `transcript_invalid`.
+- **To canonical:** `transcripts.FromOpenAI` clamps each chunk's times to its
+  span and shifts them by its start, maps Whisper's language names to ISO
+  639-1 (else `und`) and records the model as `{model}@{host}`. Then the same
+  `tracks.CommitTranscript` as a worker's `complete`.
+- **Connect** (`GET`, `POST /v1/settings/speech/connect`, `DELETE`, owner
+  session): steps `credentials` (`GET {base}/models`), `transcription` (the
+  speech sample in the exact chunk format, so a provider that refuses
+  fragmented MP4 fails here) and `saved`. The key is optional (a keyless
+  Speaches box) and sealed in `ai_connections`; the base URL isn't filtered,
+  as for webhooks (D018). The docs and the card say audio leaves the owner's
+  infrastructure.
 
 ### Transcripts and WebVTT (serve)
 
@@ -531,7 +588,7 @@ The windows are constants, because each follows from another rule:
 - **Connect:** `GET`, `POST /v1/settings/chapters/connect` and `DELETE`
   (owner session), with steps `credentials`, `structured_output` (a real call
   on a fixed three-segment transcript) and `saved`, reusing `dispatch.Step`.
-  The key is sealed in `llm_connections` (D017). The base URL isn't filtered
+  The key is sealed in `ai_connections` (D017, D075), beside the speech API's. The base URL isn't filtered
   for private addresses (Ollama on a LAN), like webhook endpoints (D018). The
   docs say chapters send transcript text to the connected provider.
 
@@ -550,9 +607,9 @@ Order:
   T07 → T09 (T09 also after T03, for its counters). T08 at any time, its
   setup-token limit after T04. T10 once the variables settle.
 - **Track B.** T11 and T12 touch no shared code and may start alongside track
-  A. T13 after T05 and T07. T14 after T11–T13. T15 and T16 after T13,
-  alongside T14, with seeded tracks. T17 after T16. T18 after T15–T17. T19
-  after T14 and T15.
+  A. T13 after T05 and T07. T14 after T11–T13, T14b after T14. T15 and T16
+  after T13, alongside T14, with seeded tracks. T17 after T16. T18 after
+  T14b–T17. T19 after T14b and T15.
 - T20 last. T00 whenever its secrets and hardware are available.
 
 Each task is a vertical slice with its own tests. Port behaviour and tests
@@ -575,14 +632,15 @@ model. `clipmux-lms` paths are under `~/clipmux-lms`, LMS paths under
 | T10 | **done** (D073) — **Operator docs and compose.** `docs/configuration.md` with a test that every `CLIPMUX_*` and `DATABASE_URL` literal in the Go source is documented and in `.env.example` (test-only variables in their own section); `docs/operations.md`: install, upgrade, backup and restore (Postgres, the secrets key, the data directory or bucket), monitoring with `deploy/prometheus/alerts.yml` checked by `promtool`, a security checklist, troubleshooting by request ID; compose with JSON logs and rotation (50 MB × 5), `stop_grace_period: 40s`, app and Caddy healthchecks, the metrics port on the internal network only. CI's image job sees the healthchecks turn healthy and a stop exit 0 within the grace period. | `deploy/`, `.env.example`, architecture "Open decisions" (backup docs) |
 | T11 | **Speech toolchain and measurement**, the long pole. `toolchain/versions.env` gains whisper.cpp's source digest and the large-v3-turbo GGML and Silero VAD models, pinned to a commit with sha256; `toolchain/build_whisper.sh` (CPU variants, Vulkan); the Dockerfile toolchain stage, `libvulkan1` and `mesa-vulkan-drivers`, `verify_toolchain.sh`, `pack_agent.sh` and the launcher; the sandbox's environment allowlist for Vulkan; `media.Tools.Whisper`, `SpeechWAVArgs`, `WhisperArgs`. Measures the real-time factor on the built-in worker's CPU, the RX 6600 XT (Vulkan) and a Modal L4 (Vulkan with `graphics`, against CUDA), picks the quantization, and checks detection on owner-recorded English, Hindi and Hinglish clips. Tests: a golden transcription under the full sandbox (skipped without the tool, required in CI); CPU whisper still opens no socket; a clip with 3 s of leading silence keeps its timeline under VAD. | clipmux-lms `transcoding/models.py`, `transcoding/video/transcription.py`; D046, D051, D061 |
 | T12 | **`internal/transcripts`**, pure Go: the canonical v1 type, whisper.cpp JSON to canonical, `Validate`, the WebVTT cue builder. Tests ported from `test_transcript.py`: rounding at minute and hour boundaries (59.9994 → `00:00:59.999`, 59.9996 → `00:01:00.000`, 3599.9996 → `01:00:00.000`), escaping, overlaps, the empty transcript's exact bytes, Devanagari, Bengali, Tamil and Urdu untouched, segments without words. | clipmux-lms `transcoding/video/transcript.py`, `transcoding/timing.py`, `transcoding/tests/test_transcript.py` |
-| T13 | **Tracks and the job families.** One migration: `tracks`, `transcripts`, the `transcribe` and `chapters` kinds, `jobs.track_id`, the two family indexes, `attempts.input_output_id`, `projects.builtin_speech`, `llm_connections`, `job_claimable_by(kind, speech)`; a Down that cancels and deletes the new kinds before restoring the single index. `kinds` on claims, the family-scoped fallback bar, family-aware `lockForChange` and delete, the `SpeechWait` sweeper, the router including transcriptions. Tests (real Postgres): a transcription and a re-encode active on one asset; a second transcription 409 `job_active`; a move refused while a transcription runs; delete cancels both and fences the transcription; with only PCs without speech online the job goes to the fallback with `primary_offline`; a `transcribe_failed` doesn't bar the re-encode, nor the reverse; `Release` with a null output; 24 h gives `transcribe_unavailable`. | `internal/db/queries/{queue,lifecycle}.sql`, D053, D059 |
+| T13 | **Tracks and the job families.** One migration: `tracks`, `transcripts`, the `transcribe` and `chapters` kinds, `jobs.track_id`, the two family indexes, `attempts.input_output_id`, `projects.builtin_speech`, `ai_connections`, `job_claimable_by(kind, speech)`; a Down that cancels and deletes the new kinds before restoring the single index. `kinds` on claims, the family-scoped fallback bar, family-aware `lockForChange` and delete, the `SpeechWait` sweeper, the router including transcriptions. Tests (real Postgres): a transcription and a re-encode active on one asset; a second transcription 409 `job_active`; a move refused while a transcription runs; delete cancels both and fences the transcription; with only PCs without speech online the job goes to the fallback with `primary_offline`; a `transcribe_failed` doesn't bar the re-encode, nor the reverse; `Release` with a null output; 24 h gives `transcribe_unavailable`. | `internal/db/queries/{queue,lifecycle}.sql`, D053, D059 |
 | T14 | **Transcription, worker to commit.** `GET /worker/v1/attempts/{id}/audio` with `media.DecryptSegment`; the speech claim loop; `--speech auto\|off\|cpu\|vulkan\|cuda` (`CLIPMUX_SPEECH`); model download by digest; the probe and the claim's `speech`; `complete {transcript}` validated, rendered, encrypted and written under the lock, then `publishing`; a speech check in `clipmux worker doctor`. Tests: ffprobe reads the `/audio` bytes as AAC with the manifest's duration; a stale attempt writes nothing; out-of-order times give 409 `transcript_invalid`; the English clip comes back `en` and the Hindi clip `hi`; with one worker, a second upload's transcode is claimed while a transcription runs. | clipmux-lms `transcoding/pipeline.py`, `transcoding/tests/test_pipeline.py` (video never waits; ASR failure; no audio) |
+| T14b | **Speech API** (D075). `projects.speech_mode`, the `speech_api` class in the router, `internal/speechapi` (the OpenAI-compatible client, the chunker, the serve runner, Connect), `PUT /v1/settings/speech`, `transcripts.FromOpenAI`. Tests against an httptest speech server that checks the multipart fields and ffprobes each chunk: `api` mode with no worker speech routes `speech_api`; `local_then_api` goes there with `primary_offline` and stays local once a worker has speech; 429 then success; 400 gives `speech_api_rejected`; three chunks shift cue times by their starts and the later ones carry the detected language; the key is in no row, error or log; disconnecting resets the mode and reroutes; a drain hands the attempt back `worker_stopped`. | clipmux-lms commit `a2ca144` (P32, unmerged: request shape, retries) |
 | T15 | **Delivery and the Cloudflare Worker.** Vectors first; the route record's `tracks`, `finishTrackPublication` from `SyncRoutes`, the master, the subtitle playlist, VTT decryption, `.vtt` only under `tracks/`, `worker/src/delivery.ts`, track-key vectors in `internal/contentkey`. Tests: `TestVectors`, `vectors.test.ts`, `workerd.test.ts`, the reconciler rewriting a record that drifted. | D015, D035, D036; clipmux-lms `delivery/src/index.ts` (VTT serving) |
 | T16 | **Integration API and webhooks.** `generate` on create, import and attach; `tracks` and `duration_seconds` on the view; the track, transcript, regenerate and delete routes; the three webhook events; `docs/api.md`. Tests: the view's JSON as literals; chapters imply subtitles; a regeneration keeps the old track until the new one is ready; idempotency across the new POSTs. | clipmux-lms `server/src/routes/api.ts:480-579`, `server/src/utils/media-actions.ts`, `media-actions.spec.ts` |
 | T17 | **Chapters.** `internal/chapters`, both adapters, the control job, Connect, the `subtitles_failed` cascade. Tests ported from `chapter.spec.ts` against httptest fakes for both adapters (the Claude fake through `option.WithBaseURL`): segment IDs to times, grounding refusals, multilingual titles, silence without a call, transient against permanent codes, one corrective retry then a permanent failure, the untrusted-content rules in the prompt; the key absent from every row and error. | clipmux-lms `server/src/utils/chapters.ts`, `chapter-queue.ts`, `chapter.spec.ts`, `docs/phases/02-server-chapters.md` |
 | T18 | **Player and dashboard.** `@clipmux/player`: the subtitles menu from hls.js and chapter markers from the chapters VTT, with subtitle requests through the refresh loader (D029). Dashboard: track status on the asset page, a transcript view, regenerate and delete, upload toggles, a Connect LLM card, speech backends on the Workers page. Playwright covers each. | clipmux-lms `player/src/ClipMuxPlayer.tsx:162-171,753-768`, `web/hooks/use-enrichment-updates.ts` |
 | T19 | **Setup test and providers.** A sample with speech, recorded by the owner (today's `sample.mp4` is a 440 Hz tone, `toolchain/make_sample.sh`); checks `subtitles_ready`, `play_subtitles` (a cue with the expected word within ±0.5 s), `thumbnail_token_refused_track` and `stored_track_encrypted`, skipped when no worker has speech and required in a provider's setup test; real Modal and RunPod measurements in `exit-providers.yml`. | D026, D054 |
-| T20 | **Exit test**, as listed above. It extends `internal/e2e` (D033, D050, D062), adds `exit-llm.yml` and the LMS parity contract test, records the exit decision and updates the known gaps (HA, OpenTelemetry, per-process limiters and cache, history growth, unfiltered owner webhook URLs, word timing coarser than whisperX, the source A/V offset the encode drops) and the threats table (transcript text to the LLM provider, track keys). | D033, D050, D062; `LMS/api/src/test/harness.ts` |
+| T20 | **Exit test**, as listed above. It extends `internal/e2e` (D033, D050, D062), adds `exit-llm.yml` (chapters and a speech API) and the LMS parity contract test, records the exit decision and updates the known gaps (HA, OpenTelemetry, per-process limiters and cache, history growth, unfiltered owner webhook URLs, word timing coarser than whisperX, the source A/V offset the encode drops) and the threats table (transcript text to the LLM provider, track keys). | D033, D050, D062; `LMS/api/src/test/harness.ts` |
 
 ## Open questions
 
@@ -603,14 +661,17 @@ Each answer becomes a decision record before the task that needs it.
 6. **Whisper on NVIDIA: Vulkan or CUDA, and which quantization?** (T11)
    Decided by its measurements. CUDA adds hundreds of MB to the image; Vulkan
    needs `graphics` in `NVIDIA_DRIVER_CAPABILITIES` and is unproven under
-   Modal's gVisor.
+   Modal's gVisor. The L4 measurement needs T00's Modal secrets; an owner
+   without a GPU can use a speech API meanwhile (D075).
 7. **Speech on the built-in worker by default?** (T14) Recommendation: `auto`
-   turns it on only with at least about 4 cores and 6 GiB.
+   turns it on only with at least about 4 cores and 6 GiB, settled by T11's
+   CPU measurement.
 8. **Do Safari and ExoPlayer accept a single-segment WebVTT playlist?** (T15)
    The fallback is 6 s segments sliced at delivery.
 9. **Two wakes per captioned video on a serverless primary?** (T14)
    Recommendation: accept for now; a `--once` machine could later claim its
-   asset's follow-up transcription.
+   asset's follow-up transcription. `local_then_api` or `api` avoids the
+   second wake (D075).
 10. **The LMS library at cutover:** regenerate with whisper, or import its
     existing VTTs as `uploaded` tracks in a follow-up? (after the phase)
 11. **Refusals from Claude?** (T17) Recommendation: `model_refused`, with no

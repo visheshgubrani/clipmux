@@ -125,6 +125,11 @@ when you introduce or discover it; remove it when it is closed.
 - No captions, chapters or transcripts. The LMS depends on them, so they gate
   the LMS migration (plans/lms-migration.md). Phase 5 adds them
   (plans/P5-production.md, D063).
+- The speech API (D075) has no spend cap or estimate: every transcription a
+  project in `api` or `local_then_api` mode sends is billed by the provider.
+  Chunks are cut at segment boundaries without overlap, so a word spoken
+  across a boundary (about every 25 minutes) can be split or lost. Whether a
+  provider accepts fragmented MP4 is proven only at Connect.
 - Phase 5's hardening track is complete (D074; D064–D073). Its exit checks
   still to run are the phase exit's (P5-T20): the soak run, the Playwright
   suites under the enforced CSP and TOTP in a browser, a backup-and-restore
