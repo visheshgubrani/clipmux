@@ -116,7 +116,13 @@ func runWorker(args []string, getenv func(string) string, stderr io.Writer) int 
 				"Run the agent in Docker, WSL2 or a VM, or pass --unsandboxed to take only your own jobs", "err", err)
 			return 1
 		}
-		mem, _ := strconv.ParseUint(getenv("CLIPMUX_TOOL_MEMORY_MB"), 10, 64)
+		var mem uint64
+		if v := getenv("CLIPMUX_TOOL_MEMORY_MB"); v != "" {
+			if mem, err = strconv.ParseUint(v, 10, 64); err != nil || mem == 0 {
+				logger.Error("invalid configuration", "err", fmt.Sprintf("CLIPMUX_TOOL_MEMORY_MB %q must be a positive number of MiB", v))
+				return 1
+			}
+		}
 		w.Tools.Sandbox = &media.Sandbox{Exec: self, MemoryMB: mem}
 		w.Sandbox = st.String()
 		logger.Info("media tools are sandboxed", "sandbox", w.Sandbox)

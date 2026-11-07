@@ -162,6 +162,13 @@ func FromEnv(getenv func(string) string) (Config, error) {
 	if cfg.PProf, err = boolEnv(getenv, "CLIPMUX_PPROF", false); err != nil {
 		return Config{}, err
 	}
+	// The built-in worker reads this itself; checking it here stops serve
+	// at boot rather than leaving the worker restarting.
+	if v := getenv("CLIPMUX_TOOL_MEMORY_MB"); v != "" {
+		if n, err := strconv.ParseUint(v, 10, 64); err != nil || n == 0 {
+			return Config{}, fmt.Errorf("CLIPMUX_TOOL_MEMORY_MB %q must be a positive number of MiB", v)
+		}
+	}
 	if cfg.MetricsAddr != "" {
 		if _, _, err := net.SplitHostPort(cfg.MetricsAddr); err != nil {
 			return Config{}, fmt.Errorf("CLIPMUX_METRICS_ADDR %q: %w", cfg.MetricsAddr, err)

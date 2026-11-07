@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -34,6 +35,7 @@ const adminUsage = `Usage:
   clipmux admin create-pairing [--app PC-NAME]
   clipmux admin reset-password < new-password.txt
   clipmux admin setup-test [--wait] [--timeout 20m]
+  clipmux admin migrate status | up | down-to VERSION --yes
 
 Host-side administration until the dashboard exists. Reads DATABASE_URL, and
 for create-webhook CLIPMUX_DATA_DIR or CLIPMUX_SECRETS_KEY (the same key serve
@@ -52,12 +54,20 @@ every dashboard session.
 
 setup-test asks the running serve to put the sample through the configured
 path; with --wait it prints the checks and exits 1 unless they all pass.
+
+migrate shows which migrations the database has (status), applies pending
+ones (up; serve and every other admin command do this too), or rolls back
+every migration above VERSION (down-to, which needs --yes and the binary
+that applied them). Migrations hold a lock, so they never run twice at once.
 `
 
 const project = db.DefaultProjectID
 
 // admin runs host-side administration commands against the database.
 func admin(args []string, getenv func(string) string, stdin io.Reader, stdout, stderr io.Writer) int {
+	if len(args) > 0 && args[0] == "migrate" {
+		return migrateCmd(args[1:], getenv, stdout, stderr)
+	}
 	if len(args) == 0 || !slices.Contains([]string{"create-key", "create-signing-key", "create-webhook", "create-pairing", "reset-password", "setup-test"}, args[0]) {
 		fmt.Fprint(stderr, adminUsage)
 		return 2
@@ -276,4 +286,71 @@ func createPairing(ctx context.Context, pool *pgxpool.Pool, name string, stdout 
 	}
 	fmt.Fprintf(stdout, "code: %s\nexpires: %s\n\nOn the PC, run:\n  clipmux worker --server URL --pair %s\n", code, p.ExpiresAt.Time.Format(time.RFC3339), code)
 	return nil
+}
+
+// migrateCmd runs clipmux admin migrate. Unlike the other commands it
+// doesn't migrate first: status must show what is pending.
+func migrateCmd(args []string, getenv func(string) string, stdout, stderr io.Writer) int {
+	usage := func() int { fmt.Fprint(stderr, adminUsage); return 2 }
+	if len(args) == 0 {
+		return usage()
+	}
+	fs := flag.NewFlagSet("migrate "+args[0], flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	yes := fs.Bool("yes", false, "confirm rolling migrations back (down-to)")
+	var version int64
+	rest := args[1:]
+	if args[0] == "down-to" {
+		if len(rest) == 0 {
+			return usage()
+		}
+		v, err := strconv.ParseInt(rest[0], 10, 64)
+		if err != nil || v < 0 {
+			fmt.Fprintf(stderr, "clipmux admin migrate down-to: %q is not a migration version\n", rest[0])
+			return 2
+		}
+		version, rest = v, rest[1:]
+	}
+	if err := fs.Parse(rest); err != nil || fs.NArg() > 0 {
+		return usage()
+	}
+	ctx := context.Background()
+	pool, err := db.Open(ctx, getenv("DATABASE_URL"))
+	if err != nil {
+		fmt.Fprintf(stderr, "clipmux admin: %v\n", err)
+		return 1
+	}
+	defer pool.Close()
+	switch args[0] {
+	case "status":
+		st, err := db.MigrationStatus(ctx, pool)
+		if err != nil {
+			fmt.Fprintf(stderr, "clipmux admin: %v\n", err)
+			return 1
+		}
+		pending := 0
+		for _, m := range st {
+			state := "applied " + m.AppliedAt.UTC().Format(time.RFC3339)
+			if !m.Applied {
+				state, pending = "pending", pending+1
+			}
+			fmt.Fprintf(stdout, "%5d  %-40s %s\n", m.Version, m.Name, state)
+		}
+		fmt.Fprintf(stdout, "%d pending\n", pending)
+	case "up":
+		err = db.Migrate(ctx, pool)
+	case "down-to":
+		if !*yes {
+			fmt.Fprintf(stderr, "clipmux admin migrate down-to %d drops what later migrations added; pass --yes to do it\n", version)
+			return 2
+		}
+		err = db.MigrateDownTo(ctx, pool, version)
+	default:
+		return usage()
+	}
+	if err != nil {
+		fmt.Fprintf(stderr, "clipmux admin: %v\n", err)
+		return 1
+	}
+	return 0
 }

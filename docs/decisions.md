@@ -666,5 +666,14 @@ Decisions within D063, made in P5-T04 (P5 open question 5 stays open until the L
 - **The refusal** is `429 rate_limited` with `Retry-After` and a `retry_after` detail. `too_many_attempts` and `too_many_pairings` keep their codes. No `RateLimit-*` headers until that draft is an RFC. Rejections show as `clipmux_http_requests_total{code="429"}`; there is no counter per limit.
 - Limits live in one process, so a second replica doubles every budget (known gap).
 
+## D068 Database sessions, boot and migrations — accepted (2026-11-07)
+Decisions within D063, made in P5-T05:
+- **Session settings.** `db.Open` gives every connection `statement_timeout=60s` and `idle_in_transaction_session_timeout=5min` unless `DATABASE_URL` sets them (as a parameter or in `options`). There is no global `lock_timeout`, because route sync holds outbox rows across storage calls. Pool size and the rest of pgxpool's settings stay URL parameters (`pool_max_conns=…`).
+- **Boot waits for Postgres.** `db.Open` retries the ping from 1 s doubling to 10 s for up to a minute, so serve outlives a database that is still starting. A URL that doesn't parse is reported without echoing it, since it carries the password.
+- **Migrations hold a lock.** Goose's Postgres session locker takes an advisory lock keyed `"cmx2"` and the schema's FNV-1a hash (`db.MigrationLockID`), so serve replicas, and serve and `clipmux admin`, never migrate the same schema at once, while installs in separate schemas of one database don't wait for each other (D035's rule). Two concurrent runs both succeed; one applies.
+- **A newer schema is refused.** Before migrating, serve and admin compare the database's version with the newest migration the binary has, and stop with `schema_newer` naming both, rather than run an old model against new tables.
+- **`clipmux admin migrate status | up | down-to VERSION --yes`.** `status` lists every migration with when it was applied, `down-to` needs `--yes`. Other admin commands keep migrating at start, now under the lock (P5 open question 12: refusing while migrations are pending would change what operators run today, for no safety the lock doesn't already give).
+- `CLIPMUX_TOOL_MEMORY_MB` must be a positive number; serve and the worker stop at boot otherwise, where it used to be ignored.
+
 ## D007 Shaka Packager 3.9.3 — accepted (2026-11-05)
 Decision: pin v3.9.3 (`toolchain/versions.env`), the version clipmux-lms runs with AES-128 in production, which needs the init-segment workaround for Shaka issue 1616. Move to a release that fixes 1616 when one exists, re-running the Phase 1 player tests.

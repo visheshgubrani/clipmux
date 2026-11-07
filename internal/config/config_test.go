@@ -146,3 +146,11 @@ func TestMetricsAndPProfAreChecked(t *testing.T) {
 		{map[string]string{"CLIPMUX_PPROF": "yes"}, false},
 	})
 }
+
+func TestToolMemoryIsChecked(t *testing.T) {
+	checkEnv(t, []envCase{
+		{map[string]string{"CLIPMUX_TOOL_MEMORY_MB": "4096"}, true},
+		{map[string]string{"CLIPMUX_TOOL_MEMORY_MB": "4G"}, false},
+		{map[string]string{"CLIPMUX_TOOL_MEMORY_MB": "0"}, false},
+	})
+}
