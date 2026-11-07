@@ -40,7 +40,8 @@ func (in *instance) startAgent(name string) *agent {
 	in.t.Helper()
 	code := regexp.MustCompile(`code: (\S+)`).FindStringSubmatch(in.admin("create-pairing", "--app", name))[1]
 	a := &agent{t: in.t, dir: in.t.TempDir()}
-	a.env = []string{"PATH=" + os.Getenv("PATH"), "CLIPMUX_AGENT_DIR=" + a.dir, "CLIPMUX_ENCODER=cpu", "HOME=" + a.dir}
+	a.env = []string{"PATH=" + os.Getenv("PATH"), "CLIPMUX_AGENT_DIR=" + a.dir, "CLIPMUX_ENCODER=cpu", "HOME=" + a.dir,
+		"CLIPMUX_SPEECH=off"} // the speech tests turn it on with the test models
 	if v := os.Getenv("CLIPMUX_PACKAGER"); v != "" {
 		a.env = append(a.env, "CLIPMUX_PACKAGER="+v)
 	}

@@ -27,6 +27,7 @@ import (
 
 	"github.com/visheshgubrani/clipmux/internal/logging"
 	"github.com/visheshgubrani/clipmux/internal/media"
+	"github.com/visheshgubrani/clipmux/internal/transcripts"
 	"github.com/visheshgubrani/clipmux/internal/workerapi"
 )
 
@@ -61,6 +62,13 @@ type Worker struct {
 	// Local holds this agent's push --local files; nil for a worker that
 	// has none (the built-in one).
 	Local *Sources
+	// Kinds are the job kinds this worker's claims ask for; nil asks for
+	// the media kinds (the server's default). A speech loop asks for
+	// ["transcribe"].
+	Kinds []string
+	// Speech is how this worker transcribes, once proven; shared by its
+	// claim loops, which report it. nil or empty: it doesn't.
+	Speech *SpeechSlot
 }
 
 func orNone(s string) string {
@@ -225,7 +233,7 @@ func (w *Worker) claim(ctx context.Context) (*workerapi.Job, error) {
 		wait = 25 * time.Second
 	}
 	var job workerapi.Job
-	status, err := w.post(ctx, "/worker/v1/claim", w.Key, map[string]any{
+	body := map[string]any{
 		"contract_versions": []int{workerapi.ContractVersion},
 		"ffmpeg_version":    versions.FFmpeg,
 		"packager_version":  versions.Packager,
@@ -234,7 +242,14 @@ func (w *Worker) claim(ctx context.Context) (*workerapi.Job, error) {
 		"wait_seconds":      wait.Seconds(),
 		"sandbox":           orNone(w.Sandbox),
 		"free_disk_bytes":   FreeDisk(w.WorkDir),
-	}, &job)
+	}
+	if w.Kinds != nil {
+		body["kinds"] = w.Kinds
+	}
+	if sp := w.Speech.Get(); sp != nil {
+		body["speech"] = workerapi.Speech{Backends: []string{string(sp.Backend)}, Model: sp.ModelName}
+	}
+	status, err := w.post(ctx, "/worker/v1/claim", w.Key, body, &job)
 	switch {
 	case err != nil:
 		return nil, err
@@ -270,11 +285,16 @@ func (w *Worker) handle(ctx context.Context, job *workerapi.Job) error {
 	var done map[string]any
 	var code string
 	var err error
-	if job.Kind == "upload_source" {
+	switch job.Kind {
+	case "upload_source":
 		var parts []workerapi.SourcePart
 		parts, code, err = w.uploadSource(jobCtx, job, hb.report)
 		done = map[string]any{"source_parts": parts}
-	} else {
+	case "transcribe":
+		var tr *transcripts.Transcript
+		tr, code, err = w.transcribe(jobCtx, job, dir, hb.report)
+		done = map[string]any{"transcript": tr}
+	default:
 		var m media.Manifest
 		m, code, err = w.process(jobCtx, job, dir, hb.report)
 		done = map[string]any{"manifest": m}
@@ -309,6 +329,10 @@ func (w *Worker) handle(ctx context.Context, job *workerapi.Job) error {
 		switch {
 		case status == http.StatusConflict && job.Kind == "upload_source":
 			code = codeUpload // the stored size wasn't the file's: upload again
+		case status == http.StatusConflict && job.Kind == "transcribe":
+			// The converter only makes valid transcripts: one serve refuses
+			// won't pass on a retry either.
+			return w.fail(ctx, job, true, codeTranscriptInvalid, err)
 		case status == http.StatusConflict:
 			code = codeOutputInvalid
 		}

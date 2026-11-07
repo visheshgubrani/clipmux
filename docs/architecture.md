@@ -301,7 +301,8 @@ Every retry gets a fresh attempt and output, so a failed run can't leave partial
 | `POST /worker/v1/claim` | Long-polls for work, then creates an attempt and lease |
 | `POST /worker/v1/attempts/{id}/heartbeat` | Reports phase and progress, extends the lease, and can tell the worker to stop |
 | `POST /worker/v1/attempts/{id}/sign` | Returns presigned URLs for a batch of output paths, source parts for an import, or a fresh source GET URL |
-| `POST /worker/v1/attempts/{id}/complete` | Submits the manifest for commit |
+| `POST /worker/v1/attempts/{id}/complete` | Submits the manifest for commit, or a transcription's canonical transcript (`{transcript}`), which serve validates, renders to WebVTT, encrypts and stores |
+| `GET /worker/v1/attempts/{id}/audio` | A transcription's input: the output's audio rendition decrypted by serve, as one fragmented MP4 (P5-T14) |
 | `POST /worker/v1/attempts/{id}/fail` | Reports a transient or permanent failure |
 
 ### Job payload
@@ -320,6 +321,8 @@ Every retry gets a fresh attempt and output, so a failed run can't leave partial
 ```
 
 The payload holds no storage credentials, and the attempt token works for this attempt only. A pinned job replaces `url` with `agent_source_id`.
+
+A claim names the job kinds it takes (`kinds`; absent means the media kinds) and, from a worker whose start-up probe proved whisper, `speech: {backends, model}`. A transcription's payload carries `speech: {input_output_id, duration_seconds, model}` instead of a source, an output and a key: the worker reads the audio from `GET …/audio` and never writes a file (D078, D079).
 
 The content key is derived at claim time, like the URLs, and opens only this attempt's output. The worker already holds the plaintext source, so the key shows it nothing new.
 

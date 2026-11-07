@@ -59,3 +59,17 @@ LIMIT sqlc.arg(max_jobs);
 -- name: BumpAssetForTrack :exec
 -- A track's change shows in the asset's view (D020).
 UPDATE assets SET version = version + 1, updated_at = now() WHERE id = $1;
+
+-- name: InsertTranscript :exec
+INSERT INTO transcripts (track_id, project_id, asset_id, body) VALUES ($1, $2, $3, $4);
+
+-- name: PublishTrack :one
+-- A transcription's VTT is stored: the track waits for its routes.
+UPDATE tracks
+SET status = 'publishing', language = $2, name = $3, duration_ms = $4, key_version = $5, output_id = $6,
+    version = version + 1, updated_at = now()
+WHERE id = $1 AND status = 'preparing'
+RETURNING *;
+
+-- name: GetTranscript :one
+SELECT * FROM transcripts WHERE track_id = $1;

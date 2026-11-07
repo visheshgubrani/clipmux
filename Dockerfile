@@ -105,6 +105,7 @@ USER 10001
 # only when asked (Modal, RunPod, docker --gpus).
 ENV CLIPMUX_DATA_DIR=/var/lib/clipmux/data \
     CLIPMUX_LISTEN=:8080 \
+    CLIPMUX_MODELS_DIR=/var/lib/clipmux-agent/models \
     NVIDIA_DRIVER_CAPABILITIES=compute,video,utility,graphics
 VOLUME /var/lib/clipmux/data
 EXPOSE 8080

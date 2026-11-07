@@ -42,6 +42,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/storage"
 	"github.com/visheshgubrani/clipmux/internal/stores"
 	"github.com/visheshgubrani/clipmux/internal/sweeper"
+	"github.com/visheshgubrani/clipmux/internal/tracks"
 	"github.com/visheshgubrani/clipmux/internal/uploads"
 	"github.com/visheshgubrani/clipmux/internal/web"
 	"github.com/visheshgubrani/clipmux/internal/webhooks"
@@ -156,8 +157,10 @@ type Deps struct {
 func Handler(d Deps) http.Handler {
 	mux := http.NewServeMux()
 	if d.Worker != nil {
-		// Every worker call is a POST; the worker API routes within it.
+		// Every worker call is a POST but a transcription's audio; the
+		// worker API routes within it.
 		mux.Handle("POST /worker/v1/", d.Worker)
+		mux.Handle("GET /worker/v1/attempts/", d.Worker)
 	}
 	if d.Storage != nil {
 		for _, method := range []string{"GET", "PUT", "OPTIONS"} {
@@ -315,6 +318,7 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 	worker.Agents = agentSvc
 	worker.Logger = logger
 	worker.Drain = drain
+	worker.Tracks = &tracks.Publisher{Stores: set, Keys: keys}
 	upl := uploads.New(pool, set)
 	upl.Logger = logger
 	playback := delivery.New(pool, set, keys)
@@ -443,7 +447,8 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 	if cfg.BuiltinWorker {
 		bw := &builtinWorker{
 			server: loopbackURL(ln.Addr()), key: workerKey, workDir: workerDir(cfg.DataDir),
-			tools: cfg.Tools, logger: logger, unsandboxed: cfg.UnsandboxedWorker,
+			modelsDir: filepath.Join(cfg.DataDir, "models"),
+			tools:     cfg.Tools, logger: logger, unsandboxed: cfg.UnsandboxedWorker,
 		}
 		bwCtx, bwStop := context.WithCancel(drain)
 		defer bwStop()

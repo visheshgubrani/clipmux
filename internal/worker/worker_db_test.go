@@ -31,6 +31,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/storage/s3test"
 	"github.com/visheshgubrani/clipmux/internal/stores"
 	"github.com/visheshgubrani/clipmux/internal/tokens"
+	"github.com/visheshgubrani/clipmux/internal/tracks"
 	"github.com/visheshgubrani/clipmux/internal/workerapi"
 )
 
@@ -111,7 +112,9 @@ func newRigOn(t *testing.T, auth workerapi.WorkerAuth, open func(base string, mu
 	q := queue.New(pool)
 	committer := outputs.New(pool, q, stores.Fixed(store))
 	api := workerapi.New(q, auth, stores.Fixed(store), contentkey.NewRing(keys), committer)
+	api.Tracks = &tracks.Publisher{Stores: stores.Fixed(store), Keys: contentkey.NewRing(keys)}
 	mux.Handle("POST /worker/v1/", api.Handler())
+	mux.Handle("GET /worker/v1/attempts/", api.Handler())
 	playback := delivery.New(pool, stores.Fixed(store), contentkey.NewRing(keys))
 	committer.OnPublished, committer.OnKeys = playback.Invalidate, playback.InvalidateKeys // as serve wires them
 	playback.Register(mux)

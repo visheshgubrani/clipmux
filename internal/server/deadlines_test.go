@@ -128,6 +128,7 @@ func TestRoutesAreClassified(t *testing.T) {
 		{"GET", "/v1/events", classLongPoll},
 		{"POST", "/worker/v1/attempts/att_1/complete", classLong},
 		{"POST", "/worker/v1/attempts/att_1/heartbeat", classAPI},
+		{"GET", "/worker/v1/attempts/att_1/audio", classStream},
 		{"POST", "/v1/executors/runpod/connect", classLong},
 		{"POST", "/v1/cloudflare/connect", classLong},
 		{"POST", "/v1/setup-test", classLong},

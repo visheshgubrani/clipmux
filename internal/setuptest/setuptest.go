@@ -15,8 +15,6 @@ package setuptest
 import (
 	"bytes"
 	"context"
-	"crypto/aes"
-	"crypto/cipher"
 	_ "embed"
 	"encoding/binary"
 	"encoding/hex"
@@ -40,6 +38,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/db"
 	"github.com/visheshgubrani/clipmux/internal/ids"
 	"github.com/visheshgubrani/clipmux/internal/lifecycle"
+	"github.com/visheshgubrani/clipmux/internal/media"
 	"github.com/visheshgubrani/clipmux/internal/secrets"
 	"github.com/visheshgubrani/clipmux/internal/settings"
 	"github.com/visheshgubrani/clipmux/internal/signingkeys"
@@ -618,13 +617,11 @@ func attr(list, name string) string {
 // fragmentAfterDecrypt reports whether AES-128-CBC with key and iv turns seg
 // into an fMP4 fragment.
 func fragmentAfterDecrypt(key, iv, seg []byte) bool {
-	block, err := aes.NewCipher(key)
-	if err != nil || len(seg) == 0 || len(seg)%aes.BlockSize != 0 {
+	if len(key) != 16 || len(iv) != 16 {
 		return false
 	}
-	plain := make([]byte, len(seg))
-	cipher.NewCBCDecrypter(block, iv).CryptBlocks(plain, seg)
-	return isFragment(plain)
+	plain, err := media.DecryptSegment([16]byte(key), [16]byte(iv), seg)
+	return err == nil && isFragment(plain)
 }
 
 // isFragment walks the leading top-level MP4 boxes (styp, sidx, …) and

@@ -47,6 +47,8 @@ needs none of these; the built-in worker gets its own from serve.
 | `CLIPMUX_AGENT_DIR` | the user's config directory | Where `agent.json`, `sources.json` and `agent.sock` live. |
 | `CLIPMUX_ENCODER` | `auto` | The first encoder to try: `auto`, `nvenc`, `vaapi`, `cuda-decode` or `cpu` (D046). |
 | `CLIPMUX_VAAPI_DEVICE` | every `/dev/dri/renderD*` | The VAAPI render node. |
+| `CLIPMUX_SPEECH` | `auto` | Whether the worker transcribes subtitles: `auto` (on a GPU whose Vulkan probe passes, else on a CPU with at least 4 cores and 6 GiB), `off`, `cpu` or `vulkan` (D077, D079). serve passes it to the built-in worker. |
+| `CLIPMUX_MODELS_DIR` | `models/` in `CLIPMUX_AGENT_DIR`; the built-in worker's is `models/` in serve's data directory | Where the worker keeps the speech models it downloads by digest (about 0.9 GB), across restarts. |
 | `CLIPMUX_TOOL_MEMORY_MB`, `CLIPMUX_FFMPEG`, `CLIPMUX_FFPROBE`, `CLIPMUX_PACKAGER`, `CLIPMUX_WHISPER`, `CLIPMUX_LOG_FORMAT`, `CLIPMUX_LOG_LEVEL` | as for serve | |
 
 ## clipmux push and clipmux listen

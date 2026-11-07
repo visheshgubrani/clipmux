@@ -2,11 +2,13 @@ package media
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 )
 
 // Speech to text (P5-T11): whisper.cpp, sandboxed like every media tool. A
@@ -115,4 +117,57 @@ func (t Tools) forSpeechGPU() Tools {
 	sb.Devices = append(render, gpuDevices(NVENC, "")...)
 	t.Sandbox = &sb
 	return t
+}
+
+// Model is a file a speech tool needs, fetched by digest (versions.env).
+type Model struct {
+	Name, URL, SHA256 string
+	Size              int64
+}
+
+// FileName is the model's file name, the one upstream uses.
+func (m Model) FileName() string {
+	return m.URL[strings.LastIndexByte(m.URL, '/')+1:]
+}
+
+// ID is how a transcript names the model: "{name}@sha256:{hex}".
+func (m Model) ID() string { return m.Name + "@sha256:" + m.SHA256 }
+
+// ProbeSpeech proves a speech backend works here, as DetectHardware proves
+// encoders: whisper runs the real model on two seconds of a tone, under the
+// sandbox jobs use, without VAD (which would skip the tone and prove
+// nothing), and must write its JSON.
+func ProbeSpeech(ctx context.Context, t Tools, dir string, sp Speech) error {
+	if t.Whisper == "" {
+		return fmt.Errorf("no whisper-cli configured")
+	}
+	tools := t.In(dir, append([]string{sp.Model}, t.readList()...)...)
+	wav := filepath.Join(dir, "probe.wav")
+	if err := tools.run(ctx, t.FFmpeg, []string{"-hide_banner", "-nostdin", "-loglevel", "error", "-y",
+		"-f", "lavfi", "-i", "sine=frequency=440:sample_rate=16000:duration=2",
+		"-ac", "1", "-c:a", "pcm_s16le", "-f", "wav", wav}, dir, io.Discard); err != nil {
+		return fmt.Errorf("probe audio: %w", err)
+	}
+	if sp.Backend == SpeechVulkan {
+		tools = tools.forSpeechGPU()
+	}
+	out := filepath.Join(dir, "probe")
+	args := []string{"-m", sp.Model, "-f", wav, "-l", "en", "-t", strconv.Itoa(max(sp.Threads, 1)), "-ojf", "-of", out, "-np"}
+	if sp.Backend != SpeechVulkan {
+		args = append(args, "-ng")
+	}
+	if err := tools.run(ctx, t.Whisper, args, dir, io.Discard); err != nil {
+		return fmt.Errorf("probe %s: %w", sp.Backend, err)
+	}
+	b, err := os.ReadFile(out + ".json")
+	if err != nil {
+		return fmt.Errorf("probe %s: %w", sp.Backend, err)
+	}
+	var result struct {
+		Transcription json.RawMessage `json:"transcription"`
+	}
+	if err := json.Unmarshal(b, &result); err != nil || result.Transcription == nil {
+		return fmt.Errorf("probe %s: whisper wrote no transcription", sp.Backend)
+	}
+	return nil
 }

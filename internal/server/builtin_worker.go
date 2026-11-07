@@ -23,8 +23,11 @@ type builtinWorker struct {
 	server  string // loopback URL of this serve
 	key     string
 	workDir string
-	tools   media.Tools
-	logger  *slog.Logger
+	// modelsDir keeps the speech models across restarts (the work
+	// directory is cleared at each one).
+	modelsDir string
+	tools     media.Tools
+	logger    *slog.Logger
 	// unsandboxed runs the tools unconfined (CLIPMUX_UNSANDBOXED_WORKER).
 	unsandboxed bool
 }
@@ -54,6 +57,7 @@ func (b *builtinWorker) childEnv() []string {
 		"CLIPMUX_FFPROBE=" + b.tools.FFprobe,
 		"CLIPMUX_PACKAGER=" + b.tools.Packager,
 		"CLIPMUX_WHISPER=" + b.tools.Whisper,
+		"CLIPMUX_MODELS_DIR=" + b.modelsDir,
 	}
 	if mem := os.Getenv("CLIPMUX_TOOL_MEMORY_MB"); mem != "" {
 		env = append(env, "CLIPMUX_TOOL_MEMORY_MB="+mem)
@@ -68,7 +72,7 @@ func (b *builtinWorker) childEnv() []string {
 			env = append(env, name+"="+v)
 		}
 	}
-	for _, name := range append([]string{"CLIPMUX_ENCODER", "CLIPMUX_VAAPI_DEVICE"}, sandbox.EnvAllowed...) {
+	for _, name := range append([]string{"CLIPMUX_ENCODER", "CLIPMUX_VAAPI_DEVICE", "CLIPMUX_SPEECH"}, sandbox.EnvAllowed...) {
 		if v := os.Getenv(name); v != "" {
 			env = append(env, name+"="+v)
 		}

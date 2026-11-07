@@ -26,6 +26,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/storage"
 	"github.com/visheshgubrani/clipmux/internal/stores"
 	"github.com/visheshgubrani/clipmux/internal/tracks"
+	"github.com/visheshgubrani/clipmux/internal/transcripts"
 )
 
 // ContractVersion is the job payload / output contract this server speaks.
@@ -141,6 +142,18 @@ type Job struct {
 	Profile          Profile    `json:"profile"`
 	OutputFormat     int32      `json:"output_format"`
 	Encryption       Encryption `json:"encryption"`
+	// Speech is a transcription's input, and nothing else is set for one:
+	// no source, output or content key.
+	Speech *JobSpeech `json:"speech,omitempty"`
+}
+
+// JobSpeech is what a transcription reads: the output whose audio it
+// fetches from GET /worker/v1/attempts/{id}/audio, its duration, and the
+// model the server expects it to use.
+type JobSpeech struct {
+	InputOutputID   string  `json:"input_output_id"`
+	DurationSeconds float64 `json:"duration_seconds"`
+	Model           string  `json:"model"`
 }
 
 const (
@@ -159,6 +172,8 @@ type API struct {
 	Stores *stores.Set
 	Keys   contentkey.Ring
 	Commit *outputs.Committer
+	// Tracks commits what transcriptions produce; nil refuses them.
+	Tracks *tracks.Publisher
 	// Agents records agent reports and serves pairing; nil for none.
 	Agents AgentReporter
 	Logger *slog.Logger
@@ -182,6 +197,7 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("POST /worker/v1/attempts/{id}/complete", a.complete)
 	mux.HandleFunc("POST /worker/v1/attempts/{id}/source-parts", a.sourceParts)
 	mux.HandleFunc("POST /worker/v1/attempts/{id}/fail", a.fail)
+	mux.HandleFunc("GET /worker/v1/attempts/{id}/audio", a.audio)
 	if a.Agents != nil {
 		a.Agents.RegisterWorker(mux)
 	}
@@ -354,6 +370,15 @@ func (a *API) claim(w http.ResponseWriter, r *http.Request) {
 		a.internal(w, "claim source", err)
 		return
 	}
+	// A transcription gets its input instead of a source or a key.
+	var speechJob *JobSpeech
+	if c.Job.Kind == tracks.JobTranscribe {
+		if speechJob, err = a.speechInput(r.Context(), c.Attempt); err != nil {
+			a.release(r.Context(), c.Token)
+			a.internal(w, "claim speech input", err)
+			return
+		}
+	}
 	// An upload_source attempt writes no output, so it gets no key (D070).
 	var enc Encryption
 	if c.Output.ID != "" {
@@ -383,7 +408,23 @@ func (a *API) claim(w http.ResponseWriter, r *http.Request) {
 		Profile:          Profile{ID: c.Job.ProfileID, Version: c.Job.ProfileVersion},
 		OutputFormat:     c.Output.OutputFormat,
 		Encryption:       enc,
+		Speech:           speechJob,
 	})
+}
+
+// speechInput describes a transcription's input output.
+func (a *API) speechInput(ctx context.Context, att db.Attempt) (*JobSpeech, error) {
+	out, err := db.New(a.Queue.Pool()).GetOutput(ctx, att.InputOutputID.String)
+	if err != nil {
+		return nil, err
+	}
+	var m struct {
+		Duration float64 `json:"duration_seconds"`
+	}
+	if err := json.Unmarshal(out.Manifest, &m); err != nil {
+		return nil, fmt.Errorf("output %s manifest: %w", out.ID, err)
+	}
+	return &JobSpeech{InputOutputID: out.ID, DurationSeconds: m.Duration, Model: media.SpeechModel.ID()}, nil
 }
 
 // maxManifest bounds a complete body: a manifest lists every file.
@@ -401,12 +442,20 @@ func (a *API) complete(w http.ResponseWriter, r *http.Request) {
 		Manifest media.Manifest `json:"manifest"`
 		// SourceParts finishes an upload_source attempt instead (D059).
 		SourceParts []SourcePart `json:"source_parts"`
+		// Transcript finishes a transcription instead: the canonical
+		// transcript (internal/transcripts). Workers never write a .vtt;
+		// serve renders it.
+		Transcript json.RawMessage `json:"transcript"`
 	}
 	if !httpjson.DecodeLimit(w, r, &req, maxManifest) {
 		return
 	}
 	if req.SourceParts != nil {
 		a.completeSource(w, r, token, req.SourceParts)
+		return
+	}
+	if req.Transcript != nil {
+		a.completeTranscript(w, r, token, req.Transcript)
 		return
 	}
 	v, err := a.Commit.Commit(r.Context(), token, req.Manifest)
@@ -420,6 +469,76 @@ func (a *API) complete(w http.ResponseWriter, r *http.Request) {
 		a.verdict(w, v)
 	default:
 		httpjson.Write(w, http.StatusOK, verdictResponse{Action: "done"})
+	}
+}
+
+// completeTranscript commits a transcription: a transcript that breaks the
+// rules is 409 transcript_invalid.
+func (a *API) completeTranscript(w http.ResponseWriter, r *http.Request, token string, raw json.RawMessage) {
+	if a.Tracks == nil {
+		httpjson.Error(w, http.StatusConflict, "transcript_invalid", "this server takes no transcripts")
+		return
+	}
+	v, err := a.Queue.CommitAttempt(r.Context(), token, a.Tracks.CommitTranscript(r.Context(), raw))
+	var inv *transcripts.InvalidError
+	switch {
+	case errors.As(err, &inv):
+		httpjson.Error(w, http.StatusConflict, "transcript_invalid", inv.Reason)
+	case err != nil:
+		a.internal(w, "complete transcript", err)
+	case v.Stop:
+		a.verdict(w, v)
+	default:
+		httpjson.Write(w, http.StatusOK, verdictResponse{Action: "done"})
+	}
+}
+
+// audio streams a transcription's input: its output's audio rendition as
+// one fragmented MP4, decrypted, so the worker needs no content key. A
+// stopped attempt gets 409 attempt_stopped.
+func (a *API) audio(w http.ResponseWriter, r *http.Request) {
+	token, att, ok := a.attempt(w, r)
+	if !ok {
+		return
+	}
+	if !att.InputOutputID.Valid {
+		httpjson.Error(w, http.StatusConflict, "not_transcription", "the attempt doesn't transcribe")
+		return
+	}
+	v, err := a.Queue.Live(r.Context(), token)
+	if err != nil {
+		a.internal(w, "audio", err)
+		return
+	}
+	if v.Stop {
+		httpjson.Error(w, http.StatusConflict, "attempt_stopped", "the attempt was told to stop: "+v.Reason)
+		return
+	}
+	out, err := db.New(a.Queue.Pool()).GetOutput(r.Context(), att.InputOutputID.String)
+	if err != nil {
+		a.internal(w, "audio output", err)
+		return
+	}
+	store, err := a.Stores.ForAsset(r.Context(), att.AssetID)
+	if err != nil {
+		a.internal(w, "audio store", err)
+		return
+	}
+	audio, err := outputs.OpenAudio(r.Context(), store, a.Keys, out)
+	if errors.Is(err, outputs.ErrNoAudio) {
+		httpjson.Error(w, http.StatusConflict, "no_audio", "the output has no audio")
+		return
+	}
+	if err != nil {
+		a.internal(w, "audio playlist", err)
+		return
+	}
+	w.Header().Set("Content-Type", "audio/mp4")
+	w.Header().Set("Cache-Control", "no-store")
+	if _, err := audio.Stream(r.Context(), w); err != nil {
+		// Mid-stream: the worker must see a cut, not a short file.
+		a.Logger.WarnContext(r.Context(), "worker api", "op", "stream audio", "attempt", att.ID, "err", err)
+		panic(http.ErrAbortHandler)
 	}
 }
 

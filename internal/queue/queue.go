@@ -437,6 +437,14 @@ func (q *Queue) withLiveAttempt(ctx context.Context, token string, fn func(qs *d
 	return v, err
 }
 
+// Live reports whether an attempt may keep going, changing nothing.
+func (q *Queue) Live(ctx context.Context, token string) (Verdict, error) {
+	return q.withLiveAttempt(ctx, token, func(*db.Queries, locked) (Verdict, error) { return Verdict{}, nil })
+}
+
+// Pool is the queue's connection pool, for reads alongside it.
+func (q *Queue) Pool() *pgxpool.Pool { return q.pool }
+
 // Heartbeat extends a live attempt's lease and records progress. A slow
 // worker whose lease was marked lost, but whose attempt is still the latest,
 // returns to running.

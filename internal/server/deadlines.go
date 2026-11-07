@@ -48,7 +48,8 @@ const (
 func classify(r *http.Request) routeClass {
 	p := r.URL.Path
 	switch {
-	case strings.HasPrefix(p, "/_storage/"), strings.HasPrefix(p, "/v/"), strings.HasPrefix(p, "/p/"):
+	case strings.HasPrefix(p, "/_storage/"), strings.HasPrefix(p, "/v/"), strings.HasPrefix(p, "/p/"),
+		r.Method == http.MethodGet && strings.HasPrefix(p, "/worker/v1/attempts/") && strings.HasSuffix(p, "/audio"):
 		return classStream
 	case r.Method == http.MethodPost && p == "/worker/v1/claim",
 		r.Method == http.MethodGet && p == "/v1/events":

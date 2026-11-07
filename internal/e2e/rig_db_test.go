@@ -114,6 +114,9 @@ func boot(t *testing.T, pinned bool, extraEnv ...string) *instance {
 	// for credentials when it ends (D064): every request, playback included,
 	// is in them.
 	in.env = append(in.env, "CLIPMUX_LOG_FORMAT=json", "CLIPMUX_LOG_LEVEL=debug")
+	// Transcription is off unless a test turns it on: each instance's data
+	// directory is new, and the speech models are 0.9 GB.
+	in.env = append(in.env, "CLIPMUX_SPEECH=off")
 	in.env = append(in.env, extraEnv...)
 	for _, k := range []string{"CLIPMUX_PACKAGER", "CLIPMUX_UNSANDBOXED_WORKER"} {
 		if v := os.Getenv(k); v != "" {

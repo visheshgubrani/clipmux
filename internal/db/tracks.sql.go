@@ -206,6 +206,44 @@ func (q *Queries) GetTrack(ctx context.Context, id string) (Track, error) {
 	return i, err
 }
 
+const getTranscript = `-- name: GetTranscript :one
+SELECT track_id, project_id, asset_id, body, created_at FROM transcripts WHERE track_id = $1
+`
+
+func (q *Queries) GetTranscript(ctx context.Context, trackID string) (Transcript, error) {
+	row := q.db.QueryRow(ctx, getTranscript, trackID)
+	var i Transcript
+	err := row.Scan(
+		&i.TrackID,
+		&i.ProjectID,
+		&i.AssetID,
+		&i.Body,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const insertTranscript = `-- name: InsertTranscript :exec
+INSERT INTO transcripts (track_id, project_id, asset_id, body) VALUES ($1, $2, $3, $4)
+`
+
+type InsertTranscriptParams struct {
+	TrackID   string
+	ProjectID string
+	AssetID   string
+	Body      []byte
+}
+
+func (q *Queries) InsertTranscript(ctx context.Context, arg InsertTranscriptParams) error {
+	_, err := q.db.Exec(ctx, insertTranscript,
+		arg.TrackID,
+		arg.ProjectID,
+		arg.AssetID,
+		arg.Body,
+	)
+	return err
+}
+
 const listStaleTranscriptions = `-- name: ListStaleTranscriptions :many
 SELECT j.id FROM jobs j
 WHERE j.project_id = $1 AND j.kind = 'transcribe' AND j.status = 'queued'
@@ -392,4 +430,56 @@ func (q *Queries) MarkTracksDeleted(ctx context.Context, assetID string) ([]stri
 		return nil, err
 	}
 	return items, nil
+}
+
+const publishTrack = `-- name: PublishTrack :one
+UPDATE tracks
+SET status = 'publishing', language = $2, name = $3, duration_ms = $4, key_version = $5, output_id = $6,
+    version = version + 1, updated_at = now()
+WHERE id = $1 AND status = 'preparing'
+RETURNING id, project_id, asset_id, kind, source, status, language, name, error_code, key_version, duration_ms, chapters, output_id, version, created_at, updated_at, ready_at, retired_at, deleted_at
+`
+
+type PublishTrackParams struct {
+	ID         string
+	Language   pgtype.Text
+	Name       pgtype.Text
+	DurationMs pgtype.Int8
+	KeyVersion pgtype.Int4
+	OutputID   pgtype.Text
+}
+
+// A transcription's VTT is stored: the track waits for its routes.
+func (q *Queries) PublishTrack(ctx context.Context, arg PublishTrackParams) (Track, error) {
+	row := q.db.QueryRow(ctx, publishTrack,
+		arg.ID,
+		arg.Language,
+		arg.Name,
+		arg.DurationMs,
+		arg.KeyVersion,
+		arg.OutputID,
+	)
+	var i Track
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.AssetID,
+		&i.Kind,
+		&i.Source,
+		&i.Status,
+		&i.Language,
+		&i.Name,
+		&i.ErrorCode,
+		&i.KeyVersion,
+		&i.DurationMs,
+		&i.Chapters,
+		&i.OutputID,
+		&i.Version,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.ReadyAt,
+		&i.RetiredAt,
+		&i.DeletedAt,
+	)
+	return i, err
 }
