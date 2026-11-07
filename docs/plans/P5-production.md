@@ -30,6 +30,9 @@ route cache and the drain flag live in one process; HA stays a known gap.
 Phase 4 exited in CI (D062). Its real-account run, Phase 2's real Cloudflare
 run and Phase 3's by-hand checks carry into T00, a parallel track.
 
+Next: [Phase 6 — Launch](P6-launch.md) (D087). This phase's pending runs, and
+T00's, become its Track A, and the launch waits on them (D088).
+
 **Exit test:** a full run of every phase's suite leaks no secret into its logs
 and drains cleanly on SIGTERM; retention deletes exactly what nothing plays;
 an upload asking for subtitles and chapters becomes ready first, then plays

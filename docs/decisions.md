@@ -868,5 +868,42 @@ Made in P5-T20, the exit test of [plans/P5-production.md](plans/P5-production.md
   - Detection on the owner's English, Hindi and Hinglish recordings (12), which aren't recorded yet.
 Consequence: as with Phase 4 (D062), the phase exits in CI with these carried as T00-style tracks; the LMS cutover (plans/lms-migration.md) can be planned, and should not switch production until the device and real-account runs above pass.
 
+## D086 Licence: AGPL-3.0 core, MIT for what apps embed — accepted (2026-11-07)
+Context: D005 kept the repository private, with no LICENSE file, until the licence was decided as part of the launch. The options on record were Apache-2.0 (the archived `vod`) and AGPL-3.0 core with an MIT SDK and player (clipmux-lms D021, proposed). The owner chose the second while planning Phase 6 ([plans/P6-launch.md](plans/P6-launch.md)).
+Decision:
+- **AGPL-3.0** for the repository: the server, the worker and the CLI, one binary.
+- **MIT** for `packages/player`, `packages/uploader` and `worker/`, each with its own `LICENSE` and `"license"` field, so apps and their deployments embed them under no copyleft.
+- **FFmpeg** stays a GPLv2+ build (`--enable-gpl`, x264 and x265, no `--enable-nonfree`), run as a separate process and never linked. The image ships the agent tarball's `licenses/` directory (D061) and a source offer naming the pinned source digests in `toolchain/versions.env` and the scripts that build them.
+Consequence: P6-T06 adds the files. Contributions need a DCO or a CLA (P6 open question 1), and a CLA is what would keep dual licensing possible.
+
+## D087 Phase 6 scope: launch, with the LMS on ClipMux first — accepted (2026-11-07)
+Context: Phases 1–5 have exited in CI (D040, D041, D050, D062, D085). Nothing for a stranger exists yet: no public image or release, no installer, a dashboard with no design layer, a README that says "nothing usable yet", and no licence file. The owner chose the scope; the plan is [plans/P6-launch.md](plans/P6-launch.md), which absorbs the checklist that was `plans/launch.md`.
+Decision:
+- **Next phase:** Phase 6, "Launch", after Phase 5. Its exit is the launch checklist. A fresh VM installs in one line and plays its sample with no build, and an agent pairs from the dashboard's command. Every pending real run is recorded (D088). The LMS has served production through its soak window. Then the repository goes public.
+- **The LMS moves before launch,** not after: real production traffic on ClipMux before strangers install it. Its instance is installed with the one-liner on a release candidate, which dogfoods the installer. `clipmux.com` is then free for the docs site, which settles the domain plan of D006.
+- **Tracks:**
+  - prove what's built (A);
+  - distribution: the licence, releases, installers and npm (B);
+  - the dashboard, designed first and signed off by the owner (C);
+  - docs and agent skills (D);
+  - then the cutover and launch day.
+- **Agent skills** are `SKILL.md` files under `skills/`, installed with `npx skills add visheshgubrani/clipmux` and evaluated with skill-creator. No MCP server and no OpenAPI spec in v1.
+- **Before the phase starts,** Phase 5's branch is pushed, passes GitHub CI and merges to main.
+Consequence: the integration API only grows; the owner routes the dashboard lacks (password change, library search, disconnecting Cloudflare, storage configs) come in P6-T12.
+
+## D088 The launch waits on every real run — accepted (2026-11-07)
+Context: several phases exited in CI against fakes, with their real-account, device and drill runs carried as T00 tracks: Phase 2's Cloudflare zone (D041), Phase 3's by-hand checks (D050), Phase 4's providers (D062), and Phase 5's LLMs, devices and drills (D085). The owner was asked whether v1 could ship those paths as beta.
+Decision: no path ships as beta. Each of the following passes, and is recorded as a decision, before the repository goes public:
+- Cloudflare on a real zone;
+- RunPod and Modal on real accounts, for encode and speech;
+- `exit-llm.yml`;
+- Safari and ExoPlayer showing subtitles;
+- the retention, backup-and-restore, rotation and TOTP drills;
+- a transcription on RunPod;
+- the by-hand checks.
+
+These are P6-T01 to T05.
+Consequence: Track A is the critical path. Its secrets, accounts, zone and hardware are owner actions and start at once.
+
 ## D007 Shaka Packager 3.9.3 — accepted (2026-11-05)
 Decision: pin v3.9.3 (`toolchain/versions.env`), the version clipmux-lms runs with AES-128 in production, which needs the init-segment workaround for Shaka issue 1616. Move to a release that fixes 1616 when one exists, re-running the Phase 1 player tests.

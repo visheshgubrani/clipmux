@@ -769,7 +769,7 @@ The terms name the Developer Platform as an example of a required Paid Service, 
 
 ### Open decisions
 
-- [ ] Choose the project name and licence, including how the image complies with ffmpeg's licence when it bundles a GPL build. Shaka Packager is BSD-licensed and adds no such constraint.
+- [x] Choose the project name and licence, including how the image complies with ffmpeg's licence when it bundles a GPL build. Shaka Packager is BSD-licensed and adds no such constraint. *(ClipMux, D006; AGPL-3.0 core with MIT player, uploader and Worker, D086)*
 - [ ] Choose a native sandbox for Windows and macOS agents. Until then, v1 requires Docker, WSL2 or a VM there.
 - [ ] Decide whether to serve encrypted segments from an R2 custom domain on a bucket without sources, with delivery generating variant playlists that point there. Only playlists and keys would run through the Worker, cutting its requests by more than 99%, but revoking a playback ID would then stop key fetches rather than segment fetches.
 - [ ] Choose which languages get an SDK for signing tokens.
@@ -778,13 +778,13 @@ The terms name the Developer Platform as an example of a required Paid Service, 
 
 Smaller items raised by the audit and not yet designed:
 
-- [ ] If `serve` runs as more than one replica, elect one leader with `pg_try_advisory_lock` for the sweepers, dispatcher and outbox publisher.
-- [ ] Ship one set of test vectors for the Go handler and the Worker, mapping a URL, token and route to an expected status, plus vectors for key derivation.
+- [x] If `serve` runs as more than one replica, elect one leader with `pg_try_advisory_lock` for the sweepers, dispatcher and outbox publisher. *(D035)*
+- [x] Ship one set of test vectors for the Go handler and the Worker, mapping a URL, token and route to an expected status, plus vectors for key derivation. *(D015, D036)*
 - [ ] Give the `vid` claim somewhere to be logged, such as Logpush or Analytics Engine, or drop it from the threats table.
-- [ ] For SSRF, pin the resolved IP for each connection, and also block IPv6 ULA and IPv4-mapped ranges.
+- [x] For SSRF, pin the resolved IP for each connection, and also block IPv6 ULA and IPv4-mapped ranges. *(`internal/publicnet`, D039)*
 - [ ] Time out jobs pinned to an agent that never returns, and tell the agent when its source's asset is deleted.
-- [ ] Cache routes in the built-in handler, and document its revocation delay.
-- [ ] Document backups for Postgres, the key that encrypts adapter secrets, and the content key secret, because losing that secret makes every output unplayable. The `manifest.json` in each output makes a rebuild-from-storage tool possible.
+- [x] Cache routes in the built-in handler, and document its revocation delay. *(D072)*
+- [x] Document backups for Postgres, the key that encrypts adapter secrets, and the content key secret, because losing that secret makes every output unplayable. The `manifest.json` in each output makes a rebuild-from-storage tool possible. *(docs/operations.md, D073; no rebuild tool)*
 
 ## Sources
 

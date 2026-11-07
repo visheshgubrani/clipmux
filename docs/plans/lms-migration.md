@@ -34,5 +34,6 @@ met. Then `clipmux-lms` retires.
 2. Add a second adapter in the LMS behind the same interface; new uploads go to ClipMux.
 3. Import the existing library; map old video IDs to new asset/playback IDs by `passthrough`.
 4. Switch playback; keep clipmux-lms read-only for a rollback window; then retire it
-   and move `clipmux.com` hostnames as planned in launch.md.
+   and move `clipmux.com` hostnames as planned in [P6-launch.md](P6-launch.md)
+   (T19, before the public launch, D087).
 5. Update the LMS `vendor/manifest.json` source URLs (they still name the old repo).

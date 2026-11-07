@@ -183,13 +183,12 @@ when you introduce or discover it; remove it when it is closed.
 
 ## Open decisions carried from architecture.md
 
-- Licence and ffmpeg GPL compliance (gated on going public, D005).
 - Native sandbox for Windows/macOS agents (v1 requires Docker, WSL2 or a VM).
 - Serving segments from an R2 custom domain with only playlists/keys through the Worker.
-- Token-signing SDK languages.
+- Token-signing SDK languages (P6 open question 2).
 - When captions, storyboards and viewer analytics enter the roadmap.
 - Confirm defaults: 7-day max token lifetime, retry budgets 5/3, 15-minute
-  reconciler, per-output keys derived from one secret.
+  reconciler, per-output keys derived from one secret (P6 open question 7).
 - Audit leftovers: where the `vid` claim is logged. (The shared Go/Worker
   vectors are D015/D036, pinned-job timeouts D045, the route cache D072 and
   the backup docs docs/operations.md.)
