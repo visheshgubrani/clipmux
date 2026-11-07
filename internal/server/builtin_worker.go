@@ -128,6 +128,7 @@ func (b *builtinWorker) run(ctx context.Context) {
 		cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr
 		cmd.Cancel = func() error { return cmd.Process.Signal(os.Interrupt) }
 		cmd.WaitDelay = 30 * time.Second
+		sandbox.DieWithParent(cmd)
 		b.logger.Info("built-in worker starting", "server", b.server)
 		err := cmd.Run()
 		if ctx.Err() != nil {

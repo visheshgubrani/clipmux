@@ -194,7 +194,7 @@ func (s *Service) Create(ctx context.Context, key apikeys.Key, req CreateRequest
 		}
 		out = Created{
 			UploadID: up.ID, AssetID: asset.ID, PartSize: up.PartSize, PartCount: partCount(up),
-			PlaybackIDs: []assets.PlaybackID{{ID: pid.ID, Policy: pid.Policy}},
+			PlaybackIDs: []assets.PlaybackID{{ID: pid.ID, Policy: pid.Policy, Status: pid.Status}},
 		}
 		stored, _ := json.Marshal(out) // without the token
 		if err := claim.Save(ctx, http.StatusCreated, stored); err != nil {

@@ -122,6 +122,7 @@ func (t Tools) run(ctx context.Context, bin string, args []string, dir string, s
 	var stderr tail
 	cmd.Stderr = &stderr
 	cmd.WaitDelay = 5 * time.Second
+	sandbox.DieWithParent(cmd)
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("%s: %w: %s", name, err, strings.TrimSpace(stderr.String()))
 	}
