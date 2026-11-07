@@ -138,6 +138,7 @@ type ContentKeySecret struct {
 	Version         int32
 	SecretEncrypted []byte
 	CreatedAt       pgtype.Timestamptz
+	UsableAt        pgtype.Timestamptz
 }
 
 type Dispatch struct {
@@ -245,12 +246,23 @@ type Output struct {
 }
 
 type Owner struct {
-	ID                string
-	ProjectID         string
-	Email             string
-	PasswordHash      string
-	CreatedAt         pgtype.Timestamptz
-	PasswordChangedAt pgtype.Timestamptz
+	ID                  string
+	ProjectID           string
+	Email               string
+	PasswordHash        string
+	CreatedAt           pgtype.Timestamptz
+	PasswordChangedAt   pgtype.Timestamptz
+	TotpSecretEncrypted []byte
+	TotpEnabledAt       pgtype.Timestamptz
+	TotpLastStep        pgtype.Int8
+}
+
+type OwnerRecoveryCode struct {
+	ProjectID string
+	OwnerID   string
+	CodeHash  []byte
+	CreatedAt pgtype.Timestamptz
+	UsedAt    pgtype.Timestamptz
 }
 
 type OwnerSession struct {

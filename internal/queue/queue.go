@@ -128,8 +128,9 @@ type Queue struct {
 	LostBudget, FailedBudget int32
 	// Backoff is the delay before retrying after the nth transient failure.
 	Backoff func(failures int32) time.Duration
-	// KeyVersion is the content key secret version for new outputs.
-	KeyVersion int32
+	// KeyVersion is the content key secret version for new outputs; it
+	// changes when the secret is rotated (D071).
+	KeyVersion func() int32
 	// Dispatch, when set, wakes a provider for a job the router sends to
 	// one (modal, runpod), in the router's transaction. Without it, jobs are
 	// never routed to a provider.
@@ -146,7 +147,7 @@ func New(pool *pgxpool.Pool) *Queue {
 		LostBudget:   5,
 		FailedBudget: 3,
 		Backoff:      DefaultBackoff,
-		KeyVersion:   1,
+		KeyVersion:   func() int32 { return 1 },
 	}
 }
 
@@ -259,7 +260,7 @@ func (q *Queue) Claim(ctx context.Context, w Worker) (*Claim, error) {
 		var output db.Output
 		if job.Kind != KindUploadSource {
 			if output, err = qs.CreateOutput(ctx, db.CreateOutputParams{
-				ID: ids.New(ids.Output), ProjectID: job.ProjectID, AssetID: job.AssetID, KeyVersion: q.KeyVersion,
+				ID: ids.New(ids.Output), ProjectID: job.ProjectID, AssetID: job.AssetID, KeyVersion: q.KeyVersion(),
 			}); err != nil {
 				return err
 			}

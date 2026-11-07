@@ -117,7 +117,11 @@ means stop; `404` means the ID is unknown or revoked.
 | --- | --- |
 | `GET /v1/setup` | no session needed: `{owner_exists, urls: {public_url, media_url, confirmed, pinned}, keys_allowed}` |
 | `POST /v1/setup/owner` | `{setup_token, email, password}` → `201`, signed in; `409 registration_closed` once an owner exists |
-| `POST /v1/session` · `GET /v1/session` · `DELETE /v1/session` | sign in (`429` with `Retry-After` after repeated failures), who am I, sign out |
+| `POST /v1/session` · `GET /v1/session` · `DELETE /v1/session` | sign in (`429` with `Retry-After` after repeated failures), who am I (`{email, totp_enabled}`), sign out. With two-factor sign-in on, signing in also takes `code` (from the authenticator) or `recovery_code`; without one it is `401 totp_required`, and a wrong or reused one `401 invalid_code`, counted as a failed sign-in (D071) |
+| `POST /v1/session/totp` | `{password}` → `201 {secret, otpauth_url}`: a new authenticator secret, waiting for a code |
+| `POST /v1/session/totp/enable` | `{code}` → `{enabled: true, recovery_codes: [10]}`, shown once; ends every other session |
+| `POST /v1/session/totp/disable` | `{password}` → `{enabled: false}`. A locked-out owner runs `clipmux admin reset-totp` on the host |
+| `POST /v1/content-keys/rotate` | `{cloudflare_token?}` → `{version, usable, current, steps}`: a new content key secret version for new outputs. With Cloudflare delivery the token is required (`409 cloudflare_token_required`): the Worker is redeployed with the new version before any output uses it; if that fails, `502` with the steps and the version stays unused (D071) |
 | `PUT /v1/settings/urls` | `{public_url, media_url?}`; `409 pinned` when the environment sets them |
 | `GET /v1/settings/routing` | `{primary_executor, fallback_executor, queue_age_fallback_minutes, builtin_worker: {last_seen_at, online}, providers_ready}` (D053); `providers_ready` lists the providers connected and verified by a setup test |
 | `PUT /v1/settings/routing` | `{primary_executor: workers \| agents \| builtin, fallback_executor?: builtin, queue_age_fallback_minutes?: 1–1440}`; a fallback can't be part of the primary, and queue age needs a fallback (`400 invalid_request`); a provider (`modal`, `runpod`) is `409 executor_not_connected` until it is connected and its setup test passed |

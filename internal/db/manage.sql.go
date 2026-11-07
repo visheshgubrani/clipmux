@@ -581,6 +581,28 @@ func (q *Queries) ListWebhookEndpoints(ctx context.Context, appID string) ([]Lis
 	return items, nil
 }
 
+const retireOtherSigningKeys = `-- name: RetireOtherSigningKeys :execrows
+UPDATE signing_keys k SET retired_at = now() + make_interval(secs => p.max_token_lifetime_seconds)
+FROM projects p
+WHERE p.id = k.project_id AND k.app_id = $1 AND k.id <> $2
+  AND k.revoked_at IS NULL AND (k.retired_at IS NULL OR k.retired_at > now() + make_interval(secs => p.max_token_lifetime_seconds))
+`
+
+type RetireOtherSigningKeysParams struct {
+	AppID  pgtype.Text
+	KeepID string
+}
+
+// A rotation: the app's other live keys stop at the end of the longest
+// token they may have signed, so sessions in progress finish.
+func (q *Queries) RetireOtherSigningKeys(ctx context.Context, arg RetireOtherSigningKeysParams) (int64, error) {
+	result, err := q.db.Exec(ctx, retireOtherSigningKeys, arg.AppID, arg.KeepID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const revokeAPIKey = `-- name: RevokeAPIKey :execrows
 UPDATE api_keys SET revoked_at = coalesce(revoked_at, now()) WHERE project_id = $1 AND id = $2
 `

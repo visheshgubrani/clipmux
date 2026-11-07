@@ -47,6 +47,9 @@ const (
 type Box struct {
 	version uint32
 	aead    cipher.AEAD
+	// previous opens values sealed with an earlier key while they are
+	// resealed (CLIPMUX_SECRETS_KEY_PREVIOUS, D071); Seal never uses it.
+	previous map[uint32]cipher.AEAD
 }
 
 // NewBox returns a Box for a 32-byte key.
@@ -90,10 +93,13 @@ func (b *Box) Open(table, rowID string, sealed []byte) ([]byte, error) {
 	if len(sealed) < 5+n+b.aead.Overhead() || sealed[0] != format {
 		return nil, errors.New("secrets: not a sealed value")
 	}
-	if binary.BigEndian.Uint32(sealed[1:5]) != b.version {
-		return nil, ErrWrongKey
+	aead := b.aead
+	if v := binary.BigEndian.Uint32(sealed[1:5]); v != b.version {
+		if aead = b.previous[v]; aead == nil {
+			return nil, ErrWrongKey
+		}
 	}
-	plain, err := b.aead.Open(nil, sealed[5:5+n], sealed[5+n:], associated(table, rowID))
+	plain, err := aead.Open(nil, sealed[5:5+n], sealed[5+n:], associated(table, rowID))
 	if err != nil {
 		// GCM can't tell a wrong key from a moved or tampered value.
 		return nil, ErrWrongKey
@@ -161,9 +167,10 @@ func create(dir string) (*Box, error) {
 }
 
 // LoadOrCreate is serve's boot step. It loads the key, creating one only on
-// a database that holds no sealed secrets yet, then checks that the key
-// opens the project's check value (sealing it on first boot).
-func LoadOrCreate(ctx context.Context, q *db.Queries, projectID, dir, env string) (*Box, error) {
+// a database that holds no sealed secrets yet, adds the previous key when
+// one is given (a rotation in progress), then checks that the box opens the
+// project's check value (sealing it on first boot).
+func LoadOrCreate(ctx context.Context, q *db.Queries, projectID, dir, env, previous string) (*Box, error) {
 	b, err := Load(dir, env)
 	if errors.Is(err, ErrNoKey) {
 		check, cerr := q.GetSecretsCheck(ctx, projectID)
@@ -177,6 +184,11 @@ func LoadOrCreate(ctx context.Context, q *db.Queries, projectID, dir, env string
 	}
 	if err != nil {
 		return nil, err
+	}
+	if previous != "" {
+		if err := b.AddPrevious(previous); err != nil {
+			return nil, err
+		}
 	}
 	if err := verify(ctx, q, projectID, b); err != nil {
 		return nil, err
@@ -205,5 +217,29 @@ func verify(ctx context.Context, q *db.Queries, projectID string, b *Box) error 
 	if subtle.ConstantTimeCompare(plain, []byte(checkPlaintext)) != 1 {
 		return ErrWrongKey
 	}
+	return nil
+}
+
+// Version is the version of the key Seal uses.
+func (b *Box) Version() uint32 { return b.version }
+
+// Opens reports whether the box holds the key for version v.
+func (b *Box) Opens(v uint32) bool { return v == b.version || b.previous[v] != nil }
+
+// AddPrevious lets the box open values sealed with an earlier key, given as
+// CLIPMUX_SECRETS_KEY is ("v1:" and 64 hex digits). Its version must differ
+// from the current key's.
+func (b *Box) AddPrevious(key string) error {
+	prev, err := parse(key)
+	if err != nil {
+		return fmt.Errorf("CLIPMUX_SECRETS_KEY_PREVIOUS: %w", err)
+	}
+	if prev.version == b.version {
+		return fmt.Errorf("CLIPMUX_SECRETS_KEY_PREVIOUS has the current key's version (v%d): give the new key the next version", b.version)
+	}
+	if b.previous == nil {
+		b.previous = map[uint32]cipher.AEAD{}
+	}
+	b.previous[prev.version] = prev.aead
 	return nil
 }

@@ -85,3 +85,11 @@ SELECT s.id FROM assets s
 JOIN attempts a ON a.output_id = s.current_output_id
 WHERE a.agent_id = $1 AND s.project_id = $2 AND s.status = 'ready'
 ORDER BY s.id;
+
+-- name: RetireOtherSigningKeys :execrows
+-- A rotation: the app's other live keys stop at the end of the longest
+-- token they may have signed, so sessions in progress finish.
+UPDATE signing_keys k SET retired_at = now() + make_interval(secs => p.max_token_lifetime_seconds)
+FROM projects p
+WHERE p.id = k.project_id AND k.app_id = sqlc.arg(app_id) AND k.id <> sqlc.arg(keep_id)
+  AND k.revoked_at IS NULL AND (k.retired_at IS NULL OR k.retired_at > now() + make_interval(secs => p.max_token_lifetime_seconds));

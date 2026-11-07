@@ -216,8 +216,14 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 
 	// The key that seals secrets in Postgres; serve refuses to start with one
 	// that can't open what the database already holds.
-	box, err := secrets.LoadOrCreate(ctx, db.New(pool), db.DefaultProjectID, cfg.DataDir, cfg.SecretsKey)
+	box, err := secrets.LoadOrCreate(ctx, db.New(pool), db.DefaultProjectID, cfg.DataDir, cfg.SecretsKey, cfg.SecretsKeyPrevious)
 	if err != nil {
+		return err
+	}
+	// Every sealed value must open with the key or the previous one: a new
+	// key without the old beside it, before reseal-secrets, stops here and
+	// names what it couldn't open (D071).
+	if err := secrets.CheckVersions(ctx, pool, box); err != nil {
 		return err
 	}
 
@@ -278,6 +284,7 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 	set := stores.New(pool, box, store)
 	acct := accounts.New(pool, db.DefaultProjectID, b.urls.PublicURL)
 	acct.TrustedProxies = cfg.TrustedProxies
+	acct.Box = box
 	acct.Logger = logger
 	// Until the owner registers, every boot prints a fresh setup token; the
 	// first visitor needs it to create the owner account.
@@ -289,7 +296,7 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 	}
 
 	q := queue.New(pool)
-	q.KeyVersion = keys.Current().Version
+	q.KeyVersion = func() int32 { return keys.Current().Version }
 	committer := outputs.New(pool, q, set)
 	committer.Logger = logger
 	// The built-in worker's key lives only in memory and is handed to the
@@ -325,6 +332,7 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 	tests.Logger = logger
 	mgmt.Tests = tests
 	mgmt.Life = life
+	mgmt.Keys = &manage.ContentKeys{Ring: keys, DataDir: cfg.DataDir}
 	mgmt.Cloudflare = &cloudflare.Connector{
 		Pool: pool, Stores: set, Keys: keys, URLs: b.urls, ProjectID: db.DefaultProjectID,
 		API: cfg.CloudflareAPI, R2Endpoint: cloudflare.EndpointTemplate(cfg.R2Endpoint),

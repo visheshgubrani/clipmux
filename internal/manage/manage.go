@@ -64,7 +64,9 @@ type API struct {
 	// Modal runs Connect Modal; nil leaves its routes 404.
 	Modal *modal.Connector
 	// Life queues library moves; nil leaves their routes 404.
-	Life   *lifecycle.Service
+	Life *lifecycle.Service
+	// Keys rotates the content key secret; nil leaves its route 404.
+	Keys   *ContentKeys
 	Now    func() time.Time
 	Logger *slog.Logger
 }
@@ -131,6 +133,7 @@ func (m *API) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/setup-test/latest", m.owned(m.latestSetupTest))
 	mux.HandleFunc("GET /v1/cloudflare", m.owned(m.cloudflareStatus))
 	mux.HandleFunc("POST /v1/cloudflare/connect", m.owned(m.connectCloudflare))
+	mux.HandleFunc("POST /v1/content-keys/rotate", m.owned(m.rotateContentKey))
 	mux.HandleFunc("GET /v1/jobs", m.owned(m.listJobs))
 	mux.HandleFunc("GET /v1/jobs/{id}", m.owned(m.getJob))
 	mux.HandleFunc("POST /v1/agents/{id}/reencode", m.owned(m.reencodeAgentOutputs))

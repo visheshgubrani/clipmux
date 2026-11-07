@@ -45,6 +45,10 @@ type Config struct {
 	// "v1:" and 64 hex digits). Unset, serve keeps it in
 	// {DataDir}/secrets.key, created on first boot. Never log it.
 	SecretsKey string
+	// SecretsKeyPrevious is the key being rotated away from
+	// (CLIPMUX_SECRETS_KEY_PREVIOUS): values it sealed still open until
+	// clipmux admin reseal-secrets seals them with SecretsKey. Never log it.
+	SecretsKeyPrevious string
 	// TrustedProxies are the addresses (e.g. Caddy's) whose X-Forwarded-For
 	// is believed when limiting sign-ins (CLIPMUX_TRUSTED_PROXIES, comma-
 	// separated addresses or CIDR ranges).
@@ -100,16 +104,17 @@ const (
 // FromEnv builds a Config from a getenv function (os.Getenv in production).
 func FromEnv(getenv func(string) string) (Config, error) {
 	cfg := Config{
-		ListenAddr:    orDefault(getenv("CLIPMUX_LISTEN"), DefaultListenAddr),
-		DatabaseURL:   getenv("DATABASE_URL"),
-		DataDir:       orDefault(getenv("CLIPMUX_DATA_DIR"), DefaultDataDir),
-		SecretsKey:    getenv("CLIPMUX_SECRETS_KEY"),
-		SelfDial:      getenv("CLIPMUX_SELF_DIAL"),
-		CloudflareAPI: getenv("CLIPMUX_CLOUDFLARE_API"),
-		R2Endpoint:    getenv("CLIPMUX_R2_ENDPOINT"),
-		RunPodAPI:     getenv("CLIPMUX_RUNPOD_API"),
-		WorkerImage:   getenv("CLIPMUX_WORKER_IMAGE"),
-		MetricsAddr:   getenv("CLIPMUX_METRICS_ADDR"),
+		ListenAddr:         orDefault(getenv("CLIPMUX_LISTEN"), DefaultListenAddr),
+		DatabaseURL:        getenv("DATABASE_URL"),
+		DataDir:            orDefault(getenv("CLIPMUX_DATA_DIR"), DefaultDataDir),
+		SecretsKey:         getenv("CLIPMUX_SECRETS_KEY"),
+		SecretsKeyPrevious: getenv("CLIPMUX_SECRETS_KEY_PREVIOUS"),
+		SelfDial:           getenv("CLIPMUX_SELF_DIAL"),
+		CloudflareAPI:      getenv("CLIPMUX_CLOUDFLARE_API"),
+		R2Endpoint:         getenv("CLIPMUX_R2_ENDPOINT"),
+		RunPodAPI:          getenv("CLIPMUX_RUNPOD_API"),
+		WorkerImage:        getenv("CLIPMUX_WORKER_IMAGE"),
+		MetricsAddr:        getenv("CLIPMUX_METRICS_ADDR"),
 	}
 	if cfg.DatabaseURL == "" {
 		return Config{}, errors.New("DATABASE_URL is required")

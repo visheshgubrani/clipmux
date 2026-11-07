@@ -53,7 +53,7 @@ func classify(r *http.Request) routeClass {
 	case r.Method == http.MethodPost && p == "/worker/v1/claim",
 		r.Method == http.MethodGet && p == "/v1/events":
 		return classLongPoll
-	case r.Method == http.MethodPost && (p == "/v1/cloudflare/connect" || p == "/v1/setup-test" ||
+	case r.Method == http.MethodPost && (p == "/v1/cloudflare/connect" || p == "/v1/setup-test" || p == "/v1/content-keys/rotate" ||
 		strings.HasPrefix(p, "/v1/executors/") && strings.HasSuffix(p, "/connect") ||
 		strings.HasPrefix(p, "/worker/v1/attempts/") && strings.HasSuffix(p, "/complete")),
 		r.Method == http.MethodDelete && strings.HasPrefix(p, "/v1/assets/") && !strings.Contains(p, "/playback-ids/"):

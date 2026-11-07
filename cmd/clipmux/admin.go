@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/visheshgubrani/clipmux/internal/accounts"
@@ -23,6 +24,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/db"
 	"github.com/visheshgubrani/clipmux/internal/ids"
 	"github.com/visheshgubrani/clipmux/internal/retention"
+	"github.com/visheshgubrani/clipmux/internal/routes"
 	"github.com/visheshgubrani/clipmux/internal/secrets"
 	"github.com/visheshgubrani/clipmux/internal/settings"
 	"github.com/visheshgubrani/clipmux/internal/setuptest"
@@ -41,6 +43,11 @@ const adminUsage = `Usage:
   clipmux admin setup-test [--wait] [--timeout 20m]
   clipmux admin migrate status | up | down-to VERSION --yes
   clipmux admin prune [--dry-run] [--files]
+  clipmux admin reseal-secrets
+  clipmux admin rotate-signing-key --app NAME
+  clipmux admin list-keys --app NAME
+  clipmux admin revoke-key ID
+  clipmux admin reset-totp
   clipmux admin outbox [--retry ID]
 
 Host-side administration until the dashboard exists. Reads DATABASE_URL, and
@@ -74,6 +81,19 @@ CLIPMUX_DATA_DIR and CLIPMUX_SECRETS_KEY as serve does. outbox lists
 route publications, wakes and stops still pending after an hour, which are
 retried forever; --retry ID makes one due at once.
 
+reseal-secrets seals every stored secret with CLIPMUX_SECRETS_KEY. To rotate
+the secrets key, give serve the new key as CLIPMUX_SECRETS_KEY (with the next
+version, "v2:…") and the old one as CLIPMUX_SECRETS_KEY_PREVIOUS, run
+reseal-secrets, then drop the previous key.
+
+rotate-signing-key creates a new signing key for the app and retires its
+others at the end of the longest token they may have signed, so viewers
+mid-session finish; switch the app's backend to the new key meanwhile.
+list-keys shows the app's API and signing keys; revoke-key ends one at once
+(an API key cmx_… ID, or a signing key's kid).
+
+reset-totp turns off the owner's second factor, for an owner who lost both
+the authenticator and the recovery codes.
 `
 
 const project = db.DefaultProjectID
@@ -85,6 +105,9 @@ func admin(args []string, getenv func(string) string, stdin io.Reader, stdout, s
 	}
 	if len(args) > 0 && (args[0] == "prune" || args[0] == "outbox") {
 		return retentionCmd(args[0], args[1:], getenv, stdout, stderr)
+	}
+	if len(args) > 0 && slices.Contains([]string{"reseal-secrets", "rotate-signing-key", "list-keys", "revoke-key", "reset-totp"}, args[0]) {
+		return keysCmd(args[0], args[1:], getenv, stdout, stderr)
 	}
 	if len(args) == 0 || !slices.Contains([]string{"create-key", "create-signing-key", "create-webhook", "create-pairing", "reset-password", "setup-test"}, args[0]) {
 		fmt.Fprint(stderr, adminUsage)
@@ -134,7 +157,7 @@ func admin(args []string, getenv func(string) string, stdin io.Reader, stdout, s
 		err = setupTest(ctx, pool, *wait, *timeout, time.Second, stdout)
 	case "create-webhook":
 		var box *secrets.Box
-		if box, err = secrets.Load(orDefault(getenv("CLIPMUX_DATA_DIR"), config.DefaultDataDir), getenv("CLIPMUX_SECRETS_KEY")); err == nil {
+		if box, err = loadBox(getenv); err == nil {
 			err = createWebhook(ctx, pool, box, *app, *endpoint, stdout)
 		}
 	}
@@ -445,7 +468,7 @@ func retentionCmd(cmd string, args []string, getenv func(string) string, stdout,
 // pruneFiles runs the file retention rules over the install's stores.
 func pruneFiles(ctx context.Context, pool *pgxpool.Pool, getenv func(string) string) (int, error) {
 	dataDir := orDefault(getenv("CLIPMUX_DATA_DIR"), config.DefaultDataDir)
-	box, err := secrets.Load(dataDir, getenv("CLIPMUX_SECRETS_KEY"))
+	box, err := loadBox(getenv)
 	if err != nil {
 		return 0, err
 	}
@@ -455,4 +478,167 @@ func pruneFiles(ctx context.Context, pool *pgxpool.Pool, getenv func(string) str
 	}
 	defer fsStore.Close()
 	return retention.NewFiles(pool, stores.New(pool, box, fsStore), fsStore).Run(ctx)
+}
+
+// loadBox loads the secrets key serve uses, and the previous one during a
+// rotation.
+func loadBox(getenv func(string) string) (*secrets.Box, error) {
+	box, err := secrets.Load(orDefault(getenv("CLIPMUX_DATA_DIR"), config.DefaultDataDir), getenv("CLIPMUX_SECRETS_KEY"))
+	if err != nil {
+		return nil, err
+	}
+	if prev := getenv("CLIPMUX_SECRETS_KEY_PREVIOUS"); prev != "" {
+		if err := box.AddPrevious(prev); err != nil {
+			return nil, err
+		}
+	}
+	return box, nil
+}
+
+// keysCmd runs the key commands (D071).
+func keysCmd(cmd string, args []string, getenv func(string) string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet(cmd, flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	appName := fs.String("app", "", "app name")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	needApp := cmd == "rotate-signing-key" || cmd == "list-keys"
+	if (needApp && *appName == "") || (cmd == "revoke-key" && fs.NArg() != 1) || (cmd != "revoke-key" && fs.NArg() > 0) {
+		fmt.Fprint(stderr, adminUsage)
+		return 2
+	}
+	ctx := context.Background()
+	pool, err := db.Open(ctx, getenv("DATABASE_URL"))
+	if err != nil {
+		fmt.Fprintf(stderr, "clipmux admin: %v\n", err)
+		return 1
+	}
+	defer pool.Close()
+	if err := db.Migrate(ctx, pool); err != nil {
+		fmt.Fprintf(stderr, "clipmux admin: %v\n", err)
+		return 1
+	}
+	switch cmd {
+	case "reseal-secrets":
+		err = resealSecrets(ctx, pool, getenv, stdout)
+	case "rotate-signing-key":
+		err = rotateSigningKey(ctx, pool, *appName, stdout)
+	case "list-keys":
+		err = listKeys(ctx, pool, *appName, stdout)
+	case "revoke-key":
+		err = revokeKey(ctx, pool, fs.Arg(0), stdout)
+	case "reset-totp":
+		var n int64
+		if n, err = db.New(pool).DisableOwnerTOTP(ctx, project); err == nil {
+			fmt.Fprintf(stdout, "second factor turned off (%d owner); turn it on again from the dashboard\n", n)
+		}
+	}
+	if err != nil {
+		fmt.Fprintf(stderr, "clipmux admin: %v\n", err)
+		return 1
+	}
+	return 0
+}
+
+func resealSecrets(ctx context.Context, pool *pgxpool.Pool, getenv func(string) string, out io.Writer) error {
+	box, err := loadBox(getenv)
+	if err != nil {
+		return err
+	}
+	if err := secrets.CheckVersions(ctx, pool, box); err != nil {
+		return err
+	}
+	counts, err := secrets.Reseal(ctx, pool, box)
+	for _, c := range secrets.Columns {
+		if n := counts[c.Table+"."+c.Column]; n > 0 {
+			fmt.Fprintf(out, "%-45s %d resealed\n", c.Table+"."+c.Column, n)
+		}
+	}
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "every secret is sealed with key v%d; CLIPMUX_SECRETS_KEY_PREVIOUS can go\n", box.Version())
+	return nil
+}
+
+func rotateSigningKey(ctx context.Context, pool *pgxpool.Pool, appName string, out io.Writer) error {
+	var app, kid, privatePEM string
+	var retired int64
+	err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		q := db.New(tx)
+		var err error
+		if app, err = appID(ctx, q, appName); err != nil {
+			return err
+		}
+		if kid, privatePEM, err = signingkeys.CreateForApp(ctx, tx, project, app); err != nil {
+			return err
+		}
+		if retired, err = q.RetireOtherSigningKeys(ctx, db.RetireOtherSigningKeysParams{AppID: pgtype.Text{String: app, Valid: true}, KeepID: kid}); err != nil {
+			return err
+		}
+		return routes.QueueKeys(ctx, q, project) // _keys.json carries not_after
+	})
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "app: %s (%s)\nkid: %s\n\n%s\nSign new playback tokens with this key. %d older key(s) keep working until the\nlongest token they signed expires, then stop.\n",
+		appName, app, kid, privatePEM, retired)
+	return nil
+}
+
+func listKeys(ctx context.Context, pool *pgxpool.Pool, appName string, out io.Writer) error {
+	q := db.New(pool)
+	app, err := q.GetAppByName(ctx, db.GetAppByNameParams{ProjectID: project, Name: appName})
+	if err != nil {
+		return fmt.Errorf("app %q: %w", appName, err)
+	}
+	when := func(t pgtype.Timestamptz) string {
+		if !t.Valid {
+			return "-"
+		}
+		return t.Time.UTC().Format(time.RFC3339)
+	}
+	keys, err := q.ListAPIKeys(ctx, app.ID)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintln(out, "API keys")
+	for _, k := range keys {
+		fmt.Fprintf(out, "  %s  %-16s %-40s used %s  revoked %s\n", k.ID, k.Name, strings.Join(k.Scopes, ","), when(k.LastUsedAt), when(k.RevokedAt))
+	}
+	sk, err := q.ListSigningKeys(ctx, pgtype.Text{String: app.ID, Valid: true})
+	if err != nil {
+		return err
+	}
+	fmt.Fprintln(out, "Signing keys")
+	for _, k := range sk {
+		fmt.Fprintf(out, "  %s  created %s  retires %s  revoked %s\n", k.ID, when(k.CreatedAt), when(k.RetiredAt), when(k.RevokedAt))
+	}
+	return nil
+}
+
+func revokeKey(ctx context.Context, pool *pgxpool.Pool, id string, out io.Writer) error {
+	return pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		q := db.New(tx)
+		n, err := q.RevokeAPIKey(ctx, db.RevokeAPIKeyParams{ProjectID: project, ID: id})
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			if n, err = q.RevokeSigningKey(ctx, db.RevokeSigningKeyParams{ProjectID: project, ID: id}); err != nil {
+				return err
+			}
+			if n > 0 {
+				if err := routes.QueueKeys(ctx, q, project); err != nil {
+					return err
+				}
+			}
+		}
+		if n == 0 {
+			return fmt.Errorf("no API key or app signing key %s", id)
+		}
+		fmt.Fprintf(out, "%s revoked\n", id)
+		return nil
+	})
 }

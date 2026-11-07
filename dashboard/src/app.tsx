@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { BrowserRouter, Link, Navigate, NavLink, Route, Routes, useLocation, useNavigate } from 'react-router'
 import { api, type Setup } from './api.ts'
+import { Account } from './pages/account.tsx'
 import { AppDetail, Apps } from './pages/apps.tsx'
 import { AssetPage } from './pages/asset.tsx'
 import { Delivery } from './pages/delivery.tsx'
@@ -48,6 +49,7 @@ export function App() {
               <Route path="/workers" element={<Workers />} />
               <Route path="/jobs" element={<Jobs />} />
               <Route path="/workers/connect" element={<ConnectPC />} />
+              <Route path="/account" element={<Account />} />
             </>
           ) : (
             <Route path="*" element={setup.owner_exists ? <ToSignIn /> : <Navigate to="/setup" />} />
@@ -103,7 +105,9 @@ function Nav({ email, onSignOut }: { email: string; onSignOut: () => void }) {
         <NavLink to="/setup" className={link}>
           Setup
         </NavLink>
-        <span className="ml-auto text-zinc-500">{email}</span>
+        <NavLink to="/account" className={({ isActive }) => `ml-auto ${link({ isActive })}`}>
+          {email}
+        </NavLink>
         <button
           type="button"
           className="text-zinc-600 hover:text-zinc-900"

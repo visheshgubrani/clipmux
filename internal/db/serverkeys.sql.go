@@ -58,7 +58,7 @@ func (q *Queries) GetInternalSigningKey(ctx context.Context, projectID string) (
 }
 
 const insertContentKeySecret = `-- name: InsertContentKeySecret :execrows
-INSERT INTO content_key_secrets (project_id, version, secret_encrypted) VALUES ($1, $2, $3)
+INSERT INTO content_key_secrets (project_id, version, secret_encrypted, usable_at) VALUES ($1, $2, $3, now())
 ON CONFLICT (project_id, version) DO NOTHING
 `
 
@@ -76,14 +76,34 @@ func (q *Queries) InsertContentKeySecret(ctx context.Context, arg InsertContentK
 	return result.RowsAffected(), nil
 }
 
+const insertPendingContentKeySecret = `-- name: InsertPendingContentKeySecret :one
+INSERT INTO content_key_secrets (project_id, version, secret_encrypted)
+VALUES ($1, (SELECT coalesce(max(version), 0) + 1 FROM content_key_secrets WHERE project_id = $1), $2)
+RETURNING version
+`
+
+type InsertPendingContentKeySecretParams struct {
+	ProjectID       string
+	SecretEncrypted []byte
+}
+
+// A new version, not yet used for new outputs.
+func (q *Queries) InsertPendingContentKeySecret(ctx context.Context, arg InsertPendingContentKeySecretParams) (int32, error) {
+	row := q.db.QueryRow(ctx, insertPendingContentKeySecret, arg.ProjectID, arg.SecretEncrypted)
+	var version int32
+	err := row.Scan(&version)
+	return version, err
+}
+
 const listContentKeySecrets = `-- name: ListContentKeySecrets :many
 
-SELECT version, secret_encrypted FROM content_key_secrets WHERE project_id = $1 ORDER BY version
+SELECT version, secret_encrypted, (usable_at IS NOT NULL)::boolean AS usable FROM content_key_secrets WHERE project_id = $1 ORDER BY version
 `
 
 type ListContentKeySecretsRow struct {
 	Version         int32
 	SecretEncrypted []byte
+	Usable          bool
 }
 
 // Server secrets, sealed with the secrets key (internal/secrets).
@@ -96,7 +116,7 @@ func (q *Queries) ListContentKeySecrets(ctx context.Context, projectID string) (
 	items := []ListContentKeySecretsRow{}
 	for rows.Next() {
 		var i ListContentKeySecretsRow
-		if err := rows.Scan(&i.Version, &i.SecretEncrypted); err != nil {
+		if err := rows.Scan(&i.Version, &i.SecretEncrypted, &i.Usable); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -130,4 +150,31 @@ func (q *Queries) ListOutputKeyVersions(ctx context.Context, projectID string) (
 		return nil, err
 	}
 	return items, nil
+}
+
+const makeContentKeysUsable = `-- name: MakeContentKeysUsable :execrows
+UPDATE content_key_secrets SET usable_at = now() WHERE project_id = $1 AND usable_at IS NULL
+`
+
+func (q *Queries) MakeContentKeysUsable(ctx context.Context, projectID string) (int64, error) {
+	result, err := q.db.Exec(ctx, makeContentKeysUsable, projectID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const setContentKeySecret = `-- name: SetContentKeySecret :exec
+UPDATE content_key_secrets SET secret_encrypted = $3 WHERE project_id = $1 AND version = $2
+`
+
+type SetContentKeySecretParams struct {
+	ProjectID       string
+	Version         int32
+	SecretEncrypted []byte
+}
+
+func (q *Queries) SetContentKeySecret(ctx context.Context, arg SetContentKeySecretParams) error {
+	_, err := q.db.Exec(ctx, setContentKeySecret, arg.ProjectID, arg.Version, arg.SecretEncrypted)
+	return err
 }
