@@ -1,6 +1,6 @@
 // Package config reads the control plane's configuration from the
-// environment. Most variables are in .env.example; P5-T10 adds a full
-// reference and a test that keeps it complete.
+// environment. docs/configuration.md lists every variable and .env.example
+// gives each an example; doc_test.go keeps both complete.
 package config
 
 import (

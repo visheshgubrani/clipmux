@@ -723,5 +723,24 @@ Decisions within D063, made in P5-T09:
 - The cache holds at most 100,000 entries of each kind and starts over past that. Changes that publish nothing, such as the project's maximum token lifetime, take up to 30 s; so do another replica's (known gap).
 - **`assets.LoadMany`** builds a page of asset views with one media-URL read per project and one playback-ID query for the whole page (`ListPlaybackIDsForAssets`), where listing and the library made one query per asset. A test counts 2 queries for 100 assets.
 
+## D073 Operator docs, a configuration reference and compose — accepted (2026-11-07)
+Made in P5-T10:
+- **`docs/configuration.md`** lists every variable by command (serve, worker, push and listen, admin, tests), with its default and what it does. `internal/config/doc_test.go` walks the Go source and fails when a variable is read that the page doesn't name, or that a deployment reads with no example in `.env.example`; variables only tests read live in their own section.
+- **`docs/operations.md`** covers install, upgrade (migrations under the lock, `schema_newer`, the drain), backups (Postgres, the secrets key and the media together, and why all three), monitoring, the retention windows, how to rotate each key, a security checklist and troubleshooting by symptom.
+- **`deploy/prometheus/alerts.yml`**: ten alerts, from serve down and no leader to stuck outbox rows, a queue backlog, no worker online, webhooks giving up and a full pool. `promtool check rules` passes, and a test checks that every metric they name is one serve exports.
+- **Compose:**
+  - JSON logs with json-file rotation (5 × 50 MB) for the app and Caddy;
+  - `stop_grace_period: 40s`, which the drain (D065) fits;
+  - healthchecks for the app (`clipmux healthcheck`) and Caddy (its admin API), and Caddy starts only once the app is healthy;
+  - metrics on `:9090`, exposed to the compose network and never published.
+- **CI's image job** checks that the metrics port isn't reachable from the host or through Caddy but answers on the compose network, and that stopping the app exits 0 within the grace period.
+
+## D074 Track A of Phase 5 is complete — accepted (2026-11-07)
+P5-T01 to T10 are done (D064–D073). What their tests prove:
+- Each task's tests pass on real Postgres and SeaweedFS with the media tools: logs and redaction, deadlines, drain and panics, metrics, limits, database timeouts and the migration lock, row and file retention, key rotation and TOTP, the route cache, and the configuration reference.
+- Every real-binary test in `internal/e2e` now runs serve with JSON logs at debug, and fails if any line isn't a JSON object with `time`, `level` and `msg`, or holds something shaped like an API, agent or dispatch key, a webhook secret, a JWT or a URL signature (`checkLogs`). This is exit check 1 of the plan, run by every phase's exit tests, not a separate test.
+- By hand on the real binary: a SIGTERM mid-encode drained cleanly, and `/metrics` passed `promtool check metrics` on a live serve.
+Left for the phase exit (P5-T20), as planned: the soak run, the Playwright suites under the enforced CSP and TOTP in a browser, a backup-and-restore drill and rotation on the real binary (including the content key through the fake Cloudflare), and CI's compose checks on a real runner. T00's real-account runs still wait for their secrets.
+
 ## D007 Shaka Packager 3.9.3 — accepted (2026-11-05)
 Decision: pin v3.9.3 (`toolchain/versions.env`), the version clipmux-lms runs with AES-128 in production, which needs the init-segment workaround for Shaka issue 1616. Move to a release that fixes 1616 when one exists, re-running the Phase 1 player tests.

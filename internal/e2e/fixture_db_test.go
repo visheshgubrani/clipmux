@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"syscall"
 	"testing"
@@ -50,7 +49,7 @@ func TestPlayerFixture(t *testing.T) {
 	// A second, fresh install for the dashboard's first-boot suite: its URLs
 	// aren't pinned, so the owner chooses them in the wizard.
 	fresh := startUnpinned(t)
-	setupToken := regexp.MustCompile(`setup_token=(\S+)`).FindStringSubmatch(fresh.log())
+	setupToken := setupTokenLine.FindStringSubmatch(fresh.log())
 	if setupToken == nil {
 		t.Fatalf("the fresh install printed no setup token:\n%s", fresh.log())
 	}

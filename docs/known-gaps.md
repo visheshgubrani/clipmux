@@ -10,72 +10,65 @@ when you introduce or discover it; remove it when it is closed.
   only; Firefox isn't in CI. The dashboard is minimal: no
   share links, no playback-ID management in the UI, and a sample preview
   that waits for Play rather than autoplaying.
-- Superseded and failed re-encodes leave their writing outputs and files in
-  place, like lost attempts (cleanup is the 7-day / 30-minute gap below).
-- Delivery reads Postgres on every request (route, output, signing key);
-  there is no route cache yet, so revocation is immediate but every segment
-  costs a few queries.
+- Built-in delivery caches routes, signing keys and outputs for 30 s
+  (D072). On one node every published change is seen at the next request;
+  a change that publishes nothing (the project's maximum token lifetime)
+  takes up to 30 s, and so does another replica's.
 - Serving playback from the same origin as the API and dashboard is the
   default; set `CLIPMUX_MEDIA_URL` to a separate registrable domain in
   production so a hostile stored file can't reach dashboard cookies.
-- Retired outputs and files from failed or lost attempts are not deleted yet
-  (the 7-day retire window and 30-minute cleanup from the architecture).
+- File retention (D070) checks 500 assets an hour for orphaned output
+  prefixes, so a full pass over a large library takes days; retired and
+  replaced outputs go on schedule regardless. Abandoned multipart uploads on
+  R2/S3 (a failed abort) are left to a bucket lifecycle rule, which Connect
+  doesn't set.
 - The media tool sandbox (D027) gives the CPU a priority, not a quota:
   `SCHED_IDLE` yields to the API, and only compose `cpus:` caps it. Landlock
   is best effort: on kernels before 5.13 (or with it disabled) the tools can
   read any file the worker's user can. Agents off Linux have no sandbox.
 - Imports have no known source size, so the claim's free-disk check passes
   them; a full disk fails the attempt (transient).
-- Agent pairing codes are 8 characters (about 39 bits) with no per-address
-  limit on redeeming; they last 15 minutes and work once.
+- Agent pairing codes are 8 characters (about 39 bits); wrong codes are
+  limited per address and overall (D067), and a code lasts 15 minutes and
+  works once.
 - Content key secrets live in Postgres sealed with the secrets key (D022).
   Back up Postgres and the secrets key together: losing either makes every
-  output unplayable. There is no command to rotate the content key secret.
+  output unplayable (docs/operations.md). Rotating the content key secret
+  (D071) doesn't re-encode existing outputs; each keeps its version.
 - Sign caps file count per attempt, not total bytes; a presigned filesystem
   PUT is capped at 5 GiB per object. `GET /v1/assets` looks up by
   `passthrough` or lists changes `updated_since`; the owner's `GET
-  /v1/library` lists every app's assets. Listing loads each asset's playback IDs with one
-  query per asset.
-- Idempotency keys are kept forever; a cleanup window (e.g. 24 h) is not
-  enforced yet.
+  /v1/library` lists every app's assets.
 - If the create transaction fails after storage started a multipart upload,
-  the abort is best effort; a failed abort leaves an orphaned staging
-  directory that nothing sweeps.
+  the abort is best effort; on the filesystem a staging directory left that
+  way is swept after 7 days without writes (D070).
 - Rate limits (D067), including the sign-in, setup and pairing windows,
   live in one serve process: a second replica doubles every budget. The
   request and loop counters behind `/metrics` (D066) are per process too;
-  the job, outbox and dispatch counts come from Postgres. Each scrape
-  counts finished attempts with a scan of `attempts`, cached for 10 s; that
-  grows with history until retention or an index covers it. There is no
-  counter per rate limit, only 429s by route.
+  the job, outbox and dispatch counts come from Postgres.
 - Filesystem storage preallocates uploads as sparse files, so disk space is
   not reserved up front; a full disk fails the part write. Abandoned
   multipart uploads are cleaned up by the upload sweeper (T05), and `tmp/`
-  leftovers from a crash are not swept yet.
+  leftovers after 24 hours (D070).
 - Storage configs other than the filesystem can be added only from code
   (`stores.AddS3`) until Connect Cloudflare (P2-T04); there is no API or
   dashboard form for a generic S3 bucket, and no way to remove a config or
   rotate its credentials.
-- One replica runs the background loops (advisory-lock leader, D035), but
-  the sign-in limiter, setup token and storage signer are per process.
-  Saving new URLs updates the storage signer of the serve that saved them
-  only; another replica keeps the old public URL until it restarts.
-- The owner can't turn on TOTP yet. The sign-in limiter and the setup token
-  live in one serve's memory (one replica assumed); expired sessions are
-  never pruned.
-- Webhooks: an endpoint's secret can't be rotated (create a new endpoint and
-  disable the old one). No per-endpoint circuit breaker, so a dead endpoint costs up to 10 s per
-  delivery for a day. Outbox and delivery rows are never pruned. Owner-set
-  endpoint URLs are not filtered for private addresses (D018). A failed
-  re-encode is visible only through its webhook, not through catch-up.
-- The secrets key (D017) can't be rotated yet. Webhook secrets, the internal
-  signing key and the content key secrets are sealed with it; adapter
-  secrets join them with R2/S3 in Phase 2.
-- `clipmux admin` has create-key, create-signing-key, create-webhook,
-  create-pairing, reset-password and setup-test; no rotation, prune or
-  migrate commands until Phase 5.
-  `clipmux listen` reads events from the outbox, which is never pruned; once
-  it is, `--since` can reach back only as far as rows are kept. `clipmux push` keeps an
+- One serve replica is the supported shape (D063). One replica runs the
+  background loops (advisory-lock leader, D035), but the rate limits, the
+  sign-in and setup limits, the setup token, the drain flag, the route
+  cache and the storage signer are per process. Saving new URLs updates the
+  storage signer of the serve that saved them only; another replica keeps
+  the old public URL until it restarts.
+- No audit log (D071): owner actions and key operations log at info with
+  their request IDs, but nothing durable records who did what. No
+  OpenTelemetry tracing (D066).
+- Webhooks: owner-set endpoint URLs are not filtered for private addresses
+  (D018). A failed re-encode is visible only through its webhook, not
+  through catch-up. When an endpoint's breaker closes, every delivery that
+  came due meanwhile is tried at once (D069).
+- `clipmux listen --since` and `GET /v1/events` reach back 30 days, the
+  webhook retention window (D069). `clipmux push` keeps an
   unfinished push's upload token in a 0600 state file under the user's cache
   directory until it completes.
 - The image is ~575 MB and built from source on a cache miss (~20 min). CI
@@ -132,19 +125,15 @@ when you introduce or discover it; remove it when it is closed.
 - No captions, chapters or transcripts. The LMS depends on them, so they gate
   the LMS migration (plans/lms-migration.md). Phase 5 adds them
   (plans/P5-production.md, D063).
-- Production hardening is Phase 5's first track (D063). Logs, request IDs
-  and redaction (D064), deadlines, panic recovery and an ordered drain
-  (D065), metrics (D066), rate limits (D067) and database timeouts and a
-  migration lock (D068) are in. Still open: no retention, nothing rotates
-  keys, and `.env.example` lacks
-  several variables (the `CLIPMUX_CLOUDFLARE_API`,
-  `CLIPMUX_R2_ENDPOINT`, `CLIPMUX_RUNPOD_API`, `CLIPMUX_WORKER_IMAGE` and
-  `CLIPMUX_EXECUTORS_ALLOW_PRIVATE_URL` overrides, and the worker and CLI
-  variables).
-- Logs (D064) are text in compose until P5-T10 sets JSON and rotation.
-  Background loops' lines carry job and attempt IDs where they log them by
-  hand; only request lines and the worker's attempt lines carry them
-  throughout.
+- Phase 5's hardening track is complete (D074; D064–D073). Its exit checks
+  still to run are the phase exit's (P5-T20): the soak run, the Playwright
+  suites under the enforced CSP and TOTP in a browser, a backup-and-restore
+  drill, rotation on the real binary, and CI's compose checks on a runner.
+- Background loops' log lines carry job and attempt IDs where they log them
+  by hand; only request lines and the worker's attempt lines carry them
+  throughout. Each `/metrics` scrape counts finished attempts with a scan of
+  `attempts`, cached for 10 s, and attempts are kept as history. There is no
+  counter per rate limit, only 429s by route (D066, D067).
 - The drain (D065) waits up to 20 s for the built-in worker and gives
   requests 15 s; an upload part or segment still running after that is cut.
   A PC agent whose server is unreachable while it stops can't hand its
@@ -160,6 +149,6 @@ when you introduce or discover it; remove it when it is closed.
 - When captions, storyboards and viewer analytics enter the roadmap.
 - Confirm defaults: 7-day max token lifetime, retry budgets 5/3, 15-minute
   reconciler, per-output keys derived from one secret.
-- Audit leftovers: shared Go/Worker test vectors; where the `vid` claim is logged; timeouts for jobs
-  pinned to an agent that never returns; route caching in the built-in handler;
-  backup docs for Postgres, the secrets-encryption key and the content key secret.
+- Audit leftovers: where the `vid` claim is logged. (The shared Go/Worker
+  vectors are D015/D036, pinned-job timeouts D045, the route cache D072 and
+  the backup docs docs/operations.md.)

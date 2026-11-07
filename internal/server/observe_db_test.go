@@ -5,6 +5,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -115,5 +117,33 @@ func TestRequestsAndLoopsAreCountedAndMetricsStayOffThePublicListener(t *testing
 	obs.Handler(true).ServeHTTP(rec, httptest.NewRequest("GET", "/debug/pprof/", nil))
 	if rec.Code != 200 {
 		t.Fatalf("pprof with CLIPMUX_PPROF: %d", rec.Code)
+	}
+}
+
+// The shipped alerts (deploy/prometheus/alerts.yml) name only metrics serve
+// exports, so a rename can't silently disarm one.
+func TestAlertsUseMetricsServeExports(t *testing.T) {
+	rules, err := os.ReadFile(filepath.Join("..", "..", "deploy", "prometheus", "alerts.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	exported := map[string]bool{}
+	obs := newObserver(nil, nil, "test")
+	obs.inFlight.Add(0)
+	for _, line := range strings.Split(string(obs.reg.Expose()), "\n") {
+		if f := strings.Fields(line); len(f) >= 3 && f[0] == "#" && f[1] == "TYPE" {
+			exported[f[2]] = true
+		}
+	}
+	// The Postgres-backed families exist only with a pool; name them here.
+	for _, n := range []string{"clipmux_jobs", "clipmux_job_queue_oldest_seconds", "clipmux_attempts_finished_total",
+		"clipmux_outbox_pending", "clipmux_outbox_oldest_pending_seconds", "clipmux_webhook_deliveries",
+		"clipmux_dispatches", "clipmux_workers_online", "clipmux_db_pool_acquired_conns", "clipmux_db_pool_max_conns"} {
+		exported[n] = true
+	}
+	for _, m := range regexp.MustCompile(`clipmux_[a-z_]+`).FindAllString(string(rules), -1) {
+		if !exported[m] {
+			t.Errorf("alerts.yml uses %s, which serve doesn't export", m)
+		}
 	}
 }
