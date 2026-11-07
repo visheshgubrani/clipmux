@@ -7,10 +7,13 @@
 package stores
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
+	"slices"
 	"sync"
 
 	"github.com/jackc/pgx/v5"
@@ -162,6 +165,39 @@ func options(cfg S3Config, sec S3Secret) storage.S3Options {
 		Endpoint: cfg.Endpoint, PublicEndpoint: cfg.PublicEndpoint, Region: cfg.Region, Bucket: cfg.Bucket,
 		AccessKeyID: sec.AccessKeyID, SecretAccessKey: sec.SecretAccessKey,
 	}
+}
+
+// Origins are the origins browsers reach this project's S3 and R2 buckets
+// at (their public endpoints), for the dashboard's Content-Security-Policy:
+// uploads PUT their parts there. The filesystem store is the public URL.
+func (s *Set) Origins(ctx context.Context, projectID string) ([]string, error) {
+	rows, err := db.New(s.pool).ListStorageConfigs(ctx, projectID)
+	if err != nil {
+		return nil, fmt.Errorf("list storage configs: %w", err)
+	}
+	var out []string
+	for _, row := range rows {
+		if row.Kind == KindFilesystem {
+			continue
+		}
+		var cfg S3Config
+		if err := json.Unmarshal(row.Config, &cfg); err != nil {
+			return nil, fmt.Errorf("storage config %s: %w", row.ID, err)
+		}
+		if o := origin(cmp.Or(cfg.PublicEndpoint, cfg.Endpoint)); o != "" && !slices.Contains(out, o) {
+			out = append(out, o)
+		}
+	}
+	return out, nil
+}
+
+// origin is a URL's scheme and host, or "" if it has neither.
+func origin(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return ""
+	}
+	return u.Scheme + "://" + u.Host
 }
 
 // AddS3 checks an r2 or s3 config against its bucket (list, write, read,

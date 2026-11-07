@@ -9,6 +9,7 @@ import (
 	"io"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -105,7 +106,8 @@ func (t Tools) run(ctx context.Context, bin string, args []string, dir string, s
 		}
 		policy := sandbox.Policy{
 			Write: t.Sandbox.Dir, Read: t.Sandbox.Read, MemoryMB: t.Sandbox.MemoryMB,
-			GPU: t.Sandbox.GPU, Devices: t.Sandbox.Devices, Env: t.Env,
+			CPUSeconds: sandbox.CPUBudget(runtime.NumCPU()),
+			GPU:        t.Sandbox.GPU, Devices: t.Sandbox.Devices, Env: t.Env,
 		}
 		args, bin = sandbox.Args(policy, append([]string{abs}, args...)...), t.Sandbox.Exec
 	}

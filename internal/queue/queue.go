@@ -98,6 +98,10 @@ const KindUploadSource = "upload_source"
 const (
 	// CodeWorkerLost: the lost-lease budget was spent.
 	CodeWorkerLost = "worker_lost"
+	// CodeWorkerStopped: a worker shutting down handed its attempt back.
+	// It counts as a lost lease, not a failure: nothing was wrong with the
+	// job, and the next worker needn't wait for the lease to expire.
+	CodeWorkerStopped = "worker_stopped"
 	// CodeProcessingFailed: the failure budget was spent, or a worker sent an
 	// unusable code.
 	CodeProcessingFailed = "processing_failed"
@@ -429,6 +433,9 @@ func (q *Queue) Fail(ctx context.Context, token string, f Failure) (Verdict, err
 	if f.Permanent {
 		kind = "permanent"
 	}
+	if code == CodeWorkerStopped && !f.Permanent {
+		return q.stopped(ctx, token)
+	}
 	return q.withLiveAttempt(ctx, token, func(qs *db.Queries, l locked) (Verdict, error) {
 		if err := qs.SetAttemptStatus(ctx, db.SetAttemptStatusParams{
 			ID: l.attempt.ID, Status: "failed", FailureKind: text(kind), ErrorCode: text(code),
@@ -446,6 +453,28 @@ func (q *Queue) Fail(ctx context.Context, token string, f Failure) (Verdict, err
 			err = q.endJob(ctx, qs, l.job, CodeProcessingFailed)
 		default:
 			err = qs.RequeueJob(ctx, db.RequeueJobParams{ID: l.job.ID, DelaySeconds: q.Backoff(failures).Seconds()})
+		}
+		return Verdict{Stop: true, Reason: ReasonFinished}, err
+	})
+}
+
+// stopped marks an attempt its worker handed back as lost and returns the
+// job to the queue at once, spending the lost-lease budget as a sweep would.
+func (q *Queue) stopped(ctx context.Context, token string) (Verdict, error) {
+	return q.withLiveAttempt(ctx, token, func(qs *db.Queries, l locked) (Verdict, error) {
+		if err := qs.SetAttemptStatus(ctx, db.SetAttemptStatusParams{
+			ID: l.attempt.ID, Status: "lost", ErrorCode: text(CodeWorkerStopped),
+		}); err != nil {
+			return Verdict{}, err
+		}
+		lost, err := qs.CountJobLoss(ctx, l.job.ID)
+		if err != nil {
+			return Verdict{}, err
+		}
+		if lost >= q.LostBudget {
+			err = q.endJob(ctx, qs, l.job, CodeWorkerLost)
+		} else {
+			err = qs.RequeueJob(ctx, db.RequeueJobParams{ID: l.job.ID})
 		}
 		return Verdict{Stop: true, Reason: ReasonFinished}, err
 	})

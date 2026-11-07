@@ -129,10 +129,9 @@ when you introduce or discover it; remove it when it is closed.
   the LMS migration (plans/lms-migration.md). Phase 5 adds them
   (plans/P5-production.md, D063).
 - Production hardening is Phase 5's first track (D063). Logs, request IDs
-  and redaction are in (D064). Still open: no metrics, only
-  `ReadHeaderTimeout` is set, a panic in a sweeper loop stops serve, the pool
-  has no statement timeouts, migrations take no lock, nothing rotates keys,
-  and `.env.example` lacks
+  and redaction (D064) and deadlines, panic recovery and an ordered drain
+  (D065) are in. Still open: no metrics, the pool has no statement timeouts,
+  migrations take no lock, nothing rotates keys, and `.env.example` lacks
   several variables (the `CLIPMUX_CLOUDFLARE_API`,
   `CLIPMUX_R2_ENDPOINT`, `CLIPMUX_RUNPOD_API`, `CLIPMUX_WORKER_IMAGE` and
   `CLIPMUX_EXECUTORS_ALLOW_PRIVATE_URL` overrides, and the worker and CLI
@@ -141,6 +140,11 @@ when you introduce or discover it; remove it when it is closed.
   Background loops' lines carry job and attempt IDs where they log them by
   hand; only request lines and the worker's attempt lines carry them
   throughout.
+- The drain (D065) waits up to 20 s for the built-in worker and gives
+  requests 15 s; an upload part or segment still running after that is cut.
+  A PC agent whose server is unreachable while it stops can't hand its
+  attempt back, and its lease lapses as before. Streams no longer use
+  sendfile, which costs some CPU on large filesystem transfers.
 
 ## Open decisions carried from architecture.md
 

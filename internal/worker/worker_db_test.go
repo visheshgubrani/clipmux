@@ -7,6 +7,7 @@ package worker
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -232,6 +233,32 @@ func TestACancelledJobStopsTheWorkerWithoutReportingAFailure(t *testing.T) {
 	objs, _, _ := r.store.List(ctx, "media/", "")
 	if len(objs) != 0 {
 		t.Fatalf("a stopped attempt uploaded %d files", len(objs))
+	}
+}
+
+func TestAWorkerShuttingDownHandsItsAttemptBack(t *testing.T) {
+	r := newRig(t)
+	r.uploaded(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	job, err := r.worker.claim(ctx)
+	if err != nil || job == nil {
+		t.Fatalf("claim: %v, %v", job, err)
+	}
+	time.AfterFunc(300*time.Millisecond, cancel) // SIGINT mid-encode
+	if err := r.worker.handle(ctx, job); !errors.Is(err, context.Canceled) {
+		t.Fatalf("handle: %v, want context.Canceled", err)
+	}
+	var status, code, jobStatus string
+	var lost, failures int
+	if err := r.pool.QueryRow(context.Background(),
+		`SELECT a.status, coalesce(a.error_code, ''), j.status, j.lost_count, j.failed_count FROM attempts a JOIN jobs j ON j.id = a.job_id`,
+	).Scan(&status, &code, &jobStatus, &lost, &failures); err != nil {
+		t.Fatal(err)
+	}
+	if status != "lost" || code != "worker_stopped" || jobStatus != "queued" || lost != 1 || failures != 0 {
+		t.Fatalf("attempt %s/%s, job %s lost %d failed %d; want lost/worker_stopped, queued, 1, 0",
+			status, code, jobStatus, lost, failures)
 	}
 }
 

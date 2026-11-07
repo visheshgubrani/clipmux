@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"runtime/debug"
 	"strconv"
 	"sync"
 	"time"
@@ -138,6 +139,13 @@ func (p *Publisher) Deliver(ctx context.Context) (int, error) {
 		sem <- struct{}{}
 		wg.Go(func() {
 			defer func() { <-sem }()
+			// A panic in one delivery mustn't stop serve; its lease lapses
+			// and it is tried again.
+			defer func() {
+				if v := recover(); v != nil {
+					p.Logger.Error("webhook delivery panicked", "delivery", d.ID, "panic", v, "stack", string(debug.Stack()))
+				}
+			}()
 			p.deliver(ctx, d)
 		})
 	}

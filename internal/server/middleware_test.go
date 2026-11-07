@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -109,5 +110,51 @@ func TestRecorderUnwrapsForResponseController(t *testing.T) {
 	}
 	if n, err := rec.ReadFrom(strings.NewReader("abc")); n != 3 || err != nil || rec.bytes != 3 || rec.status != 200 {
 		t.Fatalf("ReadFrom: %d %v bytes=%d status=%d", n, err, rec.bytes, rec.status)
+	}
+}
+
+func TestAPanickingHandlerGets500AndServingContinues(t *testing.T) {
+	var buf bytes.Buffer
+	logger, _ := logging.New(&buf, "json", "info")
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /boom", func(http.ResponseWriter, *http.Request) { panic("boom: a bad row") })
+	mux.HandleFunc("GET /half", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("partial"))
+		panic("after writing")
+	})
+	mux.HandleFunc("GET /ok", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok")) })
+	srv := httptest.NewServer(requestLog{logger: logger}.wrap(mux))
+	defer srv.Close()
+
+	res, err := http.Get(srv.URL + "/boom")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(res.Body)
+	res.Body.Close()
+	if res.StatusCode != 500 || !strings.Contains(string(body), `"code":"internal"`) {
+		t.Fatalf("boom: %d %s", res.StatusCode, body)
+	}
+	// A response that had started can't become a 500: the connection is
+	// dropped, so the client never sees a complete success.
+	if res, err := http.Get(srv.URL + "/half"); err == nil {
+		_, rerr := io.ReadAll(res.Body)
+		res.Body.Close()
+		if rerr == nil {
+			t.Fatalf("a half-written response completed: %d", res.StatusCode)
+		}
+	}
+	res, err = http.Get(srv.URL + "/ok")
+	if err != nil || res.StatusCode != 200 {
+		t.Fatalf("the server stopped serving after panics: %v %v", res, err)
+	}
+	res.Body.Close()
+	out := buf.String()
+	if !strings.Contains(out, `"msg":"handler panicked"`) || !strings.Contains(out, "boom: a bad row") ||
+		!strings.Contains(out, `"stack":"goroutine`) {
+		t.Fatalf("the panic wasn't logged with its stack: %s", out)
+	}
+	if !strings.Contains(out, `"path":"/boom","status":500`) {
+		t.Fatalf("no access line for the panicked request: %s", out)
 	}
 }

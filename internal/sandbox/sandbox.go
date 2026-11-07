@@ -56,6 +56,12 @@ const (
 	DefaultCPUSeconds = 6 * 3600
 )
 
+// CPUBudget is the CPU time a tool may use: DefaultCPUSeconds for each CPU
+// it can run on. RLIMIT_CPU counts every thread of the process, so a flat
+// 6 hours would kill an 8-thread encode after 45 minutes of wall time; the
+// wall clock itself is bounded by the attempt's own timeout.
+func CPUBudget(cpus int) uint64 { return DefaultCPUSeconds * uint64(max(cpus, 1)) }
+
 // Status is what the platform enforces.
 type Status struct {
 	Rlimits     bool `json:"rlimits"`

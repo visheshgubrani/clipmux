@@ -40,10 +40,15 @@ func (placeholder) Open(name string) (fs.File, error) {
 // never the dashboard.
 var reserved = []string{"/v1/", "/v/", "/p/", "/_storage/", "/worker/", "/_tls/", "/healthz", "/readyz"}
 
+// DefaultCSP is the dashboard's Content-Security-Policy when the server
+// gives none: everything from its own origin only.
+const DefaultCSP = "default-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
+
 // Handler serves the SPA from fsys: a real file as itself (hashed assets
 // for a year), any other path as index.html, uncached, so a deep link
-// loads the app.
-func Handler(fsys fs.FS) http.Handler {
+// loads the app. csp gives the page's Content-Security-Policy, which
+// depends on the media URL and the storage buckets; nil uses DefaultCSP.
+func Handler(fsys fs.FS, csp func(*http.Request) string) http.Handler {
 	files := http.FileServerFS(fsys)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		for _, p := range reserved {
@@ -54,8 +59,17 @@ func Handler(fsys fs.FS) http.Handler {
 				return
 			}
 		}
-		w.Header().Set("X-Content-Type-Options", "nosniff")
-		w.Header().Set("X-Frame-Options", "DENY")
+		h := w.Header()
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("X-Frame-Options", "DENY")
+		h.Set("Referrer-Policy", "no-referrer")
+		h.Set("Cross-Origin-Opener-Policy", "same-origin")
+		h.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=()")
+		policy := DefaultCSP
+		if csp != nil {
+			policy = csp(r)
+		}
+		h.Set("Content-Security-Policy", policy)
 		name := strings.TrimPrefix(path.Clean(r.URL.Path), "/")
 		if info, err := fs.Stat(fsys, name); name != "" && err == nil && !info.IsDir() {
 			if strings.HasPrefix(name, "assets/") {

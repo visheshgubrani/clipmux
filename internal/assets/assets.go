@@ -80,6 +80,9 @@ type API struct {
 	pool *pgxpool.Pool
 	// Auth accepts API keys, and the dashboard session once serve sets it.
 	Auth *apikeys.Authenticator
+	// Drain is done once serve starts shutting down: event long-polls then
+	// answer with what they have. nil never drains.
+	Drain context.Context
 }
 
 // New returns the assets API.

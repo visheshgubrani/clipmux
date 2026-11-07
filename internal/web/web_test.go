@@ -21,7 +21,7 @@ func get(h http.Handler, path string) *httptest.ResponseRecorder {
 }
 
 func TestDeepLinkServesIndexUncached(t *testing.T) {
-	h := Handler(built)
+	h := Handler(built, nil)
 	for _, p := range []string{"/", "/library", "/apps/app_1/keys", "/missing.js"} {
 		rec := get(h, p)
 		if rec.Code != 200 || !strings.Contains(rec.Body.String(), "id=root") || rec.Header().Get("Cache-Control") != "no-store" {
@@ -35,7 +35,7 @@ func TestDeepLinkServesIndexUncached(t *testing.T) {
 }
 
 func TestUnknownAPIPathIsAJSON404NotTheDashboard(t *testing.T) {
-	h := Handler(built)
+	h := Handler(built, nil)
 	for _, p := range []string{"/v1/nope", "/v/tok/pid/x", "/p/pid", "/_storage/x", "/worker/v1/x", "/_tls/x", "/healthz"} {
 		rec := get(h, p)
 		if rec.Code != 404 || !strings.Contains(rec.Body.String(), `"not_found"`) {
@@ -45,7 +45,7 @@ func TestUnknownAPIPathIsAJSON404NotTheDashboard(t *testing.T) {
 }
 
 func TestPlaceholderWithoutABuild(t *testing.T) {
-	rec := get(Handler(placeholder{}), "/library")
+	rec := get(Handler(placeholder{}, nil), "/library")
 	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "built without the dashboard") {
 		t.Fatalf("no build: %d %q", rec.Code, rec.Body.String())
 	}

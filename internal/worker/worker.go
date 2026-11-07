@@ -103,6 +103,9 @@ const (
 	codeTimeout       = "job_timeout"
 	codeSourceMissing = "source_missing"
 	codeSourceChanged = "source_changed"
+	// codeStopped: this worker is shutting down and hands its attempt back,
+	// so the job is claimable at once rather than after its lease expires.
+	codeStopped = "worker_stopped"
 )
 
 // localCode is the failure code for a local source that can't be used.
@@ -283,7 +286,16 @@ func (w *Worker) handle(ctx context.Context, job *workerapi.Job) error {
 		log.Info("attempt stopped by the server", "reason", hb.reason())
 		return nil
 	case ctx.Err() != nil:
-		return ctx.Err() // shutting down; the lease will lapse and the job retries
+		// Shutting down: hand the attempt back, on a context of its own
+		// since ctx is done. If that fails, the lease lapses as before.
+		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		defer cancel()
+		if ferr := w.fail(rctx, job, false, codeStopped, errors.New("the worker is shutting down")); ferr != nil {
+			log.Warn("couldn't hand the attempt back; its lease will lapse", "err", ferr)
+		} else {
+			log.Info("handed the attempt back: shutting down")
+		}
+		return ctx.Err()
 	case errors.Is(jobCtx.Err(), context.DeadlineExceeded):
 		code, err = codeTimeout, fmt.Errorf("attempt exceeded %s", maxJob)
 		fallthrough

@@ -87,6 +87,32 @@ const ControlJobInterval = 15 * time.Second
 // SetupTestInterval is how often a queued setup test is picked up.
 const SetupTestInterval = 5 * time.Second
 
+// BuiltinStopWait is how long shutdown waits for the built-in worker to hand
+// its attempt back before it stops serving.
+const BuiltinStopWait = 20 * time.Second
+
+// ShutdownWait is how long requests in flight get to finish at shutdown.
+// With BuiltinStopWait it fits compose's 40 s stop grace period.
+const ShutdownWait = 15 * time.Second
+
+// passTimeouts bound one pass of each background loop, so a provider or
+// storage call that hangs can't stall its loop forever. Loops missing here
+// have no bound: control jobs and imports run work that its own lease
+// bounds (a move or a 6-hour fetch).
+var passTimeouts = map[string]time.Duration{
+	"lost_leases":          time.Minute,
+	"routing":              time.Minute,
+	"dispatch":             5 * time.Minute, // provider calls, 60 s each
+	"dispatch_reaper":      2 * time.Minute,
+	"machine_reconciler":   5 * time.Minute,
+	"stranded_pinned_jobs": time.Minute,
+	"uploads":              5 * time.Minute,
+	"routes":               5 * time.Minute,  // storage writes for pending route records
+	"route_reconciler":     30 * time.Minute, // lists every route record
+	"webhooks":             5 * time.Minute,  // 10 s per delivery, 8 at a time
+	"setup_tests":          30 * time.Minute, // waits up to 15 minutes for its encode
+}
+
 // Registrar adds an API's routes to the root mux.
 type Registrar interface {
 	Register(mux *http.ServeMux)
@@ -109,6 +135,12 @@ type Deps struct {
 	// ServesHost answers Caddy's on-demand TLS check (/_tls/ask): whether
 	// a certificate may be obtained for a hostname. nil refuses every name.
 	ServesHost func(host string) bool
+	// CSP is the dashboard's Content-Security-Policy for a request; nil
+	// allows only the server's own origin.
+	CSP func(*http.Request) string
+	// Drain is done once the server starts shutting down; /readyz then
+	// fails so a load balancer stops sending new work. nil never drains.
+	Drain context.Context
 }
 
 // Handler returns the root HTTP handler. /healthz reports the process is up;
@@ -131,6 +163,10 @@ func Handler(d Deps) http.Handler {
 		text(w, http.StatusOK, "ok")
 	})
 	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
+		if d.Drain != nil && d.Drain.Err() != nil {
+			text(w, http.StatusServiceUnavailable, "draining")
+			return
+		}
 		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 		defer cancel()
 		if err := d.DB.Ping(ctx); err != nil {
@@ -148,7 +184,7 @@ func Handler(d Deps) http.Handler {
 		}
 		text(w, http.StatusOK, "ok")
 	})
-	mux.Handle("GET /", web.Handler(web.Dist()))
+	mux.Handle("GET /", web.Handler(web.Dist(), d.CSP))
 	return mux
 }
 
@@ -226,6 +262,10 @@ type boot struct {
 // every goroutine it started has stopped, so the caller can close the pool
 // and storage.
 func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog.Logger, b boot) error {
+	// drain is done when serve is asked to stop. Shutting down then runs in
+	// order: stop handing out work, let the built-in worker hand its attempt
+	// back, finish requests in flight, and only then stop the loops.
+	drain := ctx
 	pool, store, keys, box := b.pool, b.store, b.keys, b.box
 	// Each asset's store: the filesystem, or an R2/S3 config (P2-T01).
 	set := stores.New(pool, box, store)
@@ -259,6 +299,7 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 	worker := workerapi.New(q, workerapi.Auths{workerapi.BuiltinKey(workerKey), agentSvc, disp}, set, keys, committer)
 	worker.Agents = agentSvc
 	worker.Logger = logger
+	worker.Drain = drain
 	upl := uploads.New(pool, set)
 	upl.Logger = logger
 	playback := delivery.New(pool, set, keys)
@@ -312,6 +353,7 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 	}
 	mgmt.RunPod, mgmt.Modal = rp, md
 	assetsAPI := assets.New(pool)
+	assetsAPI.Drain = drain
 	// The dashboard calls the integration API with the owner's session,
 	// acting as one app; integration keys never reach the management API.
 	for _, auth := range []*apikeys.Authenticator{upl.Auth, life.Auth, assetsAPI.Auth} {
@@ -322,7 +364,9 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 	// waits for them, whichever way serve returns.
 	var wg sync.WaitGroup
 	defer wg.Wait()
-	ctx, stop := context.WithCancel(ctx)
+	// The loops outlive the drain: a commit landing while requests finish
+	// still publishes its routes.
+	ctx, stop := context.WithCancel(context.WithoutCancel(drain))
 	defer stop()
 	// One replica runs the background loops (an advisory lock); the others
 	// serve requests. Every loop is safe to run twice, so a handover costs
@@ -331,7 +375,7 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 	wg.Go(func() { leader.Run(ctx) })
 	leader.Await(ctx, 2*time.Second)
 	loop := func(interval time.Duration, name string, task sweeper.Task) {
-		wg.Go(func() { sweeper.Every(ctx, interval, name, leader.Only(task), logger) })
+		wg.Go(func() { sweeper.Every(ctx, interval, passTimeouts[name], name, leader.Only(task), logger) })
 	}
 	loop(LeaseSweepInterval, "lost_leases", func(ctx context.Context) (int, error) { return q.SweepLostLeases(ctx, 100) })
 	loop(RouteInterval, "routing", func(ctx context.Context) (int, error) { return q.Route(ctx, 200) })
@@ -364,25 +408,42 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 			return err
 		}
 	}
+	var builtinDone <-chan struct{} // nil: no built-in worker to wait for
 	if cfg.BuiltinWorker {
 		bw := &builtinWorker{
 			server: loopbackURL(ln.Addr()), key: workerKey, workDir: workerDir(cfg.DataDir),
 			tools: cfg.Tools, logger: logger, unsandboxed: cfg.UnsandboxedWorker,
 		}
-		wg.Go(func() { bw.run(ctx) })
+		bwCtx, bwStop := context.WithCancel(drain)
+		defer bwStop()
+		bwDone := make(chan struct{})
+		wg.Go(func() { defer close(bwDone); bw.run(bwCtx) })
+		builtinDone = bwDone
 	}
 
+	// Requests don't inherit drain: one in flight at the signal finishes.
+	reqCtx, cancelRequests := context.WithCancel(context.WithoutCancel(drain))
+	defer cancelRequests()
 	reqLog := requestLog{logger: logger, trusted: cfg.TrustedProxies, clientIP: acct.ClientIP}
+	secure := transportSecurity{publicURL: b.urls.PublicURL, mediaURL: b.urls.MediaURL, trusted: cfg.TrustedProxies}
+	csp := func(r *http.Request) string {
+		origins, err := set.Origins(r.Context(), db.DefaultProjectID)
+		if err != nil {
+			logger.WarnContext(r.Context(), "dashboard CSP without storage origins", "err", err)
+		}
+		return dashboardCSP(b.urls.MediaURL(), origins)
+	}
 	srv := &http.Server{
-		Handler: reqLog.wrap(Handler(Deps{
-			DB: pool, Worker: worker.Handler(), Storage: store.Handler(), ServesHost: b.urls.ServesHost,
+		Handler: reqLog.wrap(secure.wrap(defaultDeadlines.wrap(Handler(Deps{
+			DB: pool, Worker: worker.Handler(), Storage: store.Handler(), ServesHost: b.urls.ServesHost, Drain: drain, CSP: csp,
 			APIs: []Registrar{acct, mgmt, agentSvc, upl, assetsAPI, life, playback},
-		})),
+		})))),
 		// The server's own errors (TLS, a panicking handler) go to the same log.
 		ErrorLog:          slog.NewLogLogger(logger.Handler(), slog.LevelWarn),
 		ReadHeaderTimeout: 10 * time.Second,
-		// Requests inherit ctx, so long-poll claims end at shutdown.
-		BaseContext: func(net.Listener) context.Context { return ctx },
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    64 << 10,
+		BaseContext:       func(net.Listener) context.Context { return reqCtx },
 	}
 	logger.Info("clipmux serve listening", "addr", ln.Addr().String())
 
@@ -391,12 +452,24 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 	select {
 	case err := <-errCh:
 		return err // the deferred stop ends the loops, then wg.Wait waits for them
-	case <-ctx.Done():
+	case <-drain.Done():
 	}
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	logger.Info("shutting down: draining")
+	// The built-in worker got SIGINT with the drain and hands its attempt
+	// back through this server, which must still be listening.
+	if builtinDone != nil {
+		select {
+		case <-builtinDone:
+		case <-time.After(BuiltinStopWait):
+			logger.Warn("the built-in worker is still stopping; shutting down anyway")
+		}
+	}
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), ShutdownWait)
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
-		return err
+		logger.Warn("requests still running at the shutdown deadline; closing them", "err", err)
+		cancelRequests()
+		_ = srv.Close() // the error is the listener's, already closed by Shutdown
 	}
 	if err := <-errCh; !errors.Is(err, http.ErrServerClosed) {
 		return err

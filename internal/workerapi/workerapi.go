@@ -161,6 +161,10 @@ type API struct {
 	// Agents records agent reports and serves pairing; nil for none.
 	Agents AgentReporter
 	Logger *slog.Logger
+	// Drain is done once serve starts shutting down: claims then hand out
+	// nothing and waiting ones answer at once, so a worker's next job goes
+	// to a server that will still be up. nil never drains.
+	Drain context.Context
 }
 
 // New returns the worker API.
@@ -272,10 +276,25 @@ func (a *API) claim(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	c, err := a.Queue.ClaimWait(r.Context(), worker, wait, pollInterval)
+	waitCtx := r.Context()
+	if a.Drain != nil {
+		if a.Drain.Err() != nil {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		var cancel context.CancelFunc
+		waitCtx, cancel = context.WithCancel(r.Context())
+		defer cancel()
+		defer context.AfterFunc(a.Drain, cancel)()
+	}
+	c, err := a.Queue.ClaimWait(waitCtx, worker, wait, pollInterval)
 	if err != nil {
-		if r.Context().Err() != nil {
+		switch {
+		case r.Context().Err() != nil:
 			return // the worker hung up
+		case waitCtx.Err() != nil:
+			w.WriteHeader(http.StatusNoContent) // draining
+			return
 		}
 		a.internal(w, "claim", err)
 		return

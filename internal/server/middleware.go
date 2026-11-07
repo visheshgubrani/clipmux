@@ -2,14 +2,17 @@ package server
 
 import (
 	"crypto/rand"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/netip"
+	"runtime/debug"
 	"strings"
 	"time"
 
+	"github.com/visheshgubrani/clipmux/internal/httpjson"
 	"github.com/visheshgubrani/clipmux/internal/logging"
 )
 
@@ -38,7 +41,7 @@ func (l requestLog) wrap(next http.Handler) http.Handler {
 		w.Header().Set("X-Request-Id", id)
 		r = r.WithContext(logging.With(r.Context(), "request_id", id))
 		rec := &recorder{ResponseWriter: w}
-		next.ServeHTTP(rec, r)
+		abort := l.serve(next, rec, r)
 
 		status := rec.status
 		if status == 0 {
@@ -59,7 +62,36 @@ func (l requestLog) wrap(next http.Handler) http.Handler {
 			"duration_ms", time.Since(start).Milliseconds(),
 			"ip", ip,
 		)
+		if abort {
+			// The response was cut short: net/http drops the connection
+			// without logging a stack for this value.
+			panic(http.ErrAbortHandler)
+		}
 	})
+}
+
+// serve runs the handler, recovering a panic: it is logged with its stack
+// and answered 500 if nothing was written yet, so one bad request can't
+// take serve down. It reports whether the connection must be dropped: the
+// handler aborted, or panicked after its response had started.
+func (l requestLog) serve(next http.Handler, rec *recorder, r *http.Request) (abort bool) {
+	defer func() {
+		v := recover()
+		switch {
+		case v == nil:
+		case v == http.ErrAbortHandler:
+			abort = true
+		default:
+			l.logger.ErrorContext(r.Context(), "handler panicked", "route", r.Pattern, "panic", fmt.Sprint(v), "stack", string(debug.Stack()))
+			if rec.written() {
+				abort = true
+				return
+			}
+			httpjson.Error(rec, http.StatusInternalServerError, "internal", "internal error")
+		}
+	}()
+	next.ServeHTTP(rec, r)
+	return false
 }
 
 func (l requestLog) peerTrusted(r *http.Request) bool {
@@ -187,3 +219,6 @@ func (r *recorder) ReadFrom(src io.Reader) (int64, error) {
 }
 
 func (r *recorder) Unwrap() http.ResponseWriter { return r.ResponseWriter }
+
+// written reports whether the handler has started its response.
+func (r *recorder) written() bool { return r.status != 0 }

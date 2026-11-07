@@ -6,10 +6,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -40,6 +42,7 @@ type env struct {
 	store *storage.Filesystem
 	keys  contentkey.Secret
 	exec  func(string, ...any)
+	api   *workerapi.API
 }
 
 func newEnv(t *testing.T) *env {
@@ -74,7 +77,7 @@ func newEnvAuth(t *testing.T, auth workerapi.WorkerAuth) *env {
 			t.Fatal(err)
 		}
 	}
-	return &env{t: t, pool: pool, srv: srv, store: store, keys: keys, exec: exec}
+	return &env{t: t, pool: pool, srv: srv, store: store, keys: keys, exec: exec, api: api}
 }
 
 // enqueue creates an uploaded asset with a source and a queued transcode.
@@ -253,6 +256,30 @@ func TestClaimWithNoWorkIs204(t *testing.T) {
 	e := newEnv(t)
 	if code, _ := e.post("/worker/v1/claim", workerKey, capable); code != http.StatusNoContent {
 		t.Fatalf("got %d, want 204", code)
+	}
+}
+
+func TestADrainingServerHandsOutNoWorkAndEndsWaitingClaims(t *testing.T) {
+	e := newEnv(t)
+	drain, startDrain := context.WithCancel(context.Background())
+	e.api.Drain = drain
+	waiting := maps.Clone(capable)
+	waiting["wait_seconds"] = 20
+	time.AfterFunc(300*time.Millisecond, startDrain)
+	start := time.Now()
+	if code, _ := e.post("/worker/v1/claim", workerKey, waiting); code != http.StatusNoContent {
+		t.Fatalf("waiting claim at drain: %d, want 204", code)
+	}
+	if took := time.Since(start); took > 3*time.Second {
+		t.Fatalf("a waiting claim held on for %s after the drain", took)
+	}
+	e.enqueue()
+	if code, _ := e.post("/worker/v1/claim", workerKey, capable); code != http.StatusNoContent {
+		t.Fatalf("claim while draining: %d, want 204 with a job queued", code)
+	}
+	var status string
+	if err := e.pool.QueryRow(context.Background(), `SELECT status FROM jobs WHERE id = 'job_1'`).Scan(&status); err != nil || status != "queued" {
+		t.Fatalf("job %q %v, want it left queued for the next server", status, err)
 	}
 }
 
