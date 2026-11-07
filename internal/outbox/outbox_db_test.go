@@ -66,6 +66,8 @@ func TestEventsCarryTheFullAssetAtTheirVersion(t *testing.T) {
 		"error_code": "upload_cancelled", "base_url": "https://media.example",
 		"created_at": "2026-11-05T10:00:00Z", "updated_at": "2026-11-05T10:05:00Z",
 		"playback_ids": []any{map[string]any{"id": "pid_1", "policy": "signed", "playable": false, "status": "active"}},
+		// No output yet, so no duration; no tracks asked for (P5-T16).
+		"duration_seconds": nil, "tracks": []any{},
 	}
 	want := []map[string]any{
 		{"type": "video.asset.errored", "data": asset},

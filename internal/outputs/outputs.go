@@ -296,13 +296,17 @@ func commit(ctx context.Context, qs *db.Queries, a db.Attempt, manifest []byte) 
 	}
 	// Subtitles asked for at upload start now, reading this output's audio;
 	// the video doesn't wait for them.
-	var audio struct {
-		Audio bool `json:"audio"`
+	var m struct {
+		Audio    bool    `json:"audio"`
+		Duration float64 `json:"duration_seconds"`
 	}
-	if err := json.Unmarshal(manifest, &audio); err != nil {
+	if err := json.Unmarshal(manifest, &m); err != nil {
 		return invalid("manifest: %v", err)
 	}
-	if err := tracks.QueueTranscriptions(ctx, qs, asset, audio.Audio); err != nil {
+	if err := qs.SetAssetDuration(ctx, db.SetAssetDurationParams{ID: asset.ID, DurationSeconds: pgtype.Float8{Float64: m.Duration, Valid: m.Duration > 0}}); err != nil {
+		return err
+	}
+	if err := tracks.QueueTranscriptions(ctx, qs, asset, m.Audio); err != nil {
 		return err
 	}
 	pids, err := activePlaybackIDs(ctx, qs, asset.ID)

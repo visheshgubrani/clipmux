@@ -10,6 +10,7 @@ import (
 
 	"github.com/visheshgubrani/clipmux/internal/contentkey"
 	"github.com/visheshgubrani/clipmux/internal/db"
+	"github.com/visheshgubrani/clipmux/internal/outbox"
 	"github.com/visheshgubrani/clipmux/internal/routes"
 	"github.com/visheshgubrani/clipmux/internal/stores"
 	"github.com/visheshgubrani/clipmux/internal/transcripts"
@@ -174,7 +175,10 @@ func FinishPublication(ctx context.Context, qs *db.Queries, trackID string) erro
 			return err
 		}
 	}
-	return qs.BumpAssetForTrack(ctx, asset.ID)
+	if err := qs.BumpAssetForTrack(ctx, asset.ID); err != nil {
+		return err
+	}
+	return outbox.TrackEvent(ctx, qs, asset.ID, outbox.TrackReady, outbox.Track{ID: trackID, Kind: track.Kind}, nil)
 }
 
 // FinishPublishing finishes every track of an asset that was waiting for

@@ -46,18 +46,22 @@ IPv6 addresses are grouped by their /64.
 
 | Route | Scope | Notes |
 | --- | --- | --- |
-| `POST /v1/uploads` | `uploads:write` | `{size, playback_policy: "signed"\|"public", passthrough}` → `201 {upload_id, asset_id, part_size, part_count, upload_token, playback_ids}` |
+| `POST /v1/uploads` | `uploads:write` | `{size, playback_policy: "signed"\|"public", passthrough, generate?: {subtitles?, chapters?}}` → `201 {upload_id, asset_id, part_size, part_count, upload_token, playback_ids}` |
 | `POST /v1/uploads/{id}/parts` | upload token | `{part_numbers: [1…]}` (≤ 100) → `{parts: [{part_number, url}], expires_at}`; PUT each part to its URL and keep its `ETag` |
 | `GET /v1/uploads/{id}/parts` | upload token | `{parts: [{part_number, etag, size}]}` — what storage holds, for resuming |
 | `POST /v1/uploads/{id}/complete` | upload token | `{parts: [{part_number, etag}]}` → the asset, `processing` |
 | `POST /v1/uploads/{id}/cancel` | upload token or `uploads:write` | the asset becomes `errored` / `upload_cancelled` |
-| `POST /v1/assets` | `assets:write` | `{agent_source_id, playback_policy?, passthrough?}` → `201` the asset, `processing`, on a file a PC agent registered for `clipmux push --local`; its jobs run only on that agent. `404 agent_source_not_found` once attached; `409 source_unavailable` if the agent was revoked. Or `{url, playback_policy?, passthrough?}` → `201` the asset, `processing`; serve fetches the public http(s) URL and transcodes it. `400 import_url_refused` for a non-public or credentialed URL; a fetch that fails ends `errored` with `import_url_refused`, `import_failed` or `import_too_large` |
+| `POST /v1/assets` | `assets:write` | `{agent_source_id, playback_policy?, passthrough?, generate?}` → `201` the asset, `processing`, on a file a PC agent registered for `clipmux push --local`; its jobs run only on that agent. `404 agent_source_not_found` once attached; `409 source_unavailable` if the agent was revoked. Or `{url, playback_policy?, passthrough?}` → `201` the asset, `processing`; serve fetches the public http(s) URL and transcodes it. `400 import_url_refused` for a non-public or credentialed URL; a fetch that fails ends `errored` with `import_url_refused`, `import_failed` or `import_too_large` |
 | `GET /v1/assets/{id}` | `assets:read` | the asset (below) |
 | `GET /v1/events?since=&after=&wait=` | `assets:read` | the app's webhook events created at or after `since` (default now), oldest first, ≤ 100: `{data: [{id, created_at, body}]}`, `body` being exactly what an endpoint receives. Long-polls up to `wait` seconds (≤ 25) until one is newer than `after`. For `clipmux listen` |
 | `GET /v1/assets?passthrough=` | `assets:read` | the app's assets with that reference, newest first |
 | `GET /v1/assets?updated_since=&cursor=&limit=` | `assets:read` | every change since an RFC 3339 time, oldest first, deleted included, ≤ 100 per page, `next_cursor` |
 | `DELETE /v1/assets/{id}` | `assets:write` | playback stops at once; `200` once files are gone, `202` while the delete job runs |
 | `POST /v1/assets/{id}/reencode` | `assets:write` | `{supersede?}` → `202 {id, kind, status}`; `409 job_active` (`job_id`), `source_missing`, `asset_not_ready`, `asset_deleted` |
+| `GET /v1/assets/{id}/tracks/{track_id}` | `assets:read` | a track: `{id, kind, source, status, language?, name?, error_code?, duration_ms?, chapters?: [{start_ms, end_ms, title}]}`; chapters once a chapters track is ready |
+| `GET /v1/assets/{id}/tracks/{track_id}/transcript?words=` | `assets:read` | a subtitles track's transcript, the moment it reads `ready`: `{track_id, language, duration_ms, text, segments: [{id, start_ms, end_ms, text, words?: [{id, start_ms, end_ms, text}]}]}` (words with `words=true`); `409 track_not_ready` before |
+| `POST /v1/assets/{id}/tracks` | `assets:write` | `{kind: "subtitles"\|"chapters", supersede?}` → `202 {track, job}`; a new track is made and the old one keeps playing until it is ready. `409 asset_not_ready`, `no_audio`, `subtitles_not_ready` (chapters), `chapters_not_connected`, `job_active` (`job_id`; `supersede` cancels a transcription or chapters job), `asset_deleted`; idempotent with `Idempotency-Key` |
+| `DELETE /v1/assets/{id}/tracks/{track_id}` | `assets:write` | the asset; `200` once no route lists the track, `202` while it is unpublished; its file and transcript go at once |
 | `POST /v1/assets/{id}/playback-ids` | `assets:write` | `{policy}` → `201 {id, policy, playable, status}` |
 | `DELETE /v1/assets/{id}/playback-ids/{pid}` | `assets:write` | `200 revoked` once unpublished, `202 revoking` before |
 
@@ -67,8 +71,21 @@ An asset:
 {"id": "ast_…", "app_id": "app_…", "status": "ready", "version": 4, "passthrough": "lesson-42",
  "error_code": "…", "base_url": "https://media.example.net",
  "playback_ids": [{"id": "pid_…", "policy": "signed", "playable": true, "status": "active"}],
+ "duration_seconds": 1830.4,
+ "tracks": [{"id": "trk_…", "kind": "subtitles", "source": "generated", "status": "ready", "language": "hi", "name": "Hindi"}],
  "created_at": "…", "updated_at": "…"}
 ```
+
+`generate` on an upload, an import or an agent's attach asks for subtitles
+and chapters; chapters imply subtitles. Tracks are made after the video is
+ready and never hold it up. A track's `status` is `preparing`, `ready` or
+`errored` (`error_code`: `no_audio`, `transcribe_failed`, `transcript_invalid`,
+`transcribe_unavailable`, `speech_api_rejected`, and for chapters
+`subtitles_failed`); retired and deleted tracks aren't listed. A ready
+subtitles track plays in the master as an HLS subtitles rendition, and its
+VTT is at `{base_url}/v/{token}/{playback_id}/tracks/{track_id}.vtt` (or
+`/p/…`), the sidecar URL; a chapters track's VTT is at the same path.
+`duration_seconds` is null until the first output.
 
 `status` is `waiting_upload`, `processing`, `ready`, `errored` or `deleted`.
 `version` rises on every change; keep the highest you have seen.
@@ -77,7 +94,9 @@ An asset:
 
 Each app's endpoints receive its assets' events: `video.asset.ready`,
 `video.asset.updated`, `video.asset.errored`, `video.asset.reencode_failed`,
-`video.asset.deleted`. Delivery is at least once and unordered; dedupe on
+`video.asset.deleted`, and for tracks `video.asset.track.ready`,
+`video.asset.track.errored` and `video.asset.track.deleted`, which carry
+`track: {id, kind, error_code?}` beside the asset. Delivery is at least once and unordered; dedupe on
 `X-Webhook-Id`. Retries back off for 24 hours; after that, catch up with
 `updated_since`.
 

@@ -23,6 +23,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/publicnet"
 	"github.com/visheshgubrani/clipmux/internal/queue"
 	"github.com/visheshgubrani/clipmux/internal/storage"
+	"github.com/visheshgubrani/clipmux/internal/tracks"
 )
 
 // Import from URL (docs/architecture.md, "Integration API"). serve fetches
@@ -37,6 +38,9 @@ type ImportRequest struct {
 	AgentSourceID  string `json:"agent_source_id,omitempty"`
 	PlaybackPolicy string `json:"playback_policy,omitempty"`
 	Passthrough    string `json:"passthrough,omitempty"`
+	// Generate asks for subtitles and chapters (P5-T16); chapters imply
+	// subtitles. They are made after the video is ready.
+	Generate tracks.Generate `json:"generate,omitzero"`
 }
 
 // Import failure codes on the asset.
@@ -94,6 +98,9 @@ func (s *Service) Import(ctx context.Context, key apikeys.Key, req ImportRequest
 		if _, err := q.CreatePlaybackID(ctx, db.CreatePlaybackIDParams{
 			ID: ids.New(ids.PlaybackID), ProjectID: key.ProjectID, AssetID: asset.ID, Policy: req.PlaybackPolicy,
 		}); err != nil {
+			return err
+		}
+		if _, err := tracks.Create(ctx, q, key.ProjectID, asset.ID, req.Generate); err != nil {
 			return err
 		}
 		if _, err := q.CreateImportJob(ctx, db.CreateImportJobParams{

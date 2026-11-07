@@ -813,5 +813,13 @@ Decisions within D063, made in P5-T15 (vectors first: 23 track cases in `interna
 - **Moves and retention:** the move job copies `media/{asset}/tracks/` with the outputs (its cleanup deleted everything under `media/{asset}/` before); retired tracks go with the output window: marked deleted with a route refresh, then their file is deleted.
 - **Still to see:** whether Safari and ExoPlayer accept a single-segment WebVTT playlist as long as the video (P5 open question 8) is shown only by `exit-safari.yml` and `exit.yml` (P5-T20); the fallback is 6 s segments sliced at delivery.
 
+## D082 Tracks in the integration API and webhooks — accepted (2026-11-07)
+Decisions within D063, made in P5-T16:
+- **`generate: {subtitles?, chapters?}`** on `POST /v1/uploads`, `POST /v1/assets` (import and agent source) and an agent's attach creates preparing tracks in the asset's own transaction; chapters imply subtitles. It is omitted from the idempotency body when empty, so earlier keys replay unchanged.
+- **The asset view** gains `duration_seconds` (the current output's, now set as each output commits, which also gives a transcription's disk rule its duration; null before) and `tracks`, oldest first, retired and deleted hidden, `publishing` shown as `preparing`. Listing builds a page in three queries (D072 said two).
+- **Routes:** `GET /v1/assets/{id}/tracks/{track}` (chapters once ready), `GET …/transcript` (`409 track_not_ready` before ready, words with `?words=true`, `text` the segments joined with whitespace collapsed), `POST /v1/assets/{id}/tracks {kind, supersede?}` (a new track, or one still waiting for its job; `409 asset_not_ready`, `no_audio`, `subtitles_not_ready`, `chapters_not_connected`, `job_active`; `supersede` cancels only a track job, never a move or delete, and deletes the preparing track it was making; idempotent), and `DELETE …/tracks/{track}` (cancels its job, deletes the file and transcript at once, refreshes the routes, chapters waiting on deleted subtitles error `subtitles_failed`; `200` or `202`).
+- **Webhooks:** `video.asset.track.ready`, `.errored` (with the job when one caused it, and one for each chapters track the cascade errored) and `.deleted`, carrying the asset view and `track: {id, kind, error_code?}`, written after the asset's version moves.
+- A chapters regeneration queues a `chapters` job that serve runs from P5-T17.
+
 ## D007 Shaka Packager 3.9.3 — accepted (2026-11-05)
 Decision: pin v3.9.3 (`toolchain/versions.env`), the version clipmux-lms runs with AES-128 in production, which needs the init-segment workaround for Shaka issue 1616. Move to a release that fixes 1616 when one exists, re-running the Phase 1 player tests.

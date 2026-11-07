@@ -144,3 +144,25 @@ LIMIT sqlc.arg(max_rows);
 -- Its file goes next: it stops being servable first.
 UPDATE tracks SET status = 'deleted', deleted_at = now(), retired_at = NULL, version = version + 1, updated_at = now()
 WHERE id = $1 AND status = 'retired';
+
+-- name: SetAssetDuration :exec
+-- The current output's duration, set as it commits.
+UPDATE assets SET duration_seconds = $2 WHERE id = $1;
+
+-- name: ListTracksForAssets :many
+-- The tracks an asset view shows, for a page of assets at once (D072).
+SELECT * FROM tracks WHERE asset_id = ANY (sqlc.arg(asset_ids)::text[]) AND status NOT IN ('retired', 'deleted')
+ORDER BY asset_id, created_at, id;
+
+-- name: DeleteTrack :one
+UPDATE tracks SET status = 'deleted', deleted_at = now(), retired_at = NULL, version = version + 1, updated_at = now()
+WHERE id = $1 AND status <> 'deleted'
+RETURNING *;
+
+-- name: DeleteTranscript :exec
+DELETE FROM transcripts WHERE track_id = $1;
+
+-- name: GetTrackOfKind :one
+-- An asset's newest track of a kind in one of the states given.
+SELECT * FROM tracks WHERE asset_id = $1 AND kind = $2 AND status = ANY (sqlc.arg(statuses)::text[])
+ORDER BY created_at DESC, id DESC LIMIT 1;

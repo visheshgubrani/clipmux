@@ -105,6 +105,48 @@ func (q *Queries) DeleteAIConnection(ctx context.Context, arg DeleteAIConnection
 	return result.RowsAffected(), nil
 }
 
+const deleteTrack = `-- name: DeleteTrack :one
+UPDATE tracks SET status = 'deleted', deleted_at = now(), retired_at = NULL, version = version + 1, updated_at = now()
+WHERE id = $1 AND status <> 'deleted'
+RETURNING id, project_id, asset_id, kind, source, status, language, name, error_code, key_version, duration_ms, chapters, output_id, version, created_at, updated_at, ready_at, retired_at, deleted_at
+`
+
+func (q *Queries) DeleteTrack(ctx context.Context, id string) (Track, error) {
+	row := q.db.QueryRow(ctx, deleteTrack, id)
+	var i Track
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.AssetID,
+		&i.Kind,
+		&i.Source,
+		&i.Status,
+		&i.Language,
+		&i.Name,
+		&i.ErrorCode,
+		&i.KeyVersion,
+		&i.DurationMs,
+		&i.Chapters,
+		&i.OutputID,
+		&i.Version,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.ReadyAt,
+		&i.RetiredAt,
+		&i.DeletedAt,
+	)
+	return i, err
+}
+
+const deleteTranscript = `-- name: DeleteTranscript :exec
+DELETE FROM transcripts WHERE track_id = $1
+`
+
+func (q *Queries) DeleteTranscript(ctx context.Context, trackID string) error {
+	_, err := q.db.Exec(ctx, deleteTranscript, trackID)
+	return err
+}
+
 const deleteTranscriptsForAsset = `-- name: DeleteTranscriptsForAsset :execrows
 DELETE FROM transcripts WHERE asset_id = $1
 `
@@ -255,6 +297,45 @@ SELECT id, project_id, asset_id, kind, source, status, language, name, error_cod
 
 func (q *Queries) GetTrack(ctx context.Context, id string) (Track, error) {
 	row := q.db.QueryRow(ctx, getTrack, id)
+	var i Track
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.AssetID,
+		&i.Kind,
+		&i.Source,
+		&i.Status,
+		&i.Language,
+		&i.Name,
+		&i.ErrorCode,
+		&i.KeyVersion,
+		&i.DurationMs,
+		&i.Chapters,
+		&i.OutputID,
+		&i.Version,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.ReadyAt,
+		&i.RetiredAt,
+		&i.DeletedAt,
+	)
+	return i, err
+}
+
+const getTrackOfKind = `-- name: GetTrackOfKind :one
+SELECT id, project_id, asset_id, kind, source, status, language, name, error_code, key_version, duration_ms, chapters, output_id, version, created_at, updated_at, ready_at, retired_at, deleted_at FROM tracks WHERE asset_id = $1 AND kind = $2 AND status = ANY ($3::text[])
+ORDER BY created_at DESC, id DESC LIMIT 1
+`
+
+type GetTrackOfKindParams struct {
+	AssetID  string
+	Kind     string
+	Statuses []string
+}
+
+// An asset's newest track of a kind in one of the states given.
+func (q *Queries) GetTrackOfKind(ctx context.Context, arg GetTrackOfKindParams) (Track, error) {
+	row := q.db.QueryRow(ctx, getTrackOfKind, arg.AssetID, arg.Kind, arg.Statuses)
 	var i Track
 	err := row.Scan(
 		&i.ID,
@@ -564,6 +645,52 @@ func (q *Queries) ListTracksForAsset(ctx context.Context, assetID string) ([]Tra
 	return items, nil
 }
 
+const listTracksForAssets = `-- name: ListTracksForAssets :many
+SELECT id, project_id, asset_id, kind, source, status, language, name, error_code, key_version, duration_ms, chapters, output_id, version, created_at, updated_at, ready_at, retired_at, deleted_at FROM tracks WHERE asset_id = ANY ($1::text[]) AND status NOT IN ('retired', 'deleted')
+ORDER BY asset_id, created_at, id
+`
+
+// The tracks an asset view shows, for a page of assets at once (D072).
+func (q *Queries) ListTracksForAssets(ctx context.Context, assetIds []string) ([]Track, error) {
+	rows, err := q.db.Query(ctx, listTracksForAssets, assetIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Track{}
+	for rows.Next() {
+		var i Track
+		if err := rows.Scan(
+			&i.ID,
+			&i.ProjectID,
+			&i.AssetID,
+			&i.Kind,
+			&i.Source,
+			&i.Status,
+			&i.Language,
+			&i.Name,
+			&i.ErrorCode,
+			&i.KeyVersion,
+			&i.DurationMs,
+			&i.Chapters,
+			&i.OutputID,
+			&i.Version,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.ReadyAt,
+			&i.RetiredAt,
+			&i.DeletedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listTracksToTranscribe = `-- name: ListTracksToTranscribe :many
 SELECT t.id, t.project_id, t.asset_id, t.kind, t.source, t.status, t.language, t.name, t.error_code, t.key_version, t.duration_ms, t.chapters, t.output_id, t.version, t.created_at, t.updated_at, t.ready_at, t.retired_at, t.deleted_at FROM tracks t
 WHERE t.asset_id = $1 AND t.kind = 'subtitles' AND t.status = 'preparing'
@@ -802,6 +929,21 @@ func (q *Queries) RetireReadyTracksOfKind(ctx context.Context, arg RetireReadyTr
 		return nil, err
 	}
 	return items, nil
+}
+
+const setAssetDuration = `-- name: SetAssetDuration :exec
+UPDATE assets SET duration_seconds = $2 WHERE id = $1
+`
+
+type SetAssetDurationParams struct {
+	ID              string
+	DurationSeconds pgtype.Float8
+}
+
+// The current output's duration, set as it commits.
+func (q *Queries) SetAssetDuration(ctx context.Context, arg SetAssetDurationParams) error {
+	_, err := q.db.Exec(ctx, setAssetDuration, arg.ID, arg.DurationSeconds)
+	return err
 }
 
 const setSpeechMode = `-- name: SetSpeechMode :exec

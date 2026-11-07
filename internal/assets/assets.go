@@ -46,28 +46,53 @@ type View struct {
 	// {base_url}/p/{playback_id}/master.m3u8 (public).
 	BaseURL     string       `json:"base_url"`
 	PlaybackIDs []PlaybackID `json:"playback_ids"`
-	CreatedAt   time.Time    `json:"created_at"`
+	// DurationSeconds is the current output's duration; null until the
+	// first output commits.
+	DurationSeconds *float64 `json:"duration_seconds"`
+	// Tracks are its subtitles and chapters (P5-T16), oldest first; retired
+	// and deleted tracks aren't shown.
+	Tracks    []Track   `json:"tracks"`
+	CreatedAt time.Time `json:"created_at"`
 	// UpdatedAt moves with Version; GET /v1/assets?updated_since= pages on it.
 	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// Track is a subtitles or chapters track as the API shows it. A track
+// being published shows as preparing: it is ready once every route serves
+// it.
+type Track struct {
+	ID     string `json:"id"`
+	Kind   string `json:"kind"`
+	Source string `json:"source"`
+	// Status is preparing, ready or errored.
+	Status    string `json:"status"`
+	Language  string `json:"language,omitempty"`
+	Name      string `json:"name,omitempty"`
+	ErrorCode string `json:"error_code,omitempty"`
+}
+
+// TrackView is a track row as the API shows it.
+func TrackView(t db.Track) Track {
+	status := t.Status
+	if status == "publishing" {
+		status = "preparing"
+	}
+	return Track{ID: t.ID, Kind: t.Kind, Source: t.Source, Status: status, Language: t.Language.String, Name: t.Name.String, ErrorCode: t.ErrorCode.String}
 }
 
 // Load builds the view of an asset. base_url is the project's media URL,
 // read in the same transaction as the asset.
 func Load(ctx context.Context, q *db.Queries, a db.Asset) (View, error) {
-	baseURL, err := q.GetMediaURL(ctx, a.ProjectID)
+	views, err := LoadMany(ctx, q, []db.Asset{a})
 	if err != nil {
 		return View{}, err
 	}
-	pids, err := q.ListPlaybackIDs(ctx, a.ID)
-	if err != nil {
-		return View{}, err
-	}
-	return view(a, baseURL, pids), nil
+	return views[0], nil
 }
 
-// LoadMany builds the views of a page of assets in two queries, whatever
-// its length (D072): the media URL once per project, and every asset's
-// playback IDs at once.
+// LoadMany builds the views of a page of assets in three queries, whatever
+// its length (D072, D082): the media URL once per project, and every
+// asset's playback IDs and tracks at once.
 func LoadMany(ctx context.Context, q *db.Queries, rows []db.Asset) ([]View, error) {
 	ids := make([]string, len(rows))
 	for i, a := range rows {
@@ -81,6 +106,14 @@ func LoadMany(ctx context.Context, q *db.Queries, rows []db.Asset) ([]View, erro
 	for _, p := range pids {
 		byAsset[p.AssetID] = append(byAsset[p.AssetID], p)
 	}
+	trks, err := q.ListTracksForAssets(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	tracksOf := map[string][]db.Track{}
+	for _, t := range trks {
+		tracksOf[t.AssetID] = append(tracksOf[t.AssetID], t)
+	}
 	baseURLs := map[string]string{}
 	out := make([]View, 0, len(rows))
 	for _, a := range rows {
@@ -91,12 +124,12 @@ func LoadMany(ctx context.Context, q *db.Queries, rows []db.Asset) ([]View, erro
 			}
 			baseURLs[a.ProjectID] = baseURL
 		}
-		out = append(out, view(a, baseURL, byAsset[a.ID]))
+		out = append(out, view(a, baseURL, byAsset[a.ID], tracksOf[a.ID]))
 	}
 	return out, nil
 }
 
-func view(a db.Asset, baseURL string, pids []db.PlaybackID) View {
+func view(a db.Asset, baseURL string, pids []db.PlaybackID, trks []db.Track) View {
 	playable := a.CurrentOutputID.Valid && a.Status != "deleted"
 	v := View{
 		ID: a.ID, AppID: a.AppID, Status: a.Status, Version: a.Version, BaseURL: baseURL,
@@ -106,6 +139,14 @@ func view(a db.Asset, baseURL string, pids []db.PlaybackID) View {
 	}
 	for _, p := range pids {
 		v.PlaybackIDs = append(v.PlaybackIDs, PlaybackID{ID: p.ID, Policy: p.Policy, Playable: playable && p.Status == "active", Status: p.Status})
+	}
+	if a.DurationSeconds.Valid {
+		d := a.DurationSeconds.Float64
+		v.DurationSeconds = &d
+	}
+	v.Tracks = make([]Track, 0, len(trks))
+	for _, t := range trks {
+		v.Tracks = append(v.Tracks, TrackView(t))
 	}
 	return v
 }
@@ -126,6 +167,8 @@ func New(pool *pgxpool.Pool) *API { return &API{pool: pool, Auth: apikeys.NewAut
 // Register adds the routes to mux.
 func (a *API) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/assets/{id}", a.get)
+	mux.HandleFunc("GET /v1/assets/{id}/tracks/{track}", a.getTrack)
+	mux.HandleFunc("GET /v1/assets/{id}/tracks/{track}/transcript", a.getTranscript)
 	mux.HandleFunc("GET /v1/assets", a.list)
 	mux.HandleFunc("GET /v1/events", a.events)
 }

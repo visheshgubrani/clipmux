@@ -93,6 +93,8 @@ func (s *Service) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/assets", s.handleImport)
 	mux.HandleFunc("DELETE /v1/assets/{id}", s.handleDelete)
 	mux.HandleFunc("POST /v1/assets/{id}/reencode", s.handleReencode)
+	mux.HandleFunc("POST /v1/assets/{id}/tracks", s.handleRegenerateTrack)
+	mux.HandleFunc("DELETE /v1/assets/{id}/tracks/{track}", s.handleDeleteTrack)
 	mux.HandleFunc("POST /v1/assets/{id}/playback-ids", s.handleAddPlaybackID)
 	mux.HandleFunc("DELETE /v1/assets/{id}/playback-ids/{pid}", s.handleRevokePlaybackID)
 }

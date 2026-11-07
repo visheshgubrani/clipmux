@@ -7,6 +7,7 @@ package queue_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -146,8 +147,10 @@ func TestAFailedTranscriptionLeavesTheAssetReady(t *testing.T) {
 	if status, code := f.track(asset, "chapters"); status != "errored" || code != "subtitles_failed" {
 		t.Fatalf("chapters %s %s, want errored subtitles_failed", status, code)
 	}
-	if ev := f.events(); len(ev) != 0 {
-		t.Fatalf("asset events %v: a track failing is not the asset failing", ev)
+	// The app hears about each track, and nothing about the asset: a track
+	// failing is not the asset failing.
+	if ev := f.events(); strings.Join(ev, ",") != "video.asset.track.errored,video.asset.track.errored" {
+		t.Fatalf("events %v", ev)
 	}
 }
 

@@ -41,6 +41,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/ratelimit"
 	"github.com/visheshgubrani/clipmux/internal/storage"
 	"github.com/visheshgubrani/clipmux/internal/stores"
+	"github.com/visheshgubrani/clipmux/internal/tracks"
 )
 
 // Error codes the upload API returns or records on assets.
@@ -106,6 +107,9 @@ type CreateRequest struct {
 	Size           int64  `json:"size"`
 	PlaybackPolicy string `json:"playback_policy"`
 	Passthrough    string `json:"passthrough"`
+	// Generate asks for subtitles and chapters (P5-T16); chapters imply
+	// subtitles. They are made after the video is ready.
+	Generate tracks.Generate `json:"generate,omitzero"`
 }
 
 // Created is the response to POST /v1/uploads.
@@ -166,6 +170,9 @@ func (s *Service) Create(ctx context.Context, key apikeys.Key, req CreateRequest
 			ID: ids.New(ids.PlaybackID), ProjectID: key.ProjectID, AssetID: asset.ID, Policy: req.PlaybackPolicy,
 		})
 		if err != nil {
+			return err
+		}
+		if _, err := tracks.Create(ctx, q, key.ProjectID, asset.ID, req.Generate); err != nil {
 			return err
 		}
 		store, err := s.stores.Get(ctx, st.ID)

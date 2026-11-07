@@ -17,6 +17,7 @@ import (
 
 	"github.com/visheshgubrani/clipmux/internal/db"
 	"github.com/visheshgubrani/clipmux/internal/ids"
+	"github.com/visheshgubrani/clipmux/internal/outbox"
 )
 
 // Track kinds.
@@ -126,7 +127,7 @@ func QueueTranscriptions(ctx context.Context, qs *db.Queries, asset db.Asset, ha
 	}
 	if !hasAudio {
 		for _, t := range todo {
-			if err := fail(ctx, qs, t.ID, CodeNoAudio); err != nil {
+			if err := fail(ctx, qs, t.ID, CodeNoAudio, nil); err != nil {
 				return err
 			}
 		}
@@ -137,11 +138,18 @@ func QueueTranscriptions(ctx context.Context, qs *db.Queries, asset db.Asset, ha
 		return err
 	}
 	// At most one subtitles track is preparing per asset (tracks_one_preparing).
-	_, err = qs.CreateJob(ctx, db.CreateJobParams{
-		ID: ids.New(ids.Job), ProjectID: asset.ProjectID, AssetID: asset.ID, Kind: JobTranscribe,
-		TrackID: pgtype.Text{String: todo[0].ID, Valid: true},
-	})
+	_, err = QueueJob(ctx, qs, asset, JobTranscribe, todo[0].ID)
 	return err
+}
+
+// QueueJob queues the job that makes a track: a transcription (routed like
+// any worker job) or chapters (serve's own). Call it with the asset locked
+// and no track job active.
+func QueueJob(ctx context.Context, qs *db.Queries, asset db.Asset, kind, trackID string) (db.Job, error) {
+	return qs.CreateJob(ctx, db.CreateJobParams{
+		ID: ids.New(ids.Job), ProjectID: asset.ProjectID, AssetID: asset.ID, Kind: kind,
+		TrackID: pgtype.Text{String: trackID, Valid: true},
+	})
 }
 
 // Fail ends the track a job was making, for good: a failed transcription
@@ -154,22 +162,37 @@ func Fail(ctx context.Context, qs *db.Queries, job db.Job, code string) error {
 	if job.Kind == JobTranscribe && !shownCodes[code] {
 		code = CodeTranscribeFailed
 	}
-	return fail(ctx, qs, job.TrackID.String, code)
+	return fail(ctx, qs, job.TrackID.String, code, &outbox.Job{ID: job.ID, Kind: job.Kind, ErrorCode: code})
 }
 
-func fail(ctx context.Context, qs *db.Queries, trackID, code string) error {
+// fail errors a track still being made, and its chapters with it, and
+// tells the app about each.
+func fail(ctx context.Context, qs *db.Queries, trackID, code string, job *outbox.Job) error {
 	t, err := qs.ErrorTrack(ctx, db.ErrorTrackParams{ID: trackID, ErrorCode: pgtype.Text{String: code, Valid: true}})
 	if err != nil {
 		return fmt.Errorf("error track %s: %w", trackID, err)
 	}
-	if t.Kind == Subtitles {
-		if _, err := qs.ErrorPreparingTracksOfKind(ctx, db.ErrorPreparingTracksOfKindParams{
-			AssetID: t.AssetID, Kind: Chapters, ErrorCode: pgtype.Text{String: CodeSubtitlesFailed, Valid: true},
-		}); err != nil {
-			return fmt.Errorf("cascade to chapters: %w", err)
+	if err := qs.BumpAssetForTrack(ctx, t.AssetID); err != nil {
+		return err
+	}
+	if err := outbox.TrackEvent(ctx, qs, t.AssetID, outbox.TrackErrored, outbox.Track{ID: t.ID, Kind: t.Kind, ErrorCode: code}, job); err != nil {
+		return err
+	}
+	if t.Kind != Subtitles {
+		return nil
+	}
+	chapters, err := qs.ErrorPreparingTracksOfKind(ctx, db.ErrorPreparingTracksOfKindParams{
+		AssetID: t.AssetID, Kind: Chapters, ErrorCode: pgtype.Text{String: CodeSubtitlesFailed, Valid: true},
+	})
+	if err != nil {
+		return fmt.Errorf("cascade to chapters: %w", err)
+	}
+	for _, c := range chapters {
+		if err := outbox.TrackEvent(ctx, qs, c.AssetID, outbox.TrackErrored, outbox.Track{ID: c.ID, Kind: c.Kind, ErrorCode: CodeSubtitlesFailed}, nil); err != nil {
+			return err
 		}
 	}
-	return qs.BumpAssetForTrack(ctx, t.AssetID)
+	return nil
 }
 
 // DeleteAll runs in an asset's delete: every track is deleted and every

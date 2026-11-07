@@ -16,6 +16,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/idempotency"
 	"github.com/visheshgubrani/clipmux/internal/ids"
 	"github.com/visheshgubrani/clipmux/internal/queue"
+	"github.com/visheshgubrani/clipmux/internal/tracks"
 )
 
 // Local sources (docs/architecture.md, "Local sources"): `clipmux push
@@ -82,6 +83,9 @@ func (s *Service) AttachLocal(ctx context.Context, key apikeys.Key, req ImportRe
 		if _, err := q.CreatePlaybackID(ctx, db.CreatePlaybackIDParams{
 			ID: ids.New(ids.PlaybackID), ProjectID: key.ProjectID, AssetID: asset.ID, Policy: req.PlaybackPolicy,
 		}); err != nil {
+			return err
+		}
+		if _, err := tracks.Create(ctx, q, key.ProjectID, asset.ID, req.Generate); err != nil {
 			return err
 		}
 		if _, err := queue.Enqueue(ctx, tx, queue.Job{ProjectID: key.ProjectID, AssetID: asset.ID, Kind: "transcode", PinnedAgentID: src.AgentID}); err != nil {

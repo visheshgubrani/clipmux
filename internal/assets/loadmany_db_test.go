@@ -62,8 +62,9 @@ func TestAPageOfAssetsLoadsInTwoQueries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n := c.n.Load(); n != 2 {
-		t.Fatalf("listing 100 assets took %d queries, want 2", n)
+	// The media URL, every playback ID, every track (D082).
+	if n := c.n.Load(); n != 3 {
+		t.Fatalf("listing 100 assets took %d queries, want 3", n)
 	}
 	for i, a := range page {
 		one, err := assets.Load(ctx, db.New(pool), a)
