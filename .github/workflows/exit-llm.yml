@@ -20,7 +20,26 @@ env:
   TEST_DATABASE_URL: postgres://clipmux:clipmux@localhost:5432/clipmux_test?sslmode=disable
   CLIPMUX_REQUIRE_MEDIA_TOOLS: "1"
 jobs:
+  # A missing secret skips the run, shown as skipped rather than passed.
+  secrets:
+    runs-on: ubuntu-24.04
+    outputs:
+      run: ${{ steps.check.outputs.run }}
+    env:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+    steps:
+      - id: check
+        run: |
+          if [ -z "$OPENAI_API_KEY" ]; then
+            echo "::notice::OPENAI_API_KEY is not set; skipping"
+            echo "run=false" >>"$GITHUB_OUTPUT"
+          else
+            echo "run=true" >>"$GITHUB_OUTPUT"
+          fi
   llm:
+    needs: secrets
+    if: needs.secrets.outputs.run == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     services:
@@ -38,32 +57,7 @@ jobs:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
     steps:
-      - name: Secrets present
-        id: secrets
-        run: |
-          if [ -z "$OPENAI_API_KEY" ]; then
-            echo "::notice::OPENAI_API_KEY is not set; skipping"
-            echo "run=false" >>"$GITHUB_OUTPUT"
-          else
-            echo "run=true" >>"$GITHUB_OUTPUT"
-          fi
       - uses: actions/checkout@v4
-        if: steps.secrets.outputs.run == 'true'
-      - uses: actions/setup-go@v5
-        if: steps.secrets.outputs.run == 'true'
-        with:
-          go-version-file: go.mod
-      - name: Cache whisper.cpp and the speech models
-        if: steps.secrets.outputs.run == 'true'
-        uses: actions/cache@v4
-        with:
-          path: |
-            ${{ runner.temp }}/whisper
-          key: whisper-${{ runner.os }}-${{ hashFiles('toolchain/versions.env', 'toolchain/build_whisper.sh', 'toolchain/whisper-vad-token-times.patch', 'toolchain/fetch_speech_models.sh') }}
-      - name: Media tools
-        if: steps.secrets.outputs.run == 'true'
-        timeout-minutes: 45
-        run: toolchain/ci_media_tools.sh
+      - uses: ./.github/actions/media-tools
       - name: Real accounts
-        if: steps.secrets.outputs.run == 'true'
         run: CLIPMUX_E2E=1 CLIPMUX_E2E_LLM=1 go test ./internal/e2e -run TestExitRealLLMAndSpeech -count=1 -timeout 40m -v

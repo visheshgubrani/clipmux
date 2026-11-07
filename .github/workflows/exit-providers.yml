@@ -25,8 +25,28 @@ env:
   CLOUDFLARED_VERSION: 2026.10.3
   CLOUDFLARED_SHA256: 053b80b0a23031a038fdbf3c073f59f82b8f1f152aa67971d7383ffafc0dbab0
 jobs:
-  providers:
+  # A missing secret skips the run, shown as skipped rather than passed.
+  secrets:
     if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-24.04
+    outputs:
+      run: ${{ steps.check.outputs.run }}
+    env:
+      RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+      CLIPMUX_E2E_REGISTRY_PASSWORD: ${{ secrets.GHCR_PULL_TOKEN }}
+    steps:
+      - id: check
+        run: |
+          if [ -z "$CLIPMUX_E2E_REGISTRY_PASSWORD" ] || { [ -z "$RUNPOD_API_KEY" ] && [ -z "$MODAL_TOKEN_ID" ]; }; then
+            echo "::notice::GHCR_PULL_TOKEN and RUNPOD_API_KEY or MODAL_TOKEN_ID/MODAL_TOKEN_SECRET are not set; skipping"
+            echo "run=false" >>"$GITHUB_OUTPUT"
+          else
+            echo "run=true" >>"$GITHUB_OUTPUT"
+          fi
+  providers:
+    needs: secrets
+    if: needs.secrets.outputs.run == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 75
     services:
@@ -49,36 +69,11 @@ jobs:
       CLIPMUX_E2E_REGISTRY_PASSWORD: ${{ secrets.GHCR_PULL_TOKEN }}
       CLIPMUX_E2E_SERVE_PORT: "8090"
     steps:
-      - name: Secrets present
-        id: secrets
-        run: |
-          if [ -z "$CLIPMUX_E2E_REGISTRY_PASSWORD" ] || { [ -z "$RUNPOD_API_KEY" ] && [ -z "$MODAL_TOKEN_ID" ]; }; then
-            echo "::notice::GHCR_PULL_TOKEN and RUNPOD_API_KEY or MODAL_TOKEN_ID/MODAL_TOKEN_SECRET are not set; skipping"
-            echo "run=false" >>"$GITHUB_OUTPUT"
-          else
-            echo "run=true" >>"$GITHUB_OUTPUT"
-          fi
       - uses: actions/checkout@v4
-        if: steps.secrets.outputs.run == 'true'
         with:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
-      - uses: actions/setup-go@v5
-        if: steps.secrets.outputs.run == 'true'
-        with:
-          go-version-file: go.mod
-      - name: Cache whisper.cpp and the speech models
-        if: steps.secrets.outputs.run == 'true'
-        uses: actions/cache@v4
-        with:
-          path: |
-            ${{ runner.temp }}/whisper
-          key: whisper-${{ runner.os }}-${{ hashFiles('toolchain/versions.env', 'toolchain/build_whisper.sh', 'toolchain/whisper-vad-token-times.patch', 'toolchain/fetch_speech_models.sh') }}
-      - name: Media tools (the built-in worker's first-boot setup test)
-        if: steps.secrets.outputs.run == 'true'
-        timeout-minutes: 45
-        run: toolchain/ci_media_tools.sh
+      - uses: ./.github/actions/media-tools
       - name: Tunnel
-        if: steps.secrets.outputs.run == 'true'
         run: |
           curl -fsSL -o cloudflared "https://github.com/cloudflare/cloudflared/releases/download/$CLOUDFLARED_VERSION/cloudflared-linux-amd64"
           echo "$CLOUDFLARED_SHA256  cloudflared" | sha256sum -c -
@@ -91,7 +86,6 @@ jobs:
           done
           cat cloudflared.log; exit 1
       - name: Real accounts
-        if: steps.secrets.outputs.run == 'true'
         env:
           CLIPMUX_E2E_PROVIDERS: "1"
           CLIPMUX_E2E_IMAGE: ghcr.io/${{ github.repository }}:sha-${{ github.event.workflow_run.head_sha || github.sha }}

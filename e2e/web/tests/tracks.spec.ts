@@ -195,7 +195,9 @@ test('the preview plays with sound and offers new subtitles without interrupting
   // Only an autoplaying preview (the setup wizard's) starts muted.
   await expect
     .poll(() =>
-      page.evaluate(() => (document.querySelector('hlsjs-video') as unknown as HTMLVideoElement | null)?.muted),
+      page.evaluate(
+        () => (document.querySelector('hlsjs-video') as unknown as HTMLVideoElement | null)?.muted,
+      ),
     )
     .toBe(false)
   const tracks = page.getByLabel('Tracks')

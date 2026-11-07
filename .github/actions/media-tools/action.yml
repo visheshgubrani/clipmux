@@ -1,0 +1,21 @@
+# Go, ffmpeg (apt), the pinned Shaka Packager and the pinned whisper.cpp with
+# its speech models, for every job that runs the media tests or the real
+# binary (toolchain/ci_media_tools.sh). whisper.cpp and the models are cached
+# by the files that pin them.
+name: Media tools
+description: Go, ffmpeg, Shaka Packager, whisper.cpp and the speech models
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-go@v5
+      with:
+        go-version-file: go.mod
+    - name: Cache whisper.cpp and the speech models
+      uses: actions/cache@v4
+      with:
+        path: ${{ runner.temp }}/whisper
+        key: whisper-${{ runner.os }}-${{ hashFiles('toolchain/versions.env', 'toolchain/build_whisper.sh', 'toolchain/whisper-vad-token-times.patch', 'toolchain/fetch_speech_models.sh') }}
+    - name: Media tools
+      shell: bash
+      # Each apt attempt is bounded and retried inside the script.
+      run: timeout 45m toolchain/ci_media_tools.sh

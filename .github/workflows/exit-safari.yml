@@ -16,6 +16,7 @@ on:
       - "e2e/web/**"
       - "e2e/safari/**"
       - "toolchain/**"
+      - ".github/workflows/exit-safari.yml"
 permissions:
   contents: read
 concurrency:

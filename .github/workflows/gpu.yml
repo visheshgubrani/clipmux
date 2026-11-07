@@ -3,6 +3,9 @@
 # user must be in the `render` group so it can open /dev/dri/renderD*. Runs on
 # main, weekly, by hand, and on PRs that touch encoding. GitHub's hosted
 # runners have no GPU, so CI proves selection and fallback with a fake ffmpeg.
+# The job runs only while the repository variable GPU_RUNNER is "true", set
+# once that runner is registered; without it a run would sit queued for a
+# day and then fail.
 name: GPU encode
 on:
   push:
@@ -16,6 +19,7 @@ on:
       - "internal/sandbox/**"
       - "internal/worker/**"
       - "toolchain/**"
+      - ".github/workflows/gpu.yml"
 permissions:
   contents: read
 concurrency:
@@ -24,7 +28,9 @@ concurrency:
 jobs:
   vaapi:
     # Pull requests from forks never reach a self-hosted runner.
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    if: >-
+      vars.GPU_RUNNER == 'true' &&
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: [self-hosted, linux, gpu, vaapi]
     timeout-minutes: 20
     steps:

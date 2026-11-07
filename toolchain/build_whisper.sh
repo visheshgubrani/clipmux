@@ -22,9 +22,10 @@
 # agent tarball alike.
 #
 # Backends:
-#   * CPU, every x86-64 variant ggml ships (GGML_CPU_ALL_VARIANTS): the best
-#     one the CPU supports is chosen at run time, so one build runs well on
-#     any machine instead of being tuned to the builder's.
+#   * CPU, every variant ggml ships for the architecture
+#     (GGML_CPU_ALL_VARIANTS): the best one the CPU supports is chosen at run
+#     time, so one build runs well on any machine instead of being tuned to
+#     the builder's.
 #   * Vulkan: AMD (radv), Intel (anv) and NVIDIA (the driver's own ICD, which
 #     the container runtime injects with `graphics` in
 #     NVIDIA_DRIVER_CAPABILITIES). A machine without a Vulkan driver simply
@@ -140,6 +141,16 @@ mkdir -p "$SRC"
 tar -xzf "$TARBALL" -C "$SRC" --strip-components=1
 patch -d "$SRC" -p1 --forward --batch < "$PATCH" > "$BUILD_DIR/patch.log" 2>&1 \
   || { cat "$BUILD_DIR/patch.log" >&2; die "the patch no longer applies to $WHISPER_CPP_VERSION"; }
+# ggml's Linux arm64 variants end at armv9.2 with SME, which GCC 13 (Ubuntu
+# 24.04) can't compile. Without a compiler that accepts +sme, those two
+# variants are dropped; armv8.0 to armv8.6 with SVE2 still cover every arm64
+# CPU, and SME machines are rare on Linux today.
+if [ "$(uname -m)" = aarch64 ] && ! echo 'int x;' | "${CC:-cc}" -march=armv9.2-a+sme -x c -c -o /dev/null - 2>/dev/null; then
+  cpu_cmake="$SRC/ggml/src/CMakeLists.txt"
+  sed -i '/ggml_add_cpu_backend_variant(armv9\.2_[12] /d' "$cpu_cmake"
+  ! grep -q 'ggml_add_cpu_backend_variant(armv9\.2_' "$cpu_cmake" || die "couldn't drop the SME variants from $cpu_cmake"
+  log "the compiler lacks +sme: building without ggml's armv9.2 (SME) CPU variants"
+fi
 log "configuring whisper.cpp $WHISPER_CPP_VERSION"
 cmake -S "$SRC" -B "$OUT" "${CMAKE_ARGS[@]}" > "$BUILD_DIR/cmake.log" 2>&1 \
   || { tail -n 60 "$BUILD_DIR/cmake.log" >&2; die "cmake failed (full log: $BUILD_DIR/cmake.log)"; }
