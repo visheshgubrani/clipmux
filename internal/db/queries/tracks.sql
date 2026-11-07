@@ -73,3 +73,26 @@ RETURNING *;
 
 -- name: GetTranscript :one
 SELECT * FROM transcripts WHERE track_id = $1;
+
+-- name: GetAIConnection :one
+SELECT * FROM ai_connections WHERE project_id = $1 AND purpose = $2;
+
+-- name: UpsertAIConnection :one
+-- Connect saves a verified connection, replacing the project's one for
+-- that purpose; the key is sealed for this row's ID.
+INSERT INTO ai_connections (id, project_id, purpose, provider, base_url, model, response_format, key_sealed, verified_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now())
+ON CONFLICT (project_id, purpose) DO UPDATE
+SET provider = EXCLUDED.provider, base_url = EXCLUDED.base_url, model = EXCLUDED.model,
+    response_format = EXCLUDED.response_format, key_sealed = EXCLUDED.key_sealed,
+    verified_at = now(), updated_at = now()
+RETURNING *;
+
+-- name: DeleteAIConnection :execrows
+DELETE FROM ai_connections WHERE project_id = $1 AND purpose = $2;
+
+-- name: GetSpeechMode :one
+SELECT speech_mode FROM projects WHERE id = $1;
+
+-- name: SetSpeechMode :exec
+UPDATE projects SET speech_mode = $2 WHERE id = $1;

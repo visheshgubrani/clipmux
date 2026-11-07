@@ -317,6 +317,7 @@ type Project struct {
 	BuiltinSeenAt           pgtype.Timestamptz
 	BuiltinFreeDiskBytes    pgtype.Int8
 	BuiltinSpeech           bool
+	SpeechMode              string
 }
 
 type RetentionCursor struct {

@@ -24,6 +24,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/secrets"
 	"github.com/visheshgubrani/clipmux/internal/settings"
 	"github.com/visheshgubrani/clipmux/internal/signingkeys"
+	"github.com/visheshgubrani/clipmux/internal/speechapi"
 	"github.com/visheshgubrani/clipmux/internal/storage"
 	"github.com/visheshgubrani/clipmux/internal/stores"
 	"github.com/visheshgubrani/clipmux/internal/tokens"
@@ -60,6 +61,7 @@ func newRig(t *testing.T, cfg config.Config) *rig {
 	t.Cleanup(func() { store.Close() })
 	acct := accounts.New(pool, "prj_default", urls.PublicURL)
 	m := manage.New(pool, box, acct, urls)
+	m.Speech = speechapi.NewService(pool, box, "prj_default")
 	upl := uploads.New(pool, stores.Fixed(store))
 	upl.Auth.Session = m.ActAsApp
 	a := assets.New(pool)
@@ -450,5 +452,44 @@ func TestRoutingSettingsChooseAPrimaryAndAFallback(t *testing.T) {
 	}
 	if got := r.call("PUT", "/v1/settings/routing", map[string]any{"primary_executor": "workers"}, "cmx_not_a_session"); got.status != http.StatusUnauthorized {
 		t.Fatalf("an API key changed routing: %d", got.status)
+	}
+}
+
+// The speech settings (D075): local by default, and a mode that uses the
+// API refused until one is connected.
+func TestSpeechSettingsNeedAConnectionForTheAPI(t *testing.T) {
+	r := newRig(t, config.Config{})
+	got := r.call("GET", "/v1/settings/speech", nil, "")
+	if got.status != http.StatusOK || got.body["mode"] != "local" || got.body["connection"] != nil {
+		t.Fatalf("default speech = %d %v", got.status, got.body)
+	}
+	for _, c := range []struct {
+		method, path string
+		body         map[string]any
+		status       int
+		code         string
+	}{
+		{"PUT", "/v1/settings/speech", map[string]any{"mode": "api"}, 409, "speech_not_connected"},
+		{"PUT", "/v1/settings/speech", map[string]any{"mode": "local_then_api"}, 409, "speech_not_connected"},
+		{"PUT", "/v1/settings/speech", map[string]any{"mode": "cloud"}, 400, "invalid_request"},
+		{"POST", "/v1/settings/speech/connect", map[string]any{"base_url": "ftp://x", "model": "m"}, 400, "invalid_request"},
+		{"POST", "/v1/settings/speech/connect", map[string]any{"base_url": "https://api.example.com/v1"}, 400, "invalid_request"},
+		{"DELETE", "/v1/settings/speech/connect", nil, 404, "not_found"},
+	} {
+		got := r.call(c.method, c.path, c.body, "")
+		if errBody, _ := got.body["error"].(map[string]any); got.status != c.status || errBody["code"] != c.code {
+			t.Errorf("%s %s %v = %d %v, want %d %s", c.method, c.path, c.body, got.status, got.body, c.status, c.code)
+		}
+	}
+	if got := r.call("PUT", "/v1/settings/speech", map[string]any{"mode": "local"}, ""); got.status != http.StatusOK || got.body["mode"] != "local" {
+		t.Fatalf("local = %d %v", got.status, got.body)
+	}
+	// Only the owner: an integration key can't read or change them.
+	key, _, err := apikeys.Create(context.Background(), r.pool, "prj_default", "app_dashboard", "k", apikeys.AllScopes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := r.call("GET", "/v1/settings/speech", nil, key); got.status != http.StatusUnauthorized {
+		t.Fatalf("an API key read the speech settings: %d", got.status)
 	}
 }

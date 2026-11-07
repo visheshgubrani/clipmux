@@ -36,6 +36,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/settings"
 	"github.com/visheshgubrani/clipmux/internal/setuptest"
 	"github.com/visheshgubrani/clipmux/internal/signingkeys"
+	"github.com/visheshgubrani/clipmux/internal/speechapi"
 	"github.com/visheshgubrani/clipmux/internal/tokens"
 	"github.com/visheshgubrani/clipmux/internal/webhooks"
 )
@@ -63,6 +64,9 @@ type API struct {
 	RunPod *runpod.Connector
 	// Modal runs Connect Modal; nil leaves its routes 404.
 	Modal *modal.Connector
+	// Speech connects a speech API and sets the speech mode (D075); nil
+	// leaves its routes 404.
+	Speech *speechapi.Service
 	// Life queues library moves; nil leaves their routes 404.
 	Life *lifecycle.Service
 	// Keys rotates the content key secret; nil leaves its route 404.
@@ -110,6 +114,10 @@ func (m *API) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/executors/runpod/connect", m.owned(m.connectRunPod))
 	mux.HandleFunc("POST /v1/executors/modal/connect", m.owned(m.connectModal))
 	mux.HandleFunc("DELETE /v1/executors/{kind}", m.owned(m.disconnectExecutor))
+	mux.HandleFunc("GET /v1/settings/speech", m.owned(m.getSpeech))
+	mux.HandleFunc("PUT /v1/settings/speech", m.owned(m.setSpeechMode))
+	mux.HandleFunc("POST /v1/settings/speech/connect", m.owned(m.connectSpeech))
+	mux.HandleFunc("DELETE /v1/settings/speech/connect", m.owned(m.disconnectSpeech))
 	mux.HandleFunc("GET /v1/apps", m.owned(m.listApps))
 	mux.HandleFunc("POST /v1/apps", m.owned(m.createApp))
 	mux.HandleFunc("POST /v1/apps/{id}/disable", m.owned(m.setDisabled(true)))

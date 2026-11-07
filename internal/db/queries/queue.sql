@@ -9,6 +9,7 @@ INSERT INTO jobs (id, project_id, asset_id, kind, pinned_agent_id, track_id, rou
 SELECT sqlc.arg(id), p.id, sqlc.arg(asset_id), sqlc.arg(kind)::text, sqlc.narg(pinned_agent_id)::text, sqlc.narg(track_id)::text,
        CASE WHEN sqlc.arg(kind)::text NOT IN ('transcode', 'reencode', 'upload_source', 'transcribe') THEN NULL
             WHEN sqlc.narg(pinned_agent_id)::text IS NOT NULL THEN 'agents'
+            WHEN t.executor IS NULL AND sqlc.arg(kind)::text = 'transcribe' AND p.speech_mode = 'api' THEN 'speech_api'
             ELSE coalesce(t.executor, p.primary_executor) END,
        CASE WHEN sqlc.arg(kind)::text NOT IN ('transcode', 'reencode', 'upload_source', 'transcribe') THEN NULL
             WHEN sqlc.narg(pinned_agent_id)::text IS NOT NULL THEN 'pinned'
@@ -160,7 +161,10 @@ FOR UPDATE SKIP LOCKED;
 -- What the router needs to place one job: the project's routing, whether
 -- each pull executor has an online worker that could claim the job, whether
 -- the job's asset may go to a fallback, and how long the job has waited.
-SELECT j.kind, p.primary_executor, p.fallback_executor, p.queue_age_fallback_minutes,
+SELECT j.kind, p.primary_executor, p.fallback_executor, p.queue_age_fallback_minutes, p.speech_mode,
+       -- The speech API takes transcriptions once a Connect verified it (D075).
+       EXISTS (SELECT 1 FROM ai_connections c WHERE c.project_id = j.project_id AND c.purpose = 'speech'
+                 AND c.verified_at IS NOT NULL)::boolean AS speech_api_up,
        coalesce(p.builtin_seen_at > now() - make_interval(secs => sqlc.arg(online_seconds)::double precision)
                 AND job_claimable_by(j.kind, j.asset_id, j.pinned_agent_id, NULL, false, false, p.builtin_free_disk_bytes,
                                      p.builtin_speech),

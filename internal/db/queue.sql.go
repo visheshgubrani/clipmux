@@ -135,6 +135,7 @@ INSERT INTO jobs (id, project_id, asset_id, kind, pinned_agent_id, track_id, rou
 SELECT $1, p.id, $2, $3::text, $4::text, $5::text,
        CASE WHEN $3::text NOT IN ('transcode', 'reencode', 'upload_source', 'transcribe') THEN NULL
             WHEN $4::text IS NOT NULL THEN 'agents'
+            WHEN t.executor IS NULL AND $3::text = 'transcribe' AND p.speech_mode = 'api' THEN 'speech_api'
             ELSE coalesce(t.executor, p.primary_executor) END,
        CASE WHEN $3::text NOT IN ('transcode', 'reencode', 'upload_source', 'transcribe') THEN NULL
             WHEN $4::text IS NOT NULL THEN 'pinned'
@@ -437,7 +438,10 @@ func (q *Queries) InsertOutbox(ctx context.Context, arg InsertOutboxParams) erro
 }
 
 const jobRouteFacts = `-- name: JobRouteFacts :one
-SELECT j.kind, p.primary_executor, p.fallback_executor, p.queue_age_fallback_minutes,
+SELECT j.kind, p.primary_executor, p.fallback_executor, p.queue_age_fallback_minutes, p.speech_mode,
+       -- The speech API takes transcriptions once a Connect verified it (D075).
+       EXISTS (SELECT 1 FROM ai_connections c WHERE c.project_id = j.project_id AND c.purpose = 'speech'
+                 AND c.verified_at IS NOT NULL)::boolean AS speech_api_up,
        coalesce(p.builtin_seen_at > now() - make_interval(secs => $1::double precision)
                 AND job_claimable_by(j.kind, j.asset_id, j.pinned_agent_id, NULL, false, false, p.builtin_free_disk_bytes,
                                      p.builtin_speech),
@@ -498,6 +502,8 @@ type JobRouteFactsRow struct {
 	PrimaryExecutor         string
 	FallbackExecutor        pgtype.Text
 	QueueAgeFallbackMinutes pgtype.Int4
+	SpeechMode              string
+	SpeechApiUp             bool
 	BuiltinUp               bool
 	AgentsUp                bool
 	FallbackEligible        pgtype.Bool
@@ -522,6 +528,8 @@ func (q *Queries) JobRouteFacts(ctx context.Context, arg JobRouteFactsParams) (J
 		&i.PrimaryExecutor,
 		&i.FallbackExecutor,
 		&i.QueueAgeFallbackMinutes,
+		&i.SpeechMode,
+		&i.SpeechApiUp,
 		&i.BuiltinUp,
 		&i.AgentsUp,
 		&i.FallbackEligible,

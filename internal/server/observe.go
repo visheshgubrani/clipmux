@@ -16,6 +16,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/db"
 	cm "github.com/visheshgubrani/clipmux/internal/metrics"
 	"github.com/visheshgubrani/clipmux/internal/queue"
+	"github.com/visheshgubrani/clipmux/internal/speechapi"
 	"github.com/visheshgubrani/clipmux/internal/sweeper"
 	"github.com/visheshgubrani/clipmux/internal/tracks"
 )
@@ -187,6 +188,7 @@ var knownCodes = map[string]bool{
 	// Tracks (P5 track B): a transcription's and its worker's codes.
 	tracks.CodeNoAudio: true, tracks.CodeTranscribeFailed: true, tracks.CodeTranscriptInvalid: true,
 	tracks.CodeTranscribeUnavailable: true, tracks.CodeSubtitlesFailed: true, "model_unavailable": true,
+	speechapi.CodeUnavailable: true, speechapi.CodeRejected: true,
 }
 
 func boundCode(code string) string {

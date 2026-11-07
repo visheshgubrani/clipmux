@@ -70,6 +70,23 @@ func (q *Queries) CreateTrack(ctx context.Context, arg CreateTrackParams) (Track
 	return i, err
 }
 
+const deleteAIConnection = `-- name: DeleteAIConnection :execrows
+DELETE FROM ai_connections WHERE project_id = $1 AND purpose = $2
+`
+
+type DeleteAIConnectionParams struct {
+	ProjectID string
+	Purpose   string
+}
+
+func (q *Queries) DeleteAIConnection(ctx context.Context, arg DeleteAIConnectionParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteAIConnection, arg.ProjectID, arg.Purpose)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const deleteTranscriptsForAsset = `-- name: DeleteTranscriptsForAsset :execrows
 DELETE FROM transcripts WHERE asset_id = $1
 `
@@ -173,6 +190,45 @@ func (q *Queries) ErrorTrack(ctx context.Context, arg ErrorTrackParams) (Track, 
 		&i.DeletedAt,
 	)
 	return i, err
+}
+
+const getAIConnection = `-- name: GetAIConnection :one
+SELECT id, project_id, purpose, provider, base_url, model, response_format, key_sealed, verified_at, created_at, updated_at FROM ai_connections WHERE project_id = $1 AND purpose = $2
+`
+
+type GetAIConnectionParams struct {
+	ProjectID string
+	Purpose   string
+}
+
+func (q *Queries) GetAIConnection(ctx context.Context, arg GetAIConnectionParams) (AiConnection, error) {
+	row := q.db.QueryRow(ctx, getAIConnection, arg.ProjectID, arg.Purpose)
+	var i AiConnection
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.Purpose,
+		&i.Provider,
+		&i.BaseUrl,
+		&i.Model,
+		&i.ResponseFormat,
+		&i.KeySealed,
+		&i.VerifiedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getSpeechMode = `-- name: GetSpeechMode :one
+SELECT speech_mode FROM projects WHERE id = $1
+`
+
+func (q *Queries) GetSpeechMode(ctx context.Context, id string) (string, error) {
+	row := q.db.QueryRow(ctx, getSpeechMode, id)
+	var speech_mode string
+	err := row.Scan(&speech_mode)
+	return speech_mode, err
 }
 
 const getTrack = `-- name: GetTrack :one
@@ -480,6 +536,71 @@ func (q *Queries) PublishTrack(ctx context.Context, arg PublishTrackParams) (Tra
 		&i.ReadyAt,
 		&i.RetiredAt,
 		&i.DeletedAt,
+	)
+	return i, err
+}
+
+const setSpeechMode = `-- name: SetSpeechMode :exec
+UPDATE projects SET speech_mode = $2 WHERE id = $1
+`
+
+type SetSpeechModeParams struct {
+	ID         string
+	SpeechMode string
+}
+
+func (q *Queries) SetSpeechMode(ctx context.Context, arg SetSpeechModeParams) error {
+	_, err := q.db.Exec(ctx, setSpeechMode, arg.ID, arg.SpeechMode)
+	return err
+}
+
+const upsertAIConnection = `-- name: UpsertAIConnection :one
+INSERT INTO ai_connections (id, project_id, purpose, provider, base_url, model, response_format, key_sealed, verified_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now())
+ON CONFLICT (project_id, purpose) DO UPDATE
+SET provider = EXCLUDED.provider, base_url = EXCLUDED.base_url, model = EXCLUDED.model,
+    response_format = EXCLUDED.response_format, key_sealed = EXCLUDED.key_sealed,
+    verified_at = now(), updated_at = now()
+RETURNING id, project_id, purpose, provider, base_url, model, response_format, key_sealed, verified_at, created_at, updated_at
+`
+
+type UpsertAIConnectionParams struct {
+	ID             string
+	ProjectID      string
+	Purpose        string
+	Provider       string
+	BaseUrl        pgtype.Text
+	Model          string
+	ResponseFormat pgtype.Text
+	KeySealed      []byte
+}
+
+// Connect saves a verified connection, replacing the project's one for
+// that purpose; the key is sealed for this row's ID.
+func (q *Queries) UpsertAIConnection(ctx context.Context, arg UpsertAIConnectionParams) (AiConnection, error) {
+	row := q.db.QueryRow(ctx, upsertAIConnection,
+		arg.ID,
+		arg.ProjectID,
+		arg.Purpose,
+		arg.Provider,
+		arg.BaseUrl,
+		arg.Model,
+		arg.ResponseFormat,
+		arg.KeySealed,
+	)
+	var i AiConnection
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.Purpose,
+		&i.Provider,
+		&i.BaseUrl,
+		&i.Model,
+		&i.ResponseFormat,
+		&i.KeySealed,
+		&i.VerifiedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
 	)
 	return i, err
 }

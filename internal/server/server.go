@@ -39,6 +39,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/settings"
 	"github.com/visheshgubrani/clipmux/internal/setuptest"
 	"github.com/visheshgubrani/clipmux/internal/signingkeys"
+	"github.com/visheshgubrani/clipmux/internal/speechapi"
 	"github.com/visheshgubrani/clipmux/internal/storage"
 	"github.com/visheshgubrani/clipmux/internal/stores"
 	"github.com/visheshgubrani/clipmux/internal/sweeper"
@@ -86,6 +87,10 @@ const WebhookInterval = 5 * time.Second
 // unpublishes and second passes.
 const ControlJobInterval = 15 * time.Second
 
+// SpeechAPIInterval is how often serve takes the next transcription routed
+// to the speech API, one per pass.
+const SpeechAPIInterval = 5 * time.Second
+
 // RetentionInterval is how often rows past their windows are pruned
 // (D069).
 const RetentionInterval = time.Hour
@@ -113,6 +118,7 @@ var passTimeouts = map[string]time.Duration{
 	"machine_reconciler":   5 * time.Minute,
 	"stranded_pinned_jobs": time.Minute,
 	"speech_wait":          time.Minute,
+	"speech_api":           2 * time.Hour, // one whole transcription, every chunk of it
 	"uploads":              5 * time.Minute,
 	"routes":               5 * time.Minute,  // storage writes for pending route records
 	"route_reconciler":     30 * time.Minute, // lists every route record
@@ -373,6 +379,9 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 		return nil, fmt.Errorf("no adapter for provider %q", row.Kind)
 	}
 	mgmt.RunPod, mgmt.Modal = rp, md
+	speech := speechapi.NewService(pool, box, db.DefaultProjectID)
+	speech.Logger = logger
+	mgmt.Speech = speech
 	assetsAPI := assets.New(pool)
 	assetsAPI.Drain = drain
 	// The dashboard calls the integration API with the owner's session,
@@ -422,6 +431,15 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 	loop(WebhookInterval, "webhooks", hooks.Run)
 	loop(ControlJobInterval, "control_jobs", life.Run)
 	loop(ControlJobInterval, "imports", life.RunImports)
+	// Transcriptions routed to the speech API run here (D075), one at a
+	// time; the drain hands one in flight back.
+	speechAudio := obs.reg.Counter("clipmux_speech_api_audio_seconds_total", "Seconds of audio sent to the speech API.")
+	speechRunner := &speechapi.Runner{
+		Pool: pool, Queue: q, Stores: set, Keys: keys, Box: box, Publisher: worker.Tracks,
+		HTTP: http.DefaultClient, Logger: logger, Drain: drain,
+		OnAudio: func(seconds float64) { speechAudio.Add(seconds) },
+	}
+	loop(SpeechAPIInterval, "speech_api", speechRunner.Run)
 	loop(SetupTestInterval, "setup_tests", tests.Run)
 	prune := retention.New(pool)
 	prune.Logger = logger

@@ -27,7 +27,30 @@ const (
 	RouteBuiltin = "builtin"
 	RouteModal   = "modal"
 	RouteRunPod  = "runpod"
+	// RouteSpeechAPI is serve itself, sending a transcription to the
+	// connected speech API (D075). Only transcriptions go there.
+	RouteSpeechAPI = "speech_api"
 )
+
+// Speech modes (projects.speech_mode, D075): where transcriptions go.
+const (
+	SpeechLocal        = "local"
+	SpeechAPI          = "api"
+	SpeechLocalThenAPI = "local_then_api"
+)
+
+// speechRoute is a transcription's primary and fallback under a speech
+// mode: the project's own executors, the API alone, or the executors with
+// the API as their fallback (in place of a machine).
+func speechRoute(mode, primary, fallback string) (string, string) {
+	switch mode {
+	case SpeechAPI:
+		return RouteSpeechAPI, ""
+	case SpeechLocalThenAPI:
+		return primary, RouteSpeechAPI
+	}
+	return primary, fallback
+}
 
 // Route reasons, kept on the job while it is queued and copied to the
 // attempt that claims it.
@@ -84,6 +107,8 @@ var CapacityCodes = []string{
 	"scratch_full",
 	// A worker couldn't fetch or open its speech model.
 	"model_unavailable",
+	// The speech API didn't answer or was busy (D075).
+	"speech_api_unavailable",
 }
 
 // classes are the routes a worker of this executor claims.
@@ -169,6 +194,8 @@ func (q *Queue) up(class string, row db.JobRouteFactsRow) bool {
 		return q.Dispatch != nil && row.ModalUp
 	case RouteRunPod:
 		return q.Dispatch != nil && row.RunpodUp
+	case RouteSpeechAPI:
+		return row.Kind == "transcribe" && row.SpeechApiUp
 	}
 	return false
 }
@@ -222,13 +249,17 @@ func (q *Queue) Route(ctx context.Context, limit int) (int, error) {
 				// respects the provider's limits.
 				wake = q.Dispatch != nil && row.ForcedConfigured && room(to, row)
 			} else {
+				primary, fallback := row.PrimaryExecutor, row.FallbackExecutor.String
+				if row.Kind == "transcribe" {
+					primary, fallback = speechRoute(row.SpeechMode, primary, fallback)
+				}
 				to, reason = decideRoute(routeFacts{
-					Primary:          row.PrimaryExecutor,
-					Fallback:         row.FallbackExecutor.String,
-					PrimaryUp:        q.up(row.PrimaryExecutor, row),
-					FallbackUp:       row.FallbackExecutor.Valid && q.up(row.FallbackExecutor.String, row),
-					PrimaryRoom:      room(row.PrimaryExecutor, row),
-					FallbackRoom:     room(row.FallbackExecutor.String, row),
+					Primary:          primary,
+					Fallback:         fallback,
+					PrimaryUp:        q.up(primary, row),
+					FallbackUp:       fallback != "" && q.up(fallback, row),
+					PrimaryRoom:      room(primary, row),
+					FallbackRoom:     room(fallback, row),
 					FallbackEligible: row.FallbackEligible.Bool,
 					QueueAge:         time.Duration(row.QueueAgeFallbackMinutes.Int32) * time.Minute,
 					Waited:           time.Duration(row.WaitedSeconds * float64(time.Second)),
