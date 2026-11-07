@@ -73,6 +73,14 @@ func Fixed(s storage.Storage) *Set { return &Set{fixed: s} }
 
 // Get returns the store a config ID names.
 func (s *Set) Get(ctx context.Context, id string) (storage.Storage, error) {
+	return s.GetIn(ctx, db.New(s.pool), id)
+}
+
+// GetIn is Get reading through q, a caller's transaction. Inside a
+// transaction, a lookup through the pool would need a second connection
+// while holding one, and a burst of such requests larger than the pool
+// would wait on each other forever.
+func (s *Set) GetIn(ctx context.Context, q *db.Queries, id string) (storage.Storage, error) {
 	if s.fixed != nil {
 		return s.fixed, nil
 	}
@@ -82,7 +90,7 @@ func (s *Set) Get(ctx context.Context, id string) (storage.Storage, error) {
 	if ok {
 		return st, nil
 	}
-	row, err := db.New(s.pool).GetStorageConfig(ctx, id)
+	row, err := q.GetStorageConfig(ctx, id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, fmt.Errorf("%w: %s", ErrUnknown, id)
 	}
@@ -104,14 +112,20 @@ func (s *Set) Get(ctx context.Context, id string) (storage.Storage, error) {
 
 // ForAsset returns the store holding an asset's source and outputs.
 func (s *Set) ForAsset(ctx context.Context, assetID string) (storage.Storage, error) {
+	return s.ForAssetIn(ctx, db.New(s.pool), assetID)
+}
+
+// ForAssetIn is ForAsset reading through q, a caller's transaction (see
+// GetIn).
+func (s *Set) ForAssetIn(ctx context.Context, q *db.Queries, assetID string) (storage.Storage, error) {
 	if s.fixed != nil {
 		return s.fixed, nil
 	}
-	id, err := db.New(s.pool).AssetStorageID(ctx, assetID)
+	id, err := q.AssetStorageID(ctx, assetID)
 	if err != nil {
 		return nil, fmt.Errorf("storage of %s: %w", assetID, err)
 	}
-	return s.Get(ctx, id)
+	return s.GetIn(ctx, q, id)
 }
 
 // Default returns the project's default store, which new assets use.

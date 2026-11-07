@@ -2,6 +2,8 @@ package delivery
 
 import (
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,9 +15,11 @@ import (
 func TestALoadThatRacesAnInvalidationIsntKept(t *testing.T) {
 	h := &Handler{Now: time.Now}
 	h.cache = newCache(h.Now)
+	var seen []string
+	h.OnCacheLookup(func(table string, hit bool) { seen = append(seen, fmt.Sprintf("%s:%v", table, hit)) })
 	loads := 0
 	get := func(during func()) {
-		_, _ = lookup(h.cache, func() map[string]cached[db.Output] { return h.cache.outputs }, "out_1", func() (db.Output, error) {
+		_, _ = lookup(h.cache, "output", func() map[string]cached[db.Output] { return h.cache.outputs }, "out_1", func() (db.Output, error) {
 			loads++
 			if during != nil {
 				during()
@@ -32,6 +36,9 @@ func TestALoadThatRacesAnInvalidationIsntKept(t *testing.T) {
 	if loads != 2 {
 		t.Fatalf("loads = %d: a clean load wasn't cached", loads)
 	}
+	if got := strings.Join(seen, " "); got != "output:false output:false output:true" {
+		t.Fatalf("lookups reported %s", got)
+	}
 }
 
 func TestUnknownIDsAreRememberedBriefly(t *testing.T) {
@@ -40,7 +47,7 @@ func TestUnknownIDsAreRememberedBriefly(t *testing.T) {
 	h.cache = newCache(h.Now)
 	loads := 0
 	miss := func() error {
-		_, err := lookup(h.cache, func() map[string]cached[db.GetRouteRow] { return h.cache.routes }, "pid_new", func() (db.GetRouteRow, error) {
+		_, err := lookup(h.cache, "route", func() map[string]cached[db.GetRouteRow] { return h.cache.routes }, "pid_new", func() (db.GetRouteRow, error) {
 			loads++
 			return db.GetRouteRow{}, pgx.ErrNoRows
 		})

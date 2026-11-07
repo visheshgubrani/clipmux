@@ -441,6 +441,15 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 	loop(ControlJobInterval, "imports", life.RunImports)
 	// Transcriptions routed to the speech API run here (D075), one at a
 	// time; the drain hands one in flight back.
+	cacheLookups := obs.reg.Counter("clipmux_delivery_cache_lookups_total",
+		"Delivery's route cache lookups, by table and result (hit or miss).", "table", "result")
+	playback.OnCacheLookup(func(table string, hit bool) {
+		if hit {
+			cacheLookups.Inc(table, "hit")
+		} else {
+			cacheLookups.Inc(table, "miss")
+		}
+	})
 	speechAudio := obs.reg.Counter("clipmux_speech_api_audio_seconds_total", "Seconds of audio sent to the speech API.")
 	speechRunner := &speechapi.Runner{
 		Pool: pool, Queue: q, Stores: set, Keys: keys, Box: box, Publisher: worker.Tracks,

@@ -683,6 +683,11 @@ The built-in worker is a separate process that holds only an attempt token. It h
 | Secrets read from the database | Adapter secrets, the internal signing key and the content key secret encrypted with a key held outside Postgres |
 | Cloudflare token stolen | The app forgets the raw token after setup and keeps only the ID and hash its S3 credentials need. A stolen token can still deploy a Worker that reads Worker secrets, so revoke it and rotate the content key secret |
 | Forged webhooks | HMAC signature with a timestamp |
+| Subtitles or chapters read from storage | Each track's VTT sealed with AES-128-GCM under a key derived per track from the content key secret, with the storage key as associated data, so a tampered or moved object doesn't open; the Cloudflare Worker caches the ciphertext and decrypts after its cache (D079, D081) |
+| A thumbnail token reads a transcript | `t` tokens get 403 on `tracks/`; the transcript API needs an API key or the owner's session |
+| Transcript text sent to the chapters LLM, or audio to a speech API | Off until the owner connects one; the Connect card and docs say what leaves; only the transcript (chapters) or the output's audio (speech) is sent, never a source, a key or another asset's data (D075, D083) |
+| Speech tells the LLM to ignore its rules (prompt injection) | The transcript goes as delimited data with its `<` and `>` replaced, the rules only in the system prompt, a strict schema, and every boundary and time checked and derived locally; the worst a hostile transcript can do is name its own chapters |
+| A speech API or LLM key leaked | Sealed in `ai_connections` with the secrets key, opened only in serve for each job, never sent to a worker, logged or returned; disconnecting forgets it |
 
 ## First run and packaging
 

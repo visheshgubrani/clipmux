@@ -175,7 +175,7 @@ func (s *Service) Create(ctx context.Context, key apikeys.Key, req CreateRequest
 		if _, err := tracks.Create(ctx, q, key.ProjectID, asset.ID, req.Generate); err != nil {
 			return err
 		}
-		store, err := s.stores.Get(ctx, st.ID)
+		store, err := s.stores.GetIn(ctx, q, st.ID)
 		if err != nil {
 			return err
 		}
@@ -491,7 +491,7 @@ func (s *Service) sweepOne(ctx context.Context, id string) (bool, error) {
 		if err != nil || up.Status != "active" {
 			return err // cancelled, expired or completed since listing: never touch it
 		}
-		store, err := s.stores.ForAsset(ctx, up.AssetID)
+		store, err := s.stores.ForAssetIn(ctx, q, up.AssetID)
 		if err != nil {
 			return err
 		}

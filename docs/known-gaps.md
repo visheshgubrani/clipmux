@@ -54,6 +54,13 @@ when you introduce or discover it; remove it when it is closed.
   (`stores.AddS3`) until Connect Cloudflare (P2-T04); there is no API or
   dashboard form for a generic S3 bucket, and no way to remove a config or
   rotate its credentials.
+- Phase 5 exited in CI (D085). Still to run: `exit-llm.yml` and the
+  providers' speech run on real accounts, Safari and ExoPlayer showing
+  subtitles, and on the real binary the retention, backup-and-restore and
+  key-rotation drills, TOTP in a browser, the Cloudflare edge's revoked
+  track and a move to R2 with subtitles, and RunPod as a transcription's
+  fallback. The drain check doesn't yet cover a throttled segment GET or a
+  part PUT finishing.
 - One serve replica is the supported shape (D063). One replica runs the
   background loops (advisory-lock leader, D035), but the rate limits, the
   sign-in and setup limits, the setup token, the drain flag, the route
@@ -122,9 +129,26 @@ when you introduce or discover it; remove it when it is closed.
   waits for the primary without a bound, shown as `fallback_refused`.
 - The content key secret can't be rotated; when it can, rotation must
   redeploy the Worker's ring through Connect before new outputs use it.
-- No captions, chapters or transcripts. The LMS depends on them, so they gate
-  the LMS migration (plans/lms-migration.md). Phase 5 adds them
-  (plans/P5-production.md, D063).
+- Subtitles, transcripts and chapters exist (Phase 5, D076–D084) and meet
+  the LMS's needs by contract test (D085); the cutover itself is the next
+  step (plans/lms-migration.md). What they don't do yet: uploaded caption
+  files (`source: uploaded` is reserved), more than one language per asset,
+  a language hint, translation, or editing a transcript. Word timings come
+  from whisper.cpp's tokens, coarser than clipmux-lms's whisperX alignment,
+  and with a speech API from whatever the provider returns (a sentence per
+  cue when it gives no word times). Cues follow the encoded output's
+  timeline, which starts at zero; a source whose audio started late relative
+  to its video (an A/V offset) keeps that offset dropped by the encode, as
+  every output does. Language detection on the owner's own English, Hindi
+  and Hinglish recordings is still unmeasured (they aren't recorded yet), as
+  is NVIDIA speech on Modal's L4 (D077).
+- Chapters send the transcript's text to the connected LLM provider on
+  every generation; there is no spend estimate for them either. A Claude
+  refusal is final (no fallback model, by design, D083).
+- The setup test proves subtitles only when something can transcribe as it
+  starts, so a first boot's test usually skips them, and a provider's setup
+  test doesn't prove its speech (D084); `exit-providers.yml` does, once
+  T00's secrets exist.
 - The speech API (D075) has no spend cap or estimate: every transcription a
   project in `api` or `local_then_api` mode sends is billed by the provider.
   Chunks are cut at segment boundaries without overlap, so a word spoken
@@ -132,10 +156,20 @@ when you introduce or discover it; remove it when it is closed.
   provider accepts fragmented MP4 is proven only at Connect. serve sends one
   transcription to the API at a time (D080), so a burst of uploads in `api`
   mode queues behind it.
-- Phase 5's hardening track is complete (D074; D064–D073). Its exit checks
-  still to run are the phase exit's (P5-T20): the soak run, the Playwright
-  suites under the enforced CSP and TOTP in a browser, a backup-and-restore
-  drill, rotation on the real binary, and CI's compose checks on a runner.
+- Phase 5 exited in CI (D085). Still to run: `exit-llm.yml` and the
+  providers' speech run on real accounts, Safari and ExoPlayer showing
+  subtitles, and on the real binary the retention, backup-and-restore and
+  key-rotation drills, TOTP in a browser, the Cloudflare edge's revoked
+  track and a move to R2 with subtitles, and RunPod as a transcription's
+  fallback. The drain check doesn't yet cover a throttled segment GET or a
+  part PUT finishing.
+- One serve replica is the supported shape (D063): rate limits, the route
+  cache, the speech and chapters runners and the drain flag live in one
+  process. High availability, and OpenTelemetry tracing, are not built.
+  Jobs, attempts and dispatches are kept forever as history and spend, so
+  those tables only grow. Owner-configured URLs (webhook endpoints, the
+  speech API, the chapters LLM) aren't filtered for private addresses, by
+  design (D018).
 - Background loops' log lines carry job and attempt IDs where they log them
   by hand; only request lines and the worker's attempt lines carry them
   throughout. Each `/metrics` scrape counts finished attempts with a scan of

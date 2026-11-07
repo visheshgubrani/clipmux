@@ -30,6 +30,9 @@ type cache struct {
 	outputs map[string]cached[db.Output]
 	// tracks are each asset's servable tracks, by asset ID.
 	tracks map[string]cached[[]db.ListServableTracksRow]
+	// onLookup, when set, is told each lookup's table and whether it hit
+	// (clipmux_delivery_cache_lookups_total).
+	onLookup func(table string, hit bool)
 }
 
 type cached[T any] struct {
@@ -60,12 +63,17 @@ func (c *cache) clear() {
 
 // lookup returns a cached value, or loads it and keeps it unless an
 // invalidation happened meanwhile. A load that fails isn't kept.
-func lookup[T any](c *cache, m func() map[string]cached[T], id string, load func() (T, error)) (T, error) {
+func lookup[T any](c *cache, table string, m func() map[string]cached[T], id string, load func() (T, error)) (T, error) {
 	c.mu.Lock()
 	e, ok := m()[id]
 	gen := c.gen
+	report := c.onLookup
 	c.mu.Unlock()
-	if ok && c.now().Before(e.until) {
+	hit := ok && c.now().Before(e.until)
+	if report != nil {
+		report(table, hit)
+	}
+	if hit {
 		if !e.found {
 			var zero T
 			return zero, pgx.ErrNoRows
@@ -93,24 +101,24 @@ func lookup[T any](c *cache, m func() map[string]cached[T], id string, load func
 }
 
 func (c *cache) route(ctx context.Context, q *db.Queries, pid string) (db.GetRouteRow, error) {
-	return lookup(c, func() map[string]cached[db.GetRouteRow] { return c.routes }, pid,
+	return lookup(c, "route", func() map[string]cached[db.GetRouteRow] { return c.routes }, pid,
 		func() (db.GetRouteRow, error) { return q.GetRoute(ctx, pid) })
 }
 
 func (c *cache) signingKey(ctx context.Context, q *db.Queries, kid string) (db.SigningKey, error) {
-	return lookup(c, func() map[string]cached[db.SigningKey] { return c.keys }, kid,
+	return lookup(c, "signing_key", func() map[string]cached[db.SigningKey] { return c.keys }, kid,
 		func() (db.SigningKey, error) { return q.GetSigningKey(ctx, kid) })
 }
 
 func (c *cache) output(ctx context.Context, q *db.Queries, id string) (db.Output, error) {
-	return lookup(c, func() map[string]cached[db.Output] { return c.outputs }, id,
+	return lookup(c, "output", func() map[string]cached[db.Output] { return c.outputs }, id,
 		func() (db.Output, error) { return q.GetOutput(ctx, id) })
 }
 
 // tracksOf returns an asset's servable tracks, in ID order. An asset with
 // none is cached as found and empty.
 func (c *cache) tracksOf(ctx context.Context, q *db.Queries, assetID string) ([]db.ListServableTracksRow, error) {
-	return lookup(c, func() map[string]cached[[]db.ListServableTracksRow] { return c.tracks }, assetID,
+	return lookup(c, "tracks", func() map[string]cached[[]db.ListServableTracksRow] { return c.tracks }, assetID,
 		func() ([]db.ListServableTracksRow, error) { return q.ListServableTracks(ctx, assetID) })
 }
 
@@ -136,4 +144,11 @@ func (h *Handler) InvalidateKeys() {
 	defer c.mu.Unlock()
 	c.gen++
 	c.keys = map[string]cached[db.SigningKey]{}
+}
+
+// OnCacheLookup reports every cache lookup, by table and whether it hit.
+func (h *Handler) OnCacheLookup(fn func(table string, hit bool)) {
+	h.cache.mu.Lock()
+	defer h.cache.mu.Unlock()
+	h.cache.onLookup = fn
 }

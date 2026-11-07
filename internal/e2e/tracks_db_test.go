@@ -47,6 +47,41 @@ type aiFakes struct {
 	hold chan struct{}
 	// entered is signalled as each held transcription arrives.
 	entered chan struct{}
+	// reject, while set, refuses every transcription with 400.
+	reject bool
+}
+
+// holdTranscriptions keeps transcriptions waiting until release.
+func (f *aiFakes) holdTranscriptions() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.hold = make(chan struct{})
+}
+
+// release lets held transcriptions answer.
+func (f *aiFakes) release() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.hold != nil {
+		close(f.hold)
+		f.hold = nil
+	}
+}
+
+func (f *aiFakes) rejectTranscriptions(on bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.reject = on
+}
+
+// waitEntered waits for a held transcription to arrive.
+func (f *aiFakes) waitEntered(t *testing.T, limit time.Duration) {
+	t.Helper()
+	select {
+	case <-f.entered:
+	case <-time.After(limit):
+		t.Fatalf("no transcription reached the speech API within %s", limit)
+	}
 }
 
 var segmentID = regexp.MustCompile(`(?m)^(s\d+): `)
@@ -67,8 +102,13 @@ func newAIFakes(t *testing.T) *aiFakes {
 			_ = r.ParseMultipartForm(64 << 20)
 			f.mu.Lock()
 			f.transcriptions++
-			hold := f.hold
+			hold, reject := f.hold, f.reject
 			f.mu.Unlock()
+			if reject {
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = io.WriteString(w, `{"error":{"message":"this file can't be transcribed"}}`)
+				return
+			}
 			if hold != nil {
 				f.entered <- struct{}{}
 				select {

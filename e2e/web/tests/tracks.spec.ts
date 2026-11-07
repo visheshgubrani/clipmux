@@ -1,4 +1,5 @@
 import { expect, type Page, test } from '@playwright/test'
+import { watchCSP } from './csp.ts'
 
 // Subtitles and chapters (P5-T18, exit checks 14 and 15) on the real serve
 // the fixture boots, whose video was transcribed by a fake speech API and
@@ -158,6 +159,7 @@ async function signIn(page: Page, cfg: Config) {
 test('the dashboard shows tracks, their transcript and chapters, and makes and deletes them', async ({
   page,
 }) => {
+  const noViolations = await watchCSP(page)
   const cfg = await config(page)
   await signIn(page, cfg)
   await page.goto(`${cfg.ops}/assets/${cfg.asset_id}?app=${cfg.app_id}`)
@@ -182,9 +184,11 @@ test('the dashboard shows tracks, their transcript and chapters, and makes and d
   page.once('dialog', (d) => void d.accept())
   await chapters.getByRole('button', { name: 'Delete' }).click()
   await expect(chapters).toHaveCount(0)
+  await noViolations()
 })
 
 test('the owner connects an LLM and sees which PCs can transcribe', async ({ page }) => {
+  const noViolations = await watchCSP(page)
   const cfg = await config(page)
   await signIn(page, cfg)
   await page.getByRole('navigation').getByRole('link', { name: 'Captions' }).click()
@@ -208,4 +212,5 @@ test('the owner connects an LLM and sees which PCs can transcribe', async ({ pag
 
   await page.getByRole('navigation').getByRole('link', { name: 'Workers' }).click()
   await expect(page.getByRole('row', { name: /studio-pc/ })).toContainText('vulkan, cpu')
+  await noViolations()
 })
