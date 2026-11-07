@@ -36,7 +36,7 @@ are always sandboxed.
 Claims and runs media jobs. A connected PC keeps its server and key in
 agent.json under CLIPMUX_AGENT_DIR (default: your config directory), so the
 key never shows up in a process listing. Tools are found on PATH, or set with
-CLIPMUX_FFMPEG, CLIPMUX_FFPROBE and CLIPMUX_PACKAGER.
+CLIPMUX_FFMPEG, CLIPMUX_FFPROBE, CLIPMUX_PACKAGER and CLIPMUX_WHISPER.
 `
 
 // runWorker runs `clipmux worker`.
@@ -90,6 +90,7 @@ func runWorker(args []string, getenv func(string) string, stderr io.Writer) int 
 	tools.FFmpeg = orEnv(getenv("CLIPMUX_FFMPEG"), tools.FFmpeg)
 	tools.FFprobe = orEnv(getenv("CLIPMUX_FFPROBE"), tools.FFprobe)
 	tools.Packager = orEnv(getenv("CLIPMUX_PACKAGER"), tools.Packager)
+	tools.Whisper = orEnv(getenv("CLIPMUX_WHISPER"), tools.Whisper)
 
 	logger, err := logging.FromEnv(getenv, stderr)
 	if err != nil {

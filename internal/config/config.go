@@ -90,7 +90,7 @@ type Config struct {
 	// sets it, not the environment.
 	Version string
 	// Tools are the media binaries (CLIPMUX_FFMPEG, CLIPMUX_FFPROBE,
-	// CLIPMUX_PACKAGER; default: found on PATH).
+	// CLIPMUX_PACKAGER, CLIPMUX_WHISPER; default: found on PATH).
 	Tools media.Tools
 }
 
@@ -186,6 +186,7 @@ func FromEnv(getenv func(string) string) (Config, error) {
 	cfg.Tools.FFmpeg = orDefault(getenv("CLIPMUX_FFMPEG"), cfg.Tools.FFmpeg)
 	cfg.Tools.FFprobe = orDefault(getenv("CLIPMUX_FFPROBE"), cfg.Tools.FFprobe)
 	cfg.Tools.Packager = orDefault(getenv("CLIPMUX_PACKAGER"), cfg.Tools.Packager)
+	cfg.Tools.Whisper = orDefault(getenv("CLIPMUX_WHISPER"), cfg.Tools.Whisper)
 	return cfg, nil
 }
 

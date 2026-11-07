@@ -121,8 +121,11 @@ func Args(p Policy, argv ...string) []string {
 }
 
 // EnvAllowed are the driver variables a tool may receive: they pick a VAAPI
-// driver or a GPU, and carry no secrets.
-var EnvAllowed = []string{"LIBVA_DRIVER_NAME", "LIBVA_DRIVERS_PATH", "CUDA_VISIBLE_DEVICES", "CUDA_DEVICE_ORDER"}
+// driver, a Vulkan driver (whisper.cpp) or a GPU, and carry no secrets.
+var EnvAllowed = []string{
+	"LIBVA_DRIVER_NAME", "LIBVA_DRIVERS_PATH", "CUDA_VISIBLE_DEVICES", "CUDA_DEVICE_ORDER",
+	"VK_ICD_FILENAMES", "VK_DRIVER_FILES", "MESA_VK_DEVICE_SELECT", "GGML_VK_VISIBLE_DEVICES",
+}
 
 // Env keeps the NAME=VALUE pairs whose name is in EnvAllowed.
 func Env(pairs []string) []string {

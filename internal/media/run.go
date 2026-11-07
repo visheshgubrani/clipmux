@@ -34,6 +34,8 @@ var ErrUnsupportedSource = errors.New("media: unsupported or corrupt source")
 // Tools are the binaries the pipeline runs.
 type Tools struct {
 	FFmpeg, FFprobe, Packager string
+	// Whisper is whisper-cli, or "" on a worker that doesn't transcribe.
+	Whisper string
 	// Sandbox, when set, confines every tool (internal/sandbox).
 	Sandbox *Sandbox
 	// HW is what this worker's GPUs proved they can do; the zero value
@@ -72,7 +74,9 @@ func (t Tools) In(dir string, read ...string) Tools {
 }
 
 // DefaultTools finds the binaries on PATH.
-func DefaultTools() Tools { return Tools{FFmpeg: "ffmpeg", FFprobe: "ffprobe", Packager: "packager"} }
+func DefaultTools() Tools {
+	return Tools{FFmpeg: "ffmpeg", FFprobe: "ffprobe", Packager: "packager", Whisper: "whisper-cli"}
+}
 
 // Versions reports the tool versions, e.g. "8.0.1-3ubuntu2" and "v3.9.3".
 func (t Tools) Versions(ctx context.Context) (ToolVersions, error) {

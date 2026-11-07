@@ -2,9 +2,9 @@
 #
 # Prove the toolchain can do the things the engine actually asks of it.
 #
-#   ./verify_toolchain.sh [ffmpeg-path] [ffprobe-path]
+#   ./verify_toolchain.sh [ffmpeg-path] [ffprobe-path] [whisper-cli-path]
 #   ./verify_toolchain.sh                       # ffmpeg / ffprobe from PATH
-#   ./verify_toolchain.sh /usr/local/bin/ffmpeg /usr/local/bin/ffprobe
+#   ./verify_toolchain.sh /usr/local/bin/ffmpeg /usr/local/bin/ffprobe /usr/local/bin/whisper-cli
 #
 # Exits non-zero and names the missing capability. Run as an IMAGE BUILD STEP
 # (the clipmux Dockerfile, after any apt purge) so a toolchain that lost a
@@ -30,6 +30,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 FFMPEG_BIN="${1:-ffmpeg}"
 FFPROBE_BIN="${2:-}"
+WHISPER_BIN="${3:-}"
 
 # The filter/encoder inventories are what make the messages specific, so collect
 # them once. `-hide_banner` keeps the output stable across FFmpeg versions.
@@ -190,6 +191,34 @@ else
 fi
 rm -rf "$tmpdir"
 trap - EXIT
+
+# ── whisper.cpp ──────────────────────────────────────────────────────────────
+# Only when a whisper-cli is given (the image passes it). Its backends must
+# sit beside it, where ggml loads them from, and its CLI must have the flags
+# media.WhisperArgs passes. A real transcription needs the model, which the
+# image doesn't carry: workers prove it at start (`clipmux worker doctor`).
+if [ -n "$WHISPER_BIN" ]; then
+  whisper_dir="$(dirname "$(readlink -f "$WHISPER_BIN")")"
+  if ls "$whisper_dir"/libggml-cpu-*.so >/dev/null 2>&1; then
+    ok "whisper.cpp CPU backends: $(cd "$whisper_dir" && ls libggml-cpu-*.so | sed 's/^libggml-cpu-//; s/\.so$//' | paste -sd' ' -)"
+  else
+    fail "no libggml-cpu-*.so beside $WHISPER_BIN: whisper-cli can't load a CPU backend"
+  fi
+  if [ -f "$whisper_dir/libggml-vulkan.so" ]; then
+    ok "whisper.cpp Vulkan backend present"
+  else
+    fail "no libggml-vulkan.so beside $WHISPER_BIN: GPU transcription would silently run on the CPU"
+  fi
+  whisper_help="$("$WHISPER_BIN" --help 2>&1 || true)"
+  for flag in -ojf --vad -vm -sns -ng -np; do
+    if grep -qE -- "(^|[[:space:],])${flag}([[:space:],]|$)" <<<"$whisper_help"; then
+      :
+    else
+      fail "whisper-cli has no ${flag} flag, which media.WhisperArgs passes"
+    fi
+  done
+  ok "whisper-cli has every flag media.WhisperArgs passes"
+fi
 
 # ── Verdict ──────────────────────────────────────────────────────────────────
 if [ "$failures" -ne 0 ]; then

@@ -23,7 +23,7 @@ A value that doesn't parse stops the command at start, naming the variable.
 | `CLIPMUX_BUILTIN_WORKER` | `true` | Start `clipmux worker` as serve's child. |
 | `CLIPMUX_UNSANDBOXED_WORKER` | `false` | Run the built-in worker where the media tool sandbox doesn't hold. Only if the host isolates it another way (D027). |
 | `CLIPMUX_TOOL_MEMORY_MB` | `8192` | Memory limit for each media tool. Passed to the built-in worker. |
-| `CLIPMUX_FFMPEG`, `CLIPMUX_FFPROBE`, `CLIPMUX_PACKAGER` | found on `PATH` | The media tools. Shaka Packager must be 3.9.1 or later. |
+| `CLIPMUX_FFMPEG`, `CLIPMUX_FFPROBE`, `CLIPMUX_PACKAGER`, `CLIPMUX_WHISPER` | found on `PATH` | The media tools. Shaka Packager must be 3.9.1 or later; `whisper-cli` is the pinned whisper.cpp from `toolchain/build_whisper.sh`, used only to transcribe. |
 | `CLIPMUX_LOG_FORMAT` | `text` | `text` or `json` (D064). Passed to the built-in worker. |
 | `CLIPMUX_LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error`. Successful playback, storage and worker requests log at debug. |
 | `CLIPMUX_METRICS_ADDR` | unset (off) | `host:port` for `/metrics`, a listener of its own with no auth: keep it off the internet (D066). |
@@ -47,7 +47,7 @@ needs none of these; the built-in worker gets its own from serve.
 | `CLIPMUX_AGENT_DIR` | the user's config directory | Where `agent.json`, `sources.json` and `agent.sock` live. |
 | `CLIPMUX_ENCODER` | `auto` | The first encoder to try: `auto`, `nvenc`, `vaapi`, `cuda-decode` or `cpu` (D046). |
 | `CLIPMUX_VAAPI_DEVICE` | every `/dev/dri/renderD*` | The VAAPI render node. |
-| `CLIPMUX_TOOL_MEMORY_MB`, `CLIPMUX_FFMPEG`, `CLIPMUX_FFPROBE`, `CLIPMUX_PACKAGER`, `CLIPMUX_LOG_FORMAT`, `CLIPMUX_LOG_LEVEL` | as for serve | |
+| `CLIPMUX_TOOL_MEMORY_MB`, `CLIPMUX_FFMPEG`, `CLIPMUX_FFPROBE`, `CLIPMUX_PACKAGER`, `CLIPMUX_WHISPER`, `CLIPMUX_LOG_FORMAT`, `CLIPMUX_LOG_LEVEL` | as for serve | |
 
 ## clipmux push and clipmux listen
 
@@ -70,4 +70,5 @@ the same as serve. `clipmux admin` with no arguments lists its commands.
 | `TEST_DATABASE_URL` | Real-Postgres tests run against it; skipped when unset. |
 | `CLIPMUX_TEST_S3_ENDPOINT`, `CLIPMUX_TEST_S3_ACCESS_KEY`, `CLIPMUX_TEST_S3_SECRET_KEY` | The S3 store the storage contract tests use (the dev SeaweedFS). |
 | `CLIPMUX_REQUIRE_S3`, `CLIPMUX_REQUIRE_MEDIA_TOOLS` | In CI: a missing S3 store or media tool fails instead of skipping. |
+| `CLIPMUX_TEST_MODELS_DIR` | Where the speech tests find the pinned whisper and VAD models, by their upstream file names (`toolchain/fetch_speech_models.sh DIR` fetches them). Without it they skip, or fail under `CLIPMUX_REQUIRE_MEDIA_TOOLS`. |
 | `CLIPMUX_E2E` and `CLIPMUX_E2E_*`, `CLIPMUX_FIXTURE_PORT`, `CLIPMUX_GPU_TEST` | The real-binary exit tests and the browser fixture (D033). |

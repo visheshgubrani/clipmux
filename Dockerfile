@@ -23,6 +23,10 @@ RUN --mount=type=cache,target=/var/tmp/ffmpeg-build,sharing=locked \
     CLIPMUX_BUILD_DIR=/var/tmp/ffmpeg-build bash /tmp/clipmux-toolchain/build_ffmpeg.sh /usr/local
 # Its own layer: a failed download (GitHub releases can 504) keeps FFmpeg cached.
 RUN bash /tmp/clipmux-toolchain/install_packager.sh /usr/local/bin
+# whisper.cpp with its CPU variants and Vulkan, in its own directory
+# (toolchain/build_whisper.sh). The models are fetched by workers, not baked in.
+RUN --mount=type=cache,target=/var/tmp/whisper-build,sharing=locked \
+    CLIPMUX_BUILD_DIR=/var/tmp/whisper-build bash /tmp/clipmux-toolchain/build_whisper.sh /usr/local
 
 # ── The dashboard (embedded in the binary) ──────────────────────────────────
 FROM node:24 AS web
@@ -88,7 +92,7 @@ RUN set -eux; \
     rm -rf /var/lib/apt/lists/*
 COPY --from=toolchain /usr/local/ /usr/local/
 # The toolchain must still do what the engine asks of it on the final image.
-RUN ldconfig && bash /tmp/clipmux-toolchain/verify_toolchain.sh /usr/local/bin/ffmpeg /usr/local/bin/ffprobe \
+RUN ldconfig && bash /tmp/clipmux-toolchain/verify_toolchain.sh /usr/local/bin/ffmpeg /usr/local/bin/ffprobe /usr/local/bin/whisper-cli \
     && packager --version && rm -rf /tmp/clipmux-toolchain
 COPY --from=build /out/clipmux /usr/local/bin/clipmux
 
@@ -96,11 +100,12 @@ RUN useradd --system --uid 10001 --home-dir /var/lib/clipmux --create-home --she
     && install -d -o clipmux -g clipmux -m 0750 /var/lib/clipmux/data \
     && install -d -o clipmux -g clipmux -m 0700 /var/lib/clipmux-agent
 USER 10001
-# NVENC needs the driver's video capability, which NVIDIA's container
-# runtime injects only when asked (Modal, RunPod, docker --gpus).
+# NVENC needs the driver's video capability and whisper's Vulkan backend its
+# graphics one (the Vulkan ICD), which NVIDIA's container runtime injects
+# only when asked (Modal, RunPod, docker --gpus).
 ENV CLIPMUX_DATA_DIR=/var/lib/clipmux/data \
     CLIPMUX_LISTEN=:8080 \
-    NVIDIA_DRIVER_CAPABILITIES=compute,video,utility
+    NVIDIA_DRIVER_CAPABILITIES=compute,video,utility,graphics
 VOLUME /var/lib/clipmux/data
 EXPOSE 8080
 HEALTHCHECK --interval=15s --timeout=5s --start-period=30s CMD ["clipmux", "healthcheck"]

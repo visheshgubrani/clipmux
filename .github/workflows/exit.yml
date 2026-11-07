@@ -53,9 +53,15 @@ jobs:
         with:
           node-version-file: .node-version
           cache: pnpm
+      - name: Cache whisper.cpp and the speech models
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ runner.temp }}/whisper
+          key: whisper-${{ runner.os }}-${{ hashFiles('toolchain/versions.env', 'toolchain/build_whisper.sh', 'toolchain/whisper-vad-token-times.patch', 'toolchain/fetch_speech_models.sh') }}
       - name: Media tools
         # Each apt attempt is bounded and retried (toolchain/ci_media_tools.sh).
-        timeout-minutes: 20
+        timeout-minutes: 45
         run: toolchain/ci_media_tools.sh
       - run: pnpm install --frozen-lockfile && pnpm -r run build
       - name: S3-compatible store (R2 in the Phase 2 exit test)
@@ -106,9 +112,15 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.11.1"
+      - name: Cache whisper.cpp and the speech models
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ runner.temp }}/whisper
+          key: whisper-${{ runner.os }}-${{ hashFiles('toolchain/versions.env', 'toolchain/build_whisper.sh', 'toolchain/whisper-vad-token-times.patch', 'toolchain/fetch_speech_models.sh') }}
       - name: Media tools
         # Each apt attempt is bounded and retried (toolchain/ci_media_tools.sh).
-        timeout-minutes: 20
+        timeout-minutes: 45
         run: toolchain/ci_media_tools.sh
       - name: Enable KVM
         run: |

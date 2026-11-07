@@ -53,6 +53,7 @@ func (b *builtinWorker) childEnv() []string {
 		"CLIPMUX_FFMPEG=" + b.tools.FFmpeg,
 		"CLIPMUX_FFPROBE=" + b.tools.FFprobe,
 		"CLIPMUX_PACKAGER=" + b.tools.Packager,
+		"CLIPMUX_WHISPER=" + b.tools.Whisper,
 	}
 	if mem := os.Getenv("CLIPMUX_TOOL_MEMORY_MB"); mem != "" {
 		env = append(env, "CLIPMUX_TOOL_MEMORY_MB="+mem)
