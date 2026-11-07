@@ -21,6 +21,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/agents"
 	"github.com/visheshgubrani/clipmux/internal/apikeys"
 	"github.com/visheshgubrani/clipmux/internal/assets"
+	"github.com/visheshgubrani/clipmux/internal/chapters"
 	"github.com/visheshgubrani/clipmux/internal/cloudflare"
 	"github.com/visheshgubrani/clipmux/internal/config"
 	"github.com/visheshgubrani/clipmux/internal/contentkey"
@@ -91,6 +92,9 @@ const ControlJobInterval = 15 * time.Second
 // to the speech API, one per pass.
 const SpeechAPIInterval = 5 * time.Second
 
+// ChaptersInterval is how often serve takes the next chapters job.
+const ChaptersInterval = 5 * time.Second
+
 // RetentionInterval is how often rows past their windows are pruned
 // (D069).
 const RetentionInterval = time.Hour
@@ -118,7 +122,8 @@ var passTimeouts = map[string]time.Duration{
 	"machine_reconciler":   5 * time.Minute,
 	"stranded_pinned_jobs": time.Minute,
 	"speech_wait":          time.Minute,
-	"speech_api":           2 * time.Hour, // one whole transcription, every chunk of it
+	"speech_api":           2 * time.Hour,    // one whole transcription, every chunk of it
+	"chapters":             15 * time.Minute, // two model calls and the commit
 	"uploads":              5 * time.Minute,
 	"routes":               5 * time.Minute,  // storage writes for pending route records
 	"route_reconciler":     30 * time.Minute, // lists every route record
@@ -382,6 +387,9 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 	speech := speechapi.NewService(pool, box, db.DefaultProjectID)
 	speech.Logger = logger
 	mgmt.Speech = speech
+	chaptersLLM := chapters.NewService(pool, box, db.DefaultProjectID)
+	chaptersLLM.Logger = logger
+	mgmt.Chapters = chaptersLLM
 	assetsAPI := assets.New(pool)
 	assetsAPI.Drain = drain
 	// The dashboard calls the integration API with the owner's session,
@@ -440,6 +448,12 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 		OnAudio: func(seconds float64) { speechAudio.Add(seconds) },
 	}
 	loop(SpeechAPIInterval, "speech_api", speechRunner.Run)
+	// Chapters run here too (P5-T17), in their own loop so a slow model
+	// never holds up a delete; the drain hands one in flight back.
+	chaptersRunner := &chapters.Runner{
+		Pool: pool, Box: box, Publisher: worker.Tracks, HTTP: http.DefaultClient, Logger: logger, Drain: drain,
+	}
+	loop(ChaptersInterval, "chapters", chaptersRunner.Run)
 	loop(SetupTestInterval, "setup_tests", tests.Run)
 	prune := retention.New(pool)
 	prune.Logger = logger

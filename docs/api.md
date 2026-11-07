@@ -81,7 +81,10 @@ and chapters; chapters imply subtitles. Tracks are made after the video is
 ready and never hold it up. A track's `status` is `preparing`, `ready` or
 `errored` (`error_code`: `no_audio`, `transcribe_failed`, `transcript_invalid`,
 `transcribe_unavailable`, `speech_api_rejected`, and for chapters
-`subtitles_failed`); retired and deleted tracks aren't listed. A ready
+`subtitles_failed`, `llm_not_connected`, `llm_unavailable` (the model kept
+failing for now through three tries), `model_rejected`, `model_refused`,
+`invalid_model_output` (still invalid after one corrective re-prompt) and
+`transcript_too_large` (a prompt over 512 KB, never truncated)); retired and deleted tracks aren't listed. A ready
 subtitles track plays in the master as an HLS subtitles rendition, and its
 VTT is at `{base_url}/v/{token}/{playback_id}/tracks/{track_id}.vtt` (or
 `/p/…`), the sidecar URL; a chapters track's VTT is at the same path.
@@ -148,6 +151,9 @@ means stop; `404` means the ID is unknown or revoked.
 | `PUT /v1/settings/speech` | `{mode}`; `api` and `local_then_api` are `409 speech_not_connected` until a speech API is connected; queued transcriptions move to match |
 | `POST /v1/settings/speech/connect` | `{base_url, model, api_key?}`, any OpenAI-compatible `/audio/transcriptions` with `verbose_json` timestamps (OpenAI `whisper-1`, Groq `whisper-large-v3-turbo`, or a server on your network such as Speaches; the key may be empty for one that needs none) → `{connected, steps}`: `credentials` (`GET {base_url}/models`), `transcription` (11 s of sample speech sent exactly as transcriptions send audio), `saved`. **Audio leaves your infrastructure** for this provider once a mode uses it |
 | `DELETE /v1/settings/speech/connect` | Forgets the connection and returns the mode to `local`; `404` when none is connected |
+| `GET /v1/settings/chapters` | `{connection: {provider, base_url?, model, response_format?, has_key, verified_at} \| null}`: the LLM that makes chapters. The key is never returned |
+| `POST /v1/settings/chapters/connect` | `{provider: "openai_compatible" \| "anthropic", base_url?, model?, api_key?}` → `{connected, steps}`. `openai_compatible` is any `/chat/completions` API (OpenAI, Ollama, vLLM, Groq, OpenRouter) and needs `base_url` and `model`; its key may be empty for a server that needs none. `anthropic` is Claude through Anthropic's SDK and needs `api_key`; `model` defaults to `claude-opus-5-5`. Steps: `credentials` (`GET {base_url}/models`, or reading the Claude model), `structured_output` (chapters of a fixed three-segment transcript; an OpenAI-compatible server without strict JSON schemas falls back to JSON mode), `saved`. **Transcript text leaves your infrastructure** for this provider whenever chapters are made |
+| `DELETE /v1/settings/chapters/connect` | Forgets the connection; chapters already queued end `llm_not_connected`, ready ones keep playing. `404` when none is connected |
 | `GET /v1/executors` | `{data: [{kind, connected, verified, verified_at, config, max_concurrent, monthly_limit_cents, rate_cents_per_hour, disk_bytes, month_cents, machines, backoff_until}]}`: every provider ever connected, with this month's estimated spend (D055, D056) |
 | `POST /v1/executors/runpod/connect` | `{api_key, image?, registry_username?, registry_password?, gpu_type_ids?, disk_gb?, max_concurrent?, monthly_limit_cents, rate_cents_per_hour}` → `{connected, steps: [{name, ok, detail}]}`; steps `credentials`, `public_url`, `image` (resolved to its digest with the registry credentials), `registry`, `saved`, `setup_test`, stopping at the first failure; connecting again rotates the key (docs/executors.md) |
 | `POST /v1/executors/modal/connect` | `{token_id, token_secret, environment?, image?, registry_username?, registry_password?, gpu?, cpu?, memory_mib?, disk_gb?, max_concurrent?, monthly_limit_cents, rate_cents_per_hour}` → `{connected, steps}`; steps `credentials`, `public_url`, `image`, `saved`, `setup_test` (D057) |

@@ -831,6 +831,60 @@ func (q *Queries) MarkTracksDeleted(ctx context.Context, assetID string) ([]stri
 	return items, nil
 }
 
+const publishChaptersTrack = `-- name: PublishChaptersTrack :one
+UPDATE tracks
+SET status = 'publishing', language = $2, name = $3, duration_ms = $4, key_version = $5, output_id = $6,
+    chapters = $7, version = version + 1, updated_at = now()
+WHERE id = $1 AND status = 'preparing' AND kind = 'chapters'
+RETURNING id, project_id, asset_id, kind, source, status, language, name, error_code, key_version, duration_ms, chapters, output_id, version, created_at, updated_at, ready_at, retired_at, deleted_at
+`
+
+type PublishChaptersTrackParams struct {
+	ID         string
+	Language   pgtype.Text
+	Name       pgtype.Text
+	DurationMs pgtype.Int8
+	KeyVersion pgtype.Int4
+	OutputID   pgtype.Text
+	Chapters   []byte
+}
+
+// A chapters job's VTT is stored: the track waits for its routes.
+func (q *Queries) PublishChaptersTrack(ctx context.Context, arg PublishChaptersTrackParams) (Track, error) {
+	row := q.db.QueryRow(ctx, publishChaptersTrack,
+		arg.ID,
+		arg.Language,
+		arg.Name,
+		arg.DurationMs,
+		arg.KeyVersion,
+		arg.OutputID,
+		arg.Chapters,
+	)
+	var i Track
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.AssetID,
+		&i.Kind,
+		&i.Source,
+		&i.Status,
+		&i.Language,
+		&i.Name,
+		&i.ErrorCode,
+		&i.KeyVersion,
+		&i.DurationMs,
+		&i.Chapters,
+		&i.OutputID,
+		&i.Version,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.ReadyAt,
+		&i.RetiredAt,
+		&i.DeletedAt,
+	)
+	return i, err
+}
+
 const publishTrack = `-- name: PublishTrack :one
 UPDATE tracks
 SET status = 'publishing', language = $2, name = $3, duration_ms = $4, key_version = $5, output_id = $6,

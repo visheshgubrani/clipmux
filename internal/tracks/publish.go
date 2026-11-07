@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/jackc/pgx/v5/pgtype"
@@ -178,7 +179,11 @@ func FinishPublication(ctx context.Context, qs *db.Queries, trackID string) erro
 	if err := qs.BumpAssetForTrack(ctx, asset.ID); err != nil {
 		return err
 	}
-	return outbox.TrackEvent(ctx, qs, asset.ID, outbox.TrackReady, outbox.Track{ID: trackID, Kind: track.Kind}, nil)
+	if err := outbox.TrackEvent(ctx, qs, asset.ID, outbox.TrackReady, outbox.Track{ID: trackID, Kind: track.Kind}, nil); err != nil {
+		return err
+	}
+	// Ready subtitles start the chapters waiting for them.
+	return QueueNext(ctx, qs, asset.ID)
 }
 
 // FinishPublishing finishes every track of an asset that was waiting for
@@ -197,3 +202,63 @@ func FinishPublishing(ctx context.Context, qs *db.Queries, assetID string) error
 }
 
 func text(s string) pgtype.Text { return pgtype.Text{String: s, Valid: s != ""} }
+
+// ErrStale means a chapters job's track or asset changed while the model
+// answered (deleted, superseded): it commits nothing.
+var ErrStale = errors.New("tracks: the track is no longer being made")
+
+// ChaptersResult is what a chapters job made.
+type ChaptersResult struct {
+	// VTT is the chapters as WebVTT, one cue per chapter.
+	VTT []byte
+	// Chapters is the [{start_ms, end_ms, title}] the API shows.
+	Chapters   json.RawMessage
+	DurationMS int64
+	// Language and OutputID are the transcript's.
+	Language, OutputID string
+}
+
+// CommitChapters stores a chapters job's result, with the job locked by
+// the caller: the VTT sealed and written under the lock (as a
+// transcription's is, D054), then the track waits for its routes. A track
+// that is no longer preparing, or a deleted asset, gives ErrStale.
+func (p *Publisher) CommitChapters(ctx context.Context, qs *db.Queries, job db.Job, r ChaptersResult) error {
+	if job.Kind != JobChapters || !job.TrackID.Valid {
+		return fmt.Errorf("job %s doesn't make chapters", job.ID)
+	}
+	asset, err := qs.LockAsset(ctx, job.AssetID)
+	if err != nil {
+		return err
+	}
+	track, err := qs.LockTrack(ctx, job.TrackID.String)
+	if err != nil {
+		return err
+	}
+	if asset.Status == "deleted" || track.Status != Preparing {
+		return ErrStale
+	}
+	secret := p.Keys.Current()
+	key := StorageKey(asset.ID, track.ID)
+	sealed, err := contentkey.SealTrack(secret, asset.ID, track.ID, key, r.VTT)
+	if err != nil {
+		return err
+	}
+	store, err := p.Stores.ForAsset(ctx, asset.ID)
+	if err != nil {
+		return err
+	}
+	if err := store.Put(ctx, key, bytes.NewReader(sealed)); err != nil {
+		return fmt.Errorf("store %s: %w", key, err)
+	}
+	if _, err := qs.PublishChaptersTrack(ctx, db.PublishChaptersTrackParams{
+		ID: track.ID, Language: text(r.Language), Name: text("Chapters"),
+		DurationMs: pgtype.Int8{Int64: r.DurationMS, Valid: true}, KeyVersion: pgtype.Int4{Int32: secret.Version, Valid: true},
+		OutputID: text(r.OutputID), Chapters: r.Chapters,
+	}); err != nil {
+		return err
+	}
+	if err := qs.BumpAssetForTrack(ctx, asset.ID); err != nil {
+		return err
+	}
+	return publish(ctx, qs, asset, track.ID)
+}

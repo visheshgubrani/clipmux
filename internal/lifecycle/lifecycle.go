@@ -263,10 +263,14 @@ func (s *Service) Run(ctx context.Context) (int, error) {
 	return n, errors.Join(errs...)
 }
 
+// controlKinds are the jobs this loop runs; chapters have a loop of their
+// own (internal/chapters), so a slow model never holds up a delete.
+var controlKinds = []string{"delete", "move"}
+
 // runNext claims a due control job (the given one, if set) and runs it. It
 // reports whether there was one.
 func (s *Service) runNext(ctx context.Context, only pgtype.Text) (bool, error) {
-	job, err := db.New(s.pool).ClaimControlJob(ctx, db.ClaimControlJobParams{LeaseSeconds: s.Lease.Seconds(), JobID: only})
+	job, err := db.New(s.pool).ClaimControlJob(ctx, db.ClaimControlJobParams{LeaseSeconds: s.Lease.Seconds(), JobID: only, Kinds: controlKinds})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}

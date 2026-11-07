@@ -45,8 +45,8 @@ UPDATE jobs SET status = 'running', started_at = coalesce(started_at, now()),
     available_at = now() + make_interval(secs => $1::double precision)
 WHERE id = (
     SELECT c.id FROM jobs c
-    WHERE c.kind IN ('delete', 'move') AND c.status IN ('queued', 'running') AND c.available_at <= now()
-      AND ($2::text IS NULL OR c.id = $2)
+    WHERE c.kind = ANY ($2::text[]) AND c.status IN ('queued', 'running') AND c.available_at <= now()
+      AND ($3::text IS NULL OR c.id = $3)
     ORDER BY c.available_at, c.id
     LIMIT 1
     FOR UPDATE SKIP LOCKED)
@@ -55,13 +55,15 @@ RETURNING id, project_id, asset_id, kind, status, phase, progress, profile_id, p
 
 type ClaimControlJobParams struct {
 	LeaseSeconds float64
+	Kinds        []string
 	JobID        pgtype.Text
 }
 
-// serve runs delete and move jobs itself; workers never claim them. A claim leases the
-// job by pushing available_at out, so a crashed pass is picked up again.
+// serve runs delete, move and chapters jobs itself, each loop its own kinds;
+// workers never claim them. A claim leases the job by pushing available_at
+// out, so a crashed pass is picked up again.
 func (q *Queries) ClaimControlJob(ctx context.Context, arg ClaimControlJobParams) (Job, error) {
-	row := q.db.QueryRow(ctx, claimControlJob, arg.LeaseSeconds, arg.JobID)
+	row := q.db.QueryRow(ctx, claimControlJob, arg.LeaseSeconds, arg.Kinds, arg.JobID)
 	var i Job
 	err := row.Scan(
 		&i.ID,

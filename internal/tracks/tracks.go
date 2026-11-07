@@ -11,8 +11,11 @@ package tracks
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/visheshgubrani/clipmux/internal/db"
@@ -206,4 +209,48 @@ func DeleteAll(ctx context.Context, qs *db.Queries, assetID string) error {
 		return fmt.Errorf("delete transcripts: %w", err)
 	}
 	return nil
+}
+
+// QueueNext starts the asset's next track job once no track job is active:
+// chapters for a preparing chapters track whose subtitles are ready, else a
+// transcription waiting for its job. It runs wherever a track job ends or a
+// track becomes ready, in that transaction; the asset is locked here.
+func QueueNext(ctx context.Context, qs *db.Queries, assetID string) error {
+	asset, err := qs.LockAsset(ctx, assetID)
+	if err != nil {
+		return err
+	}
+	if asset.Status == "deleted" {
+		return nil
+	}
+	active, err := qs.GetActiveJobForAsset(ctx, db.GetActiveJobForAssetParams{AssetID: asset.ID, Kinds: TrackJobs})
+	if err != nil || len(active) > 0 {
+		return err
+	}
+	chapters, err := qs.GetTrackOfKind(ctx, db.GetTrackOfKindParams{AssetID: asset.ID, Kind: Chapters, Statuses: []string{Preparing}})
+	switch {
+	case err == nil:
+		if _, err := qs.GetTrackOfKind(ctx, db.GetTrackOfKindParams{AssetID: asset.ID, Kind: Subtitles, Statuses: []string{Ready}}); err == nil {
+			_, err = QueueJob(ctx, qs, asset, JobChapters, chapters.ID)
+			return err
+		} else if !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
+	case !errors.Is(err, pgx.ErrNoRows):
+		return err
+	}
+	if !asset.CurrentOutputID.Valid {
+		return nil
+	}
+	out, err := qs.GetOutput(ctx, asset.CurrentOutputID.String)
+	if err != nil {
+		return err
+	}
+	var m struct {
+		Audio bool `json:"audio"`
+	}
+	if err := json.Unmarshal(out.Manifest, &m); err != nil {
+		return fmt.Errorf("output %s manifest: %w", out.ID, err)
+	}
+	return QueueTranscriptions(ctx, qs, asset, m.Audio)
 }

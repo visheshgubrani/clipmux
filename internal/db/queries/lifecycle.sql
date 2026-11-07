@@ -20,13 +20,14 @@ UPDATE playback_ids SET status = 'revoking' WHERE asset_id = $1 AND status = 'ac
 RETURNING id;
 
 -- name: ClaimControlJob :one
--- serve runs delete and move jobs itself; workers never claim them. A claim leases the
--- job by pushing available_at out, so a crashed pass is picked up again.
+-- serve runs delete, move and chapters jobs itself, each loop its own kinds;
+-- workers never claim them. A claim leases the job by pushing available_at
+-- out, so a crashed pass is picked up again.
 UPDATE jobs SET status = 'running', started_at = coalesce(started_at, now()),
     available_at = now() + make_interval(secs => sqlc.arg(lease_seconds)::double precision)
 WHERE id = (
     SELECT c.id FROM jobs c
-    WHERE c.kind IN ('delete', 'move') AND c.status IN ('queued', 'running') AND c.available_at <= now()
+    WHERE c.kind = ANY (sqlc.arg(kinds)::text[]) AND c.status IN ('queued', 'running') AND c.available_at <= now()
       AND (sqlc.narg(job_id)::text IS NULL OR c.id = sqlc.narg(job_id))
     ORDER BY c.available_at, c.id
     LIMIT 1

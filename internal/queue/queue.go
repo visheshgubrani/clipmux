@@ -86,7 +86,9 @@ func (q *Queue) CommitAttempt(ctx context.Context, token string, commit func(qs 
 			return Verdict{}, nil
 		}
 		if tracks.IsTrackJob(l.job.Kind) {
-			return Verdict{}, nil
+			// The next track job (chapters from these subtitles, or a
+			// transcription that waited) starts now this one has ended.
+			return Verdict{}, tracks.QueueNext(ctx, qs, l.job.AssetID)
 		}
 		// A local source whose push asked for --upload-source goes to
 		// storage next, from the PC that holds it (D059).

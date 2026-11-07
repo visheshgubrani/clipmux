@@ -166,3 +166,12 @@ DELETE FROM transcripts WHERE track_id = $1;
 -- An asset's newest track of a kind in one of the states given.
 SELECT * FROM tracks WHERE asset_id = $1 AND kind = $2 AND status = ANY (sqlc.arg(statuses)::text[])
 ORDER BY created_at DESC, id DESC LIMIT 1;
+
+-- name: PublishChaptersTrack :one
+-- A chapters job's VTT is stored: the track waits for its routes.
+UPDATE tracks
+SET status = 'publishing', language = $2, name = $3, duration_ms = $4, key_version = $5, output_id = $6,
+    chapters = $7, version = version + 1, updated_at = now()
+WHERE id = $1 AND status = 'preparing' AND kind = 'chapters'
+RETURNING *;
+

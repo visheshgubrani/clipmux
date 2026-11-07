@@ -13,6 +13,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/visheshgubrani/clipmux/internal/chapters"
 	"github.com/visheshgubrani/clipmux/internal/db"
 	cm "github.com/visheshgubrani/clipmux/internal/metrics"
 	"github.com/visheshgubrani/clipmux/internal/queue"
@@ -189,6 +190,9 @@ var knownCodes = map[string]bool{
 	tracks.CodeNoAudio: true, tracks.CodeTranscribeFailed: true, tracks.CodeTranscriptInvalid: true,
 	tracks.CodeTranscribeUnavailable: true, tracks.CodeSubtitlesFailed: true, "model_unavailable": true,
 	speechapi.CodeUnavailable: true, speechapi.CodeRejected: true,
+	// Chapters (P5-T17).
+	chapters.CodeNotConnected: true, chapters.CodeRejected: true, chapters.CodeRefused: true,
+	chapters.CodeInvalidOutput: true, chapters.CodeTranscriptTooLarge: true, chapters.CodeUnavailable: true,
 }
 
 func boundCode(code string) string {

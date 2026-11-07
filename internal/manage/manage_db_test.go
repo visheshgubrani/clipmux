@@ -16,6 +16,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/accounts"
 	"github.com/visheshgubrani/clipmux/internal/apikeys"
 	"github.com/visheshgubrani/clipmux/internal/assets"
+	"github.com/visheshgubrani/clipmux/internal/chapters"
 	"github.com/visheshgubrani/clipmux/internal/config"
 	"github.com/visheshgubrani/clipmux/internal/contentkey"
 	"github.com/visheshgubrani/clipmux/internal/db/dbtest"
@@ -62,6 +63,7 @@ func newRig(t *testing.T, cfg config.Config) *rig {
 	acct := accounts.New(pool, "prj_default", urls.PublicURL)
 	m := manage.New(pool, box, acct, urls)
 	m.Speech = speechapi.NewService(pool, box, "prj_default")
+	m.Chapters = chapters.NewService(pool, box, "prj_default")
 	upl := uploads.New(pool, stores.Fixed(store))
 	upl.Auth.Session = m.ActAsApp
 	a := assets.New(pool)
@@ -491,5 +493,38 @@ func TestSpeechSettingsNeedAConnectionForTheAPI(t *testing.T) {
 	}
 	if got := r.call("GET", "/v1/settings/speech", nil, key); got.status != http.StatusUnauthorized {
 		t.Fatalf("an API key read the speech settings: %d", got.status)
+	}
+}
+
+// The chapters LLM (P5-T17): none by default, Connect checks its input,
+// and only the owner reaches it.
+func TestChaptersSettingsAreTheOwners(t *testing.T) {
+	r := newRig(t, config.Config{})
+	got := r.call("GET", "/v1/settings/chapters", nil, "")
+	if got.status != http.StatusOK || got.body["connection"] != nil {
+		t.Fatalf("default chapters = %d %v", got.status, got.body)
+	}
+	for _, c := range []struct {
+		method, path string
+		body         map[string]any
+		status       int
+		code         string
+	}{
+		{"POST", "/v1/settings/chapters/connect", map[string]any{"provider": "gemini", "model": "m"}, 400, "invalid_request"},
+		{"POST", "/v1/settings/chapters/connect", map[string]any{"provider": "openai_compatible", "base_url": "ftp://x", "model": "m"}, 400, "invalid_request"},
+		{"POST", "/v1/settings/chapters/connect", map[string]any{"provider": "anthropic"}, 400, "invalid_request"},
+		{"DELETE", "/v1/settings/chapters/connect", nil, 404, "not_found"},
+	} {
+		got := r.call(c.method, c.path, c.body, "")
+		if errBody, _ := got.body["error"].(map[string]any); got.status != c.status || errBody["code"] != c.code {
+			t.Errorf("%s %s %v = %d %v, want %d %s", c.method, c.path, c.body, got.status, got.body, c.status, c.code)
+		}
+	}
+	key, _, err := apikeys.Create(context.Background(), r.pool, "prj_default", "app_dashboard", "k", apikeys.AllScopes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := r.call("GET", "/v1/settings/chapters", nil, key); got.status != http.StatusUnauthorized {
+		t.Fatalf("an API key read the chapters settings: %d", got.status)
 	}
 }

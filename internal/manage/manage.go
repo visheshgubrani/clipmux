@@ -24,6 +24,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/accounts"
 	"github.com/visheshgubrani/clipmux/internal/apikeys"
 	"github.com/visheshgubrani/clipmux/internal/assets"
+	"github.com/visheshgubrani/clipmux/internal/chapters"
 	"github.com/visheshgubrani/clipmux/internal/cloudflare"
 	"github.com/visheshgubrani/clipmux/internal/db"
 	"github.com/visheshgubrani/clipmux/internal/httpjson"
@@ -67,6 +68,8 @@ type API struct {
 	// Speech connects a speech API and sets the speech mode (D075); nil
 	// leaves its routes 404.
 	Speech *speechapi.Service
+	// Chapters is the chapters LLM's Connect (P5-T17).
+	Chapters *chapters.Service
 	// Life queues library moves; nil leaves their routes 404.
 	Life *lifecycle.Service
 	// Keys rotates the content key secret; nil leaves its route 404.
@@ -118,6 +121,9 @@ func (m *API) Register(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /v1/settings/speech", m.owned(m.setSpeechMode))
 	mux.HandleFunc("POST /v1/settings/speech/connect", m.owned(m.connectSpeech))
 	mux.HandleFunc("DELETE /v1/settings/speech/connect", m.owned(m.disconnectSpeech))
+	mux.HandleFunc("GET /v1/settings/chapters", m.owned(m.getChapters))
+	mux.HandleFunc("POST /v1/settings/chapters/connect", m.owned(m.connectChapters))
+	mux.HandleFunc("DELETE /v1/settings/chapters/connect", m.owned(m.disconnectChapters))
 	mux.HandleFunc("GET /v1/apps", m.owned(m.listApps))
 	mux.HandleFunc("POST /v1/apps", m.owned(m.createApp))
 	mux.HandleFunc("POST /v1/apps/{id}/disable", m.owned(m.setDisabled(true)))
