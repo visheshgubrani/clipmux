@@ -1,13 +1,17 @@
+# Every pull request: Go (vet and race tests against Postgres and SeaweedFS,
+# with ffmpeg and the packager) and one job of quick checks. Real whisper.cpp
+# runs on the self-hosted GPU runner (gpu.yml), not here. The image, the exit
+# suites, Safari and the agent tarballs run by hand and on release tags; see
+# .github/README.md for what runs where and why (Actions minutes).
 name: CI
 on:
-  push:
-    branches: [main]
   pull_request:
+  workflow_dispatch:
 permissions:
   contents: read
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: true
 jobs:
   go:
     runs-on: ubuntu-24.04
@@ -26,6 +30,8 @@ jobs:
       TEST_DATABASE_URL: postgres://clipmux:clipmux@localhost:5432/clipmux_test?sslmode=disable
       # A missing ffmpeg or packager fails the media tests instead of skipping them.
       CLIPMUX_REQUIRE_MEDIA_TOOLS: "1"
+      # whisper.cpp's tests run on the GPU runner, on its own CPU and GPU.
+      CLIPMUX_SKIP_SPEECH: "1"
       # The storage contract suite runs against SeaweedFS too, never skipping.
       CLIPMUX_REQUIRE_S3: "1"
       CLIPMUX_TEST_S3_ENDPOINT: http://127.0.0.1:8333
@@ -39,127 +45,31 @@ jobs:
           docker compose -f deploy/compose.dev.yml up -d seaweedfs
           for i in $(seq 60); do curl -s -o /dev/null http://127.0.0.1:8333/ && exit 0; sleep 1; done; exit 1
       - uses: ./.github/actions/media-tools
-      - name: gofmt
-        run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
-      - run: go vet ./...
-      # The speech tests run real whisper.cpp on the runner's CPU, minutes each.
-      - run: go test -race -timeout 25m ./...
+      # gofmt and vet run in checks (make lint).
+      - run: go test -race -timeout 20m ./...
       - run: go build ./cmd/clipmux
-  lint:
+  checks:
+    # Each job is billed by the started minute, so the quick checks share one.
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - run: make lint
-  sqlc:
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-      - name: Generated queries are current
-        run: make sqlc-check
-  ts:
-    # The dashboard and the @clipmux packages (D002).
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
           node-version-file: .node-version
           cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm lint
-      - run: pnpm typecheck
-      - run: pnpm test
-      - run: pnpm build
+      - name: Go lint (gofmt, vet, staticcheck, govulncheck)
+        run: make lint
+      - name: Generated queries are current
+        run: make sqlc-check
+      - name: Toolchain scripts parse, and the pinned packager verifies
+        run: bash -n toolchain/*.sh && mkdir -p "$RUNNER_TEMP/bin" && toolchain/install_packager.sh "$RUNNER_TEMP/bin"
+      - name: TypeScript (the dashboard, the @clipmux packages and the Worker, D002)
+        run: pnpm install --frozen-lockfile && pnpm lint && pnpm typecheck && pnpm test && pnpm build
       - name: The embedded Worker bundle is current
         run: |
           cp worker/dist/worker.js internal/cloudflare/worker.js
           git diff --exit-code internal/cloudflare/worker.js
-  toolchain:
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-      - name: Scripts parse
-        run: bash -n toolchain/*.sh
-      - name: Pinned Shaka Packager verifies
-        run: mkdir -p "$RUNNER_TEMP/bin" && toolchain/install_packager.sh "$RUNNER_TEMP/bin"
-  image:
-    # The packaged stack: the image builds (FFmpeg from source, cached),
-    # starts under compose behind Caddy, confines its tools, and passes the
-    # setup test end to end. On main, an image that passed is pushed to the
-    # private ghcr package as sha-{commit}, which serverless providers pull
-    # (D052, D058). It is never pushed as /server or /web (D006), and never
-    # from a pull request.
-    runs-on: ubuntu-24.04
-    timeout-minutes: 60
-    permissions:
-      contents: read
-      packages: write
-    env:
-      IMAGE: ghcr.io/visheshgubrani/clipmux:sha-${{ github.sha }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
-      - name: Build
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          load: true
-          push: false
-          tags: clipmux:local
-          # The binary names the image it ships in, so providers run this
-          # same build.
-          build-args: |
-            VERSION=${{ github.sha }}
-            WORKER_IMAGE=${{ env.IMAGE }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-      - name: Start app, Postgres and Caddy
-        working-directory: deploy
-        run: |
-          printf 'POSTGRES_PASSWORD=ci\nCLIPMUX_SECRETS_KEY=v1:%s\nCLIPMUX_PUBLIC_URL=http://localhost\n' "$(openssl rand -hex 32)" > .env
-          docker compose up -d --no-build --wait
-      - name: The sandbox holds inside the container
-        run: docker compose -f deploy/compose.yml exec -T app clipmux sandbox-exec --probe
-      - name: A sandboxed tool can't open a socket
-        run: |
-          if docker compose -f deploy/compose.yml exec -T app clipmux sandbox-exec -- /usr/bin/bash -c 'exec 3<>/dev/tcp/127.0.0.1/8080'; then
-            echo "a sandboxed tool connected to the API" >&2; exit 1
-          fi
-      - name: Setup test through Caddy
-        run: docker compose -f deploy/compose.yml exec -T app clipmux admin setup-test --wait --timeout 15m
-      - name: Health through Caddy
-        run: curl -fsS http://localhost/healthz
-      - name: Metrics stay on the compose network
-        run: |
-          if curl -fsS --max-time 3 http://localhost:9090/metrics; then
-            echo "the metrics port is published" >&2; exit 1
-          fi
-          docker compose -f deploy/compose.yml exec -T caddy wget -qO- http://app:9090/metrics | grep -q '^clipmux_build_info{'
-          if curl -fsS http://localhost/metrics | grep -q clipmux_; then
-            echo "metrics are served through Caddy" >&2; exit 1
-          fi
-      - name: The binary names its own image
-        run: |
-          docker run --rm --entrypoint grep clipmux:local -aqF "$IMAGE" /usr/local/bin/clipmux
-      - name: Push to the private package (main only)
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        run: |
-          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-          docker tag clipmux:local "$IMAGE"
-          docker push "$IMAGE"
-      - name: A stop drains within the grace period
-        run: |
-          start=$(date +%s)
-          docker compose -f deploy/compose.yml stop app
-          took=$(( $(date +%s) - start ))
-          code=$(docker inspect -f '{{.State.ExitCode}}' "$(docker compose -f deploy/compose.yml ps -aq app)")
-          echo "stopped in ${took}s with exit code ${code}"
-          [ "$code" = 0 ] && [ "$took" -lt 40 ]
-      - name: Logs
-        if: failure()
-        # No deploy/.env means the stack never started (e.g. the build failed).
-        run: '[ -f deploy/.env ] || exit 0; docker compose -f deploy/compose.yml logs'

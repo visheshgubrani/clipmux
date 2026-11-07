@@ -18,10 +18,13 @@ import (
 
 // speechTools returns the media tools with whisper-cli and the pinned
 // models, sandboxed by this test binary, or skips (fails under
-// CLIPMUX_REQUIRE_MEDIA_TOOLS=1). The models are read from
+// CLIPMUX_REQUIRE_MEDIA_TOOLS=1, unless CLIPMUX_SKIP_SPEECH=1 asks to skip). The models are read from
 // CLIPMUX_TEST_MODELS_DIR, under their upstream file names.
 func speechTools(t *testing.T) (Tools, Speech) {
 	t.Helper()
+	if os.Getenv("CLIPMUX_SKIP_SPEECH") == "1" {
+		t.Skip("speech tests skipped (CLIPMUX_SKIP_SPEECH=1); they run on the GPU runner")
+	}
 	tools := testTools(t)
 	tools.Whisper = "whisper-cli"
 	if p := os.Getenv("CLIPMUX_WHISPER"); p != "" {

@@ -1,22 +1,10 @@
-# The Phase 1 exit test in Safari (macOS minutes cost 10x on a private repo,
-# so this runs on main, weekly, by hand, and on PRs that touch playback).
+# The Phase 1 exit test in Safari. macOS minutes cost 10x on a private
+# repository, so this runs by hand (on PRs that touch playback) and on tags.
 name: Exit test (Safari)
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
-  schedule:
-    - cron: "37 4 * * 1"
-  pull_request:
-    paths:
-      - "internal/delivery/**"
-      - "internal/media/**"
-      - "internal/worker/**"
-      - "packages/player/**"
-      - "e2e/web/**"
-      - "e2e/safari/**"
-      - "toolchain/**"
-      - ".github/workflows/exit-safari.yml"
+  push:
+    tags: ["v*"]
 permissions:
   contents: read
 concurrency:

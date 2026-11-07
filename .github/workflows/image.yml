@@ -1,0 +1,99 @@
+# The packaged stack under compose (the image job that was in ci.yml). It
+# builds FFmpeg and whisper.cpp from source on a cache miss, so it runs on
+# pull requests only when they touch the image, by hand, and on release tags.
+name: Image
+on:
+  pull_request:
+    paths:
+      - "Dockerfile"
+      - "deploy/**"
+      - "toolchain/**"
+      # CI-only setup, not part of the image.
+      - "!toolchain/ci_media_tools.sh"
+      - ".github/workflows/image.yml"
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: read
+concurrency:
+  group: image-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+jobs:
+  image:
+    # The packaged stack: the image builds (FFmpeg from source, cached),
+    # starts under compose behind Caddy, confines its tools, and passes the
+    # setup test end to end. Run by hand on main (or on a tag), an image that
+    # passed is pushed to the private ghcr package as sha-{commit}, which
+    # serverless providers pull (D052, D058). It is never pushed as /server or
+    # /web (D006), and never from a pull request.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ghcr.io/visheshgubrani/clipmux:sha-${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          push: false
+          tags: clipmux:local
+          # The binary names the image it ships in, so providers run this
+          # same build.
+          build-args: |
+            VERSION=${{ github.sha }}
+            WORKER_IMAGE=${{ env.IMAGE }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Start app, Postgres and Caddy
+        working-directory: deploy
+        run: |
+          printf 'POSTGRES_PASSWORD=ci\nCLIPMUX_SECRETS_KEY=v1:%s\nCLIPMUX_PUBLIC_URL=http://localhost\n' "$(openssl rand -hex 32)" > .env
+          docker compose up -d --no-build --wait
+      - name: The sandbox holds inside the container
+        run: docker compose -f deploy/compose.yml exec -T app clipmux sandbox-exec --probe
+      - name: A sandboxed tool can't open a socket
+        run: |
+          if docker compose -f deploy/compose.yml exec -T app clipmux sandbox-exec -- /usr/bin/bash -c 'exec 3<>/dev/tcp/127.0.0.1/8080'; then
+            echo "a sandboxed tool connected to the API" >&2; exit 1
+          fi
+      - name: Setup test through Caddy
+        run: docker compose -f deploy/compose.yml exec -T app clipmux admin setup-test --wait --timeout 15m
+      - name: Health through Caddy
+        run: curl -fsS http://localhost/healthz
+      - name: Metrics stay on the compose network
+        run: |
+          if curl -fsS --max-time 3 http://localhost:9090/metrics; then
+            echo "the metrics port is published" >&2; exit 1
+          fi
+          docker compose -f deploy/compose.yml exec -T caddy wget -qO- http://app:9090/metrics | grep -q '^clipmux_build_info{'
+          if curl -fsS http://localhost/metrics | grep -q clipmux_; then
+            echo "metrics are served through Caddy" >&2; exit 1
+          fi
+      - name: The binary names its own image
+        run: |
+          docker run --rm --entrypoint grep clipmux:local -aqF "$IMAGE" /usr/local/bin/clipmux
+      - name: Push to the private package (main or a tag, never a pull request)
+        if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker tag clipmux:local "$IMAGE"
+          docker push "$IMAGE"
+      - name: A stop drains within the grace period
+        run: |
+          start=$(date +%s)
+          docker compose -f deploy/compose.yml stop app
+          took=$(( $(date +%s) - start ))
+          code=$(docker inspect -f '{{.State.ExitCode}}' "$(docker compose -f deploy/compose.yml ps -aq app)")
+          echo "stopped in ${took}s with exit code ${code}"
+          [ "$code" = 0 ] && [ "$took" -lt 40 ]
+      - name: Logs
+        if: failure()
+        # No deploy/.env means the stack never started (e.g. the build failed).
+        run: '[ -f deploy/.env ] || exit 0; docker compose -f deploy/compose.yml logs'

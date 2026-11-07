@@ -1,9 +1,9 @@
-# Go, ffmpeg (apt), the pinned Shaka Packager and the pinned whisper.cpp with
-# its speech models, for every job that runs the media tests or the real
-# binary (toolchain/ci_media_tools.sh). whisper.cpp and the models are cached
-# by the files that pin them.
+# Go, ffmpeg (apt) and the pinned Shaka Packager for every job that runs the
+# media tests or the real binary, plus the pinned whisper.cpp and its speech
+# models unless the job sets CLIPMUX_SKIP_SPEECH=1 (toolchain/ci_media_tools.sh).
+# whisper.cpp and the models are cached by the files that pin them.
 name: Media tools
-description: Go, ffmpeg, Shaka Packager, whisper.cpp and the speech models
+description: Go, ffmpeg and Shaka Packager, with whisper.cpp and the speech models unless skipped
 runs:
   using: composite
   steps:
@@ -11,6 +11,7 @@ runs:
       with:
         go-version-file: go.mod
     - name: Cache whisper.cpp and the speech models
+      if: env.CLIPMUX_SKIP_SPEECH != '1'
       uses: actions/cache@v4
       with:
         path: ${{ runner.temp }}/whisper

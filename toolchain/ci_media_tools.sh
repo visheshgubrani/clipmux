@@ -5,16 +5,24 @@
 # $CLIPMUX_TEST_MODELS_DIR (exported through GITHUB_ENV). whisper.cpp builds
 # into $CLIPMUX_WHISPER_PREFIX (default $RUNNER_TEMP/whisper), which a
 # workflow may cache: build_whisper.sh stops early when its manifest matches.
+# With CLIPMUX_SKIP_SPEECH=1 it installs only ffmpeg and the packager: no
+# whisper.cpp, its build tools or the models.
 # Runner apt mirrors sometimes stall without output; each attempt is
 # bounded and retried rather than waited out.
 set -euo pipefail
 dest=${1:-$RUNNER_TEMP/bin}
 here=$(cd "$(dirname "$0")" && pwd)
 apt_opts=(-o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30)
+packages=(ffmpeg)
+speech=1
+if [ "${CLIPMUX_SKIP_SPEECH:-}" = 1 ]; then
+  speech=0
+else
+  packages+=(cmake glslc libvulkan-dev spirv-headers libvulkan1 mesa-vulkan-drivers)
+fi
 for try in 1 2 3; do
   if sudo timeout 240 apt-get "${apt_opts[@]}" update -qq &&
-     sudo timeout 300 apt-get "${apt_opts[@]}" install -y -qq --no-install-recommends ffmpeg \
-       cmake glslc libvulkan-dev spirv-headers libvulkan1 mesa-vulkan-drivers; then
+     sudo timeout 300 apt-get "${apt_opts[@]}" install -y -qq --no-install-recommends "${packages[@]}"; then
     break
   fi
   [ "$try" = 3 ] && { echo "ci_media_tools: apt failed 3 times" >&2; exit 1; }
@@ -23,6 +31,10 @@ for try in 1 2 3; do
 done
 mkdir -p "$dest"
 "$here/install_packager.sh" "$dest"
+if [ "$speech" = 0 ]; then
+  if [ -n "${GITHUB_PATH:-}" ]; then echo "$dest" >> "$GITHUB_PATH"; fi
+  exit 0
+fi
 prefix=${CLIPMUX_WHISPER_PREFIX:-$RUNNER_TEMP/whisper}
 CLIPMUX_BUILD_DIR="${RUNNER_TEMP:-/tmp}/whisper-build" "$here/build_whisper.sh" "$prefix"
 ln -sf "$prefix/bin/whisper-cli" "$dest/whisper-cli"

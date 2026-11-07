@@ -82,6 +82,9 @@ func TestSetupTestPassesEveryCheckOnAFreshInstall(t *testing.T) {
 // subtitles that say "Americans" at 1.6 s ± 0.5 s through delivery (P5-T19).
 func TestSetupTestProvesSubtitlesWithWhisper(t *testing.T) {
 	tools := mediaTools(t)
+	if os.Getenv("CLIPMUX_SKIP_SPEECH") == "1" {
+		t.Skip("speech tests skipped (CLIPMUX_SKIP_SPEECH=1); they run on the GPU runner")
+	}
 	whisper := os.Getenv("CLIPMUX_WHISPER")
 	if whisper == "" {
 		whisper = "whisper-cli"

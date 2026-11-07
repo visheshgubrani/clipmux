@@ -1,29 +1,20 @@
 # The exit tests of Phases 1 to 5 (docs/plans/P1-T09-T12.md, T12, and each
 # phase's plan): the real binary, Chromium (hls.js, the Video.js player,
 # subtitles and chapters, the uploader, the dashboard) and ExoPlayer on an
-# Android emulator. Safari runs in exit-safari.yml. The weekly run soaks for
-# 30 minutes (P5 check 5); every other run for 60 s.
+# Android emulator. Safari runs in exit-safari.yml. A run by hand may soak
+# for 30 minutes (P5 check 5); every other run soaks for 60 s.
 name: Exit test
 on:
-  push:
-    branches: [main]
+  # About an hour of Linux runner and a quarter of one for the emulator, so by
+  # hand (before merging a phase or anything touching playback) and on tags.
   workflow_dispatch:
-  schedule:
-    - cron: "17 4 * * 1"
-  pull_request:
-    paths:
-      - "internal/**"
-      - "cmd/**"
-      - "packages/**"
-      - "dashboard/**"
-      - "e2e/**"
-      - "worker/**"
-      - "deploy/compose.dev.yml"
-      - "toolchain/**"
-      - "go.mod"
-      - "pnpm-lock.yaml"
-      - ".github/workflows/exit.yml"
-      - ".github/actions/**"
+    inputs:
+      soak:
+        description: Soak for 30 minutes instead of 60 s (P5 check 5)
+        type: boolean
+        default: false
+  push:
+    tags: ["v*"]
 permissions:
   contents: read
 concurrency:
@@ -68,7 +59,7 @@ jobs:
           promtool check rules deploy/prometheus/alerts.yml
       - name: Real binary (Phase 1 to 5 exit tests)
         env:
-          CLIPMUX_E2E_SOAK: ${{ github.event_name == 'schedule' && '1' || '' }}
+          CLIPMUX_E2E_SOAK: ${{ inputs.soak && '1' || '' }}
           CLIPMUX_REQUIRE_S3: "1"
           CLIPMUX_TEST_S3_ENDPOINT: http://127.0.0.1:8333
           CLIPMUX_TEST_S3_ACCESS_KEY: clipmuxdev

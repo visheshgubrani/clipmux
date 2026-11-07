@@ -2,12 +2,13 @@
 # check 9): Connect RunPod and Connect Modal each run the setup test
 # through their provider, against serve behind a Cloudflare quick tunnel,
 # encode on NVENC, and leave no machine running (TestExitRealProviders).
-# It pays for a few GPU-minutes, so it runs after CI pushed main's image,
-# weekly and by hand, and does nothing without the providers' secrets.
+# It pays for a few GPU-minutes, so it runs after the Image workflow pushed
+# main's image, weekly and by hand, once REAL_PROVIDERS is set, with the
+# secrets RUNPOD_API_KEY, MODAL_TOKEN_ID, MODAL_TOKEN_SECRET, GHCR_PULL_TOKEN.
 name: Exit test (providers)
 on:
   workflow_run:
-    workflows: [CI]
+    workflows: [Image]
     types: [completed]
     branches: [main]
   workflow_dispatch:
@@ -25,28 +26,10 @@ env:
   CLOUDFLARED_VERSION: 2026.10.3
   CLOUDFLARED_SHA256: 053b80b0a23031a038fdbf3c073f59f82b8f1f152aa67971d7383ffafc0dbab0
 jobs:
-  # A missing secret skips the run, shown as skipped rather than passed.
-  secrets:
-    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
-    runs-on: ubuntu-24.04
-    outputs:
-      run: ${{ steps.check.outputs.run }}
-    env:
-      RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
-      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
-      CLIPMUX_E2E_REGISTRY_PASSWORD: ${{ secrets.GHCR_PULL_TOKEN }}
-    steps:
-      - id: check
-        run: |
-          if [ -z "$CLIPMUX_E2E_REGISTRY_PASSWORD" ] || { [ -z "$RUNPOD_API_KEY" ] && [ -z "$MODAL_TOKEN_ID" ]; }; then
-            echo "::notice::GHCR_PULL_TOKEN and RUNPOD_API_KEY or MODAL_TOKEN_ID/MODAL_TOKEN_SECRET are not set; skipping"
-            echo "run=false" >>"$GITHUB_OUTPUT"
-          else
-            echo "run=true" >>"$GITHUB_OUTPUT"
-          fi
   providers:
-    needs: secrets
-    if: needs.secrets.outputs.run == 'true'
+    # Off until the repository variable REAL_PROVIDERS is "true": the run pays for
+    # real GPU minutes, and costs no runner minutes while it is off.
+    if: vars.REAL_PROVIDERS == 'true' && (github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success')
     runs-on: ubuntu-24.04
     timeout-minutes: 75
     services:

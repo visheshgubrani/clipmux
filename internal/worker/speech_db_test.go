@@ -314,6 +314,9 @@ func waitFor(t *testing.T, r *rig, countSQL string) {
 // whisper-cli.
 func speechSetup(t *testing.T, r *rig) *media.Speech {
 	t.Helper()
+	if os.Getenv("CLIPMUX_SKIP_SPEECH") == "1" {
+		t.Skip("speech tests skipped (CLIPMUX_SKIP_SPEECH=1); they run on the GPU runner")
+	}
 	whisper := os.Getenv("CLIPMUX_WHISPER")
 	if whisper == "" {
 		whisper = "whisper-cli"
