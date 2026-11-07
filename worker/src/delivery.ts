@@ -26,6 +26,17 @@ interface Route {
   backend: 'r2' | 'origin'
   outputs: Record<string, number>
   denied?: boolean
+  // The tracks tracks/{id}.vtt may name (internal/routes.Track).
+  tracks?: Record<string, Track>
+}
+
+interface Track {
+  kind: 'subtitles' | 'chapters'
+  language: string
+  name: string
+  duration_ms: number
+  key_version: number
+  listed: boolean
 }
 
 interface Keys {
@@ -52,6 +63,9 @@ const CONTENT_TYPES: Record<string, string> = {
   '.m4s': 'video/iso.segment',
   '.jpg': 'image/jpeg',
 }
+
+// A track's files: its playlist or its VTT (delivery.trackPath).
+const TRACK_PATH = /^(trk_[0-9a-z_]{1,64})\.(m3u8|vtt)$/
 
 // The output path grammar (internal/media.ValidOutputPath).
 const OUTPUT_PATH =
@@ -174,7 +188,97 @@ export function createWorker(opts: Options = {}) {
     const h = common(
       new Headers({ 'Content-Type': CONTENT_TYPES['.m3u8'] ?? '', 'Cache-Control': 'no-store' }),
     )
-    return new Response(req.method === 'HEAD' ? null : rewriteMaster(text, r.output_id), { headers: h })
+    const subs = Object.entries(r.tracks ?? {})
+      .filter(([, t]) => t.listed)
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+      .map(([id, t]) => ({ id, name: t.name, language: t.language }))
+    return new Response(
+      req.method === 'HEAD' ? null : masterWithSubtitles(rewriteMaster(text, r.output_id), subs),
+      {
+        headers: h,
+      },
+    )
+  }
+
+  // track serves tracks/{id}.m3u8 (subtitles only) or tracks/{id}.vtt:
+  // the edge caches the sealed bytes, and they are decrypted after it, so
+  // no plaintext sits in the cache (delivery.track).
+  async function track(env: Env, req: Request, r: Route, rel: string): Promise<Response> {
+    const m = TRACK_PATH.exec(rel)
+    const t = m ? r.tracks?.[m[1] as string] : undefined
+    if (!m || !t) return notFound()
+    const id = m[1] as string
+    if (m[2] === 'm3u8') {
+      if (t.kind !== 'subtitles') return notFound()
+      const h = common(
+        new Headers({ 'Content-Type': CONTENT_TYPES['.m3u8'] ?? '', 'Cache-Control': 'no-store' }),
+      )
+      return new Response(req.method === 'HEAD' ? null : subtitlePlaylist(id, t.duration_ms), { headers: h })
+    }
+    const scope = r.policy === 'signed' ? 'private' : 'public'
+    if (r.backend === 'origin') {
+      // The origin decrypts; nothing it returns goes in the edge cache.
+      return finish(await origin(env, req, null), 'text/vtt; charset=utf-8', `${scope}, ${IMMUTABLE}`, req)
+    }
+    const key = `media/${r.asset_id}/tracks/${id}.vtt`
+    const edge = cacheFor()
+    let sealed: Uint8Array | undefined
+    const hit = edge ? await edge.match(new Request(cacheURL(key))) : undefined
+    if (hit) sealed = new Uint8Array(await hit.arrayBuffer())
+    if (!sealed) {
+      const obj = await env.MEDIA.get(key)
+      if (!obj) return notFound()
+      sealed = new Uint8Array(await new Response(obj.body).arrayBuffer())
+      if (edge)
+        await remember(
+          key,
+          new Response(sealed.slice()),
+          new Headers({ 'Content-Type': 'application/octet-stream' }),
+        )
+    }
+    const plain = await openTrack(env, r.asset_id, id, key, sealed)
+    if (!plain) return error(500, 'internal', 'internal error')
+    const h = common(
+      new Headers({ 'Content-Type': 'text/vtt; charset=utf-8', 'Cache-Control': `${scope}, ${IMMUTABLE}` }),
+    )
+    h.set('Content-Length', String(plain.length))
+    return new Response(req.method === 'HEAD' ? null : plain, { headers: h })
+  }
+
+  // openTrack reverses contentkey.SealTrack: 0x01 | version u32 | 12-byte
+  // nonce | AES-128-GCM ciphertext and tag, the storage key as associated
+  // data, under HMAC-SHA256(secret, "clipmux-track-key-v1\n" + asset +
+  // "\n" + track)[:16].
+  async function openTrack(
+    env: Env,
+    assetID: string,
+    trackID: string,
+    key: string,
+    sealed: Uint8Array,
+  ): Promise<Uint8Array | null> {
+    if (sealed.length < 17 + 16 || sealed[0] !== 1) return null
+    const version = new DataView(sealed.buffer, sealed.byteOffset, sealed.byteLength).getUint32(1)
+    const s = secret(env, version)
+    if (!s) return null
+    const enc = new TextEncoder()
+    const mac = await crypto.subtle.sign(
+      'HMAC',
+      await s,
+      enc.encode(`clipmux-track-key-v1\n${assetID}\n${trackID}`),
+    )
+    const aes = await crypto.subtle.importKey('raw', new Uint8Array(mac).slice(0, 16), 'AES-GCM', false, [
+      'decrypt',
+    ])
+    try {
+      const plain = await crypto.subtle.decrypt(
+        { name: 'AES-GCM', iv: sealed.slice(5, 17), additionalData: enc.encode(key) },
+        aes,
+        sealed.slice(17),
+      )
+      return new Uint8Array(plain)
+    } catch {
+      return null
+    }
   }
 
   // origin passes a request that passed every check here to the built-in
@@ -305,6 +409,9 @@ export function createWorker(opts: Options = {}) {
 
     if (path === 'master.m3u8' && audience === 'v') return master(env, r, req)
     if (path === 'poster.jpg') return object(env, req, r, r.output_id, 'poster.jpg', 'max-age=300')
+    // Before the output lookup, which would take "tracks" for an output. A
+    // thumbnail token never reads a track.
+    if (path.startsWith('tracks/')) return audience === 'v' ? track(env, req, r, path.slice(7)) : denied()
     if (audience !== 'v' && !path.endsWith('/poster.jpg')) return denied()
     const slash = path.indexOf('/')
     if (slash < 0) return notFound()
@@ -339,6 +446,45 @@ export function rewriteMaster(master: string, outputID: string): string {
     out += `${line}\n`
   }
   return out
+}
+
+// masterWithSubtitles adds one EXT-X-MEDIA per listed subtitles track (in ID
+// order) before the first variant, and SUBTITLES="subs" to every variant
+// (delivery.Master).
+export function masterWithSubtitles(
+  master: string,
+  subs: { id: string; name: string; language: string }[],
+): string {
+  if (subs.length === 0) return master
+  const attr = (s: string) => s.replace(/["\r\n]/g, '')
+  const media = subs
+    .map(
+      (s) =>
+        `#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="${attr(s.name)}",LANGUAGE="${attr(s.language)}",AUTOSELECT=YES,DEFAULT=NO,URI="tracks/${s.id}.m3u8"\n`,
+    )
+    .join('')
+  let out = ''
+  let inserted = false
+  for (const line of master.split(/(?<=\n)/)) {
+    if (line.startsWith('#EXT-X-STREAM-INF:')) {
+      if (!inserted) {
+        out += media
+        inserted = true
+      }
+      out += `${line.replace(/\n$/, '')},SUBTITLES="subs"\n`
+      continue
+    }
+    out += line
+  }
+  return inserted ? out : out + media
+}
+
+// subtitlePlaylist is a subtitles track's playlist: its whole VTT as one
+// segment, times from integer milliseconds (delivery.SubtitlePlaylist).
+export function subtitlePlaylist(trackID: string, durationMS: number): string {
+  const target = Math.max(Math.ceil(durationMS / 1000), 1)
+  const extinf = `${Math.floor(durationMS / 1000)}.${String(durationMS % 1000).padStart(3, '0')}`
+  return `#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:${target}\n#EXT-X-MEDIA-SEQUENCE:0\n#EXT-X-PLAYLIST-TYPE:VOD\n#EXTINF:${extinf},\n${trackID}.vtt\n#EXT-X-ENDLIST\n`
 }
 
 function rangeOnly(req: Request): HeadersInit {

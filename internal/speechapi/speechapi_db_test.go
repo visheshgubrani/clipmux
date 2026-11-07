@@ -350,7 +350,8 @@ func TestAPIModeTranscribesThroughTheAPIInChunks(t *testing.T) {
 			t.Errorf("chunk %d is %q, want AAC ffprobe can read", i+1, codec)
 		}
 	}
-	if status, _ := r.track(); status != "publishing" {
+	// No playback ID to publish to: ready at once (P5-T15).
+	if status, _ := r.track(); status != "ready" {
 		t.Fatalf("track %s", status)
 	}
 	var body []byte
@@ -420,7 +421,7 @@ func TestATransientRefusalIsRetriedAndAPermanentOneFailsTheTrack(t *testing.T) {
 	}
 	r.subtitles()
 	r.run()
-	if status, _ := r.track(); status != "publishing" {
+	if status, _ := r.track(); status != "ready" {
 		t.Fatalf("after a 429 then success: %s", status)
 	}
 

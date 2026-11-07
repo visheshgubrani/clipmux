@@ -96,3 +96,51 @@ SELECT speech_mode FROM projects WHERE id = $1;
 
 -- name: SetSpeechMode :exec
 UPDATE projects SET speech_mode = $2 WHERE id = $1;
+
+-- name: ListServableTracks :many
+-- The tracks delivery may serve for an asset: stored (publishing), ready,
+-- or retired within the window; a route record carries exactly these.
+SELECT id, kind, status, language, name, duration_ms, key_version FROM tracks
+WHERE asset_id = $1 AND status IN ('publishing', 'ready', 'retired')
+ORDER BY id;
+
+-- name: ListServableTracksForProject :many
+SELECT t.asset_id, t.id, t.kind, t.status, t.language, t.name, t.duration_ms, t.key_version FROM tracks t
+WHERE t.project_id = $1 AND t.status IN ('publishing', 'ready', 'retired')
+ORDER BY t.asset_id, t.id;
+
+-- name: CountPendingRoutesForTrack :one
+SELECT count(*) FROM outbox
+WHERE kind = 'route_sync' AND done_at IS NULL AND asset_id = sqlc.arg(asset_id)
+  AND payload->>'track_id' = sqlc.arg(track_id)::text;
+
+-- name: ListPublishingTracks :many
+SELECT id FROM tracks WHERE asset_id = $1 AND status = 'publishing' ORDER BY id;
+
+-- name: MarkTrackReady :one
+UPDATE tracks SET status = 'ready', ready_at = now(), version = version + 1, updated_at = now()
+WHERE id = $1 AND status = 'publishing'
+RETURNING *;
+
+-- name: RetireReadyTracksOfKind :many
+-- A newer track of the kind became ready: the old ones stay servable for
+-- the retire window, so a session holding an old master still loads them.
+UPDATE tracks SET status = 'retired', retired_at = now(), version = version + 1, updated_at = now()
+WHERE asset_id = $1 AND kind = $2 AND status = 'ready' AND id <> sqlc.arg(keep)::text
+RETURNING id;
+
+-- name: ListPurgeableRetiredTracks :many
+-- Retired tracks past the same window as retired outputs (D070).
+SELECT t.id, t.asset_id, t.project_id, a.app_id FROM tracks t
+JOIN assets a ON a.id = t.asset_id
+JOIN projects p ON p.id = t.project_id
+WHERE t.status = 'retired'
+  AND t.retired_at < sqlc.arg(now)::timestamptz
+      - greatest(interval '7 days', make_interval(secs => p.max_token_lifetime_seconds)) - interval '1 hour'
+ORDER BY t.retired_at, t.id
+LIMIT sqlc.arg(max_rows);
+
+-- name: PurgeTrack :execrows
+-- Its file goes next: it stops being servable first.
+UPDATE tracks SET status = 'deleted', deleted_at = now(), retired_at = NULL, version = version + 1, updated_at = now()
+WHERE id = $1 AND status = 'retired';

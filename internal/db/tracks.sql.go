@@ -21,6 +21,24 @@ func (q *Queries) BumpAssetForTrack(ctx context.Context, id string) error {
 	return err
 }
 
+const countPendingRoutesForTrack = `-- name: CountPendingRoutesForTrack :one
+SELECT count(*) FROM outbox
+WHERE kind = 'route_sync' AND done_at IS NULL AND asset_id = $1
+  AND payload->>'track_id' = $2::text
+`
+
+type CountPendingRoutesForTrackParams struct {
+	AssetID pgtype.Text
+	TrackID string
+}
+
+func (q *Queries) CountPendingRoutesForTrack(ctx context.Context, arg CountPendingRoutesForTrackParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countPendingRoutesForTrack, arg.AssetID, arg.TrackID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const createTrack = `-- name: CreateTrack :one
 
 INSERT INTO tracks (id, project_id, asset_id, kind)
@@ -300,6 +318,171 @@ func (q *Queries) InsertTranscript(ctx context.Context, arg InsertTranscriptPara
 	return err
 }
 
+const listPublishingTracks = `-- name: ListPublishingTracks :many
+SELECT id FROM tracks WHERE asset_id = $1 AND status = 'publishing' ORDER BY id
+`
+
+func (q *Queries) ListPublishingTracks(ctx context.Context, assetID string) ([]string, error) {
+	rows, err := q.db.Query(ctx, listPublishingTracks, assetID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listPurgeableRetiredTracks = `-- name: ListPurgeableRetiredTracks :many
+SELECT t.id, t.asset_id, t.project_id, a.app_id FROM tracks t
+JOIN assets a ON a.id = t.asset_id
+JOIN projects p ON p.id = t.project_id
+WHERE t.status = 'retired'
+  AND t.retired_at < $1::timestamptz
+      - greatest(interval '7 days', make_interval(secs => p.max_token_lifetime_seconds)) - interval '1 hour'
+ORDER BY t.retired_at, t.id
+LIMIT $2
+`
+
+type ListPurgeableRetiredTracksParams struct {
+	Now     pgtype.Timestamptz
+	MaxRows int32
+}
+
+type ListPurgeableRetiredTracksRow struct {
+	ID        string
+	AssetID   string
+	ProjectID string
+	AppID     string
+}
+
+// Retired tracks past the same window as retired outputs (D070).
+func (q *Queries) ListPurgeableRetiredTracks(ctx context.Context, arg ListPurgeableRetiredTracksParams) ([]ListPurgeableRetiredTracksRow, error) {
+	rows, err := q.db.Query(ctx, listPurgeableRetiredTracks, arg.Now, arg.MaxRows)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListPurgeableRetiredTracksRow{}
+	for rows.Next() {
+		var i ListPurgeableRetiredTracksRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.AssetID,
+			&i.ProjectID,
+			&i.AppID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listServableTracks = `-- name: ListServableTracks :many
+SELECT id, kind, status, language, name, duration_ms, key_version FROM tracks
+WHERE asset_id = $1 AND status IN ('publishing', 'ready', 'retired')
+ORDER BY id
+`
+
+type ListServableTracksRow struct {
+	ID         string
+	Kind       string
+	Status     string
+	Language   pgtype.Text
+	Name       pgtype.Text
+	DurationMs pgtype.Int8
+	KeyVersion pgtype.Int4
+}
+
+// The tracks delivery may serve for an asset: stored (publishing), ready,
+// or retired within the window; a route record carries exactly these.
+func (q *Queries) ListServableTracks(ctx context.Context, assetID string) ([]ListServableTracksRow, error) {
+	rows, err := q.db.Query(ctx, listServableTracks, assetID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListServableTracksRow{}
+	for rows.Next() {
+		var i ListServableTracksRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Kind,
+			&i.Status,
+			&i.Language,
+			&i.Name,
+			&i.DurationMs,
+			&i.KeyVersion,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listServableTracksForProject = `-- name: ListServableTracksForProject :many
+SELECT t.asset_id, t.id, t.kind, t.status, t.language, t.name, t.duration_ms, t.key_version FROM tracks t
+WHERE t.project_id = $1 AND t.status IN ('publishing', 'ready', 'retired')
+ORDER BY t.asset_id, t.id
+`
+
+type ListServableTracksForProjectRow struct {
+	AssetID    string
+	ID         string
+	Kind       string
+	Status     string
+	Language   pgtype.Text
+	Name       pgtype.Text
+	DurationMs pgtype.Int8
+	KeyVersion pgtype.Int4
+}
+
+func (q *Queries) ListServableTracksForProject(ctx context.Context, projectID string) ([]ListServableTracksForProjectRow, error) {
+	rows, err := q.db.Query(ctx, listServableTracksForProject, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListServableTracksForProjectRow{}
+	for rows.Next() {
+		var i ListServableTracksForProjectRow
+		if err := rows.Scan(
+			&i.AssetID,
+			&i.ID,
+			&i.Kind,
+			&i.Status,
+			&i.Language,
+			&i.Name,
+			&i.DurationMs,
+			&i.KeyVersion,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listStaleTranscriptions = `-- name: ListStaleTranscriptions :many
 SELECT j.id FROM jobs j
 WHERE j.project_id = $1 AND j.kind = 'transcribe' AND j.status = 'queued'
@@ -462,6 +645,39 @@ func (q *Queries) LockTrack(ctx context.Context, id string) (Track, error) {
 	return i, err
 }
 
+const markTrackReady = `-- name: MarkTrackReady :one
+UPDATE tracks SET status = 'ready', ready_at = now(), version = version + 1, updated_at = now()
+WHERE id = $1 AND status = 'publishing'
+RETURNING id, project_id, asset_id, kind, source, status, language, name, error_code, key_version, duration_ms, chapters, output_id, version, created_at, updated_at, ready_at, retired_at, deleted_at
+`
+
+func (q *Queries) MarkTrackReady(ctx context.Context, id string) (Track, error) {
+	row := q.db.QueryRow(ctx, markTrackReady, id)
+	var i Track
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.AssetID,
+		&i.Kind,
+		&i.Source,
+		&i.Status,
+		&i.Language,
+		&i.Name,
+		&i.ErrorCode,
+		&i.KeyVersion,
+		&i.DurationMs,
+		&i.Chapters,
+		&i.OutputID,
+		&i.Version,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.ReadyAt,
+		&i.RetiredAt,
+		&i.DeletedAt,
+	)
+	return i, err
+}
+
 const markTracksDeleted = `-- name: MarkTracksDeleted :many
 UPDATE tracks SET status = 'deleted', deleted_at = now(), retired_at = NULL, version = version + 1, updated_at = now()
 WHERE asset_id = $1 AND status <> 'deleted'
@@ -538,6 +754,54 @@ func (q *Queries) PublishTrack(ctx context.Context, arg PublishTrackParams) (Tra
 		&i.DeletedAt,
 	)
 	return i, err
+}
+
+const purgeTrack = `-- name: PurgeTrack :execrows
+UPDATE tracks SET status = 'deleted', deleted_at = now(), retired_at = NULL, version = version + 1, updated_at = now()
+WHERE id = $1 AND status = 'retired'
+`
+
+// Its file goes next: it stops being servable first.
+func (q *Queries) PurgeTrack(ctx context.Context, id string) (int64, error) {
+	result, err := q.db.Exec(ctx, purgeTrack, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const retireReadyTracksOfKind = `-- name: RetireReadyTracksOfKind :many
+UPDATE tracks SET status = 'retired', retired_at = now(), version = version + 1, updated_at = now()
+WHERE asset_id = $1 AND kind = $2 AND status = 'ready' AND id <> $3::text
+RETURNING id
+`
+
+type RetireReadyTracksOfKindParams struct {
+	AssetID string
+	Kind    string
+	Keep    string
+}
+
+// A newer track of the kind became ready: the old ones stay servable for
+// the retire window, so a session holding an old master still loads them.
+func (q *Queries) RetireReadyTracksOfKind(ctx context.Context, arg RetireReadyTracksOfKindParams) ([]string, error) {
+	rows, err := q.db.Query(ctx, retireReadyTracksOfKind, arg.AssetID, arg.Kind, arg.Keep)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const setSpeechMode = `-- name: SetSpeechMode :exec

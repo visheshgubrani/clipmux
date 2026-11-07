@@ -137,3 +137,52 @@ func TestFilesGoOnlyOnceNothingCanPlayOrWriteThem(t *testing.T) {
 		}
 	}
 }
+
+// Retired tracks go with the output window (P5-T15): one retired 8 days ago
+// stops being served and loses its file; one retired a day ago, and the
+// ready one, stay.
+func TestRetiredTracksGoWithTheOutputWindow(t *testing.T) {
+	pool := dbtest.New(t)
+	ctx := context.Background()
+	fs, err := storage.OpenFilesystem(t.TempDir(), storage.FilesystemOptions{BaseURL: "http://unused"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fs.Close()
+	exec := func(sql string, args ...any) {
+		t.Helper()
+		if _, err := pool.Exec(ctx, sql, args...); err != nil {
+			t.Fatalf("%s: %v", sql, err)
+		}
+	}
+	exec(`INSERT INTO assets (id, project_id, app_id, status, storage_id) VALUES ('ast_1', 'prj_default', 'app_dashboard', 'processing', 'sto_default')`)
+	exec(`INSERT INTO playback_ids (id, project_id, asset_id, policy) VALUES ('pid_1', 'prj_default', 'ast_1', 'public')`)
+	for _, tr := range []struct{ id, status, retired string }{{"trk_ready", "ready", ""}, {"trk_r1", "retired", "1 day"}, {"trk_r8", "retired", "8 days"}} {
+		retired := "NULL"
+		if tr.retired != "" {
+			retired = "now() - interval '" + tr.retired + "'"
+		}
+		exec(`INSERT INTO tracks (id, project_id, asset_id, kind, status, retired_at) VALUES ($1, 'prj_default', 'ast_1', 'subtitles', $2, `+retired+`)`, tr.id, tr.status)
+		if err := fs.Put(ctx, "media/ast_1/tracks/"+tr.id+".vtt", strings.NewReader("sealed")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	n, err := retention.NewFiles(pool, stores.Fixed(fs), fs).PurgeRetiredTracks(ctx)
+	if err != nil || n != 1 {
+		t.Fatalf("purged %d, %v; want 1", n, err)
+	}
+	for id, want := range map[string]string{"trk_ready": "ready", "trk_r1": "retired", "trk_r8": "deleted"} {
+		var status string
+		if err := pool.QueryRow(ctx, `SELECT status FROM tracks WHERE id = $1`, id).Scan(&status); err != nil || status != want {
+			t.Errorf("%s = %s (%v), want %s", id, status, err, want)
+		}
+		_, err := fs.Head(ctx, "media/ast_1/tracks/"+id+".vtt")
+		if (err == nil) != (want != "deleted") {
+			t.Errorf("%s file kept = %v", id, err == nil)
+		}
+	}
+	var refreshes int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM outbox WHERE kind = 'route_sync' AND payload->>'op' = 'refresh'`).Scan(&refreshes); err != nil || refreshes != 1 {
+		t.Errorf("route refreshes = %d (%v), want 1", refreshes, err)
+	}
+}

@@ -15,6 +15,36 @@ import (
 // or enabling an app refreshes each of its routes.
 const OpRefresh = "refresh"
 
+// OpTrack publishes a route because one of its asset's tracks was stored:
+// once every such row of the track is confirmed, the track is ready.
+const OpTrack = "track"
+
+// QueueTrack writes the route_sync rows that publish a stored track, one per
+// live playback ID of its asset, and returns how many it wrote: with none,
+// the track has nothing to wait for.
+func QueueTrack(ctx context.Context, q *db.Queries, projectID, appID, assetID, trackID string) (int, error) {
+	pids, err := q.ListPlaybackIDs(ctx, assetID)
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, p := range pids {
+		if p.Status != "active" {
+			continue
+		}
+		payload, _ := json.Marshal(map[string]any{"v": 1, "op": OpTrack, "playback_id": p.ID, "app_id": appID, "asset_id": assetID, "track_id": trackID})
+		if err := q.InsertOutbox(ctx, db.InsertOutboxParams{
+			ID: ids.New(ids.Event), ProjectID: projectID, Kind: "route_sync",
+			AppID: pgtype.Text{String: appID, Valid: true}, AssetID: pgtype.Text{String: assetID, Valid: true},
+			Payload: payload,
+		}); err != nil {
+			return n, err
+		}
+		n++
+	}
+	return n, nil
+}
+
 // QueueKeys asks for _keys.json to be rewritten. Call it in the transaction
 // that creates, retires or revokes a signing key or changes the project's
 // maximum token lifetime.

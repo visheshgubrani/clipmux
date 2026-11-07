@@ -50,6 +50,11 @@ export function vectorEnv(): { env: Env; objects: Map<string, Uint8Array> } {
       objects.set(`media/${o.asset_id}/${o.id}/${name}`, enc.encode(body as string))
     }
   }
+  // Tracks are stored sealed (AES-128-GCM, D079), exactly the bytes the Go
+  // side stores: the Worker decrypts what serve wrote.
+  for (const t of vectors.tracks ?? []) {
+    if (t.sealed_hex) objects.set(`media/${t.asset_id}/tracks/${t.id}.vtt`, Buffer.from(t.sealed_hex, 'hex'))
+  }
   const env = {
     MEDIA: memoryBucket(objects) as unknown as R2Bucket,
     CONTENT_KEYS: JSON.stringify({ [vectors.content_key_version]: vectors.content_key_secret_hex }),

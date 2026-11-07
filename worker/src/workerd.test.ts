@@ -52,6 +52,22 @@ before(async () => {
       await r2.put(`media/${o.asset_id}/${o.id}/${name}`, body as string)
     }
   }
+  for (const t of vectors.tracks ?? []) {
+    if (t.sealed_hex) await r2.put(`media/${t.asset_id}/tracks/${t.id}.vtt`, Buffer.from(t.sealed_hex, 'hex'))
+  }
+})
+
+test('a sealed VTT decrypts with WebCrypto in workerd, twice through the edge cache', async () => {
+  const tok = await sign('pid_tracks')
+  const want = vectors.tracks.find((t: { id: string }) => t.id === 'trk_hi').vtt
+  for (let i = 0; i < 2; i++) {
+    const res = await mf.dispatchFetch(`https://media.example/v/${tok}/pid_tracks/tracks/trk_hi.vtt`)
+    assert.equal(res.status, 200)
+    assert.equal(res.headers.get('Content-Type'), 'text/vtt; charset=utf-8')
+    assert.equal(await res.text(), want)
+  }
+  const master = await mf.dispatchFetch(`https://media.example/v/${tok}/pid_tracks/master.m3u8`)
+  assert.match(await master.text(), /SUBTITLES="subs"/)
 })
 
 after(async () => {

@@ -16,7 +16,10 @@ for (const c of vectors.cases) {
     let path: string = c.path
     for (const [name, tok] of Object.entries(vectors.tokens))
       path = path.replaceAll(`{${name}}`, tok as string)
-    const res = await worker.fetch(new Request(`https://media.example${path}`), env)
+    const res = await worker.fetch(
+      new Request(`https://media.example${path}`, { method: c.method ?? 'GET' }),
+      env,
+    )
     const body = new Uint8Array(await res.arrayBuffer())
     assert.equal(res.status, c.status, new TextDecoder().decode(body))
     assert.equal(res.headers.get('X-Content-Type-Options'), 'nosniff')

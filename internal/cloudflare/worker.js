@@ -99,6 +99,7 @@ var CONTENT_TYPES = {
   ".m4s": "video/iso.segment",
   ".jpg": "image/jpeg"
 };
+var TRACK_PATH = /^(trk_[0-9a-z_]{1,64})\.(m3u8|vtt)$/;
 var OUTPUT_PATH = /^(manifest\.json|master\.m3u8|poster\.jpg|([1-9][0-9]{1,3}p|audio)\/(index\.m3u8|init\.mp4|seg_[0-9]{5,6}\.m4s))$/;
 var CLOCK_SKEW = 60;
 var IMMUTABLE = "max-age=31536000, immutable";
@@ -197,7 +198,80 @@ ${outputID}`)
     const h = common(
       new Headers({ "Content-Type": CONTENT_TYPES[".m3u8"] ?? "", "Cache-Control": "no-store" })
     );
-    return new Response(req.method === "HEAD" ? null : rewriteMaster(text, r.output_id), { headers: h });
+    const subs = Object.entries(r.tracks ?? {}).filter(([, t]) => t.listed).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([id, t]) => ({ id, name: t.name, language: t.language }));
+    return new Response(
+      req.method === "HEAD" ? null : masterWithSubtitles(rewriteMaster(text, r.output_id), subs),
+      {
+        headers: h
+      }
+    );
+  }
+  async function track(env, req, r, rel) {
+    const m = TRACK_PATH.exec(rel);
+    const t = m ? r.tracks?.[m[1]] : void 0;
+    if (!m || !t) return notFound();
+    const id = m[1];
+    if (m[2] === "m3u8") {
+      if (t.kind !== "subtitles") return notFound();
+      const h2 = common(
+        new Headers({ "Content-Type": CONTENT_TYPES[".m3u8"] ?? "", "Cache-Control": "no-store" })
+      );
+      return new Response(req.method === "HEAD" ? null : subtitlePlaylist(id, t.duration_ms), { headers: h2 });
+    }
+    const scope = r.policy === "signed" ? "private" : "public";
+    if (r.backend === "origin") {
+      return finish(await origin(env, req, null), "text/vtt; charset=utf-8", `${scope}, ${IMMUTABLE}`, req);
+    }
+    const key = `media/${r.asset_id}/tracks/${id}.vtt`;
+    const edge = cacheFor();
+    let sealed;
+    const hit = edge ? await edge.match(new Request(cacheURL(key))) : void 0;
+    if (hit) sealed = new Uint8Array(await hit.arrayBuffer());
+    if (!sealed) {
+      const obj = await env.MEDIA.get(key);
+      if (!obj) return notFound();
+      sealed = new Uint8Array(await new Response(obj.body).arrayBuffer());
+      if (edge)
+        await remember(
+          key,
+          new Response(sealed.slice()),
+          new Headers({ "Content-Type": "application/octet-stream" })
+        );
+    }
+    const plain = await openTrack(env, r.asset_id, id, key, sealed);
+    if (!plain) return error(500, "internal", "internal error");
+    const h = common(
+      new Headers({ "Content-Type": "text/vtt; charset=utf-8", "Cache-Control": `${scope}, ${IMMUTABLE}` })
+    );
+    h.set("Content-Length", String(plain.length));
+    return new Response(req.method === "HEAD" ? null : plain, { headers: h });
+  }
+  async function openTrack(env, assetID, trackID, key, sealed) {
+    if (sealed.length < 17 + 16 || sealed[0] !== 1) return null;
+    const version = new DataView(sealed.buffer, sealed.byteOffset, sealed.byteLength).getUint32(1);
+    const s = secret(env, version);
+    if (!s) return null;
+    const enc = new TextEncoder();
+    const mac = await crypto.subtle.sign(
+      "HMAC",
+      await s,
+      enc.encode(`clipmux-track-key-v1
+${assetID}
+${trackID}`)
+    );
+    const aes = await crypto.subtle.importKey("raw", new Uint8Array(mac).slice(0, 16), "AES-GCM", false, [
+      "decrypt"
+    ]);
+    try {
+      const plain = await crypto.subtle.decrypt(
+        { name: "AES-GCM", iv: sealed.slice(5, 17), additionalData: enc.encode(key) },
+        aes,
+        sealed.slice(17)
+      );
+      return new Uint8Array(plain);
+    } catch {
+      return null;
+    }
   }
   async function origin(env, req, cacheKey) {
     if (!env.ORIGIN_URL) return error(500, "internal", "no origin");
@@ -294,6 +368,7 @@ ${outputID}`)
     }
     if (path === "master.m3u8" && audience === "v") return master(env, r, req);
     if (path === "poster.jpg") return object2(env, req, r, r.output_id, "poster.jpg", "max-age=300");
+    if (path.startsWith("tracks/")) return audience === "v" ? track(env, req, r, path.slice(7)) : denied();
     if (audience !== "v" && !path.endsWith("/poster.jpg")) return denied();
     const slash = path.indexOf("/");
     if (slash < 0) return notFound();
@@ -325,6 +400,42 @@ function rewriteMaster(master, outputID) {
 `;
   }
   return out;
+}
+function masterWithSubtitles(master, subs) {
+  if (subs.length === 0) return master;
+  const attr = (s) => s.replace(/["\r\n]/g, "");
+  const media = subs.map(
+    (s) => `#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="${attr(s.name)}",LANGUAGE="${attr(s.language)}",AUTOSELECT=YES,DEFAULT=NO,URI="tracks/${s.id}.m3u8"
+`
+  ).join("");
+  let out = "";
+  let inserted = false;
+  for (const line of master.split(/(?<=\n)/)) {
+    if (line.startsWith("#EXT-X-STREAM-INF:")) {
+      if (!inserted) {
+        out += media;
+        inserted = true;
+      }
+      out += `${line.replace(/\n$/, "")},SUBTITLES="subs"
+`;
+      continue;
+    }
+    out += line;
+  }
+  return inserted ? out : out + media;
+}
+function subtitlePlaylist(trackID, durationMS) {
+  const target = Math.max(Math.ceil(durationMS / 1e3), 1);
+  const extinf = `${Math.floor(durationMS / 1e3)}.${String(durationMS % 1e3).padStart(3, "0")}`;
+  return `#EXTM3U
+#EXT-X-VERSION:3
+#EXT-X-TARGETDURATION:${target}
+#EXT-X-MEDIA-SEQUENCE:0
+#EXT-X-PLAYLIST-TYPE:VOD
+#EXTINF:${extinf},
+${trackID}.vtt
+#EXT-X-ENDLIST
+`;
 }
 function rangeOnly(req) {
   const r = req.headers.get("Range");

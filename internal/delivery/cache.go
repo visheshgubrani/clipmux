@@ -28,6 +28,8 @@ type cache struct {
 	routes  map[string]cached[db.GetRouteRow]
 	keys    map[string]cached[db.SigningKey]
 	outputs map[string]cached[db.Output]
+	// tracks are each asset's servable tracks, by asset ID.
+	tracks map[string]cached[[]db.ListServableTracksRow]
 }
 
 type cached[T any] struct {
@@ -53,6 +55,7 @@ func (c *cache) clear() {
 	c.routes = map[string]cached[db.GetRouteRow]{}
 	c.keys = map[string]cached[db.SigningKey]{}
 	c.outputs = map[string]cached[db.Output]{}
+	c.tracks = map[string]cached[[]db.ListServableTracksRow]{}
 }
 
 // lookup returns a cached value, or loads it and keeps it unless an
@@ -104,8 +107,16 @@ func (c *cache) output(ctx context.Context, q *db.Queries, id string) (db.Output
 		func() (db.Output, error) { return q.GetOutput(ctx, id) })
 }
 
-// Invalidate drops the routes of these playback IDs, and every output:
-// a publication may follow a commit, a retirement or a purge.
+// tracksOf returns an asset's servable tracks, in ID order. An asset with
+// none is cached as found and empty.
+func (c *cache) tracksOf(ctx context.Context, q *db.Queries, assetID string) ([]db.ListServableTracksRow, error) {
+	return lookup(c, func() map[string]cached[[]db.ListServableTracksRow] { return c.tracks }, assetID,
+		func() ([]db.ListServableTracksRow, error) { return q.ListServableTracks(ctx, assetID) })
+}
+
+// Invalidate drops the routes of these playback IDs, and every output and
+// track list: a publication may follow a commit, a retirement, a purge or
+// a track stored or made ready.
 func (h *Handler) Invalidate(pids ...string) {
 	c := h.cache
 	c.mu.Lock()
@@ -115,6 +126,7 @@ func (h *Handler) Invalidate(pids ...string) {
 		delete(c.routes, p)
 	}
 	c.outputs = map[string]cached[db.Output]{}
+	c.tracks = map[string]cached[[]db.ListServableTracksRow]{}
 }
 
 // InvalidateKeys drops every signing key, after _keys.json changed.

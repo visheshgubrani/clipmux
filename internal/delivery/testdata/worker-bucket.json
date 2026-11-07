@@ -23,6 +23,16 @@
       "outputs": {
         "out_p": 1,
         "out_x": 1
+      },
+      "tracks": {
+        "trk_other": {
+          "kind": "chapters",
+          "language": "en",
+          "name": "English",
+          "duration_ms": 30789,
+          "key_version": 1,
+          "listed": false
+        }
       }
     },
     "pid_signed": {
@@ -35,6 +45,96 @@
       "outputs": {
         "out_v": 1,
         "out_v_old": 1
+      }
+    },
+    "pid_tracks": {
+      "v": 1,
+      "app_id": "app_a",
+      "asset_id": "ast_t",
+      "output_id": "out_t",
+      "policy": "signed",
+      "backend": "r2",
+      "outputs": {
+        "out_t": 1
+      },
+      "tracks": {
+        "trk_ch": {
+          "kind": "chapters",
+          "language": "en",
+          "name": "English",
+          "duration_ms": 30789,
+          "key_version": 1,
+          "listed": false
+        },
+        "trk_en": {
+          "kind": "subtitles",
+          "language": "en",
+          "name": "English",
+          "duration_ms": 30789,
+          "key_version": 1,
+          "listed": true
+        },
+        "trk_hi": {
+          "kind": "subtitles",
+          "language": "hi",
+          "name": "Hindi",
+          "duration_ms": 30789,
+          "key_version": 1,
+          "listed": true
+        },
+        "trk_old": {
+          "kind": "subtitles",
+          "language": "en",
+          "name": "English",
+          "duration_ms": 30789,
+          "key_version": 1,
+          "listed": false
+        }
+      }
+    },
+    "pid_tracks_pub": {
+      "v": 1,
+      "app_id": "app_a",
+      "asset_id": "ast_t",
+      "output_id": "out_t",
+      "policy": "public",
+      "backend": "r2",
+      "outputs": {
+        "out_t": 1
+      },
+      "tracks": {
+        "trk_ch": {
+          "kind": "chapters",
+          "language": "en",
+          "name": "English",
+          "duration_ms": 30789,
+          "key_version": 1,
+          "listed": false
+        },
+        "trk_en": {
+          "kind": "subtitles",
+          "language": "en",
+          "name": "English",
+          "duration_ms": 30789,
+          "key_version": 1,
+          "listed": true
+        },
+        "trk_hi": {
+          "kind": "subtitles",
+          "language": "hi",
+          "name": "Hindi",
+          "duration_ms": 30789,
+          "key_version": 1,
+          "listed": true
+        },
+        "trk_old": {
+          "kind": "subtitles",
+          "language": "en",
+          "name": "English",
+          "duration_ms": 30789,
+          "key_version": 1,
+          "listed": false
+        }
       }
     }
   },

@@ -16,10 +16,13 @@ package delivery
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"path"
+	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -31,9 +34,11 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/db"
 	"github.com/visheshgubrani/clipmux/internal/httpjson"
 	"github.com/visheshgubrani/clipmux/internal/media"
+	"github.com/visheshgubrani/clipmux/internal/routes"
 	"github.com/visheshgubrani/clipmux/internal/storage"
 	"github.com/visheshgubrani/clipmux/internal/stores"
 	"github.com/visheshgubrani/clipmux/internal/tokens"
+	"github.com/visheshgubrani/clipmux/internal/tracks"
 )
 
 // clockSkew tolerates an app server's clock running slightly ahead.
@@ -150,10 +155,23 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, token string, si
 	}
 	switch {
 	case p == "master.m3u8" && audience == tokens.AudiencePlayback:
-		h.master(w, r, store, route.AssetID, current)
+		trks, err := h.cache.tracksOf(ctx, q, route.AssetID)
+		if err != nil {
+			h.fail(w, "tracks", err)
+			return
+		}
+		h.master(w, r, store, route.AssetID, current, trks)
 	case p == "poster.jpg":
 		// Unpinned: it follows the current output, so it can't be immutable.
 		h.object(w, r, store, route.AssetID, current, "poster.jpg", route.Policy, "max-age=300")
+	case strings.HasPrefix(p, "tracks/"):
+		// Before the output lookup, which would take "tracks" for an
+		// output. A thumbnail token never reads a track.
+		if audience != tokens.AudiencePlayback {
+			denied(w)
+			return
+		}
+		h.track(w, r, q, store, route, strings.TrimPrefix(p, "tracks/"))
 	case audience != tokens.AudiencePlayback && !strings.HasSuffix(p, "/poster.jpg"):
 		denied(w) // a thumbnail token fetches posters only
 	default:
@@ -219,7 +237,7 @@ func (h *Handler) authorize(ctx context.Context, q *db.Queries, route db.GetRout
 // master serves the current output's master with {output_id}/ in front of
 // every URI, so relative URLs resolve to .../{playback_id}/{output_id}/...
 // with the token still in the path.
-func (h *Handler) master(w http.ResponseWriter, r *http.Request, store storage.Storage, assetID, outputID string) {
+func (h *Handler) master(w http.ResponseWriter, r *http.Request, store storage.Storage, assetID, outputID string, trks []db.ListServableTracksRow) {
 	rc, err := store.Get(r.Context(), "media/"+assetID+"/"+outputID+"/master.m3u8")
 	if err != nil {
 		h.fail(w, "master", err)
@@ -233,7 +251,133 @@ func (h *Handler) master(w http.ResponseWriter, r *http.Request, store storage.S
 	}
 	w.Header().Set("Content-Type", contentTypes[".m3u8"])
 	w.Header().Set("Cache-Control", "no-store")
-	_, _ = io.WriteString(w, RewriteMaster(string(raw), outputID))
+	var subs []Subtitles
+	for _, t := range trks {
+		if routes.TrackOf(t.Kind, t.Status, t.Language, t.Name, t.DurationMs, t.KeyVersion).Listed {
+			subs = append(subs, Subtitles{ID: t.ID, Name: t.Name.String, Language: t.Language.String})
+		}
+	}
+	_, _ = io.WriteString(w, Master(string(raw), outputID, subs))
+}
+
+// Subtitles is a subtitles track the master lists.
+type Subtitles struct{ ID, Name, Language string }
+
+// Master is the master playlist served: RewriteMaster, then, with
+// subtitles, one EXT-X-MEDIA per track (in ID order) before the first
+// variant and SUBTITLES="subs" on every variant.
+func Master(raw, outputID string, subs []Subtitles) string {
+	m := RewriteMaster(raw, outputID)
+	if len(subs) == 0 {
+		return m
+	}
+	var media strings.Builder
+	for _, s := range subs {
+		fmt.Fprintf(&media, "#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID=\"subs\",NAME=\"%s\",LANGUAGE=\"%s\",AUTOSELECT=YES,DEFAULT=NO,URI=\"tracks/%s.m3u8\"\n",
+			attrValue(s.Name), attrValue(s.Language), s.ID)
+	}
+	var b strings.Builder
+	inserted := false
+	for line := range strings.Lines(m) {
+		if strings.HasPrefix(line, "#EXT-X-STREAM-INF:") {
+			if !inserted {
+				b.WriteString(media.String())
+				inserted = true
+			}
+			line = strings.TrimSuffix(line, "\n") + ",SUBTITLES=\"subs\"\n"
+		}
+		b.WriteString(line)
+	}
+	if !inserted {
+		b.WriteString(media.String())
+	}
+	return b.String()
+}
+
+// attrValue keeps a quoted playlist attribute on one line and quoted.
+func attrValue(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r == '"' || r == '\n' || r == '\r' {
+			return -1
+		}
+		return r
+	}, s)
+}
+
+// SubtitlePlaylist is a subtitles track's media playlist: its whole VTT as
+// one segment as long as the output. Times are written from integer
+// milliseconds, so the Worker's copy matches byte for byte.
+func SubtitlePlaylist(trackID string, durationMS int64) string {
+	target := max((durationMS+999)/1000, 1)
+	return fmt.Sprintf("#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:%d\n#EXT-X-MEDIA-SEQUENCE:0\n#EXT-X-PLAYLIST-TYPE:VOD\n#EXTINF:%d.%03d,\n%s.vtt\n#EXT-X-ENDLIST\n",
+		target, durationMS/1000, durationMS%1000, trackID)
+}
+
+// trackPath is a track's file: its playlist or its VTT.
+var trackPath = regexp.MustCompile(`^(trk_[0-9a-z_]{1,64})\.(m3u8|vtt)$`)
+
+// maxTrack bounds a VTT read into memory to decrypt it.
+const maxTrack = 64 << 20
+
+// track serves tracks/{id}.m3u8 (subtitles only) or tracks/{id}.vtt, for
+// this asset's servable tracks: the VTT decrypted (D079), text/vtt,
+// immutable; the playlist never cached.
+func (h *Handler) track(w http.ResponseWriter, r *http.Request, q *db.Queries, store storage.Storage, route db.GetRouteRow, rel string) {
+	m := trackPath.FindStringSubmatch(rel)
+	if m == nil {
+		notFound(w)
+		return
+	}
+	trks, err := h.cache.tracksOf(r.Context(), q, route.AssetID)
+	if err != nil {
+		h.fail(w, "tracks", err)
+		return
+	}
+	i := slices.IndexFunc(trks, func(t db.ListServableTracksRow) bool { return t.ID == m[1] })
+	if i < 0 {
+		notFound(w)
+		return
+	}
+	t := trks[i]
+	if m[2] == "m3u8" {
+		if t.Kind != tracks.Subtitles {
+			notFound(w)
+			return
+		}
+		w.Header().Set("Content-Type", contentTypes[".m3u8"])
+		w.Header().Set("Cache-Control", "no-store")
+		_, _ = io.WriteString(w, SubtitlePlaylist(t.ID, t.DurationMs.Int64))
+		return
+	}
+	key := tracks.StorageKey(route.AssetID, t.ID)
+	rc, err := store.Get(r.Context(), key)
+	if errors.Is(err, storage.ErrNotFound) {
+		notFound(w)
+		return
+	}
+	if err != nil {
+		h.fail(w, "track", err)
+		return
+	}
+	defer rc.Close()
+	sealed, err := io.ReadAll(io.LimitReader(rc, maxTrack))
+	if err != nil {
+		h.fail(w, "track", err)
+		return
+	}
+	plain, err := h.keys.OpenTrack(route.AssetID, t.ID, key, sealed)
+	if err != nil {
+		h.fail(w, "track", err)
+		return
+	}
+	scope := "public"
+	if route.Policy == "signed" {
+		scope = "private"
+	}
+	w.Header().Set("Content-Type", "text/vtt; charset=utf-8")
+	w.Header().Set("Cache-Control", scope+", max-age=31536000, immutable")
+	w.Header().Set("Content-Length", strconv.Itoa(len(plain)))
+	_, _ = w.Write(plain)
 }
 
 // RewriteMaster prefixes every URI in a master playlist with outputID/.

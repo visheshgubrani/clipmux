@@ -235,6 +235,8 @@ type route struct {
 	OutputID   string `json:"output_id,omitempty"`
 	Policy     string `json:"policy,omitempty"`
 	Backend    string `json:"backend,omitempty"`
+	// TrackID is set with Op "track": the stored track the row publishes.
+	TrackID string `json:"track_id,omitempty"`
 }
 
 const opUnpublish = "unpublish"
@@ -341,6 +343,7 @@ func (c *Committer) SyncRoutes(ctx context.Context, limit int) (int, error) {
 		type key struct{ asset, output string }
 		touched := map[key]bool{}
 		revokedFrom := map[string]bool{}
+		tracksDone := map[string]bool{}
 		for _, row := range rows {
 			var r route
 			if err := json.Unmarshal(row.Payload, &r); err != nil {
@@ -374,6 +377,8 @@ func (c *Committer) SyncRoutes(ctx context.Context, limit int) (int, error) {
 					revokedFrom[r.AssetID] = true
 				}
 			case routes.OpRefresh:
+			case routes.OpTrack:
+				tracksDone[r.TrackID] = true
 			default:
 				touched[key{r.AssetID, r.OutputID}] = true
 			}
@@ -385,6 +390,11 @@ func (c *Committer) SyncRoutes(ctx context.Context, limit int) (int, error) {
 		}
 		for assetID := range revokedFrom {
 			if err := finishRevocation(ctx, qs, assetID); err != nil {
+				return err
+			}
+		}
+		for trackID := range tracksDone {
+			if err := tracks.FinishPublication(ctx, qs, trackID); err != nil {
 				return err
 			}
 		}
@@ -504,7 +514,11 @@ func finishPublication(ctx context.Context, qs *db.Queries, assetID, outputID st
 		if _, err := qs.MarkAssetReady(ctx, assetID); err != nil {
 			return err
 		}
-		return outbox.AssetEvent(ctx, qs, assetID, outbox.AssetReady, nil)
+		if err := outbox.AssetEvent(ctx, qs, assetID, outbox.AssetReady, nil); err != nil {
+			return err
+		}
+		// Tracks stored before the video was ready wait for it.
+		return tracks.FinishPublishing(ctx, qs, assetID)
 	case "ready":
 		return outbox.AssetEvent(ctx, qs, assetID, outbox.AssetUpdated, nil)
 	}

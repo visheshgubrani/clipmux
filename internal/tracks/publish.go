@@ -10,6 +10,7 @@ import (
 
 	"github.com/visheshgubrani/clipmux/internal/contentkey"
 	"github.com/visheshgubrani/clipmux/internal/db"
+	"github.com/visheshgubrani/clipmux/internal/routes"
 	"github.com/visheshgubrani/clipmux/internal/stores"
 	"github.com/visheshgubrani/clipmux/internal/transcripts"
 )
@@ -118,8 +119,77 @@ func (p *Publisher) CommitTranscript(ctx context.Context, raw json.RawMessage) f
 		}); err != nil {
 			return err
 		}
-		return qs.BumpAssetForTrack(ctx, asset.ID)
+		if err := qs.BumpAssetForTrack(ctx, asset.ID); err != nil {
+			return err
+		}
+		return publish(ctx, qs, asset, track.ID)
 	}
+}
+
+// publish writes a stored track's route_sync rows; with no playback ID to
+// publish, it is ready at once (as outputs.commit does for an output).
+func publish(ctx context.Context, qs *db.Queries, asset db.Asset, trackID string) error {
+	n, err := routes.QueueTrack(ctx, qs, asset.ProjectID, asset.AppID, asset.ID, trackID)
+	if err != nil || n > 0 {
+		return err
+	}
+	return FinishPublication(ctx, qs, trackID)
+}
+
+// FinishPublication makes a stored track ready once every route_sync row
+// of it is confirmed, and only once its asset is ready, so video is always
+// ready before its captions. It retires the asset's previous ready track of
+// the kind (still servable for the retire window) and republishes the
+// routes so the master stops listing it. SyncRoutes calls it, as does the
+// asset becoming ready (FinishPublishing). Lock order: asset, then track.
+func FinishPublication(ctx context.Context, qs *db.Queries, trackID string) error {
+	track, err := qs.GetTrack(ctx, trackID)
+	if err != nil {
+		return err
+	}
+	asset, err := qs.LockAsset(ctx, track.AssetID)
+	if err != nil {
+		return err
+	}
+	if track, err = qs.LockTrack(ctx, trackID); err != nil {
+		return err
+	}
+	if track.Status != Publishing || asset.Status != "ready" {
+		return nil
+	}
+	pending, err := qs.CountPendingRoutesForTrack(ctx, db.CountPendingRoutesForTrackParams{AssetID: text(asset.ID), TrackID: trackID})
+	if err != nil || pending > 0 {
+		return err
+	}
+	// The old one first: at most one ready track per kind (tracks_one_ready).
+	retired, err := qs.RetireReadyTracksOfKind(ctx, db.RetireReadyTracksOfKindParams{AssetID: asset.ID, Kind: track.Kind, Keep: trackID})
+	if err != nil {
+		return err
+	}
+	if _, err := qs.MarkTrackReady(ctx, trackID); err != nil {
+		return err
+	}
+	if len(retired) > 0 {
+		if err := routes.QueueAssetRefresh(ctx, qs, asset.ProjectID, asset.AppID, asset.ID); err != nil {
+			return err
+		}
+	}
+	return qs.BumpAssetForTrack(ctx, asset.ID)
+}
+
+// FinishPublishing finishes every track of an asset that was waiting for
+// the asset to become ready. The asset is locked by the caller.
+func FinishPublishing(ctx context.Context, qs *db.Queries, assetID string) error {
+	ids, err := qs.ListPublishingTracks(ctx, assetID)
+	if err != nil {
+		return err
+	}
+	for _, id := range ids {
+		if err := FinishPublication(ctx, qs, id); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func text(s string) pgtype.Text { return pgtype.Text{String: s, Valid: s != ""} }

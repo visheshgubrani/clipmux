@@ -203,7 +203,8 @@ func TestASpeechWorkerTranscribesToAPublishedTrack(t *testing.T) {
 		Scan(&trk, &status, &lang, &name, &keyVersion); err != nil {
 		t.Fatal(err)
 	}
-	if status != "publishing" || lang != "en" || name != "English" || keyVersion != 1 {
+	// No playback ID to publish to: ready at once (P5-T15).
+	if status != "ready" || lang != "en" || name != "English" || keyVersion != 1 {
 		t.Fatalf("track %s %s %s v%d", status, lang, name, keyVersion)
 	}
 	var body []byte

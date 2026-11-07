@@ -16,6 +16,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/routes"
 	"github.com/visheshgubrani/clipmux/internal/storage"
 	"github.com/visheshgubrani/clipmux/internal/stores"
+	"github.com/visheshgubrani/clipmux/internal/tracks"
 )
 
 // File windows (D070).
@@ -61,6 +62,7 @@ func (f *Files) Run(ctx context.Context) (int, error) {
 		run  func(context.Context) (int, error)
 	}{
 		{"retired_outputs", f.PurgeRetired},
+		{"retired_tracks", f.PurgeRetiredTracks},
 		{"abandoned_outputs", f.PurgeAbandoned},
 		{"orphan_prefixes", f.SweepOrphans},
 		{"filesystem_leftovers", f.sweepFS},
@@ -102,6 +104,39 @@ func (f *Files) PurgeRetired(ctx context.Context) (int, error) {
 		}
 		if err := f.deletePrefix(ctx, o.AssetID, o.Prefix.String); err != nil {
 			return n, err // the orphan sweep finishes it
+		}
+		n++
+	}
+	return n, nil
+}
+
+// PurgeRetiredTracks deletes tracks retired past the same window as
+// outputs (P5 "Retention": retired tracks go with the output window): the
+// track stops being served first (it becomes deleted and the records drop
+// it), then its file goes.
+func (f *Files) PurgeRetiredTracks(ctx context.Context) (int, error) {
+	rows, err := db.New(f.pool).ListPurgeableRetiredTracks(ctx, db.ListPurgeableRetiredTracksParams{Now: f.ts(f.Now()), MaxRows: 100})
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, t := range rows {
+		err := pgx.BeginFunc(ctx, f.pool, func(tx pgx.Tx) error {
+			q := db.New(tx)
+			if _, err := q.PurgeTrack(ctx, t.ID); err != nil {
+				return err
+			}
+			return routes.QueueAssetRefresh(ctx, q, t.ProjectID, t.AppID, t.AssetID)
+		})
+		if err != nil {
+			return n, fmt.Errorf("purge track %s: %w", t.ID, err)
+		}
+		store, err := f.stores.ForAsset(ctx, t.AssetID)
+		if err != nil {
+			return n, err
+		}
+		if err := store.Delete(ctx, tracks.StorageKey(t.AssetID, t.ID)); err != nil {
+			return n, fmt.Errorf("delete track %s: %w", t.ID, err)
 		}
 		n++
 	}

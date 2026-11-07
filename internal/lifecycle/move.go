@@ -95,7 +95,9 @@ func (s *Service) runMove(ctx context.Context, job db.Job) error {
 	if err != nil {
 		return err
 	}
-	prefixes := []string{"uploads/" + job.AssetID + "/"}
+	// Track files sit apart from outputs (tracks.StorageKey); only tracks
+	// that can be served have one, since a purge deletes its file.
+	prefixes := []string{"uploads/" + job.AssetID + "/", "media/" + job.AssetID + "/tracks/"}
 	for _, o := range outs {
 		prefixes = append(prefixes, "media/"+job.AssetID+"/"+o+"/")
 	}
