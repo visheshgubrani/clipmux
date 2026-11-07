@@ -11,3 +11,4 @@ export {
   TokenSession,
 } from './refresh.ts'
 export { type ClipMuxSource, clipmuxSource, playbackUrl, type SourceOptions } from './source.ts'
+export { type Chapter, fetchTrack, parseChapters, trackUrl } from './tracks.ts'

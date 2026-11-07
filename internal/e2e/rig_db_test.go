@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"os"
@@ -264,6 +265,13 @@ func fixture(t *testing.T, seconds, w, h int) string {
 // a browser would, and returns the asset and its signed playback ID.
 func (in *instance) upload(key, path string) (asset, pid string) {
 	in.t.Helper()
+	return in.uploadWith(key, path, nil)
+}
+
+// uploadWith is upload with more fields in the create request, such as
+// generate.
+func (in *instance) uploadWith(key, path string, extra map[string]any) (asset, pid string) {
+	in.t.Helper()
 	data, err := os.ReadFile(path)
 	if err != nil {
 		in.t.Fatal(err)
@@ -276,7 +284,9 @@ func (in *instance) upload(key, path string) (asset, pid string) {
 		UploadToken string                `json:"upload_token"`
 		PlaybackIDs []struct{ ID string } `json:"playback_ids"`
 	}
-	if s := in.call("POST", "/v1/uploads", key, map[string]any{"size": len(data), "playback_policy": "signed"}, &created); s != 201 {
+	body := map[string]any{"size": len(data), "playback_policy": "signed"}
+	maps.Copy(body, extra)
+	if s := in.call("POST", "/v1/uploads", key, body, &created); s != 201 {
 		in.t.Fatalf("create upload: %d", s)
 	}
 	numbers := make([]int, created.PartCount)

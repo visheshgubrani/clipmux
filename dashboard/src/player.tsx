@@ -7,10 +7,13 @@ export function Preview({
   assetId,
   baseUrl,
   autoplay,
+  chaptersTrack,
 }: {
   assetId: string
   baseUrl: string
   autoplay?: boolean
+  /** A ready chapters track, marked on the time slider. */
+  chaptersTrack?: string | undefined
 }) {
   const ref = useRef<HTMLElement & { getToken?: () => Promise<string | null>; token?: string }>(null)
   useEffect(() => {
@@ -24,6 +27,12 @@ export function Preview({
       el.setAttribute('playback-id', first.playback_id)
     })
   }, [assetId, baseUrl])
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    if (chaptersTrack) el.setAttribute('chapters-track', chaptersTrack)
+    else el.removeAttribute('chapters-track')
+  }, [chaptersTrack])
   return (
     <clipmux-player
       ref={ref}

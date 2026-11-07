@@ -2,6 +2,10 @@ export interface FixtureConfig {
   base_url: string
   playback_id: string
   api: string
+  subtitles_track: string
+  chapters_track: string
+  cue_text: string
+  cue_start: number
 }
 
 export async function config(): Promise<FixtureConfig> {

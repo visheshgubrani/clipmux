@@ -43,6 +43,7 @@ export const executorNames: Record<string, string> = {
   agent: 'a PC',
   runpod: 'RunPod',
   modal: 'Modal',
+  speech_api: 'the speech API',
 }
 
 const providerNames: Record<string, string> = { runpod: 'RunPod', modal: 'Modal' }
@@ -172,9 +173,11 @@ const stepNames: Record<string, string> = {
   registry: 'Registry access',
   saved: 'Saved',
   setup_test: 'Setup test',
+  transcription: 'Sample transcription',
+  structured_output: 'Sample chapters',
 }
 
-function Steps({ steps }: { steps: Step[] }) {
+export function Steps({ steps }: { steps: Step[] }) {
   if (steps.length === 0) return null
   return (
     <ol className="grid gap-1 text-sm">

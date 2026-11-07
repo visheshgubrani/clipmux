@@ -4,6 +4,7 @@ import { api, type Setup } from './api.ts'
 import { Account } from './pages/account.tsx'
 import { AppDetail, Apps } from './pages/apps.tsx'
 import { AssetPage } from './pages/asset.tsx'
+import { Captions } from './pages/captions.tsx'
 import { Delivery } from './pages/delivery.tsx'
 import { Jobs } from './pages/jobs.tsx'
 import { Library } from './pages/library.tsx'
@@ -47,6 +48,7 @@ export function App() {
               <Route path="/apps/:id" element={<AppDetail keysAllowed={setup.keys_allowed} />} />
               <Route path="/delivery" element={<Delivery />} />
               <Route path="/workers" element={<Workers />} />
+              <Route path="/captions" element={<Captions />} />
               <Route path="/jobs" element={<Jobs />} />
               <Route path="/workers/connect" element={<ConnectPC />} />
               <Route path="/account" element={<Account />} />
@@ -101,6 +103,9 @@ function Nav({ email, onSignOut }: { email: string; onSignOut: () => void }) {
         </NavLink>
         <NavLink to="/workers" className={link} end>
           Workers
+        </NavLink>
+        <NavLink to="/captions" className={link}>
+          Captions
         </NavLink>
         <NavLink to="/setup" className={link}>
           Setup
