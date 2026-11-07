@@ -73,3 +73,8 @@ UPDATE idempotency_keys SET response_status = $3, response_body = $4 WHERE app_i
 
 -- name: RotateUploadToken :execrows
 UPDATE uploads SET token_hash = $2 WHERE id = $1 AND status = 'active';
+
+-- name: ListPlaybackIDsForAssets :many
+-- One query for a page of assets (D072), in the order ListPlaybackIDs uses.
+SELECT * FROM playback_ids WHERE asset_id = ANY(sqlc.arg(asset_ids)::text[]) AND status <> 'revoked'
+ORDER BY asset_id, created_at, id;

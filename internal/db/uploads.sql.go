@@ -297,6 +297,40 @@ func (q *Queries) ListPlaybackIDs(ctx context.Context, assetID string) ([]Playba
 	return items, nil
 }
 
+const listPlaybackIDsForAssets = `-- name: ListPlaybackIDsForAssets :many
+SELECT id, project_id, asset_id, policy, status, created_at, revoked_at FROM playback_ids WHERE asset_id = ANY($1::text[]) AND status <> 'revoked'
+ORDER BY asset_id, created_at, id
+`
+
+// One query for a page of assets (D072), in the order ListPlaybackIDs uses.
+func (q *Queries) ListPlaybackIDsForAssets(ctx context.Context, assetIds []string) ([]PlaybackID, error) {
+	rows, err := q.db.Query(ctx, listPlaybackIDsForAssets, assetIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []PlaybackID{}
+	for rows.Next() {
+		var i PlaybackID
+		if err := rows.Scan(
+			&i.ID,
+			&i.ProjectID,
+			&i.AssetID,
+			&i.Policy,
+			&i.Status,
+			&i.CreatedAt,
+			&i.RevokedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const lockUpload = `-- name: LockUpload :one
 SELECT id, project_id, asset_id, multipart_id, declared_size, part_size, token_hash, status, last_activity_at, created_at, finished_at, parts_seen, last_swept_at FROM uploads WHERE id = $1 FOR UPDATE
 `

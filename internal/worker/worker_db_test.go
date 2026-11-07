@@ -109,9 +109,12 @@ func newRigOn(t *testing.T, auth workerapi.WorkerAuth, open func(base string, mu
 		t.Fatal(err)
 	}
 	q := queue.New(pool)
-	api := workerapi.New(q, auth, stores.Fixed(store), contentkey.NewRing(keys), outputs.New(pool, q, stores.Fixed(store)))
+	committer := outputs.New(pool, q, stores.Fixed(store))
+	api := workerapi.New(q, auth, stores.Fixed(store), contentkey.NewRing(keys), committer)
 	mux.Handle("POST /worker/v1/", api.Handler())
-	delivery.New(pool, stores.Fixed(store), contentkey.NewRing(keys)).Register(mux)
+	playback := delivery.New(pool, stores.Fixed(store), contentkey.NewRing(keys))
+	committer.OnPublished, committer.OnKeys = playback.Invalidate, playback.InvalidateKeys // as serve wires them
+	playback.Register(mux)
 	return &rig{pool: pool, store: store, media: srv.URL, api: api, worker: &Worker{
 		Server: srv.URL, Key: "k", WorkDir: t.TempDir(), Tools: tl, HTTP: http.DefaultClient,
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Wait: time.Millisecond,

@@ -62,6 +62,41 @@ func Load(ctx context.Context, q *db.Queries, a db.Asset) (View, error) {
 	if err != nil {
 		return View{}, err
 	}
+	return view(a, baseURL, pids), nil
+}
+
+// LoadMany builds the views of a page of assets in two queries, whatever
+// its length (D072): the media URL once per project, and every asset's
+// playback IDs at once.
+func LoadMany(ctx context.Context, q *db.Queries, rows []db.Asset) ([]View, error) {
+	ids := make([]string, len(rows))
+	for i, a := range rows {
+		ids[i] = a.ID
+	}
+	pids, err := q.ListPlaybackIDsForAssets(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	byAsset := map[string][]db.PlaybackID{}
+	for _, p := range pids {
+		byAsset[p.AssetID] = append(byAsset[p.AssetID], p)
+	}
+	baseURLs := map[string]string{}
+	out := make([]View, 0, len(rows))
+	for _, a := range rows {
+		baseURL, ok := baseURLs[a.ProjectID]
+		if !ok {
+			if baseURL, err = q.GetMediaURL(ctx, a.ProjectID); err != nil {
+				return nil, err
+			}
+			baseURLs[a.ProjectID] = baseURL
+		}
+		out = append(out, view(a, baseURL, byAsset[a.ID]))
+	}
+	return out, nil
+}
+
+func view(a db.Asset, baseURL string, pids []db.PlaybackID) View {
 	playable := a.CurrentOutputID.Valid && a.Status != "deleted"
 	v := View{
 		ID: a.ID, AppID: a.AppID, Status: a.Status, Version: a.Version, BaseURL: baseURL,
@@ -72,7 +107,7 @@ func Load(ctx context.Context, q *db.Queries, a db.Asset) (View, error) {
 	for _, p := range pids {
 		v.PlaybackIDs = append(v.PlaybackIDs, PlaybackID{ID: p.ID, Policy: p.Policy, Playable: playable && p.Status == "active", Status: p.Status})
 	}
-	return v, nil
+	return v
 }
 
 // API serves GET /v1/assets and GET /v1/assets/{id}.
@@ -203,13 +238,9 @@ func (a *API) writeList(w http.ResponseWriter, r *http.Request, q *db.Queries, r
 
 // WriteList sends a page of asset views, {"data": [...], "next_cursor"?}.
 func WriteList(ctx context.Context, w http.ResponseWriter, q *db.Queries, rows []db.Asset, next string) error {
-	out := make([]View, 0, len(rows))
-	for _, asset := range rows {
-		v, err := Load(ctx, q, asset)
-		if err != nil {
-			return err
-		}
-		out = append(out, v)
+	out, err := LoadMany(ctx, q, rows)
+	if err != nil {
+		return err
 	}
 	body := map[string]any{"data": out}
 	if next != "" {

@@ -78,7 +78,9 @@ func TestSetupTestPassesEveryCheckOnAFreshInstall(t *testing.T) {
 		mux.Handle(m+" /_storage/", store.Handler())
 	}
 	upl.Register(mux)
-	delivery.New(pool, stores.Fixed(store), ring).Register(mux)
+	playback := delivery.New(pool, stores.Fixed(store), ring)
+	committer.OnPublished, committer.OnKeys = playback.Invalidate, playback.InvalidateKeys // as serve wires them
+	playback.Register(mux)
 	urls, err := settings.Load(ctx, pool, "prj_default", config.Config{PublicURL: srv.URL, MediaURL: srv.URL, URLsPinned: true})
 	if err != nil {
 		t.Fatal(err)

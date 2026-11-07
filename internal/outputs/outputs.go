@@ -58,6 +58,10 @@ type Committer struct {
 	queue  *queue.Queue
 	stores *stores.Set
 	Logger *slog.Logger
+	// OnPublished and OnKeys run after route records or _keys.json are
+	// confirmed, so built-in delivery drops what it cached (D072).
+	OnPublished func(pids ...string)
+	OnKeys      func()
 
 	// publishInline publishes routes right after the commit; tests turn it
 	// off to stand in for a crash between the two steps.
@@ -312,8 +316,10 @@ func activePlaybackIDs(ctx context.Context, qs *db.Queries, assetID string) ([]d
 // confirmed, and rewrites _keys.json where a key changed. It returns how many
 // rows it confirmed. Safe to run concurrently (SKIP LOCKED) and repeatedly.
 func (c *Committer) SyncRoutes(ctx context.Context, limit int) (int, error) {
-	published := 0
+	published, keysPublished := 0, 0
+	var pids []string
 	err := pgx.BeginFunc(ctx, c.pool, func(tx pgx.Tx) error {
+		pids, keysPublished = pids[:0], 0
 		qs := db.New(tx)
 		rows, err := qs.LockPendingRouteSyncs(ctx, int32(limit))
 		if err != nil {
@@ -345,6 +351,7 @@ func (c *Committer) SyncRoutes(ctx context.Context, limit int) (int, error) {
 				return err
 			}
 			published++
+			pids = append(pids, r.PlaybackID)
 			switch r.Op {
 			case opUnpublish:
 				n, err := qs.RevokePlaybackID(ctx, r.PlaybackID)
@@ -371,8 +378,19 @@ func (c *Committer) SyncRoutes(ctx context.Context, limit int) (int, error) {
 		}
 		n, err := c.syncKeys(ctx, qs, adapters)
 		published += n
+		keysPublished = n
 		return err
 	})
+	// Only once committed: a cache refilled before then would read the
+	// old state back.
+	if err == nil {
+		if len(pids) > 0 && c.OnPublished != nil {
+			c.OnPublished(pids...)
+		}
+		if keysPublished > 0 && c.OnKeys != nil {
+			c.OnKeys()
+		}
+	}
 	return published, err
 }
 

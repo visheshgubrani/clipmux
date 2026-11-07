@@ -66,7 +66,9 @@ func newRig(t *testing.T) *rig {
 	mux := http.NewServeMux()
 	assets.New(pool).Register(mux)
 	svc.Register(mux)
-	delivery.New(pool, stores.Fixed(store), contentkey.NewRing(keys)).Register(mux)
+	playback := delivery.New(pool, stores.Fixed(store), contentkey.NewRing(keys))
+	committer.OnPublished, committer.OnKeys = playback.Invalidate, playback.InvalidateKeys // as serve wires them
+	playback.Register(mux)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	key, _, err := apikeys.Create(ctx, pool, "prj_default", "app_dashboard", "backend",

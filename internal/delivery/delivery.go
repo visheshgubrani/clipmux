@@ -52,13 +52,16 @@ type Handler struct {
 	pool   *pgxpool.Pool
 	stores *stores.Set
 	keys   contentkey.Ring
+	cache  *cache
 	Now    func() time.Time
 	Logger *slog.Logger
 }
 
 // New returns the built-in delivery handler.
 func New(pool *pgxpool.Pool, set *stores.Set, keys contentkey.Ring) *Handler {
-	return &Handler{pool: pool, stores: set, keys: keys, Now: time.Now, Logger: slog.Default()}
+	h := &Handler{pool: pool, stores: set, keys: keys, Now: time.Now, Logger: slog.Default()}
+	h.cache = newCache(func() time.Time { return h.Now() })
+	return h
 }
 
 // Register adds the playback routes to mux.
@@ -102,7 +105,7 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, token string, si
 	common(w)
 	ctx := r.Context()
 	q := db.New(h.pool)
-	route, err := q.GetRoute(ctx, r.PathValue("pid"))
+	route, err := h.cache.route(ctx, q, r.PathValue("pid"))
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		notFound(w)
@@ -159,7 +162,7 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, token string, si
 			notFound(w)
 			return
 		}
-		out, err := q.GetOutput(ctx, outputID)
+		out, err := h.cache.output(ctx, q, outputID)
 		if errors.Is(err, pgx.ErrNoRows) || (err == nil && (out.AssetID != route.AssetID || out.Status == "writing" || out.PurgedAt.Valid)) {
 			notFound(w) // only this asset's committed or retired outputs whose files are kept
 			return
@@ -187,7 +190,7 @@ func (h *Handler) authorize(ctx context.Context, q *db.Queries, route db.GetRout
 	if err != nil {
 		return "", http.StatusForbidden
 	}
-	key, err := q.GetSigningKey(ctx, tok.Kid)
+	key, err := h.cache.signingKey(ctx, q, tok.Kid)
 	if err != nil || key.RevokedAt.Valid || (key.RetiredAt.Valid && !key.RetiredAt.Time.After(h.Now())) {
 		return "", http.StatusForbidden
 	}

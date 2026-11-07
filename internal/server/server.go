@@ -318,6 +318,7 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 	upl.Logger = logger
 	playback := delivery.New(pool, set, keys)
 	playback.Logger = logger
+	committer.OnPublished, committer.OnKeys = playback.Invalidate, playback.InvalidateKeys
 	if cfg.MaxUploadBytes > 0 {
 		upl.MaxSize = cfg.MaxUploadBytes
 	}

@@ -715,5 +715,13 @@ Decisions within D063, made in P5-T08 (answering P5 open questions 2 to 4):
 - **The setup token lasts a day.** Past that, the next attempt is refused and a fresh token is logged, so a token copied from an old log can't claim an install left unregistered. It is still printed to the log (open question 3), and the setup route has a failure limit (D067).
 - **No audit log this phase** (open question 4): ownership changes and key operations log at info with the request ID; a durable audit trail is a known gap.
 
+## D072 A route cache in built-in delivery, and listing in two queries — accepted (2026-11-07)
+Decisions within D063, made in P5-T09:
+- **Delivery caches** each playback ID's route, each signing key and each output it reads, so a segment request usually costs no query. Entries live 30 s (`delivery.RouteTTL`), and an unknown ID 5 s, against the Worker's 60 s and 5 s (D036).
+- **Invalidation comes from route publication.** `outputs.Committer` calls `OnPublished(pids…)` after the transaction that confirms route_sync rows commits, and `OnKeys()` after `_keys.json` is confirmed; serve wires them to the handler. Every change the Worker must see already goes through those rows, so on one node a revocation, a deletion, a disabled app or a new output is seen at the next request. Outputs are all dropped on any route invalidation, because a publication may follow a commit, a retirement or a purge.
+- **A generation counter** refuses to store a value whose load began before an invalidation, so a slow read can't put back what was just dropped.
+- The cache holds at most 100,000 entries of each kind and starts over past that. Changes that publish nothing, such as the project's maximum token lifetime, take up to 30 s; so do another replica's (known gap).
+- **`assets.LoadMany`** builds a page of asset views with one media-URL read per project and one playback-ID query for the whole page (`ListPlaybackIDsForAssets`), where listing and the library made one query per asset. A test counts 2 queries for 100 assets.
+
 ## D007 Shaka Packager 3.9.3 — accepted (2026-11-05)
 Decision: pin v3.9.3 (`toolchain/versions.env`), the version clipmux-lms runs with AES-128 in production, which needs the init-segment workaround for Shaka issue 1616. Move to a release that fixes 1616 when one exists, re-running the Phase 1 player tests.

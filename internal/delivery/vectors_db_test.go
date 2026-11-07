@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -276,8 +277,14 @@ func TestVectors(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	for _, c := range v.Cases {
-		t.Run(c.Name, func(t *testing.T) {
+	// Twice: the second pass is answered from the route cache (D072), and
+	// must answer the same.
+	for pass, c := range append(slices.Clone(v.Cases), v.Cases...) {
+		name := c.Name
+		if pass >= len(v.Cases) {
+			name += "/cached"
+		}
+		t.Run(name, func(t *testing.T) {
 			p := c.Path
 			for name, tok := range v.Tokens {
 				p = strings.ReplaceAll(p, "{"+name+"}", tok)
