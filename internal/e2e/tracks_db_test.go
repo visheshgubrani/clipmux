@@ -10,6 +10,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -218,6 +220,22 @@ func (in *instance) noAIKeys() {
 			}
 		}
 	}
+}
+
+// speechFixture writes a clip of JFK's 11 s of public-domain speech over a
+// test pattern (internal/media/testdata/speech/jfk.ogg).
+func speechFixture(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "speech.mp4")
+	out, err := exec.Command("ffmpeg", "-nostdin", "-v", "error", "-y",
+		"-f", "lavfi", "-i", "testsrc2=size=640x360:rate=25",
+		"-i", filepath.Join("..", "media", "testdata", "speech", "jfk.ogg"),
+		"-t", "11", "-map", "0:v", "-map", "1:a", "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
+		"-c:a", "aac", "-ar", "48000", path).CombinedOutput()
+	if err != nil {
+		t.Fatalf("ffmpeg speech fixture: %v\n%s", err, out)
+	}
+	return path
 }
 
 func (f *aiFakes) String() string { return fmt.Sprintf("speech %s, llm %s", f.speech.URL, f.llm.URL) }

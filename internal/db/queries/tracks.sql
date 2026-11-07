@@ -175,3 +175,14 @@ SET status = 'publishing', language = $2, name = $3, duration_ms = $4, key_versi
 WHERE id = $1 AND status = 'preparing' AND kind = 'chapters'
 RETURNING *;
 
+-- name: ProjectCanTranscribe :one
+-- Whether something can transcribe right now: the built-in worker or an
+-- online PC that reported speech, or a connected speech API in a mode that
+-- uses it. The setup test asks for subtitles only then.
+SELECT ((p.builtin_speech AND coalesce(p.builtin_seen_at > now() - make_interval(secs => sqlc.arg(online_seconds)::double precision), false))
+    OR EXISTS (SELECT 1 FROM agents g WHERE g.project_id = p.id AND g.status = 'approved'
+               AND g.last_seen_at > now() - make_interval(secs => sqlc.arg(online_seconds)::double precision)
+               AND jsonb_typeof(g.capabilities -> 'speech') = 'object')
+    OR (p.speech_mode <> 'local' AND EXISTS (SELECT 1 FROM ai_connections c WHERE c.project_id = p.id
+               AND c.purpose = 'speech' AND c.verified_at IS NOT NULL)))::boolean
+FROM projects p WHERE p.id = sqlc.arg(project_id);

@@ -3,8 +3,9 @@ package e2e
 // Check 9 of the Phase 4 exit test (docs/plans/P4-serverless.md), on real
 // accounts: Connect RunPod and Connect Modal each run the setup test
 // through their provider, against serve behind a tunnel, encode on NVENC,
-// and leave no machine running. exit-providers.yml runs it; without a
-// provider's secrets that provider is skipped.
+// and leave no machine running. With the provider as the primary, a clip of
+// speech is then transcribed on its GPU and timed (P5-T19). exit-providers.yml
+// runs it; without a provider's secrets that provider is skipped.
 //
 //	CLIPMUX_E2E_PROVIDERS=1
 //	CLIPMUX_E2E_PUBLIC_URL     the tunnel's https URL, forwarding to CLIPMUX_E2E_SERVE_PORT
@@ -15,6 +16,7 @@ package e2e
 
 import (
 	"context"
+	"net/http"
 	"os"
 	"strings"
 	"testing"
@@ -115,6 +117,11 @@ func TestExitRealProviders(t *testing.T) {
 				t.Errorf("the sample encoded on %q, want nvenc", stage)
 			}
 
+			// P5-T19: with the provider as the primary, a clip of speech is
+			// transcribed on its GPU (the image ships whisper; the machine
+			// fetches the models by digest), and its real-time factor logged.
+			speechOn(t, in, owner, publicURL, p.kind)
+
 			// Every machine stopped, by the database and by the provider.
 			deadline = time.Now().Add(3 * time.Minute)
 			for in.scalar(`SELECT count(*)::text FROM dispatches WHERE kind = $1 AND instance_id IS NOT NULL AND stopped_at IS NULL`, p.kind) != "0" {
@@ -158,4 +165,35 @@ func machines(t *testing.T, in *instance, kind string) []dispatch.Instance {
 		t.Fatalf("list %s machines: %s", kind, strings.ReplaceAll(err.Error(), os.Getenv("RUNPOD_API_KEY"), "…"))
 	}
 	return running
+}
+
+// speechOn routes to kind, transcribes 11 s of English there, checks what
+// came back, logs how long the transcription took, and routes back.
+func speechOn(t *testing.T, in *instance, owner *http.Client, publicURL, kind string) {
+	t.Helper()
+	routing := func(primary string) {
+		if s := ownerCall(t, owner, "PUT", publicURL+"/v1/settings/routing", map[string]any{"primary_executor": primary}, nil); s != 200 {
+			t.Fatalf("route to %s: %d", primary, s)
+		}
+	}
+	routing(kind)
+	defer routing("workers")
+	key, _, _ := in.credentials("Speech on " + kind)
+	asset, _ := in.uploadWith(key, speechFixture(t), map[string]any{"generate": map[string]bool{"subtitles": true}})
+	in.waitReady(key, asset, 25*time.Minute)
+	trk := in.waitTracks(key, asset, 30*time.Minute)["subtitles"]
+	if trk.Status != "ready" || trk.Language != "en" {
+		t.Fatalf("subtitles on %s = %+v", kind, trk)
+	}
+	var tr struct {
+		Text string `json:"text"`
+	}
+	in.call("GET", "/v1/assets/"+asset+"/tracks/"+trk.ID+"/transcript", key, nil, &tr)
+	if !strings.Contains(strings.ToLower(tr.Text), "ask not what your country") {
+		t.Fatalf("transcript on %s = %q", kind, tr.Text)
+	}
+	t.Logf("transcription on %s: %s", kind, in.scalar(`
+		SELECT a.executor || ', ' || round(extract(epoch FROM a.finished_at - a.started_at)::numeric, 1) || ' s for 11 s, worker ' || coalesce(a.worker_info::text, '')
+		FROM attempts a JOIN jobs j ON j.id = a.job_id
+		WHERE j.asset_id = $1 AND j.kind = 'transcribe' AND a.status = 'committed'`, asset))
 }

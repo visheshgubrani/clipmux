@@ -831,6 +831,31 @@ func (q *Queries) MarkTracksDeleted(ctx context.Context, assetID string) ([]stri
 	return items, nil
 }
 
+const projectCanTranscribe = `-- name: ProjectCanTranscribe :one
+SELECT ((p.builtin_speech AND coalesce(p.builtin_seen_at > now() - make_interval(secs => $1::double precision), false))
+    OR EXISTS (SELECT 1 FROM agents g WHERE g.project_id = p.id AND g.status = 'approved'
+               AND g.last_seen_at > now() - make_interval(secs => $1::double precision)
+               AND jsonb_typeof(g.capabilities -> 'speech') = 'object')
+    OR (p.speech_mode <> 'local' AND EXISTS (SELECT 1 FROM ai_connections c WHERE c.project_id = p.id
+               AND c.purpose = 'speech' AND c.verified_at IS NOT NULL)))::boolean
+FROM projects p WHERE p.id = $2
+`
+
+type ProjectCanTranscribeParams struct {
+	OnlineSeconds float64
+	ProjectID     string
+}
+
+// Whether something can transcribe right now: the built-in worker or an
+// online PC that reported speech, or a connected speech API in a mode that
+// uses it. The setup test asks for subtitles only then.
+func (q *Queries) ProjectCanTranscribe(ctx context.Context, arg ProjectCanTranscribeParams) (bool, error) {
+	row := q.db.QueryRow(ctx, projectCanTranscribe, arg.OnlineSeconds, arg.ProjectID)
+	var column_1 bool
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const publishChaptersTrack = `-- name: PublishChaptersTrack :one
 UPDATE tracks
 SET status = 'publishing', language = $2, name = $3, duration_ms = $4, key_version = $5, output_id = $6,
