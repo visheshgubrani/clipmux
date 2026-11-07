@@ -251,7 +251,7 @@ func (m *API) owned(h ownedHandler) http.HandlerFunc {
 			err = h(w, r, owner)
 		}
 		if err != nil && !errors.Is(err, errWritten) && !httpjson.WriteProblem(w, err) {
-			m.Logger.Error("manage api", "path", r.URL.Path, "err", err)
+			m.Logger.ErrorContext(r.Context(), "manage api", "route", r.Pattern, "err", err)
 			httpjson.Error(w, http.StatusInternalServerError, "internal", "internal error")
 		}
 	}
@@ -274,7 +274,7 @@ var errWritten = errors.New("manage: response already written")
 func (m *API) setup(w http.ResponseWriter, r *http.Request) {
 	exists, err := db.New(m.pool).OwnerExists(r.Context(), m.urlsProject())
 	if err != nil {
-		m.Logger.Error("manage api", "path", r.URL.Path, "err", err)
+		m.Logger.ErrorContext(r.Context(), "manage api", "route", r.Pattern, "err", err)
 		httpjson.Error(w, http.StatusInternalServerError, "internal", "internal error")
 		return
 	}

@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/visheshgubrani/clipmux/internal/logging"
 	"github.com/visheshgubrani/clipmux/internal/media"
 	"github.com/visheshgubrani/clipmux/internal/sandbox"
 	"github.com/visheshgubrani/clipmux/internal/worker"
@@ -60,6 +61,12 @@ func (b *builtinWorker) childEnv() []string {
 		env = append(env, "TMPDIR="+tmp)
 	}
 	// A GPU on the server host encodes for the built-in worker too.
+	// The child logs like serve, to the same stream.
+	for _, name := range []string{logging.EnvFormat, logging.EnvLevel} {
+		if v := os.Getenv(name); v != "" {
+			env = append(env, name+"="+v)
+		}
+	}
 	for _, name := range append([]string{"CLIPMUX_ENCODER", "CLIPMUX_VAAPI_DEVICE"}, sandbox.EnvAllowed...) {
 		if v := os.Getenv(name); v != "" {
 			env = append(env, name+"="+v)

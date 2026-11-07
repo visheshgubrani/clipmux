@@ -43,7 +43,7 @@ func (s *Service) fail(w http.ResponseWriter, r *http.Request, err error) {
 		err = httpjson.Fail(http.StatusNotFound, "not_found", "no such agent")
 	}
 	if !httpjson.WriteProblem(w, err) {
-		s.Logger.Error("agents api", "path", r.URL.Path, "err", err)
+		s.Logger.ErrorContext(r.Context(), "agents api", "route", r.Pattern, "err", err)
 		httpjson.Error(w, http.StatusInternalServerError, "internal", "internal error")
 	}
 }

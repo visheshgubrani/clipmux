@@ -108,7 +108,7 @@ func (s *Service) handleDelete(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, errNotFound):
 		httpjson.Error(w, http.StatusNotFound, "not_found", "no such asset")
 	case err != nil:
-		s.Logger.Error("delete asset", "asset", r.PathValue("id"), "err", err)
+		s.Logger.ErrorContext(r.Context(), "delete asset", "asset", r.PathValue("id"), "err", err)
 		httpjson.Error(w, http.StatusInternalServerError, "internal", "internal error")
 	case done:
 		httpjson.Write(w, http.StatusOK, view)

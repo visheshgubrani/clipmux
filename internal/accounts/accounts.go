@@ -309,7 +309,7 @@ func (s *Service) fail(w http.ResponseWriter, op string, err error) {
 		w.Header().Set("Retry-After", p.Details["retry_after"])
 	}
 	if !httpjson.WriteProblem(w, err) {
-		s.Logger.Error("accounts", "op", op, "err", err)
+		s.Logger.Error("accounts", "op", op, "request_id", w.Header().Get("X-Request-Id"), "err", err)
 		httpjson.Error(w, http.StatusInternalServerError, "internal", "internal error")
 	}
 }

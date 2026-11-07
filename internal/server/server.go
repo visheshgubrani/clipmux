@@ -372,11 +372,14 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 		wg.Go(func() { bw.run(ctx) })
 	}
 
+	reqLog := requestLog{logger: logger, trusted: cfg.TrustedProxies, clientIP: acct.ClientIP}
 	srv := &http.Server{
-		Handler: Handler(Deps{
+		Handler: reqLog.wrap(Handler(Deps{
 			DB: pool, Worker: worker.Handler(), Storage: store.Handler(), ServesHost: b.urls.ServesHost,
 			APIs: []Registrar{acct, mgmt, agentSvc, upl, assetsAPI, life, playback},
-		}),
+		})),
+		// The server's own errors (TLS, a panicking handler) go to the same log.
+		ErrorLog:          slog.NewLogLogger(logger.Handler(), slog.LevelWarn),
 		ReadHeaderTimeout: 10 * time.Second,
 		// Requests inherit ctx, so long-poll claims end at shutdown.
 		BaseContext: func(net.Listener) context.Context { return ctx },

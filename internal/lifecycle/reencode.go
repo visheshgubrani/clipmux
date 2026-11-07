@@ -139,7 +139,7 @@ func (s *Service) respond(w http.ResponseWriter, op string, status int, v any, e
 		httpjson.Error(w, http.StatusNotFound, "not_found", "not found")
 	case httpjson.WriteProblem(w, err):
 	default:
-		s.Logger.Error("lifecycle api", "op", op, "err", err)
+		s.Logger.Error("lifecycle api", "op", op, "request_id", w.Header().Get("X-Request-Id"), "err", err)
 		httpjson.Error(w, http.StatusInternalServerError, "internal", "internal error")
 	}
 }

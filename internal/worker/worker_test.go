@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/visheshgubrani/clipmux/internal/logging"
 	"github.com/visheshgubrani/clipmux/internal/media"
 	"github.com/visheshgubrani/clipmux/internal/workerapi"
 )
@@ -92,15 +93,15 @@ func TestStalledDownloadIsCutAndResumed(t *testing.T) {
 }
 
 func TestRedactRemovesSignaturesAndTokens(t *testing.T) {
-	err := redact(&url.Error{Op: "Get", URL: "https://m.example/_storage/objects/uploads/a/source?exp=1&sig=SECRET", Err: errors.New("EOF")})
+	err := logging.RedactError(&url.Error{Op: "Get", URL: "https://m.example/_storage/objects/uploads/a/source?exp=1&sig=SECRET", Err: errors.New("EOF")})
 	if strings.Contains(err.Error(), "SECRET") || strings.Contains(err.Error(), "sig=") {
 		t.Fatalf("signature leaked: %v", err)
 	}
-	err = redact(&url.Error{Op: "Get", URL: "https://m.example/v/eyJTOKEN.x.y/pid_1/master.m3u8", Err: errors.New("EOF")})
+	err = logging.RedactError(&url.Error{Op: "Get", URL: "https://m.example/v/eyJTOKEN.x.y/pid_1/master.m3u8", Err: errors.New("EOF")})
 	if strings.Contains(err.Error(), "eyJTOKEN") {
 		t.Fatalf("token leaked: %v", err)
 	}
-	if !errors.Is(redact(&url.Error{Op: "Get", URL: "http://x", Err: io.ErrUnexpectedEOF}), io.ErrUnexpectedEOF) {
+	if !errors.Is(logging.RedactError(&url.Error{Op: "Get", URL: "http://x", Err: io.ErrUnexpectedEOF}), io.ErrUnexpectedEOF) {
 		t.Fatal("redact must keep the cause")
 	}
 }

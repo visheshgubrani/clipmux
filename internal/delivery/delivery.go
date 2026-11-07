@@ -297,6 +297,6 @@ func (h *Handler) object(w http.ResponseWriter, r *http.Request, store storage.S
 }
 
 func (h *Handler) fail(w http.ResponseWriter, op string, err error) {
-	h.Logger.Error("delivery", "op", op, "err", err)
+	h.Logger.Error("delivery", "op", op, "request_id", w.Header().Get("X-Request-Id"), "err", err)
 	httpjson.Error(w, http.StatusInternalServerError, "internal", "internal error")
 }

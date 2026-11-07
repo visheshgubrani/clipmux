@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/visheshgubrani/clipmux/internal/dispatch"
+	"github.com/visheshgubrani/clipmux/internal/logging"
 	"github.com/visheshgubrani/clipmux/internal/media"
 	"github.com/visheshgubrani/clipmux/internal/sandbox"
 	"github.com/visheshgubrani/clipmux/internal/worker"
@@ -90,7 +91,11 @@ func runWorker(args []string, getenv func(string) string, stderr io.Writer) int 
 	tools.FFprobe = orEnv(getenv("CLIPMUX_FFPROBE"), tools.FFprobe)
 	tools.Packager = orEnv(getenv("CLIPMUX_PACKAGER"), tools.Packager)
 
-	logger := slog.New(slog.NewTextHandler(stderr, nil))
+	logger, err := logging.FromEnv(getenv, stderr)
+	if err != nil {
+		logger.Error("invalid configuration", "err", err)
+		return 1
+	}
 	if err := os.MkdirAll(*workDir, 0o750); err != nil {
 		logger.Error("work dir", "err", err)
 		return 1

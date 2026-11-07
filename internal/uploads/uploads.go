@@ -563,7 +563,7 @@ func (s *Service) respond(w http.ResponseWriter, op string, status int, v any, e
 	case errors.Is(err, storage.ErrTooLarge):
 		httpjson.Error(w, http.StatusRequestEntityTooLarge, "too_large", "the upload is too large for this storage")
 	default:
-		s.Logger.Error("upload api", "op", op, "err", err)
+		s.Logger.Error("upload api", "op", op, "request_id", w.Header().Get("X-Request-Id"), "err", err)
 		httpjson.Error(w, http.StatusInternalServerError, "internal", "internal error")
 	}
 }

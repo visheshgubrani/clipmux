@@ -559,7 +559,7 @@ func (a *API) fail(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) internal(w http.ResponseWriter, op string, err error) {
-	a.Logger.Error("worker api", "op", op, "err", err)
+	a.Logger.Error("worker api", "op", op, "request_id", w.Header().Get("X-Request-Id"), "err", err)
 	httpjson.Error(w, http.StatusInternalServerError, "internal", "internal error")
 }
 

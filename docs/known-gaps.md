@@ -128,14 +128,19 @@ when you introduce or discover it; remove it when it is closed.
 - No captions, chapters or transcripts. The LMS depends on them, so they gate
   the LMS migration (plans/lms-migration.md). Phase 5 adds them
   (plans/P5-production.md, D063).
-- Production hardening is Phase 5's first track (D063): logs are text only
-  with no access log or request IDs, there are no metrics, only
+- Production hardening is Phase 5's first track (D063). Logs, request IDs
+  and redaction are in (D064). Still open: no metrics, only
   `ReadHeaderTimeout` is set, a panic in a sweeper loop stops serve, the pool
   has no statement timeouts, migrations take no lock, nothing rotates keys,
-  and `.env.example` lacks several variables (the `CLIPMUX_CLOUDFLARE_API`,
+  and `.env.example` lacks
+  several variables (the `CLIPMUX_CLOUDFLARE_API`,
   `CLIPMUX_R2_ENDPOINT`, `CLIPMUX_RUNPOD_API`, `CLIPMUX_WORKER_IMAGE` and
   `CLIPMUX_EXECUTORS_ALLOW_PRIVATE_URL` overrides, and the worker and CLI
   variables).
+- Logs (D064) are text in compose until P5-T10 sets JSON and rotation.
+  Background loops' lines carry job and attempt IDs where they log them by
+  hand; only request lines and the worker's attempt lines carry them
+  throughout.
 
 ## Open decisions carried from architecture.md
 

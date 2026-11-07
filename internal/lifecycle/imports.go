@@ -18,6 +18,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/httpjson"
 	"github.com/visheshgubrani/clipmux/internal/idempotency"
 	"github.com/visheshgubrani/clipmux/internal/ids"
+	"github.com/visheshgubrani/clipmux/internal/logging"
 	"github.com/visheshgubrani/clipmux/internal/outbox"
 	"github.com/visheshgubrani/clipmux/internal/publicnet"
 	"github.com/visheshgubrani/clipmux/internal/queue"
@@ -159,7 +160,9 @@ func (s *Service) runImport(ctx context.Context, job db.Job) error {
 	}
 	key := sourceKey(job.AssetID)
 	if fail := s.fetch(ctx, store, job.ImportUrl.String, key); fail != nil {
-		s.Logger.Warn("import failed", "job", job.ID, "code", fail.code, "permanent", fail.permanent, "err", fail.cause)
+		// Only the host: the URL's query may be a signature the app handed us.
+		s.Logger.Warn("import failed", "job", job.ID, "host", logging.URLHost(job.ImportUrl.String), "code", fail.code,
+			"permanent", fail.permanent, "err", logging.RedactError(fail.cause))
 		if !fail.permanent && job.FailedCount+1 < importRetries {
 			delay := 30 * math.Pow(2, float64(job.FailedCount))
 			return q.RetryImportJob(ctx, db.RetryImportJobParams{ID: job.ID, ErrorCode: pgtype.Text{String: fail.code, Valid: true}, DelaySeconds: delay})
