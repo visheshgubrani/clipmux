@@ -24,7 +24,7 @@ met. Then `clipmux-lms` retires.
 | Signed HLS, renewable in the player | App backend signs ES256 tokens; `@clipmux/player` (Video.js) `getToken()` | Phase 1 — LMS signs tokens itself instead of calling `/playback-token`, and swaps its vendored Vidstack player for the Video.js one |
 | Webhook trigger + re-fetch | Outbox webhooks + `GET /v1/assets/{id}` | Phase 1 |
 | Delete a video | `DELETE /v1/assets/{id}` | Phase 1 |
-| Auto subtitles, chapters, transcript VTT (feed AI summary/quiz/chat) | **Not designed** | Decide: add to ClipMux before migration, or move transcription into the LMS |
+| Auto subtitles, chapters, transcript VTT (feed AI summary/quiz/chat) | `"generate": {"subtitles", "chapters"}` at upload; whisper.cpp subtitles as a track (HLS and sidecar VTT); transcript JSON with ms segments; LLM chapters | Phase 5 ([P5-production.md](P5-production.md), D063), proven by a parity contract test |
 | Edge delivery at today's scale | Cloudflare Worker + R2 | Phase 2 |
 | Existing library | Import from URL from clipmux-lms R2 (or a one-off copy job) | Phase 2 |
 

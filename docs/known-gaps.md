@@ -41,10 +41,9 @@ when you introduce or discover it; remove it when it is closed.
 - If the create transaction fails after storage started a multipart upload,
   the abort is best effort; a failed abort leaves an orphaned staging
   directory that nothing sweeps.
-- No rate limiting on the upload endpoints yet. The queue, `/worker/v1/{claim,heartbeat,fail}` and the
-  lost-lease sweeper run, but nothing enqueues jobs until T05 and no worker
-  process exists until T06. Claim payloads carry no source URL or content key
-  until T04/T08.
+- Rate limiting covers sign-in only (D024) and agent-started pairings (a cap
+  of 10); uploads, setup, pairing codes, imports, the long-polls and delivery
+  have none until P5-T04.
 - Filesystem storage preallocates uploads as sparse files, so disk space is
   not reserved up front; a full disk fails the part write. Abandoned
   multipart uploads are cleaned up by the upload sweeper (T05), and `tmp/`
@@ -68,7 +67,9 @@ when you introduce or discover it; remove it when it is closed.
 - The secrets key (D017) can't be rotated yet. Webhook secrets, the internal
   signing key and the content key secrets are sealed with it; adapter
   secrets join them with R2/S3 in Phase 2.
-- `clipmux admin` has create-key, create-signing-key and create-webhook.
+- `clipmux admin` has create-key, create-signing-key, create-webhook,
+  create-pairing, reset-password and setup-test; no rotation, prune or
+  migrate commands until Phase 5.
   `clipmux listen` reads events from the outbox, which is never pruned; once
   it is, `--since` can reach back only as far as rows are kept. `clipmux push` keeps an
   unfinished push's upload token in a 0600 state file under the user's cache
@@ -125,8 +126,16 @@ when you introduce or discover it; remove it when it is closed.
 - The content key secret can't be rotated; when it can, rotation must
   redeploy the Worker's ring through Connect before new outputs use it.
 - No captions, chapters or transcripts. The LMS depends on them, so they gate
-  the LMS migration (plans/lms-migration.md); OSS-V2 leaves them as an open
-  roadmap decision.
+  the LMS migration (plans/lms-migration.md). Phase 5 adds them
+  (plans/P5-production.md, D063).
+- Production hardening is Phase 5's first track (D063): logs are text only
+  with no access log or request IDs, there are no metrics, only
+  `ReadHeaderTimeout` is set, a panic in a sweeper loop stops serve, the pool
+  has no statement timeouts, migrations take no lock, nothing rotates keys,
+  and `.env.example` lacks several variables (the `CLIPMUX_CLOUDFLARE_API`,
+  `CLIPMUX_R2_ENDPOINT`, `CLIPMUX_RUNPOD_API`, `CLIPMUX_WORKER_IMAGE` and
+  `CLIPMUX_EXECUTORS_ALLOW_PRIVATE_URL` overrides, and the worker and CLI
+  variables).
 
 ## Open decisions carried from architecture.md
 

@@ -1,5 +1,6 @@
 // Package config reads the control plane's configuration from the
-// environment. Every variable is documented in .env.example.
+// environment. Most variables are in .env.example; P5-T10 adds a full
+// reference and a test that keeps it complete.
 package config
 
 import (
