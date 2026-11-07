@@ -99,7 +99,7 @@ func (c *Committer) Commit(ctx context.Context, token string, m media.Manifest) 
 
 // verify checks the stored output against the manifest and the rules above.
 func (c *Committer) verify(ctx context.Context, att db.Attempt, m media.Manifest) error {
-	out, err := db.New(c.pool).GetOutput(ctx, att.OutputID)
+	out, err := db.New(c.pool).GetOutput(ctx, att.OutputID.String)
 	if err != nil {
 		return err
 	}
@@ -126,7 +126,7 @@ func (c *Committer) verify(ctx context.Context, att db.Attempt, m media.Manifest
 	if err != nil {
 		return err
 	}
-	prefix := "media/" + att.AssetID + "/" + att.OutputID + "/"
+	prefix := "media/" + att.AssetID + "/" + att.OutputID.String + "/"
 	stored := map[string]int64{}
 	for cursor := ""; ; {
 		objs, next, err := store.List(ctx, prefix, cursor)
@@ -271,15 +271,15 @@ func commit(ctx context.Context, qs *db.Queries, a db.Attempt, manifest []byte) 
 	if asset.Status == "deleted" {
 		return invalid("the asset was deleted")
 	}
-	n, err := qs.CommitOutput(ctx, db.CommitOutputParams{ID: a.OutputID, Manifest: manifest})
+	n, err := qs.CommitOutput(ctx, db.CommitOutputParams{ID: a.OutputID.String, Manifest: manifest})
 	if err != nil {
 		return err
 	}
 	if n != 1 {
-		return invalid("output %s is not being written", a.OutputID)
+		return invalid("output %s is not being written", a.OutputID.String)
 	}
 	previous := asset.CurrentOutputID
-	if asset, err = qs.MoveCurrentOutput(ctx, db.MoveCurrentOutputParams{ID: asset.ID, CurrentOutputID: pgtype.Text{String: a.OutputID, Valid: true}}); err != nil {
+	if asset, err = qs.MoveCurrentOutput(ctx, db.MoveCurrentOutputParams{ID: asset.ID, CurrentOutputID: pgtype.Text{String: a.OutputID.String, Valid: true}}); err != nil {
 		return err
 	}
 	if previous.Valid {
@@ -292,12 +292,12 @@ func commit(ctx context.Context, qs *db.Queries, a db.Attempt, manifest []byte) 
 		return err
 	}
 	for _, p := range pids {
-		if err := QueueRoute(ctx, qs, asset, p, a.OutputID); err != nil {
+		if err := QueueRoute(ctx, qs, asset, p, a.OutputID.String); err != nil {
 			return err
 		}
 	}
 	if len(pids) == 0 {
-		return finishPublication(ctx, qs, asset.ID, a.OutputID)
+		return finishPublication(ctx, qs, asset.ID, a.OutputID.String)
 	}
 	return nil
 }

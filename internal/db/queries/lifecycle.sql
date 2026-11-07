@@ -88,7 +88,7 @@ UPDATE assets SET storage_id = sqlc.arg(target)::text, version = version + 1, up
 WHERE id = sqlc.arg(id) AND storage_id = sqlc.arg(source)::text;
 
 -- name: ListServableOutputIDs :many
-SELECT id FROM outputs WHERE asset_id = $1 AND status IN ('committed', 'retired') ORDER BY id;
+SELECT id FROM outputs WHERE asset_id = $1 AND status IN ('committed', 'retired') AND purged_at IS NULL ORDER BY id;
 
 -- name: MoveProgress :one
 SELECT

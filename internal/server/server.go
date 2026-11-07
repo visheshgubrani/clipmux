@@ -117,6 +117,7 @@ var passTimeouts = map[string]time.Duration{
 	"webhooks":             5 * time.Minute,  // 10 s per delivery, 8 at a time
 	"setup_tests":          30 * time.Minute, // waits up to 15 minutes for its encode
 	"retention":            10 * time.Minute,
+	"file_retention":       30 * time.Minute, // deletes whole output prefixes
 }
 
 // Registrar adds an API's routes to the root mux.
@@ -410,6 +411,9 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 	prune := retention.New(pool)
 	prune.Logger = logger
 	loop(RetentionInterval, "retention", prune.Run)
+	files := retention.NewFiles(pool, set, store)
+	files.Logger = logger
+	loop(RetentionInterval, "file_retention", files.Run)
 	// Saving the URLs re-runs the setup test: a wrong hostname should fail
 	// here, not in an app.
 	mgmt.URLsSaved = func(settings.URLs) {

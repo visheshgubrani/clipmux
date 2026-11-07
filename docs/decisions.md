@@ -692,5 +692,15 @@ Decisions within D063, made in P5-T06:
 - **Two-step secret rotation** keeps D018's single signature header: `POST /v1/webhook-endpoints/{id}/secret` returns a new secret once, sealed apart (`webhook_endpoints_pending`), while deliveries stay signed with the old one; `…/secret/activate` switches signing to it from the next try.
 - **Redelivery:** `GET /v1/webhook-endpoints/{id}/deliveries` lists the latest 100, and `POST /v1/webhook-deliveries/{id}/redeliver` sends a delivery that gave up (`failed`) again with a fresh 24 hours; any other is `409 not_redeliverable`.
 
+## D070 File retention and output-less attempts — accepted (2026-11-07)
+Decisions within D063 and the architecture's "Storage layout", made in P5-T07:
+- **`outputs.purged_at`**: an output whose files were deleted. Delivery answers 404 for it, route records leave it out of `outputs`, and the move job doesn't copy it; the row stays as history.
+- **Retired outputs** go once retired longer than the larger of 7 days and the project's maximum token lifetime, plus an hour, so a viewer mid-session on the old output finishes. The output is marked purged and its asset's routes refreshed in one transaction, and only then are its files deleted, so nothing serves a file that is going.
+- **The files of a failed, lost or superseded attempt** go 30 minutes after a newer attempt of its job started or the job ended. Only a live attempt can sign, and its URLs last 15 minutes, so nothing can write there after.
+- **Orphaned output prefixes** (`media/{asset}/out_*/` with no unpurged row) are deleted by a sweep of 500 assets per hourly pass, resuming from a cursor in `retention_cursors`. A claim creates its output's row before the worker gets a URL, so a prefix without a row has no writer and needs no age check. Only `out_` prefixes are touched, so an asset's other files (tracks, P5 track B) are safe.
+- **Filesystem leftovers:** `tmp/` files older than 24 hours, and multipart directories nothing has written to for 7 days (an upload idle for a day is aborted, so such a directory has no upload). This is `storage.Filesystem.SweepStale`, not part of `Storage`.
+- **An upload_source attempt has no output.** `attempts.output_id` became nullable; the claim creates no output and carries no content key for it, `sign` refuses it with `409 no_output`, and the migration marks the empty outputs earlier claims made as purged.
+- The file rules run hourly with a 30-minute pass deadline, and on demand with `clipmux admin prune --files`.
+
 ## D007 Shaka Packager 3.9.3 — accepted (2026-11-05)
 Decision: pin v3.9.3 (`toolchain/versions.env`), the version clipmux-lms runs with AES-128 in production, which needs the init-segment workaround for Shaka issue 1616. Move to a release that fixes 1616 when one exists, re-running the Phase 1 player tests.

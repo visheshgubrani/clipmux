@@ -157,7 +157,7 @@ func TestClaimCreatesAttemptLeaseAndFreshOutput(t *testing.T) {
 	if c.Attempt.AttemptNumber != 1 || c.Attempt.Executor != "builtin" || c.Attempt.Status != "running" {
 		t.Fatalf("attempt = %+v", c.Attempt)
 	}
-	if c.Output.AssetID != "ast_1" || c.Output.Status != "writing" || c.Attempt.OutputID != c.Output.ID {
+	if c.Output.AssetID != "ast_1" || c.Output.Status != "writing" || c.Attempt.OutputID.String != c.Output.ID {
 		t.Fatalf("output = %+v", c.Output)
 	}
 	if lease := time.Until(c.Attempt.LeaseExpiresAt.Time); lease < 80*time.Second || lease > 100*time.Second {

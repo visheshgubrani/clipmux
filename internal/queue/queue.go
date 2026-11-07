@@ -56,8 +56,10 @@ func (q *Queue) Release(ctx context.Context, token string) error {
 		if err := qs.DeleteAttempt(ctx, l.attempt.ID); err != nil {
 			return Verdict{}, err
 		}
-		if err := qs.DeleteWritingOutput(ctx, l.attempt.OutputID); err != nil {
-			return Verdict{}, err
+		if l.attempt.OutputID.Valid {
+			if err := qs.DeleteWritingOutput(ctx, l.attempt.OutputID.String); err != nil {
+				return Verdict{}, err
+			}
 		}
 		return Verdict{}, qs.RequeueJob(ctx, db.RequeueJobParams{ID: l.job.ID})
 	})
@@ -252,15 +254,19 @@ func (q *Queue) Claim(ctx context.Context, w Worker) (*Claim, error) {
 		if err != nil {
 			return err
 		}
-		output, err := qs.CreateOutput(ctx, db.CreateOutputParams{
-			ID: ids.New(ids.Output), ProjectID: job.ProjectID, AssetID: job.AssetID, KeyVersion: q.KeyVersion,
-		})
-		if err != nil {
-			return err
+		// Every attempt but an upload_source one writes an output of its
+		// own (D070).
+		var output db.Output
+		if job.Kind != KindUploadSource {
+			if output, err = qs.CreateOutput(ctx, db.CreateOutputParams{
+				ID: ids.New(ids.Output), ProjectID: job.ProjectID, AssetID: job.AssetID, KeyVersion: q.KeyVersion,
+			}); err != nil {
+				return err
+			}
 		}
 		attempt, err := qs.CreateAttempt(ctx, db.CreateAttemptParams{
 			ID: ids.New(ids.Attempt), ProjectID: job.ProjectID, JobID: job.ID, AssetID: job.AssetID,
-			AttemptNumber: n, OutputID: output.ID, Executor: w.Executor, AgentID: text(w.AgentID),
+			AttemptNumber: n, OutputID: text(output.ID), Executor: w.Executor, AgentID: text(w.AgentID),
 			TokenHash: hash, WorkerInfo: info, LeaseSeconds: q.Lease.Seconds(), RouteReason: text(attemptReason(job.RouteReason.String)),
 			DispatchID: text(w.DispatchID),
 		})

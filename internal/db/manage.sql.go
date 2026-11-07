@@ -289,7 +289,7 @@ type ListJobAttemptsRow struct {
 	StartedAt       pgtype.Timestamptz
 	FinishedAt      pgtype.Timestamptz
 	LastHeartbeatAt pgtype.Timestamptz
-	OutputID        string
+	OutputID        pgtype.Text
 	Encoder         []byte
 }
 

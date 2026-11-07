@@ -54,3 +54,45 @@ ORDER BY created_at, id LIMIT 100;
 -- name: RetryOutboxNow :execrows
 UPDATE outbox SET available_at = now() WHERE id = $1 AND done_at IS NULL;
 
+-- name: ListPurgeableRetired :many
+-- Retired outputs past the window a viewer mid-session may still use: the
+-- larger of 7 days and the project's longest token, plus an hour.
+SELECT o.id, o.asset_id, o.prefix, o.project_id, a.app_id FROM outputs o
+JOIN projects p ON p.id = o.project_id
+JOIN assets a ON a.id = o.asset_id
+WHERE o.status = 'retired' AND o.purged_at IS NULL
+  AND o.retired_at < sqlc.arg(now)::timestamptz
+      - greatest(interval '7 days', make_interval(secs => p.max_token_lifetime_seconds)) - interval '1 hour'
+ORDER BY o.retired_at, o.id
+LIMIT sqlc.arg(max_rows);
+
+-- name: ListPurgeableAbandoned :many
+-- Writing outputs no attempt can still write: their attempt was replaced by
+-- a newer one, or their job ended, at least grace ago. That outlasts the
+-- 15-minute PUT URLs it was signed, so a stale worker can't recreate a file.
+SELECT o.id, o.asset_id, o.prefix FROM outputs o
+JOIN attempts a ON a.output_id = o.id
+JOIN jobs j ON j.id = a.job_id
+WHERE o.status = 'writing' AND o.purged_at IS NULL
+  AND (EXISTS (SELECT 1 FROM attempts n WHERE n.job_id = a.job_id AND n.attempt_number > a.attempt_number
+                 AND n.started_at < sqlc.arg(before))
+       OR (j.status IN ('succeeded', 'failed', 'cancelled') AND coalesce(j.finished_at, j.created_at) < sqlc.arg(before)))
+ORDER BY o.created_at, o.id
+LIMIT sqlc.arg(max_rows);
+
+-- name: MarkOutputPurged :execrows
+UPDATE outputs SET purged_at = now() WHERE id = $1 AND purged_at IS NULL;
+
+-- name: GetRetentionCursor :one
+SELECT value FROM retention_cursors WHERE project_id = $1 AND name = $2;
+
+-- name: SetRetentionCursor :exec
+INSERT INTO retention_cursors (project_id, name, value) VALUES ($1, $2, $3)
+ON CONFLICT (project_id, name) DO UPDATE SET value = excluded.value, updated_at = now();
+
+-- name: ListAssetsForSweep :many
+SELECT id, project_id, app_id FROM assets WHERE id > $1 AND status <> 'deleted' ORDER BY id LIMIT $2;
+
+-- name: KnownOutputs :many
+-- An asset's outputs whose files may still be needed.
+SELECT id FROM outputs WHERE asset_id = $1 AND purged_at IS NULL;

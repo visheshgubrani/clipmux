@@ -24,6 +24,180 @@ func (q *Queries) ForgetSpentDispatchKeys(ctx context.Context, maxRows int32) (i
 	return result.RowsAffected(), nil
 }
 
+const getRetentionCursor = `-- name: GetRetentionCursor :one
+SELECT value FROM retention_cursors WHERE project_id = $1 AND name = $2
+`
+
+type GetRetentionCursorParams struct {
+	ProjectID string
+	Name      string
+}
+
+func (q *Queries) GetRetentionCursor(ctx context.Context, arg GetRetentionCursorParams) (string, error) {
+	row := q.db.QueryRow(ctx, getRetentionCursor, arg.ProjectID, arg.Name)
+	var value string
+	err := row.Scan(&value)
+	return value, err
+}
+
+const knownOutputs = `-- name: KnownOutputs :many
+SELECT id FROM outputs WHERE asset_id = $1 AND purged_at IS NULL
+`
+
+// An asset's outputs whose files may still be needed.
+func (q *Queries) KnownOutputs(ctx context.Context, assetID string) ([]string, error) {
+	rows, err := q.db.Query(ctx, knownOutputs, assetID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listAssetsForSweep = `-- name: ListAssetsForSweep :many
+SELECT id, project_id, app_id FROM assets WHERE id > $1 AND status <> 'deleted' ORDER BY id LIMIT $2
+`
+
+type ListAssetsForSweepParams struct {
+	ID    string
+	Limit int32
+}
+
+type ListAssetsForSweepRow struct {
+	ID        string
+	ProjectID string
+	AppID     string
+}
+
+func (q *Queries) ListAssetsForSweep(ctx context.Context, arg ListAssetsForSweepParams) ([]ListAssetsForSweepRow, error) {
+	rows, err := q.db.Query(ctx, listAssetsForSweep, arg.ID, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListAssetsForSweepRow{}
+	for rows.Next() {
+		var i ListAssetsForSweepRow
+		if err := rows.Scan(&i.ID, &i.ProjectID, &i.AppID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listPurgeableAbandoned = `-- name: ListPurgeableAbandoned :many
+SELECT o.id, o.asset_id, o.prefix FROM outputs o
+JOIN attempts a ON a.output_id = o.id
+JOIN jobs j ON j.id = a.job_id
+WHERE o.status = 'writing' AND o.purged_at IS NULL
+  AND (EXISTS (SELECT 1 FROM attempts n WHERE n.job_id = a.job_id AND n.attempt_number > a.attempt_number
+                 AND n.started_at < $1)
+       OR (j.status IN ('succeeded', 'failed', 'cancelled') AND coalesce(j.finished_at, j.created_at) < $1))
+ORDER BY o.created_at, o.id
+LIMIT $2
+`
+
+type ListPurgeableAbandonedParams struct {
+	Before  pgtype.Timestamptz
+	MaxRows int32
+}
+
+type ListPurgeableAbandonedRow struct {
+	ID      string
+	AssetID string
+	Prefix  pgtype.Text
+}
+
+// Writing outputs no attempt can still write: their attempt was replaced by
+// a newer one, or their job ended, at least grace ago. That outlasts the
+// 15-minute PUT URLs it was signed, so a stale worker can't recreate a file.
+func (q *Queries) ListPurgeableAbandoned(ctx context.Context, arg ListPurgeableAbandonedParams) ([]ListPurgeableAbandonedRow, error) {
+	rows, err := q.db.Query(ctx, listPurgeableAbandoned, arg.Before, arg.MaxRows)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListPurgeableAbandonedRow{}
+	for rows.Next() {
+		var i ListPurgeableAbandonedRow
+		if err := rows.Scan(&i.ID, &i.AssetID, &i.Prefix); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listPurgeableRetired = `-- name: ListPurgeableRetired :many
+SELECT o.id, o.asset_id, o.prefix, o.project_id, a.app_id FROM outputs o
+JOIN projects p ON p.id = o.project_id
+JOIN assets a ON a.id = o.asset_id
+WHERE o.status = 'retired' AND o.purged_at IS NULL
+  AND o.retired_at < $1::timestamptz
+      - greatest(interval '7 days', make_interval(secs => p.max_token_lifetime_seconds)) - interval '1 hour'
+ORDER BY o.retired_at, o.id
+LIMIT $2
+`
+
+type ListPurgeableRetiredParams struct {
+	Now     pgtype.Timestamptz
+	MaxRows int32
+}
+
+type ListPurgeableRetiredRow struct {
+	ID        string
+	AssetID   string
+	Prefix    pgtype.Text
+	ProjectID string
+	AppID     string
+}
+
+// Retired outputs past the window a viewer mid-session may still use: the
+// larger of 7 days and the project's longest token, plus an hour.
+func (q *Queries) ListPurgeableRetired(ctx context.Context, arg ListPurgeableRetiredParams) ([]ListPurgeableRetiredRow, error) {
+	rows, err := q.db.Query(ctx, listPurgeableRetired, arg.Now, arg.MaxRows)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListPurgeableRetiredRow{}
+	for rows.Next() {
+		var i ListPurgeableRetiredRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.AssetID,
+			&i.Prefix,
+			&i.ProjectID,
+			&i.AppID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listStuckOutbox = `-- name: ListStuckOutbox :many
 SELECT id, kind, attempts, coalesce(last_error, '')::text AS last_error, created_at, available_at
 FROM outbox WHERE done_at IS NULL AND kind <> 'webhook' AND created_at < $1
@@ -66,6 +240,18 @@ func (q *Queries) ListStuckOutbox(ctx context.Context, before pgtype.Timestamptz
 		return nil, err
 	}
 	return items, nil
+}
+
+const markOutputPurged = `-- name: MarkOutputPurged :execrows
+UPDATE outputs SET purged_at = now() WHERE id = $1 AND purged_at IS NULL
+`
+
+func (q *Queries) MarkOutputPurged(ctx context.Context, id string) (int64, error) {
+	result, err := q.db.Exec(ctx, markOutputPurged, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const pruneAgentPairings = `-- name: PruneAgentPairings :execrows
@@ -219,4 +405,20 @@ func (q *Queries) RetryOutboxNow(ctx context.Context, id string) (int64, error) 
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const setRetentionCursor = `-- name: SetRetentionCursor :exec
+INSERT INTO retention_cursors (project_id, name, value) VALUES ($1, $2, $3)
+ON CONFLICT (project_id, name) DO UPDATE SET value = excluded.value, updated_at = now()
+`
+
+type SetRetentionCursorParams struct {
+	ProjectID string
+	Name      string
+	Value     string
+}
+
+func (q *Queries) SetRetentionCursor(ctx context.Context, arg SetRetentionCursorParams) error {
+	_, err := q.db.Exec(ctx, setRetentionCursor, arg.ProjectID, arg.Name, arg.Value)
+	return err
 }

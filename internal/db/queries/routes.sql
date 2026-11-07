@@ -11,7 +11,7 @@ WHERE id = sqlc.arg(id);
 -- name: ListServableOutputs :many
 -- Pinned paths and keys may name only these outputs.
 SELECT id, key_version FROM outputs
-WHERE asset_id = $1 AND status IN ('committed', 'retired')
+WHERE asset_id = $1 AND status IN ('committed', 'retired') AND purged_at IS NULL
 ORDER BY id;
 
 -- name: ListServableRoutes :many
@@ -28,7 +28,7 @@ ORDER BY p.id;
 -- name: ListServableOutputsForProject :many
 SELECT o.asset_id, o.id, o.key_version FROM outputs o
 JOIN assets a ON a.id = o.asset_id
-WHERE a.project_id = $1 AND o.status IN ('committed', 'retired')
+WHERE a.project_id = $1 AND o.status IN ('committed', 'retired') AND o.purged_at IS NULL
 ORDER BY o.asset_id, o.id;
 
 -- name: ListPublishedKeys :many

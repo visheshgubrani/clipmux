@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -26,6 +27,8 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/settings"
 	"github.com/visheshgubrani/clipmux/internal/setuptest"
 	"github.com/visheshgubrani/clipmux/internal/signingkeys"
+	"github.com/visheshgubrani/clipmux/internal/storage"
+	"github.com/visheshgubrani/clipmux/internal/stores"
 	"github.com/visheshgubrani/clipmux/internal/webhooks"
 )
 
@@ -37,7 +40,7 @@ const adminUsage = `Usage:
   clipmux admin reset-password < new-password.txt
   clipmux admin setup-test [--wait] [--timeout 20m]
   clipmux admin migrate status | up | down-to VERSION --yes
-  clipmux admin prune [--dry-run]
+  clipmux admin prune [--dry-run] [--files]
   clipmux admin outbox [--retry ID]
 
 Host-side administration until the dashboard exists. Reads DATABASE_URL, and
@@ -64,7 +67,10 @@ every migration above VERSION (down-to, which needs --yes and the binary
 that applied them). Migrations hold a lock, so they never run twice at once.
 
 prune deletes rows past their retention windows now, as serve does every
-hour, and prints what went; --dry-run counts without deleting. outbox lists
+hour, and prints what went; --dry-run counts without deleting. --files also
+deletes stored files past theirs (retired outputs, replaced attempts'
+files, orphaned prefixes, the filesystem store's leftovers), reading
+CLIPMUX_DATA_DIR and CLIPMUX_SECRETS_KEY as serve does. outbox lists
 route publications, wakes and stops still pending after an hour, which are
 retried forever; --retry ID makes one due at once.
 
@@ -373,6 +379,7 @@ func retentionCmd(cmd string, args []string, getenv func(string) string, stdout,
 	fs.SetOutput(stderr)
 	dryRun := fs.Bool("dry-run", false, "count what would go without deleting it (prune)")
 	retry := fs.String("retry", "", "make this pending outbox row due now (outbox)")
+	withFiles := fs.Bool("files", false, "also delete stored files past their windows (prune)")
 	if err := fs.Parse(args); err != nil || fs.NArg() > 0 {
 		fmt.Fprint(stderr, adminUsage)
 		return 2
@@ -401,6 +408,13 @@ func retentionCmd(cmd string, args []string, getenv func(string) string, stdout,
 		}
 		if *dryRun {
 			fmt.Fprintln(stdout, "(dry run: nothing was deleted)")
+		} else if *withFiles {
+			n, err := pruneFiles(ctx, pool, getenv)
+			fmt.Fprintf(stdout, "%-20s %d\n", "files", n)
+			if err != nil {
+				fmt.Fprintf(stderr, "clipmux admin: %v\n", err)
+				return 1
+			}
 		}
 	case *retry != "":
 		ok, err := r.RetryNow(ctx, *retry)
@@ -426,4 +440,19 @@ func retentionCmd(cmd string, args []string, getenv func(string) string, stdout,
 		fmt.Fprintf(stdout, "%d stuck (pending for over %s)\n", len(rows), retention.StuckAfter)
 	}
 	return 0
+}
+
+// pruneFiles runs the file retention rules over the install's stores.
+func pruneFiles(ctx context.Context, pool *pgxpool.Pool, getenv func(string) string) (int, error) {
+	dataDir := orDefault(getenv("CLIPMUX_DATA_DIR"), config.DefaultDataDir)
+	box, err := secrets.Load(dataDir, getenv("CLIPMUX_SECRETS_KEY"))
+	if err != nil {
+		return 0, err
+	}
+	fsStore, err := storage.OpenFilesystem(filepath.Join(dataDir, "storage"), storage.FilesystemOptions{BaseURL: config.DefaultPublicURL})
+	if err != nil {
+		return 0, err
+	}
+	defer fsStore.Close()
+	return retention.NewFiles(pool, stores.New(pool, box, fsStore), fsStore).Run(ctx)
 }

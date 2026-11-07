@@ -323,13 +323,21 @@ func (a *API) claim(w http.ResponseWriter, r *http.Request) {
 		a.internal(w, "claim source", err)
 		return
 	}
-	secret, ok := a.Keys.Get(c.Output.KeyVersion)
-	if !ok {
-		a.release(r.Context(), c.Token)
-		a.internal(w, "claim key", fmt.Errorf("no content key secret version %d", c.Output.KeyVersion))
-		return
+	// An upload_source attempt writes no output, so it gets no key (D070).
+	var enc Encryption
+	if c.Output.ID != "" {
+		secret, ok := a.Keys.Get(c.Output.KeyVersion)
+		if !ok {
+			a.release(r.Context(), c.Token)
+			a.internal(w, "claim key", fmt.Errorf("no content key secret version %d", c.Output.KeyVersion))
+			return
+		}
+		key, kid := secret.Derive(c.Job.AssetID, c.Output.ID), contentkey.KeyID(c.Output.ID)
+		enc = Encryption{
+			Method: "aes-128", KeyVersion: c.Output.KeyVersion,
+			Key: hex.EncodeToString(key[:]), KeyID: hex.EncodeToString(kid[:]),
+		}
 	}
-	key, kid := secret.Derive(c.Job.AssetID, c.Output.ID), contentkey.KeyID(c.Output.ID)
 	httpjson.Write(w, http.StatusOK, Job{
 		ContractVersion:  ContractVersion,
 		AttemptID:        c.Attempt.ID,
@@ -343,10 +351,7 @@ func (a *API) claim(w http.ResponseWriter, r *http.Request) {
 		Source:           src,
 		Profile:          Profile{ID: c.Job.ProfileID, Version: c.Job.ProfileVersion},
 		OutputFormat:     c.Output.OutputFormat,
-		Encryption: Encryption{
-			Method: "aes-128", KeyVersion: c.Output.KeyVersion,
-			Key: hex.EncodeToString(key[:]), KeyID: hex.EncodeToString(kid[:]),
-		},
+		Encryption:       enc,
 	})
 }
 
@@ -445,13 +450,18 @@ func (a *API) sign(w http.ResponseWriter, r *http.Request) {
 		a.verdict(w, v)
 		return
 	}
+	if !att.OutputID.Valid {
+		// An upload_source attempt writes the source, through source-parts.
+		httpjson.Error(w, http.StatusConflict, "no_output", "this attempt writes no output")
+		return
+	}
 	resp := SignResponse{Action: "continue", URLs: make(map[string]string, len(paths)), ExpiresAt: time.Now().Add(putURLTTL).UTC()}
 	store, err := a.Stores.ForAsset(r.Context(), att.AssetID)
 	if err != nil {
 		a.internal(w, "storage", err)
 		return
 	}
-	prefix := "media/" + att.AssetID + "/" + att.OutputID + "/"
+	prefix := "media/" + att.AssetID + "/" + att.OutputID.String + "/"
 	for _, p := range paths {
 		url, err := store.PresignPut(r.Context(), prefix+p, putURLTTL)
 		if err != nil {

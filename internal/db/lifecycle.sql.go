@@ -266,7 +266,7 @@ func (q *Queries) ListAssetsToMove(ctx context.Context, arg ListAssetsToMovePara
 }
 
 const listServableOutputIDs = `-- name: ListServableOutputIDs :many
-SELECT id FROM outputs WHERE asset_id = $1 AND status IN ('committed', 'retired') ORDER BY id
+SELECT id FROM outputs WHERE asset_id = $1 AND status IN ('committed', 'retired') AND purged_at IS NULL ORDER BY id
 `
 
 func (q *Queries) ListServableOutputIDs(ctx context.Context, assetID string) ([]string, error) {

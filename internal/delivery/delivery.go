@@ -160,8 +160,8 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, token string, si
 			return
 		}
 		out, err := q.GetOutput(ctx, outputID)
-		if errors.Is(err, pgx.ErrNoRows) || (err == nil && (out.AssetID != route.AssetID || out.Status == "writing")) {
-			notFound(w) // only this asset's committed or retired outputs
+		if errors.Is(err, pgx.ErrNoRows) || (err == nil && (out.AssetID != route.AssetID || out.Status == "writing" || out.PurgedAt.Valid)) {
+			notFound(w) // only this asset's committed or retired outputs whose files are kept
 			return
 		}
 		if err != nil {

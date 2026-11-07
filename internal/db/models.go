@@ -98,7 +98,7 @@ type Attempt struct {
 	JobID             string
 	AssetID           string
 	AttemptNumber     int32
-	OutputID          string
+	OutputID          pgtype.Text
 	Executor          string
 	AgentID           pgtype.Text
 	Status            string
@@ -241,6 +241,7 @@ type Output struct {
 	CreatedAt    pgtype.Timestamptz
 	CommittedAt  pgtype.Timestamptz
 	RetiredAt    pgtype.Timestamptz
+	PurgedAt     pgtype.Timestamptz
 }
 
 type Owner struct {
@@ -287,6 +288,13 @@ type Project struct {
 	QueueAgeFallbackMinutes pgtype.Int4
 	BuiltinSeenAt           pgtype.Timestamptz
 	BuiltinFreeDiskBytes    pgtype.Int8
+}
+
+type RetentionCursor struct {
+	ProjectID string
+	Name      string
+	Value     string
+	UpdatedAt pgtype.Timestamptz
 }
 
 type SetupTest struct {
