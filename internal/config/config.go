@@ -75,6 +75,16 @@ type Config struct {
 	// is private (CLIPMUX_EXECUTORS_ALLOW_PRIVATE_URL): only for development
 	// and tests whose "provider" runs on the same machine.
 	ExecutorsAllowPrivateURL bool
+	// MetricsAddr is where /metrics is served (CLIPMUX_METRICS_ADDR,
+	// host:port; unset, nowhere). It is a listener of its own, never the
+	// public one, and needs no auth: keep it off the internet.
+	MetricsAddr string
+	// PProf adds Go's /debug/pprof/ handlers to the metrics listener
+	// (CLIPMUX_PPROF).
+	PProf bool
+	// Version is the build's version, for clipmux_build_info; the binary
+	// sets it, not the environment.
+	Version string
 	// Tools are the media binaries (CLIPMUX_FFMPEG, CLIPMUX_FFPROBE,
 	// CLIPMUX_PACKAGER; default: found on PATH).
 	Tools media.Tools
@@ -99,6 +109,7 @@ func FromEnv(getenv func(string) string) (Config, error) {
 		R2Endpoint:    getenv("CLIPMUX_R2_ENDPOINT"),
 		RunPodAPI:     getenv("CLIPMUX_RUNPOD_API"),
 		WorkerImage:   getenv("CLIPMUX_WORKER_IMAGE"),
+		MetricsAddr:   getenv("CLIPMUX_METRICS_ADDR"),
 	}
 	if cfg.DatabaseURL == "" {
 		return Config{}, errors.New("DATABASE_URL is required")
@@ -125,12 +136,8 @@ func FromEnv(getenv func(string) string) (Config, error) {
 		}
 		cfg.MaxUploadBytes = n
 	}
-	switch v := getenv("CLIPMUX_BUILTIN_WORKER"); v {
-	case "", "true", "1":
-		cfg.BuiltinWorker = true
-	case "false", "0":
-	default:
-		return Config{}, fmt.Errorf("CLIPMUX_BUILTIN_WORKER %q must be true or false", v)
+	if cfg.BuiltinWorker, err = boolEnv(getenv, "CLIPMUX_BUILTIN_WORKER", true); err != nil {
+		return Config{}, err
 	}
 	for _, p := range strings.FieldsFunc(getenv("CLIPMUX_TRUSTED_PROXIES"), func(r rune) bool { return r == ',' || r == ' ' }) {
 		prefix, err := netip.ParsePrefix(p)
@@ -146,25 +153,42 @@ func FromEnv(getenv func(string) string) (Config, error) {
 	if cfg.SelfDial != "" && strings.ContainsAny(cfg.SelfDial, "/ ") {
 		return Config{}, fmt.Errorf("CLIPMUX_SELF_DIAL %q must be a host or host:port", cfg.SelfDial)
 	}
-	switch v := getenv("CLIPMUX_UNSANDBOXED_WORKER"); v {
-	case "", "false", "0":
-	case "true", "1":
-		cfg.UnsandboxedWorker = true
-	default:
-		return Config{}, fmt.Errorf("CLIPMUX_UNSANDBOXED_WORKER %q must be true or false", v)
+	if cfg.UnsandboxedWorker, err = boolEnv(getenv, "CLIPMUX_UNSANDBOXED_WORKER", false); err != nil {
+		return Config{}, err
 	}
-	switch v := getenv("CLIPMUX_EXECUTORS_ALLOW_PRIVATE_URL"); v {
-	case "", "false", "0":
-	case "true", "1":
-		cfg.ExecutorsAllowPrivateURL = true
-	default:
-		return Config{}, fmt.Errorf("CLIPMUX_EXECUTORS_ALLOW_PRIVATE_URL %q must be true or false", v)
+	if cfg.ExecutorsAllowPrivateURL, err = boolEnv(getenv, "CLIPMUX_EXECUTORS_ALLOW_PRIVATE_URL", false); err != nil {
+		return Config{}, err
+	}
+	if cfg.PProf, err = boolEnv(getenv, "CLIPMUX_PPROF", false); err != nil {
+		return Config{}, err
+	}
+	if cfg.MetricsAddr != "" {
+		if _, _, err := net.SplitHostPort(cfg.MetricsAddr); err != nil {
+			return Config{}, fmt.Errorf("CLIPMUX_METRICS_ADDR %q: %w", cfg.MetricsAddr, err)
+		}
+	}
+	if cfg.PProf && cfg.MetricsAddr == "" {
+		return Config{}, errors.New("CLIPMUX_PPROF needs CLIPMUX_METRICS_ADDR: pprof is served only on the metrics listener")
 	}
 	cfg.Tools = media.DefaultTools()
 	cfg.Tools.FFmpeg = orDefault(getenv("CLIPMUX_FFMPEG"), cfg.Tools.FFmpeg)
 	cfg.Tools.FFprobe = orDefault(getenv("CLIPMUX_FFPROBE"), cfg.Tools.FFprobe)
 	cfg.Tools.Packager = orDefault(getenv("CLIPMUX_PACKAGER"), cfg.Tools.Packager)
 	return cfg, nil
+}
+
+// boolEnv reads a true/false variable; unset is def.
+func boolEnv(getenv func(string) string, name string, def bool) (bool, error) {
+	switch v := getenv(name); v {
+	case "":
+		return def, nil
+	case "true", "1":
+		return true, nil
+	case "false", "0":
+		return false, nil
+	default:
+		return false, fmt.Errorf("%s %q must be true or false", name, v)
+	}
 }
 
 // Origin accepts an http(s) URL with no path, query or fragment and returns

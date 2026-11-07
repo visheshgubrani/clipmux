@@ -374,8 +374,11 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 	leader := sweeper.NewLeader(pool, logger)
 	wg.Go(func() { leader.Run(ctx) })
 	leader.Await(ctx, 2*time.Second)
+	obs := newObserver(pool, leader, cfg.Version)
 	loop := func(interval time.Duration, name string, task sweeper.Task) {
-		wg.Go(func() { sweeper.Every(ctx, interval, passTimeouts[name], name, leader.Only(task), logger) })
+		wg.Go(func() {
+			sweeper.Every(ctx, interval, passTimeouts[name], name, leader.Only(obs.loop(name, task)), logger)
+		})
 	}
 	loop(LeaseSweepInterval, "lost_leases", func(ctx context.Context) (int, error) { return q.SweepLostLeases(ctx, 100) })
 	loop(RouteInterval, "routing", func(ctx context.Context) (int, error) { return q.Route(ctx, 200) })
@@ -424,7 +427,7 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 	// Requests don't inherit drain: one in flight at the signal finishes.
 	reqCtx, cancelRequests := context.WithCancel(context.WithoutCancel(drain))
 	defer cancelRequests()
-	reqLog := requestLog{logger: logger, trusted: cfg.TrustedProxies, clientIP: acct.ClientIP}
+	reqLog := requestLog{logger: logger, trusted: cfg.TrustedProxies, clientIP: acct.ClientIP, obs: obs}
 	secure := transportSecurity{publicURL: b.urls.PublicURL, mediaURL: b.urls.MediaURL, trusted: cfg.TrustedProxies}
 	csp := func(r *http.Request) string {
 		origins, err := set.Origins(r.Context(), db.DefaultProjectID)
@@ -444,6 +447,18 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 		IdleTimeout:       120 * time.Second,
 		MaxHeaderBytes:    64 << 10,
 		BaseContext:       func(net.Listener) context.Context { return reqCtx },
+	}
+	// Metrics and pprof listen on an address of their own, never the
+	// public one (D066).
+	if cfg.MetricsAddr != "" {
+		mln, err := net.Listen("tcp", cfg.MetricsAddr)
+		if err != nil {
+			return fmt.Errorf("metrics listener: %w", err)
+		}
+		msrv := &http.Server{Handler: obs.Handler(cfg.PProf), ReadHeaderTimeout: 10 * time.Second}
+		defer msrv.Close() // runs before wg.Wait; the error is the listener's
+		wg.Go(func() { _ = msrv.Serve(mln) })
+		logger.Info("metrics listening", "addr", mln.Addr().String(), "pprof", cfg.PProf)
 	}
 	logger.Info("clipmux serve listening", "addr", ln.Addr().String())
 

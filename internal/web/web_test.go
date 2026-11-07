@@ -36,7 +36,7 @@ func TestDeepLinkServesIndexUncached(t *testing.T) {
 
 func TestUnknownAPIPathIsAJSON404NotTheDashboard(t *testing.T) {
 	h := Handler(built, nil)
-	for _, p := range []string{"/v1/nope", "/v/tok/pid/x", "/p/pid", "/_storage/x", "/worker/v1/x", "/_tls/x", "/healthz"} {
+	for _, p := range []string{"/v1/nope", "/v/tok/pid/x", "/p/pid", "/_storage/x", "/worker/v1/x", "/_tls/x", "/healthz", "/metrics", "/debug/pprof/"} {
 		rec := get(h, p)
 		if rec.Code != 404 || !strings.Contains(rec.Body.String(), `"not_found"`) {
 			t.Errorf("GET %s = %d %q, want a JSON 404", p, rec.Code, rec.Body.String())

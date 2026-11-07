@@ -88,6 +88,7 @@ func serve(stderr io.Writer) int {
 		logger.Error("invalid configuration", "err", err)
 		return 1
 	}
+	cfg.Version = version
 	if cfg.WorkerImage == "" {
 		cfg.WorkerImage = workerImage
 	}

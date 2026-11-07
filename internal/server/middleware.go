@@ -26,6 +26,8 @@ type requestLog struct {
 	trusted []netip.Prefix
 	// clientIP finds the client's address through trusted proxies.
 	clientIP func(*http.Request) netip.Addr
+	// obs counts requests (D066); nil counts nothing.
+	obs *observer
 }
 
 // redactedWildcards are path wildcards that carry a credential.
@@ -41,7 +43,13 @@ func (l requestLog) wrap(next http.Handler) http.Handler {
 		w.Header().Set("X-Request-Id", id)
 		r = r.WithContext(logging.With(r.Context(), "request_id", id))
 		rec := &recorder{ResponseWriter: w}
+		if l.obs != nil {
+			l.obs.inFlight.Add(1)
+		}
 		abort := l.serve(next, rec, r)
+		if l.obs != nil {
+			l.obs.inFlight.Add(-1)
+		}
 
 		status := rec.status
 		if status == 0 {
@@ -53,6 +61,7 @@ func (l requestLog) wrap(next http.Handler) http.Handler {
 				ip = a.String()
 			}
 		}
+		l.obs.request(r, status, rec.bytes, time.Since(start))
 		l.logger.Log(r.Context(), accessLevel(r, status), "http request",
 			"method", r.Method,
 			"route", r.Pattern,

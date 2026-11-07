@@ -38,7 +38,7 @@ func (placeholder) Open(name string) (fs.File, error) {
 
 // reserved are the server's own paths: a typo under them is a JSON 404,
 // never the dashboard.
-var reserved = []string{"/v1/", "/v/", "/p/", "/_storage/", "/worker/", "/_tls/", "/healthz", "/readyz"}
+var reserved = []string{"/v1/", "/v/", "/p/", "/_storage/", "/worker/", "/_tls/", "/healthz", "/readyz", "/metrics", "/debug/"}
 
 // DefaultCSP is the dashboard's Content-Security-Policy when the server
 // gives none: everything from its own origin only.
