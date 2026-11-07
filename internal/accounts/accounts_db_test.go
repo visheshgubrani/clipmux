@@ -211,3 +211,21 @@ func TestSessionsEndWhenIdleAndOnPasswordReset(t *testing.T) {
 		t.Fatalf("login with the new password = %d", res.StatusCode)
 	}
 }
+
+func TestTheSixthWrongSetupTokenIsThrottled(t *testing.T) {
+	r := newRig(t, "http://localhost:8080")
+	for i := range 5 {
+		res := r.do("POST", "/v1/setup/owner", map[string]string{"setup_token": "wrong", "email": "owner@example.com", "password": goodPassword}, nil, nil)
+		if res.StatusCode != http.StatusForbidden {
+			t.Fatalf("wrong token %d = %d, want 403", i+1, res.StatusCode)
+		}
+	}
+	token, _, err := r.svc.SetupToken(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := r.do("POST", "/v1/setup/owner", map[string]string{"setup_token": token, "email": "owner@example.com", "password": goodPassword}, nil, nil)
+	if res.StatusCode != http.StatusTooManyRequests || res.Header.Get("Retry-After") == "" {
+		t.Fatalf("sixth try = %d (Retry-After %q), want 429 even with the right token", res.StatusCode, res.Header.Get("Retry-After"))
+	}
+}

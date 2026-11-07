@@ -36,6 +36,11 @@ func (a *API) events(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	release, ok := a.Auth.Limits.EventPoll(w, key)
+	if !ok {
+		return
+	}
+	defer release()
 	since := time.Now()
 	if s := r.URL.Query().Get("since"); s != "" {
 		t, err := time.Parse(time.RFC3339Nano, s)

@@ -650,5 +650,21 @@ Decisions within D063, made in P5-T03:
 - Also: the pgx pool's acquired, idle and maximum connections, acquire wait and empty acquires; `clipmux_leader`; `clipmux_build_info{version}`; goroutines, heap bytes and the process start time.
 - **`/readyz`** answers 503 while the database ping fails or serve drains (D065), and only once serve is listening. OpenTelemetry stays out (P5 design note e): request IDs and job and attempt IDs in the logs cover one node.
 
+## D067 Rate limits in one process — accepted (2026-11-07)
+Decisions within D063, made in P5-T04 (P5 open question 5 stays open until the LMS's import rate is known):
+- **`internal/ratelimit`** holds GCRA token buckets, sliding failure windows (the sign-in limiter, generalised; its 5-per-address, 20-overall, 15-minute literals are unchanged) and concurrency slots, each keyed by a string and capped at 100,000 keys (fully recovered keys are dropped first; past that a limiter forgets everything rather than grow). The client address moved there from `accounts` with its rule: the rightmost `X-Forwarded-For` hop a trusted proxy added. Addresses are keyed by themselves for IPv4 and by /64 for IPv6.
+- **Limits are applied where the caller is already known**, not from a route table:
+  - integration API, per API key or per owner session acting as an app, in `apikeys.Authenticator.Require`, shared by every API: 20 requests a second with bursts of 200, and writes (anything but GET, HEAD, OPTIONS) also 2 a second with bursts of 60;
+  - `GET /v1/events`: 4 long-polls at once per key;
+  - upload-token routes: 10 a second with bursts of 50 per upload, answered with CORS and `Retry-After` exposed so the browser can back off;
+  - `POST /v1/setup/owner`: wrong setup tokens limited like sign-ins;
+  - `POST /worker/v1/pair`: 10 wrong codes per address and 100 overall in 15 minutes, bounding guesses at a 39-bit code;
+  - `POST /worker/v1/pairings`: 20 an hour per address, beside the existing cap of 10 waiting;
+  - `POST /worker/v1/pairings/poll`: 2 a second per address, bursts of 4;
+  - playback (`/v/`, `/p/`): only refusals count. An address with 300 answers of 401, 403 or 404 in 5 minutes gets 429 for every playback request until they age out; successes never count, so a classroom behind one NAT is never limited.
+  - Signed storage URLs, attempt calls and claims are not limited: each is signed or scoped to one attempt.
+- **The refusal** is `429 rate_limited` with `Retry-After` and a `retry_after` detail. `too_many_attempts` and `too_many_pairings` keep their codes. No `RateLimit-*` headers until that draft is an RFC. Rejections show as `clipmux_http_requests_total{code="429"}`; there is no counter per limit.
+- Limits live in one process, so a second replica doubles every budget (known gap).
+
 ## D007 Shaka Packager 3.9.3 — accepted (2026-11-05)
 Decision: pin v3.9.3 (`toolchain/versions.env`), the version clipmux-lms runs with AES-128 in production, which needs the init-segment workaround for Shaka issue 1616. Move to a release that fixes 1616 when one exists, re-running the Phase 1 player tests.

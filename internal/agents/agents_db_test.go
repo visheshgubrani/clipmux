@@ -422,3 +422,16 @@ func TestARevokedAgentsSourceCantBeReencoded(t *testing.T) {
 		t.Fatalf("re-encode = %d %v, want 409 source_unavailable", status, body)
 	}
 }
+
+func TestWrongPairingCodesAreThrottledPerAddress(t *testing.T) {
+	r := newRig(t)
+	for i := range 10 {
+		if code, body := r.bearer("", "/worker/v1/pair", map[string]any{"code": "ABCD-EFGH"}); code != http.StatusNotFound {
+			t.Fatalf("wrong code %d = %d %v, want 404", i+1, code, body)
+		}
+	}
+	code, body := r.bearer("", "/worker/v1/pair", map[string]any{"code": "ABCD-EFGH"})
+	if code != http.StatusTooManyRequests || body["error"].(map[string]any)["code"] != "rate_limited" {
+		t.Fatalf("11th wrong code = %d %v, want 429 rate_limited", code, body)
+	}
+}

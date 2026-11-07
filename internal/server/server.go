@@ -356,8 +356,12 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 	assetsAPI.Drain = drain
 	// The dashboard calls the integration API with the owner's session,
 	// acting as one app; integration keys never reach the management API.
+	// One set of per-key limits, so a key's budget is the same whichever
+	// API it calls (D067).
+	apiLimits := apikeys.NewLimits()
 	for _, auth := range []*apikeys.Authenticator{upl.Auth, life.Auth, assetsAPI.Auth} {
 		auth.Session = mgmt.ActAsApp
+		auth.Limits = apiLimits
 	}
 
 	// Defers run last in, first out: stop cancels the loops before wg.Wait
@@ -437,10 +441,10 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 		return dashboardCSP(b.urls.MediaURL(), origins)
 	}
 	srv := &http.Server{
-		Handler: reqLog.wrap(secure.wrap(defaultDeadlines.wrap(Handler(Deps{
+		Handler: reqLog.wrap(secure.wrap(newRefusals(acct.ClientIP).wrap(defaultDeadlines.wrap(Handler(Deps{
 			DB: pool, Worker: worker.Handler(), Storage: store.Handler(), ServesHost: b.urls.ServesHost, Drain: drain, CSP: csp,
 			APIs: []Registrar{acct, mgmt, agentSvc, upl, assetsAPI, life, playback},
-		})))),
+		}))))),
 		// The server's own errors (TLS, a panicking handler) go to the same log.
 		ErrorLog:          slog.NewLogLogger(logger.Handler(), slog.LevelWarn),
 		ReadHeaderTimeout: 10 * time.Second,

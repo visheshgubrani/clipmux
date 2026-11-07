@@ -21,6 +21,27 @@ Scopes: `uploads:write`, `assets:read`, `assets:write`. No API key can reach the
 management API. A cookie request that changes state from another site is
 refused (`403 cross_origin`).
 
+## Limits
+
+A refused request is `429 rate_limited` with `Retry-After` (seconds) and
+`retry_after` in the error details; wait that long and retry (D067). Limits
+are per serve process.
+
+| Surface | Counted by | Limit |
+| --- | --- | --- |
+| Integration API (API key, or the owner's session acting as an app) | key | 20 requests a second, bursts of 200; of those, writes (`POST`, `DELETE`) 2 a second, bursts of 60 |
+| `GET /v1/events` | key | 4 long-polls at once |
+| `/v1/uploads/{id}/*` with an upload token | upload | 10 requests a second, bursts of 50 |
+| `POST /v1/session` | address, and overall | 5 failed sign-ins per address and 20 overall in 15 minutes (`too_many_attempts`) |
+| `POST /v1/setup/owner` | address, and overall | 5 wrong setup tokens per address and 20 overall in 15 minutes |
+| `POST /worker/v1/pair` | address, and overall | 10 wrong codes per address and 100 overall in 15 minutes |
+| `POST /worker/v1/pairings` | address | 20 an hour (and at most 10 waiting at once, `too_many_pairings`) |
+| `POST /worker/v1/pairings/poll` | address | 2 a second, bursts of 4 |
+| Playback (`/v/`, `/p/`) | address | only refusals count: after 300 answers of 401, 403 or 404 in 5 minutes, every playback request from that address gets 429 until they age out; successful requests are never limited |
+
+An address is the client's as `CLIPMUX_TRUSTED_PROXIES` (Caddy) reports it;
+IPv6 addresses are grouped by their /64.
+
 ## Integration API
 
 | Route | Scope | Notes |

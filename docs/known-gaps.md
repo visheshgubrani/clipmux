@@ -41,13 +41,13 @@ when you introduce or discover it; remove it when it is closed.
 - If the create transaction fails after storage started a multipart upload,
   the abort is best effort; a failed abort leaves an orphaned staging
   directory that nothing sweeps.
-- The request and loop counters behind `/metrics` (D066) are per serve
-  process; the job, outbox and dispatch counts come from Postgres. Each
-  scrape counts finished attempts with a scan of `attempts`, cached for
-  10 s; that grows with history until retention or an index covers it.
-- Rate limiting covers sign-in only (D024) and agent-started pairings (a cap
-  of 10); uploads, setup, pairing codes, imports, the long-polls and delivery
-  have none until P5-T04.
+- Rate limits (D067), including the sign-in, setup and pairing windows,
+  live in one serve process: a second replica doubles every budget. The
+  request and loop counters behind `/metrics` (D066) are per process too;
+  the job, outbox and dispatch counts come from Postgres. Each scrape counts finished attempts with a
+  scan of `attempts`, cached for 10 s; that grows with history until
+  retention or an index covers it. There is no counter per rate limit, only
+  429s by route.
 - Filesystem storage preallocates uploads as sparse files, so disk space is
   not reserved up front; a full disk fails the part write. Abandoned
   multipart uploads are cleaned up by the upload sweeper (T05), and `tmp/`
@@ -134,9 +134,9 @@ when you introduce or discover it; remove it when it is closed.
   (plans/P5-production.md, D063).
 - Production hardening is Phase 5's first track (D063). Logs, request IDs
   and redaction (D064), deadlines, panic recovery and an ordered drain
-  (D065) and metrics (D066) are in. Still open: rate limits beyond sign-in,
-  the pool has no statement timeouts, migrations take no lock, no
-  retention, nothing rotates keys, and `.env.example` lacks
+  (D065), metrics (D066) and rate limits (D067) are in. Still open: the
+  pool has no statement timeouts, migrations take no lock, no retention,
+  nothing rotates keys, and `.env.example` lacks
   several variables (the `CLIPMUX_CLOUDFLARE_API`,
   `CLIPMUX_R2_ENDPOINT`, `CLIPMUX_RUNPOD_API`, `CLIPMUX_WORKER_IMAGE` and
   `CLIPMUX_EXECUTORS_ALLOW_PRIVATE_URL` overrides, and the worker and CLI

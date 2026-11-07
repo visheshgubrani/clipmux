@@ -13,6 +13,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/db"
 	"github.com/visheshgubrani/clipmux/internal/httpjson"
 	"github.com/visheshgubrani/clipmux/internal/queue"
+	"github.com/visheshgubrani/clipmux/internal/ratelimit"
 )
 
 // RegisterWorker adds the agent routes under /worker/v1: pairing, which an
@@ -84,7 +85,16 @@ func (s *Service) handleRedeem(w http.ResponseWriter, r *http.Request) {
 	if !httpjson.Decode(w, r, &req) {
 		return
 	}
-	creds, err := s.Redeem(r.Context(), req.Code, req.Description, s.accounts.ClientIP(r))
+	ip := s.accounts.ClientIP(r)
+	key := ratelimit.AddrKey(ip)
+	if ok, wait := s.redeems.Allow(key); !ok {
+		ratelimit.Refuse(w, wait)
+		return
+	}
+	creds, err := s.Redeem(r.Context(), req.Code, req.Description, ip)
+	if errors.Is(err, errNotFound) {
+		s.redeems.Fail(key)
+	}
 	if err != nil {
 		s.fail(w, r, err)
 		return
@@ -97,7 +107,12 @@ func (s *Service) handleStart(w http.ResponseWriter, r *http.Request) {
 	if !httpjson.Decode(w, r, &d) {
 		return
 	}
-	req, err := s.Start(r.Context(), d, s.accounts.ClientIP(r))
+	ip := s.accounts.ClientIP(r)
+	if ok, wait := s.starts.Take(ratelimit.AddrKey(ip)); !ok {
+		ratelimit.Refuse(w, wait)
+		return
+	}
+	req, err := s.Start(r.Context(), d, ip)
 	if err != nil {
 		s.fail(w, r, err)
 		return
@@ -112,7 +127,12 @@ func (s *Service) handlePoll(w http.ResponseWriter, r *http.Request) {
 	if !httpjson.Decode(w, r, &req) {
 		return
 	}
-	res, err := s.Poll(r.Context(), req.PollToken, s.accounts.ClientIP(r))
+	ip := s.accounts.ClientIP(r)
+	if ok, wait := s.polls.Take(ratelimit.AddrKey(ip)); !ok {
+		ratelimit.Refuse(w, wait)
+		return
+	}
+	res, err := s.Poll(r.Context(), req.PollToken, ip)
 	if err != nil {
 		s.fail(w, r, err)
 		return

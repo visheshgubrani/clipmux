@@ -7,6 +7,9 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"time"
+
+	"github.com/visheshgubrani/clipmux/internal/ratelimit"
 )
 
 // dashboardCSP is the dashboard's Content-Security-Policy. Scripts come only
@@ -112,3 +115,66 @@ func (t transportSecurity) scheme(r *http.Request) string {
 	}
 	return ""
 }
+
+// refusals limits playback by its failures (D067). A classroom behind one
+// NAT makes thousands of good requests, so successes never count; a client
+// scanning for playback IDs or replaying stale tokens makes refusals. An
+// address with RefusalsPerWindow refusals (401, 403, 404) in RefusalWindow
+// gets 429 for every playback request until they age out.
+type refusals struct {
+	limit    *ratelimit.Failures
+	clientIP func(*http.Request) netip.Addr
+}
+
+// Delivery's refusal budget per address.
+const (
+	RefusalWindow     = 5 * time.Minute
+	RefusalsPerWindow = 300
+)
+
+func newRefusals(clientIP func(*http.Request) netip.Addr) refusals {
+	return refusals{limit: ratelimit.NewFailures(RefusalWindow, RefusalsPerWindow, 0), clientIP: clientIP}
+}
+
+func (f refusals) wrap(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, "/v/") && !strings.HasPrefix(r.URL.Path, "/p/") {
+			next.ServeHTTP(w, r)
+			return
+		}
+		key := ratelimit.AddrKey(f.clientIP(r))
+		if ok, wait := f.limit.Allow(key); !ok {
+			w.Header().Set("Access-Control-Allow-Origin", "*") // a player must see why
+			ratelimit.Refuse(w, wait)
+			return
+		}
+		st := &statusOnly{ResponseWriter: w}
+		next.ServeHTTP(st, r)
+		switch st.status {
+		case http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound:
+			f.limit.Fail(key)
+		}
+	})
+}
+
+// statusOnly notes the status a handler wrote.
+type statusOnly struct {
+	http.ResponseWriter
+	status int
+}
+
+func (s *statusOnly) WriteHeader(code int) {
+	if s.status == 0 {
+		s.status = code
+	}
+	s.ResponseWriter.WriteHeader(code)
+}
+
+func (s *statusOnly) Write(b []byte) (int, error) {
+	if s.status == 0 {
+		s.status = http.StatusOK
+	}
+	return s.ResponseWriter.Write(b)
+}
+
+func (s *statusOnly) Unwrap() http.ResponseWriter { return s.ResponseWriter }

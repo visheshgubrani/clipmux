@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"strings"
 	"testing"
 )
 
@@ -68,5 +69,43 @@ func TestPlainHTTPIsRedirectedOnlyForConfiguredHosts(t *testing.T) {
 	public = "http://localhost:8080" // first boot on plain http: nothing to enforce
 	if rec := do("localhost:8080", caddy, "http"); rec.Code != 204 {
 		t.Fatalf("http public URL: %d", rec.Code)
+	}
+}
+
+func TestPlaybackIsLimitedByRefusalsOnly(t *testing.T) {
+	f := newRefusals(func(r *http.Request) netip.Addr { return netip.MustParseAddr(r.Header.Get("X-Test-IP")) })
+	h := f.wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/unknown/master.m3u8") {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write([]byte("#EXTM3U"))
+	}))
+	do := func(ip, path string) int {
+		req := httptest.NewRequest("GET", path, nil)
+		req.Header.Set("X-Test-IP", ip)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec.Code
+	}
+	// A classroom behind one address: many successes, never limited.
+	for range 2000 {
+		if code := do("198.51.100.7", "/p/pid_1/master.m3u8"); code != 200 {
+			t.Fatalf("a successful playback request got %d", code)
+		}
+	}
+	for i := 1; i <= RefusalsPerWindow; i++ {
+		if code := do("203.0.113.66", "/p/unknown/master.m3u8"); code != 404 {
+			t.Fatalf("refusal %d got %d before the budget was spent", i, code)
+		}
+	}
+	if code := do("203.0.113.66", "/p/pid_1/master.m3u8"); code != 429 {
+		t.Fatalf("after %d refusals: %d, want 429", RefusalsPerWindow, code)
+	}
+	if code := do("198.51.100.7", "/p/pid_1/master.m3u8"); code != 200 {
+		t.Fatalf("another address was limited: %d", code)
+	}
+	if code := do("203.0.113.66", "/v1/assets"); code != 200 {
+		t.Fatalf("only playback paths are limited by refusals: %d", code)
 	}
 }

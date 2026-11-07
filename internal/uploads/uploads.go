@@ -38,6 +38,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/ids"
 	"github.com/visheshgubrani/clipmux/internal/outbox"
 	"github.com/visheshgubrani/clipmux/internal/queue"
+	"github.com/visheshgubrani/clipmux/internal/ratelimit"
 	"github.com/visheshgubrani/clipmux/internal/storage"
 	"github.com/visheshgubrani/clipmux/internal/stores"
 )
@@ -68,12 +69,15 @@ type Service struct {
 	// IdleExpiry is how long an upload may go without activity.
 	IdleExpiry time.Duration
 	Logger     *slog.Logger
+	// tokens rate each upload token's requests: 10 a second with bursts of
+	// 50, ample for a browser signing parts in batches of 100 (D067).
+	tokens *ratelimit.Buckets
 }
 
 // New returns a Service with the architecture's defaults.
 func New(pool *pgxpool.Pool, set *stores.Set) *Service {
 	return &Service{
-		pool: pool, stores: set, Auth: apikeys.NewAuthenticator(pool),
+		pool: pool, stores: set, Auth: apikeys.NewAuthenticator(pool), tokens: ratelimit.NewBuckets(10, 50),
 		MaxSize:    storage.PartSize * storage.MaxParts,
 		PartURLTTL: time.Hour,
 		IdleExpiry: 24 * time.Hour,
@@ -595,6 +599,12 @@ func (s *Service) upload(w http.ResponseWriter, r *http.Request) (db.Upload, boo
 	}
 	if up.ID != r.PathValue("id") {
 		httpjson.Error(w, http.StatusForbidden, "upload_mismatch", "the token belongs to another upload")
+		return db.Upload{}, false
+	}
+	if ok, wait := s.tokens.Take(up.ID); !ok {
+		cors(w) // the browser must be able to read the 429 and its wait
+		w.Header().Set("Access-Control-Expose-Headers", "Retry-After")
+		ratelimit.Refuse(w, wait)
 		return db.Upload{}, false
 	}
 	return up, true

@@ -12,12 +12,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"math"
-	"net"
 	"net/http"
 	"net/netip"
 	"net/url"
-	"strconv"
 	"strings"
 	"time"
 
@@ -27,6 +24,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/db"
 	"github.com/visheshgubrani/clipmux/internal/httpjson"
 	"github.com/visheshgubrani/clipmux/internal/ids"
+	"github.com/visheshgubrani/clipmux/internal/ratelimit"
 )
 
 const (
@@ -57,9 +55,12 @@ type Service struct {
 	projectID  string
 	setupToken string
 	publicURL  func() string
-	limiter    *limiter
-	cop        http.CrossOriginProtection
-	check      func(hash, password string) (ok, rehash bool)
+	// limiter counts failed sign-ins and setup counts wrong setup tokens:
+	// five per address and twenty overall in 15 minutes, checked before
+	// anything is hashed or compared.
+	limiter, setup *ratelimit.Failures
+	cop            http.CrossOriginProtection
+	check          func(hash, password string) (ok, rehash bool)
 
 	// TrustedProxies are the addresses whose X-Forwarded-For is believed
 	// when limiting logins (CLIPMUX_TRUSTED_PROXIES).
@@ -72,7 +73,7 @@ type Service struct {
 func New(pool *pgxpool.Pool, projectID string, publicURL func() string) *Service {
 	return &Service{
 		pool: pool, projectID: projectID, setupToken: rand.Text(), publicURL: publicURL,
-		limiter: newLimiter(time.Now), check: checkPassword, Logger: slog.New(slog.DiscardHandler),
+		limiter: ratelimit.NewFailures(limitWindow, limitPerIP, limitAll), setup: ratelimit.NewFailures(limitWindow, limitPerIP, limitAll), check: checkPassword, Logger: slog.New(slog.DiscardHandler),
 	}
 }
 
@@ -130,9 +131,10 @@ func (s *Service) CreateOwner(ctx context.Context, setupToken, email, password s
 // Login checks the owner's email and password and returns a new session
 // token. Attempts are limited per address before anything is hashed.
 func (s *Service) Login(ctx context.Context, ip netip.Addr, email, password string) (Owner, string, error) {
-	if ok, wait := s.limiter.allow(ip); !ok {
+	key := ratelimit.AddrKey(ip)
+	if ok, wait := s.limiter.Allow(key); !ok {
 		p := httpjson.Fail(http.StatusTooManyRequests, "too_many_attempts", "too many failed sign-ins; try again later")
-		p.Details = map[string]string{"retry_after": strconv.Itoa(int(math.Ceil(wait.Seconds())))}
+		p.Details = map[string]string{"retry_after": ratelimit.RetryAfter(wait)}
 		return Owner{}, "", p
 	}
 	q := db.New(s.pool)
@@ -146,10 +148,10 @@ func (s *Service) Login(ctx context.Context, ip netip.Addr, email, password stri
 	}
 	ok, rehash := s.check(hash, password)
 	if !ok || row.ID == "" {
-		s.limiter.fail(ip)
+		s.limiter.Fail(key)
 		return Owner{}, "", errBadCredentials
 	}
-	s.limiter.reset(ip)
+	s.limiter.Reset(key)
 	if rehash {
 		if err := q.SetOwnerPassword(ctx, db.SetOwnerPasswordParams{ID: row.ID, PasswordHash: HashPassword(password)}); err != nil {
 			return Owner{}, "", err
@@ -259,32 +261,7 @@ func (s *Service) ClientIP(r *http.Request) netip.Addr { return s.clientIP(r) }
 // forwarding chain's first untrusted hop when the connection is a trusted
 // proxy (Caddy).
 func (s *Service) clientIP(r *http.Request) netip.Addr {
-	host, _, _ := net.SplitHostPort(r.RemoteAddr)
-	addr, _ := netip.ParseAddr(host)
-	if !s.trusted(addr) {
-		return addr
-	}
-	hops := strings.Split(r.Header.Get("X-Forwarded-For"), ",")
-	for i := len(hops) - 1; i >= 0; i-- {
-		hop, err := netip.ParseAddr(strings.TrimSpace(hops[i]))
-		if err != nil {
-			break
-		}
-		if !s.trusted(hop) {
-			return hop
-		}
-		addr = hop
-	}
-	return addr
-}
-
-func (s *Service) trusted(a netip.Addr) bool {
-	for _, p := range s.TrustedProxies {
-		if p.Contains(a.Unmap()) {
-			return true
-		}
-	}
-	return false
+	return ratelimit.ClientIP(r, s.TrustedProxies)
 }
 
 // --- HTTP ---
@@ -329,7 +306,18 @@ func (s *Service) handleCreateOwner(w http.ResponseWriter, r *http.Request) {
 	if s.crossOrigin(w, r) || !httpjson.Decode(w, r, &c) {
 		return
 	}
+	// Wrong setup tokens are limited like sign-ins: the token is all that
+	// stands between a fresh install and whoever reaches it first.
+	key := ratelimit.AddrKey(s.clientIP(r))
+	if ok, wait := s.setup.Allow(key); !ok {
+		w.Header().Set("Retry-After", ratelimit.RetryAfter(wait))
+		httpjson.WriteProblem(w, ratelimit.Problem(wait))
+		return
+	}
 	owner, token, err := s.CreateOwner(r.Context(), c.SetupToken, c.Email, c.Password)
+	if errors.Is(err, errBadSetupToken) {
+		s.setup.Fail(key)
+	}
 	if err != nil {
 		s.fail(w, "create_owner", err)
 		return
