@@ -85,7 +85,7 @@ func (q *Queries) GetAssetInProject(ctx context.Context, arg GetAssetInProjectPa
 }
 
 const getJobInProject = `-- name: GetJobInProject :one
-SELECT j.id, j.project_id, j.asset_id, j.kind, j.status, j.phase, j.progress, j.profile_id, j.profile_version, j.pinned_agent_id, j.lost_count, j.failed_count, j.error_code, j.routed_to, j.route_reason, j.available_at, j.created_at, j.started_at, j.finished_at, j.source_storage_id, j.target_storage_id, j.import_url, s.app_id, s.passthrough FROM jobs j
+SELECT j.id, j.project_id, j.asset_id, j.kind, j.status, j.phase, j.progress, j.profile_id, j.profile_version, j.pinned_agent_id, j.lost_count, j.failed_count, j.error_code, j.routed_to, j.route_reason, j.available_at, j.created_at, j.started_at, j.finished_at, j.source_storage_id, j.target_storage_id, j.import_url, j.track_id, s.app_id, s.passthrough FROM jobs j
 JOIN assets s ON s.id = j.asset_id
 WHERE j.project_id = $1 AND j.id = $2
 `
@@ -118,6 +118,7 @@ type GetJobInProjectRow struct {
 	SourceStorageID pgtype.Text
 	TargetStorageID pgtype.Text
 	ImportUrl       pgtype.Text
+	TrackID         pgtype.Text
 	AppID           string
 	Passthrough     pgtype.Text
 }
@@ -148,6 +149,7 @@ func (q *Queries) GetJobInProject(ctx context.Context, arg GetJobInProjectParams
 		&i.SourceStorageID,
 		&i.TargetStorageID,
 		&i.ImportUrl,
+		&i.TrackID,
 		&i.AppID,
 		&i.Passthrough,
 	)
@@ -334,7 +336,7 @@ func (q *Queries) ListJobAttempts(ctx context.Context, jobIds []string) ([]ListJ
 }
 
 const listJobs = `-- name: ListJobs :many
-SELECT j.id, j.project_id, j.asset_id, j.kind, j.status, j.phase, j.progress, j.profile_id, j.profile_version, j.pinned_agent_id, j.lost_count, j.failed_count, j.error_code, j.routed_to, j.route_reason, j.available_at, j.created_at, j.started_at, j.finished_at, j.source_storage_id, j.target_storage_id, j.import_url, s.app_id, s.passthrough FROM jobs j
+SELECT j.id, j.project_id, j.asset_id, j.kind, j.status, j.phase, j.progress, j.profile_id, j.profile_version, j.pinned_agent_id, j.lost_count, j.failed_count, j.error_code, j.routed_to, j.route_reason, j.available_at, j.created_at, j.started_at, j.finished_at, j.source_storage_id, j.target_storage_id, j.import_url, j.track_id, s.app_id, s.passthrough FROM jobs j
 JOIN assets s ON s.id = j.asset_id
 WHERE j.project_id = $1
   AND ($2::text IS NULL OR j.status = $2)
@@ -379,6 +381,7 @@ type ListJobsRow struct {
 	SourceStorageID pgtype.Text
 	TargetStorageID pgtype.Text
 	ImportUrl       pgtype.Text
+	TrackID         pgtype.Text
 	AppID           string
 	Passthrough     pgtype.Text
 }
@@ -424,6 +427,7 @@ func (q *Queries) ListJobs(ctx context.Context, arg ListJobsParams) ([]ListJobsR
 			&i.SourceStorageID,
 			&i.TargetStorageID,
 			&i.ImportUrl,
+			&i.TrackID,
 			&i.AppID,
 			&i.Passthrough,
 		); err != nil {

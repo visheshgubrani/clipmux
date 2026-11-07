@@ -111,6 +111,7 @@ var passTimeouts = map[string]time.Duration{
 	"dispatch_reaper":      2 * time.Minute,
 	"machine_reconciler":   5 * time.Minute,
 	"stranded_pinned_jobs": time.Minute,
+	"speech_wait":          time.Minute,
 	"uploads":              5 * time.Minute,
 	"routes":               5 * time.Minute,  // storage writes for pending route records
 	"route_reconciler":     30 * time.Minute, // lists every route record
@@ -408,6 +409,7 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 	// machine nobody recorded.
 	loop(ReconcileInterval, "machine_reconciler", disp.Reconcile)
 	loop(UploadSweepInterval, "stranded_pinned_jobs", func(ctx context.Context) (int, error) { return q.SweepStrandedPinned(ctx, 100) })
+	loop(UploadSweepInterval, "speech_wait", func(ctx context.Context) (int, error) { return q.SweepStaleTranscriptions(ctx, 100) })
 	loop(UploadSweepInterval, "uploads", func(ctx context.Context) (int, error) { return upl.Sweep(ctx, 500) })
 	loop(RouteSyncInterval, "routes", func(ctx context.Context) (int, error) { return committer.SyncRoutes(ctx, 1000) })
 	loop(ReconcileInterval, "route_reconciler", func(ctx context.Context) (int, error) {

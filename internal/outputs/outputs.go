@@ -39,6 +39,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/routes"
 	"github.com/visheshgubrani/clipmux/internal/storage"
 	"github.com/visheshgubrani/clipmux/internal/stores"
+	"github.com/visheshgubrani/clipmux/internal/tracks"
 )
 
 // InvalidError means the output failed verification and was not committed.
@@ -290,6 +291,17 @@ func commit(ctx context.Context, qs *db.Queries, a db.Attempt, manifest []byte) 
 		if err := qs.RetireOutput(ctx, previous.String); err != nil {
 			return err
 		}
+	}
+	// Subtitles asked for at upload start now, reading this output's audio;
+	// the video doesn't wait for them.
+	var audio struct {
+		Audio bool `json:"audio"`
+	}
+	if err := json.Unmarshal(manifest, &audio); err != nil {
+		return invalid("manifest: %v", err)
+	}
+	if err := tracks.QueueTranscriptions(ctx, qs, asset, audio.Audio); err != nil {
+		return err
 	}
 	pids, err := activePlaybackIDs(ctx, qs, asset.ID)
 	if err != nil {

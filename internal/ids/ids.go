@@ -31,6 +31,8 @@ const (
 	Pairing    = "pair"
 	Executor   = "exe"
 	Dispatch   = "dsp"
+	Track      = "trk"
+	Connection = "aic"
 )
 
 const alphabet = "0123456789abcdefghjkmnpqrstvwxyz" // Crockford, lowercase

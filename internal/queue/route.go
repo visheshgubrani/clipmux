@@ -82,6 +82,8 @@ var CapacityCodes = []string{
 	"source_download_failed",
 	"upload_failed",
 	"scratch_full",
+	// A worker couldn't fetch or open its speech model.
+	"model_unavailable",
 }
 
 // classes are the routes a worker of this executor claims.
@@ -254,10 +256,14 @@ func (q *Queue) Route(ctx context.Context, limit int) (int, error) {
 }
 
 // TouchBuiltin records that the built-in worker called, with the free disk
-// its claim reported (0 when a heartbeat, which doesn't say). Writes are
-// coalesced to one per 10 s.
-func (q *Queue) TouchBuiltin(ctx context.Context, freeDiskBytes int64) error {
+// and the speech its claim reported (0 and nil from a heartbeat, which
+// says neither). Writes are coalesced to one per 10 s.
+func (q *Queue) TouchBuiltin(ctx context.Context, freeDiskBytes int64, speech *bool) error {
+	var sp pgtype.Bool
+	if speech != nil {
+		sp = pgtype.Bool{Bool: *speech, Valid: true}
+	}
 	return db.New(q.pool).TouchBuiltinWorker(ctx, db.TouchBuiltinWorkerParams{
-		ID: q.ProjectID, FreeDiskBytes: pgtype.Int8{Int64: freeDiskBytes, Valid: freeDiskBytes > 0},
+		ID: q.ProjectID, FreeDiskBytes: pgtype.Int8{Int64: freeDiskBytes, Valid: freeDiskBytes > 0}, Speech: sp,
 	})
 }

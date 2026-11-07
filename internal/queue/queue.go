@@ -17,6 +17,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/db"
 	"github.com/visheshgubrani/clipmux/internal/ids"
 	"github.com/visheshgubrani/clipmux/internal/outbox"
+	"github.com/visheshgubrani/clipmux/internal/tracks"
 )
 
 // ErrUnknownToken means no attempt carries the presented token.
@@ -82,6 +83,9 @@ func (q *Queue) CommitAttempt(ctx context.Context, token string, commit func(qs 
 			return Verdict{}, err
 		}
 		if l.job.Kind == KindUploadSource {
+			return Verdict{}, nil
+		}
+		if tracks.IsTrackJob(l.job.Kind) {
 			return Verdict{}, nil
 		}
 		// A local source whose push asked for --upload-source goes to
@@ -177,10 +181,19 @@ type Worker struct {
 	// FreeDiskBytes is the free space in the worker's scratch directory, or
 	// 0 when it didn't say; a worker takes only sources that fit.
 	FreeDiskBytes int64
+	// Kinds are the job kinds this claim takes; empty means the media kinds
+	// (MediaKinds), which is all a worker that predates transcription asks
+	// for. A worker with speech runs a second claim loop for transcribe.
+	Kinds []string
+	// Speech: the worker proved at start that it can transcribe.
+	Speech bool
 	// Info is what the worker reported at claim (tool versions, encoders,
 	// free disk), stored on the attempt as JSON.
 	Info json.RawMessage
 }
+
+// MediaKinds are the worker job kinds that encode or move media.
+var MediaKinds = []string{"transcode", "reencode", KindUploadSource}
 
 // Job describes work to enqueue.
 type Job struct {
@@ -188,6 +201,8 @@ type Job struct {
 	AssetID       string
 	Kind          string
 	PinnedAgentID string
+	// TrackID is the track a transcribe or chapters job makes.
+	TrackID string
 }
 
 // Claim is a successful claim. Token is shown to the worker once; only its
@@ -229,6 +244,7 @@ func Enqueue(ctx context.Context, conn db.DBTX, j Job) (db.Job, error) {
 		AssetID:       j.AssetID,
 		Kind:          j.Kind,
 		PinnedAgentID: text(j.PinnedAgentID),
+		TrackID:       text(j.TrackID),
 	})
 }
 
@@ -255,10 +271,19 @@ func (q *Queue) Claim(ctx context.Context, w Worker) (*Claim, error) {
 		if err != nil {
 			return err
 		}
-		// Every attempt but an upload_source one writes an output of its
-		// own (D070).
+		// Every attempt but an upload_source or transcribe one writes an
+		// output of its own (D070); a transcription reads the asset's
+		// current output instead, and keeps reading it if a re-encode
+		// commits meanwhile.
 		var output db.Output
-		if job.Kind != KindUploadSource {
+		var input pgtype.Text
+		if job.Kind == tracks.JobTranscribe {
+			asset, err := qs.GetAssetByID(ctx, job.AssetID)
+			if err != nil {
+				return err
+			}
+			input = asset.CurrentOutputID
+		} else if job.Kind != KindUploadSource {
 			if output, err = qs.CreateOutput(ctx, db.CreateOutputParams{
 				ID: ids.New(ids.Output), ProjectID: job.ProjectID, AssetID: job.AssetID, KeyVersion: q.KeyVersion(),
 			}); err != nil {
@@ -269,7 +294,7 @@ func (q *Queue) Claim(ctx context.Context, w Worker) (*Claim, error) {
 			ID: ids.New(ids.Attempt), ProjectID: job.ProjectID, JobID: job.ID, AssetID: job.AssetID,
 			AttemptNumber: n, OutputID: text(output.ID), Executor: w.Executor, AgentID: text(w.AgentID),
 			TokenHash: hash, WorkerInfo: info, LeaseSeconds: q.Lease.Seconds(), RouteReason: text(attemptReason(job.RouteReason.String)),
-			DispatchID: text(w.DispatchID),
+			DispatchID: text(w.DispatchID), InputOutputID: input,
 		})
 		if err != nil {
 			return err
@@ -299,10 +324,15 @@ func (q *Queue) Claim(ctx context.Context, w Worker) (*Claim, error) {
 // still waking within its deadline; lock order is job, then dispatch.
 func (q *Queue) lockClaimable(ctx context.Context, qs *db.Queries, w Worker) (db.Job, error) {
 	if w.DispatchID == "" {
+		kinds := w.Kinds
+		if len(kinds) == 0 {
+			kinds = MediaKinds
+		}
 		return qs.LockNextClaimableJob(ctx, db.LockNextClaimableJobParams{
-			ProjectID: q.ProjectID, Classes: classes(w.Executor),
+			ProjectID: q.ProjectID, Classes: classes(w.Executor), Kinds: kinds,
 			AgentID: text(w.AgentID), LocalOnly: w.LocalOnly, Untrusted: w.Untrusted,
 			FreeDiskBytes: pgtype.Int8{Int64: w.FreeDiskBytes, Valid: w.FreeDiskBytes > 0},
+			Speech:        w.Speech,
 		})
 	}
 	job, err := qs.LockDispatchedJob(ctx, db.LockDispatchedJobParams{ID: w.JobID, Kind: w.Executor})
@@ -584,6 +614,38 @@ func (q *Queue) FenceAgent(ctx context.Context, agentID string) (int, error) {
 	return n, nil
 }
 
+// SpeechWait is how long a transcription waits for a worker that can take
+// it, matching the LMS's own limit; then its track errors
+// transcribe_unavailable and the asset plays on without subtitles.
+const SpeechWait = 24 * time.Hour
+
+// SweepStaleTranscriptions ends transcriptions nothing claimed within
+// SpeechWait.
+func (q *Queue) SweepStaleTranscriptions(ctx context.Context, limit int) (int, error) {
+	stale, err := db.New(q.pool).ListStaleTranscriptions(ctx, db.ListStaleTranscriptionsParams{
+		ProjectID: q.ProjectID, WaitSeconds: SpeechWait.Seconds(), MaxJobs: int32(limit),
+	})
+	if err != nil {
+		return 0, fmt.Errorf("list stale transcriptions: %w", err)
+	}
+	n := 0
+	for _, id := range stale {
+		err := pgx.BeginFunc(ctx, q.pool, func(tx pgx.Tx) error {
+			qs := db.New(tx)
+			job, err := qs.LockJob(ctx, id)
+			if err != nil || job.Status != "queued" {
+				return err
+			}
+			n++
+			return q.endJob(ctx, qs, job, tracks.CodeTranscribeUnavailable)
+		})
+		if err != nil {
+			return n, fmt.Errorf("end stale transcription %s: %w", id, err)
+		}
+	}
+	return n, nil
+}
+
 // CodeAgentUnavailable ends jobs pinned to an agent that can't run them.
 const CodeAgentUnavailable = "agent_unavailable"
 
@@ -621,13 +683,18 @@ func (q *Queue) SweepStrandedPinned(ctx context.Context, limit int) (int, error)
 
 // endJob fails a job for good. A ready asset (a failed re-encode) keeps
 // playing its current output; anything else becomes errored. Either way the
-// app hears about it through the webhook outbox, in this transaction.
+// app hears about it through the webhook outbox, in this transaction. A job
+// that makes a track fails only its track: video never waits for, or
+// fails with, its captions.
 func (q *Queue) endJob(ctx context.Context, qs *db.Queries, job db.Job, code string) error {
 	if err := qs.FailJob(ctx, db.FailJobParams{ID: job.ID, ErrorCode: text(code)}); err != nil {
 		return err
 	}
 	if job.Kind == KindUploadSource {
 		return nil // the asset plays on; its source stays on the PC
+	}
+	if tracks.IsTrackJob(job.Kind) {
+		return tracks.Fail(ctx, qs, job, code)
 	}
 	asset, err := qs.LockAsset(ctx, job.AssetID)
 	if err != nil {

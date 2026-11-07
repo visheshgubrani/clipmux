@@ -25,6 +25,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/queue"
 	"github.com/visheshgubrani/clipmux/internal/storage"
 	"github.com/visheshgubrani/clipmux/internal/stores"
+	"github.com/visheshgubrani/clipmux/internal/tracks"
 )
 
 // ContractVersion is the job payload / output contract this server speaks.
@@ -222,7 +223,25 @@ type claimRequest struct {
 	// Sandbox is what confines the worker's tools, e.g.
 	// "rlimits,no_new_privs,seccomp,idle,landlock_abi_6", or "none".
 	Sandbox string `json:"sandbox"`
+	// Kinds are the job kinds this claim takes (claimKinds); absent means
+	// the media kinds, all a worker from before transcription asks for.
+	Kinds []string `json:"kinds"`
+	// Speech is what the worker's transcription probe proved at start, or
+	// absent when it can't transcribe. Every claim of a worker that can
+	// sends it, whichever kinds it asks for.
+	Speech *Speech `json:"speech"`
 }
+
+// Speech is a worker's transcription capability.
+type Speech struct {
+	// Backends whisper ran on in the probe: "cpu", "vulkan".
+	Backends []string `json:"backends"`
+	// Model is the speech model it holds, "{name}@sha256:{hex}".
+	Model string `json:"model"`
+}
+
+// claimKinds are the job kinds a worker may ask for.
+var claimKinds = []string{"transcode", "reencode", "upload_source", "transcribe"}
 
 func (a *API) claim(w http.ResponseWriter, r *http.Request) {
 	worker, ok := a.Auth.AuthenticateWorker(r.Context(), httpjson.Bearer(r))
@@ -242,6 +261,13 @@ func (a *API) claim(w http.ResponseWriter, r *http.Request) {
 		httpjson.Error(w, http.StatusConflict, "packager_too_old", "Shaka Packager 3.9.1 or later is required")
 		return
 	}
+	for _, k := range req.Kinds {
+		if !slices.Contains(claimKinds, k) {
+			httpjson.Error(w, http.StatusBadRequest, "invalid_kinds", "kinds may name only "+strings.Join(claimKinds, ", "))
+			return
+		}
+	}
+	speech := req.Speech != nil && len(req.Speech.Backends) > 0
 	wait := defaultWait
 	if req.WaitSeconds != nil {
 		wait = min(max(time.Duration(*req.WaitSeconds*float64(time.Second)), 0), maxWait)
@@ -249,10 +275,11 @@ func (a *API) claim(w http.ResponseWriter, r *http.Request) {
 	info, _ := json.Marshal(map[string]any{
 		"ffmpeg_version": req.FFmpegVersion, "packager_version": req.PackagerVersion,
 		"encoders": req.Encoders, "free_disk_bytes": req.FreeDiskBytes, "contract_versions": req.ContractVersions,
-		"sandbox": req.Sandbox, "hardware": req.Hardware,
+		"sandbox": req.Sandbox, "hardware": req.Hardware, "speech": req.Speech,
 	})
 	worker.Info = info
 	worker.FreeDiskBytes = max(req.FreeDiskBytes, 0)
+	worker.Kinds, worker.Speech = req.Kinds, speech
 	if worker.DispatchID != "" && !Sandboxed(req.Sandbox) {
 		// A serverless machine takes public uploads like any trusted
 		// worker, so its tools must be confined (D054).
@@ -262,7 +289,7 @@ func (a *API) claim(w http.ResponseWriter, r *http.Request) {
 	if worker.Executor == "builtin" {
 		// The router counts the built-in worker as online, with this much
 		// disk, for OnlineWithin after it calls.
-		if err := a.Queue.TouchBuiltin(r.Context(), worker.FreeDiskBytes); err != nil {
+		if err := a.Queue.TouchBuiltin(r.Context(), worker.FreeDiskBytes, &speech); err != nil {
 			a.Logger.Error("worker api", "op", "touch builtin", "err", err)
 		}
 	}
@@ -309,7 +336,11 @@ func (a *API) claim(w http.ResponseWriter, r *http.Request) {
 		a.release(r.Context(), c.Token)
 		return
 	}
-	src, err := a.source(r.Context(), c.Job.AssetID)
+	// A transcription reads an output, never the source.
+	var src Source
+	if c.Job.Kind != tracks.JobTranscribe {
+		src, err = a.source(r.Context(), c.Job.AssetID)
+	}
 	if errors.Is(err, storage.ErrNotFound) {
 		// The source is gone; no executor can ever run this job.
 		if _, ferr := a.Queue.Fail(r.Context(), c.Token, queue.Failure{Permanent: true, Code: "source_missing"}); ferr != nil {
@@ -540,7 +571,7 @@ func (a *API) heartbeat(w http.ResponseWriter, r *http.Request) {
 	case att.AgentID.Valid && a.Agents != nil:
 		a.Agents.ReportBeat(r, att.AgentID.String)
 	case att.Executor == "builtin":
-		if err := a.Queue.TouchBuiltin(r.Context(), 0); err != nil {
+		if err := a.Queue.TouchBuiltin(r.Context(), 0, nil); err != nil {
 			a.Logger.Error("worker api", "op", "touch builtin", "err", err)
 		}
 	}

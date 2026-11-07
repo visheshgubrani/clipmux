@@ -19,6 +19,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/apikeys"
 	"github.com/visheshgubrani/clipmux/internal/assets"
 	"github.com/visheshgubrani/clipmux/internal/contentkey"
+	"github.com/visheshgubrani/clipmux/internal/db"
 	"github.com/visheshgubrani/clipmux/internal/db/dbtest"
 	"github.com/visheshgubrani/clipmux/internal/delivery"
 	"github.com/visheshgubrani/clipmux/internal/lifecycle"
@@ -26,6 +27,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/queue"
 	"github.com/visheshgubrani/clipmux/internal/storage"
 	"github.com/visheshgubrani/clipmux/internal/stores"
+	"github.com/visheshgubrani/clipmux/internal/tracks"
 	"github.com/visheshgubrani/clipmux/internal/uploads"
 )
 
@@ -256,6 +258,53 @@ func TestDeleteCancelsTheRunningJobAndItsWorkerStops(t *testing.T) {
 	}
 	if ev := r.events(); len(ev) != 1 || ev[0] != "video.asset.deleted" {
 		t.Fatalf("events = %v, want exactly one video.asset.deleted", ev)
+	}
+}
+
+// Delete stops both families (P5-T13): the re-encode and the
+// transcription are cancelled, the transcription's worker is told to stop,
+// and the asset's tracks and transcripts go at once.
+func TestDeleteCancelsBothFamiliesAndFencesTheTranscription(t *testing.T) {
+	r := newRig(t)
+	r.ready()
+	ctx := context.Background()
+	qs := db.New(r.pool)
+	if _, err := tracks.Create(ctx, qs, "prj_default", "ast_1", tracks.Generate{Chapters: true}); err != nil {
+		t.Fatal(err)
+	}
+	asset, err := qs.GetAssetByID(ctx, "ast_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tracks.QueueTranscriptions(ctx, qs, asset, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := queue.Enqueue(ctx, r.pool, queue.Job{ProjectID: "prj_default", AssetID: "ast_1", Kind: "reencode"}); err != nil {
+		t.Fatal(err)
+	}
+	encode, err := r.q.Claim(ctx, queue.Worker{Executor: "builtin"})
+	if err != nil || encode == nil || encode.Job.Kind != "reencode" {
+		t.Fatalf("encode claim: %+v, %v", encode, err)
+	}
+	speech, err := r.q.Claim(ctx, queue.Worker{Executor: "builtin", Kinds: []string{"transcribe"}, Speech: true})
+	if err != nil || speech == nil || speech.Job.Kind != "transcribe" {
+		t.Fatalf("speech claim: %+v, %v", speech, err)
+	}
+	r.exec(`INSERT INTO transcripts (track_id, project_id, asset_id, body) SELECT id, project_id, asset_id, '{}' FROM tracks WHERE kind = 'subtitles'`)
+
+	if status, body := r.call("DELETE", "/v1/assets/ast_1", r.key); status != http.StatusOK && status != http.StatusAccepted {
+		t.Fatalf("DELETE = %d %v", status, body)
+	}
+	for _, c := range []*queue.Claim{encode, speech} {
+		if v, err := r.q.Heartbeat(ctx, c.Token, queue.Progress{}); err != nil || !v.Stop || v.Reason != queue.ReasonCancelled {
+			t.Fatalf("%s heartbeat = %+v, %v; want stop: cancelled", c.Job.Kind, v, err)
+		}
+	}
+	if n := r.scalar(`SELECT count(*) FROM tracks WHERE asset_id = 'ast_1' AND status <> 'deleted'`); n != int64(0) {
+		t.Fatalf("%v tracks not deleted", n)
+	}
+	if n := r.scalar(`SELECT count(*) FROM transcripts`); n != int64(0) {
+		t.Fatalf("%v transcripts left", n)
 	}
 }
 

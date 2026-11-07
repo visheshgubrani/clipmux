@@ -279,7 +279,7 @@ func TestTheBuiltinWorkerCountsOnlyWithRoomForTheSource(t *testing.T) {
 	f.exec(`INSERT INTO uploads (id, project_id, asset_id, multipart_id, declared_size, part_size, token_hash, status)
 		VALUES ('upl_1', 'prj_default', 'ast_1', 'mp', 2000000000, 33554432, 'h', 'completed')`)
 
-	if err := f.q.TouchBuiltin(context.Background(), 5_000_000_000); err != nil {
+	if err := f.q.TouchBuiltin(context.Background(), 5_000_000_000, nil); err != nil {
 		t.Fatal(err)
 	}
 	f.route()

@@ -64,6 +64,20 @@ type AgentSource struct {
 	UploadSource bool
 }
 
+type AiConnection struct {
+	ID             string
+	ProjectID      string
+	Purpose        string
+	Provider       string
+	BaseUrl        pgtype.Text
+	Model          string
+	ResponseFormat pgtype.Text
+	KeySealed      []byte
+	VerifiedAt     pgtype.Timestamptz
+	CreatedAt      pgtype.Timestamptz
+	UpdatedAt      pgtype.Timestamptz
+}
+
 type App struct {
 	ID         string
 	ProjectID  string
@@ -117,6 +131,7 @@ type Attempt struct {
 	DispatchID        pgtype.Text
 	SourceMultipartID pgtype.Text
 	SourcePartSize    pgtype.Int8
+	InputOutputID     pgtype.Text
 }
 
 type CloudflareConnection struct {
@@ -214,6 +229,7 @@ type Job struct {
 	SourceStorageID pgtype.Text
 	TargetStorageID pgtype.Text
 	ImportUrl       pgtype.Text
+	TrackID         pgtype.Text
 }
 
 type Outbox struct {
@@ -300,6 +316,7 @@ type Project struct {
 	QueueAgeFallbackMinutes pgtype.Int4
 	BuiltinSeenAt           pgtype.Timestamptz
 	BuiltinFreeDiskBytes    pgtype.Int8
+	BuiltinSpeech           bool
 }
 
 type RetentionCursor struct {
@@ -342,6 +359,36 @@ type StorageConfig struct {
 	SecretsEncrypted []byte
 	IsDefault        bool
 	CreatedAt        pgtype.Timestamptz
+}
+
+type Track struct {
+	ID         string
+	ProjectID  string
+	AssetID    string
+	Kind       string
+	Source     string
+	Status     string
+	Language   pgtype.Text
+	Name       pgtype.Text
+	ErrorCode  pgtype.Text
+	KeyVersion pgtype.Int4
+	DurationMs pgtype.Int8
+	Chapters   []byte
+	OutputID   pgtype.Text
+	Version    int64
+	CreatedAt  pgtype.Timestamptz
+	UpdatedAt  pgtype.Timestamptz
+	ReadyAt    pgtype.Timestamptz
+	RetiredAt  pgtype.Timestamptz
+	DeletedAt  pgtype.Timestamptz
+}
+
+type Transcript struct {
+	TrackID   string
+	ProjectID string
+	AssetID   string
+	Body      []byte
+	CreatedAt pgtype.Timestamptz
 }
 
 type Upload struct {

@@ -4,8 +4,11 @@
 -- name: LockActiveUploadForAsset :one
 SELECT * FROM uploads WHERE asset_id = $1 AND status = 'active' FOR UPDATE;
 
--- name: GetActiveJobForAsset :one
-SELECT * FROM jobs WHERE asset_id = $1 AND status IN ('queued', 'running');
+-- name: GetActiveJobForAsset :many
+-- The asset's active jobs of the kinds given: one family (outputs or
+-- tracks, at most one job each) or both. Move and delete belong to both.
+SELECT * FROM jobs WHERE asset_id = $1 AND status IN ('queued', 'running') AND kind = ANY (sqlc.arg(kinds)::text[])
+ORDER BY id;
 
 -- name: MarkAssetDeleted :one
 UPDATE assets SET status = 'deleted', error_code = NULL, version = version + 1, updated_at = now()

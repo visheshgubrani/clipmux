@@ -31,6 +31,7 @@ var Columns = []Column{
 	{"webhook_endpoints", "pending_secret_encrypted", "id", "webhook_endpoints_pending"},
 	{"content_key_secrets", "secret_encrypted", "project_id || '/v' || version", "content_key_secrets"},
 	{"owners", "totp_secret_encrypted", "id", "owners"},
+	{"ai_connections", "key_sealed", "id", "ai_connections"},
 }
 
 // CheckVersions refuses a box that can't open every sealed value: after a

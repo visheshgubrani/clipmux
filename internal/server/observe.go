@@ -17,6 +17,7 @@ import (
 	cm "github.com/visheshgubrani/clipmux/internal/metrics"
 	"github.com/visheshgubrani/clipmux/internal/queue"
 	"github.com/visheshgubrani/clipmux/internal/sweeper"
+	"github.com/visheshgubrani/clipmux/internal/tracks"
 )
 
 // observer holds the server's metrics (D066). Request and loop metrics are
@@ -183,6 +184,9 @@ var knownCodes = map[string]bool{
 	"job_timeout": true, "source_missing": true, "source_changed": true, "source_invalid": true,
 	queue.CodeWorkerStopped: true, queue.CodeWorkerLost: true, queue.CodeProcessingFailed: true,
 	queue.CodeAgentRevoked: true, "agent_unavailable": true, "wake_failed": true, "wake_timeout": true,
+	// Tracks (P5 track B): a transcription's and its worker's codes.
+	tracks.CodeNoAudio: true, tracks.CodeTranscribeFailed: true, tracks.CodeTranscriptInvalid: true,
+	tracks.CodeTranscribeUnavailable: true, tracks.CodeSubtitlesFailed: true, "model_unavailable": true,
 }
 
 func boundCode(code string) string {

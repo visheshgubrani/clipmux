@@ -128,6 +128,28 @@ func TestOneActiveMutatingJobPerAsset(t *testing.T) {
 	mustExec(t, pool, `INSERT INTO jobs (id, project_id, asset_id, kind, routed_to, status) VALUES ('job_2', 'prj_default', $1, 'reencode', 'workers', 'queued')`, asset)
 }
 
+// Two families (P5-T13): a transcription runs beside an encode, but never
+// beside another track job, a move or a delete.
+func TestOneActiveJobPerFamily(t *testing.T) {
+	pool := dbtest.New(t)
+	_, asset := seed(t, pool)
+	mustExec(t, pool, `INSERT INTO tracks (id, project_id, asset_id, kind) VALUES ('trk_1', 'prj_default', $1, 'subtitles')`, asset)
+	mustExec(t, pool, `INSERT INTO jobs (id, project_id, asset_id, kind, routed_to, status) VALUES ('job_1', 'prj_default', $1, 'reencode', 'workers', 'running')`, asset)
+	mustExec(t, pool, `INSERT INTO jobs (id, project_id, asset_id, kind, routed_to, status, track_id) VALUES ('job_2', 'prj_default', $1, 'transcribe', 'workers', 'queued', 'trk_1')`, asset)
+
+	err := exec(t, pool, `INSERT INTO jobs (id, project_id, asset_id, kind, status, track_id) VALUES ('job_3', 'prj_default', $1, 'chapters', 'queued', 'trk_1')`, asset)
+	wantPgCode(t, err, pgUniqueViolation)
+	mustExec(t, pool, `UPDATE jobs SET status = 'succeeded' WHERE id = 'job_1'`)
+	// The encode ended, but a move still waits for the transcription.
+	err = exec(t, pool, `INSERT INTO jobs (id, project_id, asset_id, kind, status, source_storage_id, target_storage_id) VALUES ('job_3', 'prj_default', $1, 'move', 'queued', 'sto_default', 'sto_default')`, asset)
+	wantPgCode(t, err, pgUniqueViolation)
+
+	// A track job names its track; a media job doesn't, and a transcription
+	// is never pinned.
+	wantPgCode(t, exec(t, pool, `INSERT INTO jobs (id, project_id, asset_id, kind, routed_to, status) VALUES ('job_4', 'prj_default', $1, 'transcribe', 'workers', 'failed')`, asset), pgCheckViolation)
+	wantPgCode(t, exec(t, pool, `INSERT INTO jobs (id, project_id, asset_id, kind, routed_to, status, track_id) VALUES ('job_4', 'prj_default', $1, 'transcode', 'workers', 'failed', 'trk_1')`, asset), pgCheckViolation)
+}
+
 func TestCurrentOutputMustBelongToTheAsset(t *testing.T) {
 	pool := dbtest.New(t)
 	_, asset := seed(t, pool)
@@ -232,6 +254,32 @@ func TestMigrationsRollBackAndReapply(t *testing.T) {
 	if n != 0 {
 		t.Fatalf("%d tables left after rolling back every migration", n)
 	}
+	if err := db.Migrate(ctx, pool); err != nil {
+		t.Fatalf("re-apply: %v", err)
+	}
+}
+
+// Rolling back the families (P5-T13) with both kinds of job active drops
+// the track jobs and keeps the encode, so the single index can come back.
+func TestTheTrackMigrationRollsBackWithJobsActive(t *testing.T) {
+	pool := dbtest.New(t)
+	ctx := context.Background()
+	_, asset := seed(t, pool)
+	mustExec(t, pool, `INSERT INTO tracks (id, project_id, asset_id, kind) VALUES ('trk_1', 'prj_default', $1, 'subtitles')`, asset)
+	mustExec(t, pool, `INSERT INTO jobs (id, project_id, asset_id, kind, routed_to, status) VALUES ('job_1', 'prj_default', $1, 'reencode', 'workers', 'running')`, asset)
+	mustExec(t, pool, `INSERT INTO jobs (id, project_id, asset_id, kind, routed_to, status, track_id) VALUES ('job_2', 'prj_default', $1, 'transcribe', 'workers', 'queued', 'trk_1')`, asset)
+	if err := db.MigrateDownTo(ctx, pool, 23); err != nil {
+		t.Fatalf("down to 23: %v", err)
+	}
+	var kinds string
+	if err := pool.QueryRow(ctx, `SELECT string_agg(kind, ',' ORDER BY id) FROM jobs`).Scan(&kinds); err != nil {
+		t.Fatal(err)
+	}
+	if kinds != "reencode" {
+		t.Fatalf("jobs after rollback: %s", kinds)
+	}
+	err := exec(t, pool, `INSERT INTO jobs (id, project_id, asset_id, kind, status, source_storage_id, target_storage_id) VALUES ('job_3', 'prj_default', $1, 'move', 'queued', 'sto_default', 'sto_default')`, asset)
+	wantPgCode(t, err, pgUniqueViolation)
 	if err := db.Migrate(ctx, pool); err != nil {
 		t.Fatalf("re-apply: %v", err)
 	}
