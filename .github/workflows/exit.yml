@@ -1,27 +1,20 @@
 # The exit tests of Phases 1 to 5 (docs/plans/P1-T09-T12.md, T12, and each
 # phase's plan): the real binary, Chromium (hls.js, the Video.js player,
 # subtitles and chapters, the uploader, the dashboard) and ExoPlayer on an
-# Android emulator. Safari runs in exit-safari.yml. The weekly run soaks for
-# 30 minutes (P5 check 5); every other run for 60 s.
+# Android emulator. Safari runs in exit-safari.yml. A run by hand may soak
+# for 30 minutes (P5 check 5); every other run soaks for 60 s.
 name: Exit test
 on:
-  push:
-    branches: [main]
+  # About an hour of Linux runner and a quarter of one for the emulator, so by
+  # hand (before merging a phase or anything touching playback) and on tags.
   workflow_dispatch:
-  schedule:
-    - cron: "17 4 * * 1"
-  pull_request:
-    paths:
-      - "internal/**"
-      - "cmd/**"
-      - "packages/**"
-      - "dashboard/**"
-      - "e2e/**"
-      - "worker/**"
-      - "deploy/compose.dev.yml"
-      - "toolchain/**"
-      - "go.mod"
-      - "pnpm-lock.yaml"
+    inputs:
+      soak:
+        description: Soak for 30 minutes instead of 60 s (P5 check 5)
+        type: boolean
+        default: false
+  push:
+    tags: ["v*"]
 permissions:
   contents: read
 concurrency:
@@ -47,24 +40,12 @@ jobs:
           --health-interval 2s --health-timeout 3s --health-retries 30
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
           node-version-file: .node-version
           cache: pnpm
-      - name: Cache whisper.cpp and the speech models
-        uses: actions/cache@v4
-        with:
-          path: |
-            ${{ runner.temp }}/whisper
-          key: whisper-${{ runner.os }}-${{ hashFiles('toolchain/versions.env', 'toolchain/build_whisper.sh', 'toolchain/whisper-vad-token-times.patch', 'toolchain/fetch_speech_models.sh') }}
-      - name: Media tools
-        # Each apt attempt is bounded and retried (toolchain/ci_media_tools.sh).
-        timeout-minutes: 45
-        run: toolchain/ci_media_tools.sh
+      - uses: ./.github/actions/media-tools
       - run: pnpm install --frozen-lockfile && pnpm -r run build
       - name: S3-compatible store (R2 in the Phase 2 exit test)
         run: |
@@ -78,7 +59,7 @@ jobs:
           promtool check rules deploy/prometheus/alerts.yml
       - name: Real binary (Phase 1 to 5 exit tests)
         env:
-          CLIPMUX_E2E_SOAK: ${{ github.event_name == 'schedule' && '1' || '' }}
+          CLIPMUX_E2E_SOAK: ${{ inputs.soak && '1' || '' }}
           CLIPMUX_REQUIRE_S3: "1"
           CLIPMUX_TEST_S3_ENDPOINT: http://127.0.0.1:8333
           CLIPMUX_TEST_S3_ACCESS_KEY: clipmuxdev
@@ -111,9 +92,6 @@ jobs:
           --health-interval 2s --health-timeout 3s --health-retries 30
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -121,16 +99,7 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.11.1"
-      - name: Cache whisper.cpp and the speech models
-        uses: actions/cache@v4
-        with:
-          path: |
-            ${{ runner.temp }}/whisper
-          key: whisper-${{ runner.os }}-${{ hashFiles('toolchain/versions.env', 'toolchain/build_whisper.sh', 'toolchain/whisper-vad-token-times.patch', 'toolchain/fetch_speech_models.sh') }}
-      - name: Media tools
-        # Each apt attempt is bounded and retried (toolchain/ci_media_tools.sh).
-        timeout-minutes: 45
-        run: toolchain/ci_media_tools.sh
+      - uses: ./.github/actions/media-tools
       - name: Enable KVM
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules

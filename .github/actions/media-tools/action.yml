@@ -1,0 +1,22 @@
+# Go, ffmpeg (apt) and the pinned Shaka Packager for every job that runs the
+# media tests or the real binary, plus the pinned whisper.cpp and its speech
+# models unless the job sets CLIPMUX_SKIP_SPEECH=1 (toolchain/ci_media_tools.sh).
+# whisper.cpp and the models are cached by the files that pin them.
+name: Media tools
+description: Go, ffmpeg and Shaka Packager, with whisper.cpp and the speech models unless skipped
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-go@v5
+      with:
+        go-version-file: go.mod
+    - name: Cache whisper.cpp and the speech models
+      if: env.CLIPMUX_SKIP_SPEECH != '1'
+      uses: actions/cache@v4
+      with:
+        path: ${{ runner.temp }}/whisper
+        key: whisper-${{ runner.os }}-${{ hashFiles('toolchain/versions.env', 'toolchain/build_whisper.sh', 'toolchain/whisper-vad-token-times.patch', 'toolchain/fetch_speech_models.sh') }}
+    - name: Media tools
+      shell: bash
+      # Each apt attempt is bounded and retried inside the script.
+      run: timeout 45m toolchain/ci_media_tools.sh

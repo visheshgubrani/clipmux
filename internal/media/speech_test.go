@@ -18,10 +18,13 @@ import (
 
 // speechTools returns the media tools with whisper-cli and the pinned
 // models, sandboxed by this test binary, or skips (fails under
-// CLIPMUX_REQUIRE_MEDIA_TOOLS=1). The models are read from
+// CLIPMUX_REQUIRE_MEDIA_TOOLS=1, unless CLIPMUX_SKIP_SPEECH=1 asks to skip). The models are read from
 // CLIPMUX_TEST_MODELS_DIR, under their upstream file names.
 func speechTools(t *testing.T) (Tools, Speech) {
 	t.Helper()
+	if os.Getenv("CLIPMUX_SKIP_SPEECH") == "1" {
+		t.Skip("speech tests skipped (CLIPMUX_SKIP_SPEECH=1); they run on the GPU runner")
+	}
 	tools := testTools(t)
 	tools.Whisper = "whisper-cli"
 	if p := os.Getenv("CLIPMUX_WHISPER"); p != "" {
@@ -121,10 +124,20 @@ func firstWord(t *testing.T, tr *transcripts.Transcript, w string) int64 {
 
 // The golden transcription: the real model, under the full sandbox (no
 // network, Landlock, seccomp), reads the audio rendition and finds the
-// words, the language and their times.
-func TestWhisperTranscribesUnderTheSandbox(t *testing.T) {
+// words, the language and their times. Silence before the speech moves
+// every time by exactly that much: the VAD skips the silence without
+// shifting the timeline it reports. Both checks share two transcriptions,
+// each of which costs a CPU runner a minute or more.
+func TestWhisperTranscribesUnderTheSandboxKeepingTheTimeline(t *testing.T) {
 	tools, sp := speechTools(t)
-	tr := transcribe(t, tools, sp, audioRendition(t, 3*time.Second))
+	plain := transcribe(t, tools, sp, audioRendition(t, 10*time.Millisecond))
+	tr := transcribe(t, tools, sp, audioRendition(t, 3010*time.Millisecond))
+	for _, w := range []string{"americans", "country"} {
+		d := firstWord(t, tr, w) - firstWord(t, plain, w)
+		if d < 2700 || d > 3300 {
+			t.Errorf("%q moved %d ms with 3 s of leading silence, want 3000 ± 300", w, d)
+		}
+	}
 	if tr.Language != "en" {
 		t.Fatalf("language %q", tr.Language)
 	}
@@ -138,20 +151,6 @@ func TestWhisperTranscribesUnderTheSandbox(t *testing.T) {
 	vtt := string(tr.VTT())
 	if !strings.HasPrefix(vtt, "WEBVTT\n") || !strings.Contains(vtt, " --> ") {
 		t.Fatalf("vtt %q", vtt)
-	}
-}
-
-// Silence before the speech moves every time by exactly that much: the VAD
-// skips the silence without shifting the timeline it reports.
-func TestLeadingSilenceKeepsTheTimelineUnderVAD(t *testing.T) {
-	tools, sp := speechTools(t)
-	plain := transcribe(t, tools, sp, audioRendition(t, 10*time.Millisecond))
-	late := transcribe(t, tools, sp, audioRendition(t, 3010*time.Millisecond))
-	for _, w := range []string{"americans", "country"} {
-		d := firstWord(t, late, w) - firstWord(t, plain, w)
-		if d < 2700 || d > 3300 {
-			t.Errorf("%q moved %d ms with 3 s of leading silence, want 3000 ± 300", w, d)
-		}
 	}
 }
 

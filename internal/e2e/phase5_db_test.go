@@ -114,6 +114,18 @@ func TestPhase5ExitTracksOnTheRealBinary(t *testing.T) {
 	in.connectLLM(owner, ai)
 	key, kid, priv := in.credentials("Tracks")
 
+	// serve sends one transcription at a time to the speech API (D080), and
+	// the setup test's sample has speech: let a setup test and its
+	// transcription finish first, so the one held below is this asset's.
+	deadline := time.Now().Add(3 * time.Minute)
+	for in.scalar(`SELECT (SELECT count(*) FROM setup_tests WHERE status IN ('queued', 'running'))
+		+ (SELECT count(*) FROM jobs WHERE kind = 'transcribe' AND status IN ('queued', 'running'))`) != "0" {
+		if time.Now().After(deadline) {
+			t.Fatal("the setup test and its transcription never finished")
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+
 	// 10. With the speech API answering nothing, the asset is ready, and a
 	// second upload becomes ready too.
 	ai.holdTranscriptions()
@@ -201,7 +213,7 @@ func TestPhase5ExitTracksOnTheRealBinary(t *testing.T) {
 	}
 	// The delete job's first pass removes the files and sets deleted_at; a
 	// second pass waits out the PUT URLs' lifetime (lifecycle.LateWrites).
-	deadline := time.Now().Add(time.Minute)
+	deadline = time.Now().Add(time.Minute)
 	for in.scalar(`SELECT (deleted_at IS NOT NULL)::text FROM assets WHERE id = $1`, a) != "true" {
 		if time.Now().After(deadline) {
 			t.Fatal("the delete job never removed the files")

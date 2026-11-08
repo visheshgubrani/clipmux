@@ -1,12 +1,18 @@
-# Real GPU encodes (P3-T03, D046), on a self-hosted runner with a GPU: the
-# owner's Ubuntu machine with an AMD RX 6600 XT (VAAPI). The runner's service
-# user must be in the `render` group so it can open /dev/dri/renderD*. Runs on
-# main, weekly, by hand, and on PRs that touch encoding. GitHub's hosted
-# runners have no GPU, so CI proves selection and fallback with a fake ffmpeg.
-name: GPU encode
+# Real GPU encodes (P3-T03, D046) and every test that runs real whisper.cpp,
+# on a self-hosted runner: the owner's Ubuntu machine with an AMD RX 6600 XT
+# (VAAPI and Vulkan). Self-hosted minutes are free, so the speech tests run
+# here instead of on hosted CI (which sets CLIPMUX_SKIP_SPEECH=1).
+#
+# The runner needs: its service user in the `render` and `docker` groups,
+# ffmpeg and libvulkan1 on the host, and Docker, which builds whisper.cpp from
+# the pinned recipe in an Ubuntu 24.04 container when the build in the
+# runner's cache doesn't match it. The build and the models (fetched by
+# digest) persist in ~/.cache/clipmux-runner between runs.
+#
+# The job runs only while the repository variable GPU_RUNNER is "true"; with
+# no runner registered, a run would sit queued for a day and then fail.
+name: GPU and speech
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
   schedule:
     - cron: "17 5 * * 1"
@@ -15,18 +21,38 @@ on:
       - "internal/media/**"
       - "internal/sandbox/**"
       - "internal/worker/**"
+      - "internal/setuptest/**"
+      - "internal/transcripts/**"
       - "toolchain/**"
+      - ".github/workflows/gpu.yml"
 permissions:
   contents: read
 concurrency:
-  group: gpu-${{ github.ref }}
+  group: gpu
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   vaapi:
     # Pull requests from forks never reach a self-hosted runner.
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    if: >-
+      vars.GPU_RUNNER == 'true' &&
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: [self-hosted, linux, gpu, vaapi]
-    timeout-minutes: 20
+    timeout-minutes: 45
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: clipmux
+          POSTGRES_PASSWORD: clipmux
+          POSTGRES_DB: clipmux_test
+        # Not 5432: the owner's machine runs its own Postgres there.
+        ports: ["5455:5432"]
+        options: >-
+          --health-cmd "pg_isready -U clipmux -d clipmux_test"
+          --health-interval 2s --health-timeout 3s --health-retries 30
+    env:
+      TEST_DATABASE_URL: postgres://clipmux:clipmux@localhost:5455/clipmux_test?sslmode=disable
+      CLIPMUX_REQUIRE_MEDIA_TOOLS: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -36,8 +62,27 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/bin" && toolchain/install_packager.sh "$RUNNER_TEMP/bin"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: whisper.cpp and the speech models (cached on the runner)
+        run: |
+          cache="$HOME/.cache/clipmux-runner"
+          prefix="$cache/whisper"
+          mkdir -p "$prefix" "$cache/models"
+          # Stops at once when the cached build matches the recipe; otherwise
+          # it needs build tools the host doesn't have, so build in a container.
+          if ! toolchain/build_whisper.sh "$prefix" >/dev/null 2>&1; then
+            docker run --rm -v "$PWD/toolchain:/toolchain:ro" -v "$prefix:/out" ubuntu:24.04 bash -euc '
+              apt-get update -qq
+              DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
+                ca-certificates curl cmake make g++ glslc libvulkan-dev spirv-headers patch >/dev/null
+              CLIPMUX_BUILD_DIR=/tmp/whisper-build /toolchain/build_whisper.sh /out
+              chown -R '"$(id -u):$(id -g)"' /out'
+          fi
+          toolchain/fetch_speech_models.sh "$cache/models"
+          echo "CLIPMUX_WHISPER=$prefix/bin/whisper-cli" >> "$GITHUB_ENV"
+          echo "CLIPMUX_TEST_MODELS_DIR=$cache/models" >> "$GITHUB_ENV"
       - name: GPU parity (golden encode, keyframes, decryption, SSIM against the CPU)
         env:
           CLIPMUX_GPU_TEST: "1"
-          CLIPMUX_REQUIRE_MEDIA_TOOLS: "1"
         run: go test ./internal/media -run 'GPUBackends|Golden|DecryptsBack' -count=1 -v
+      - name: Speech (whisper.cpp on the CPU and on Vulkan, the speech worker, the setup test's subtitles)
+        run: go test ./internal/media ./internal/worker ./internal/setuptest -run 'Whisper|Speech|Transcri' -count=1 -timeout 30m

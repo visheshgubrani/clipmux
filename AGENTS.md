@@ -20,6 +20,8 @@ anything decided since, and wins over the architecture doc where they differ.
 - Media tests need ffmpeg, ffprobe and Shaka Packager ≥ 3.9.1
   (`toolchain/install_packager.sh`); they skip without them, except in CI
   where `CLIPMUX_REQUIRE_MEDIA_TOOLS=1` makes a missing tool a failure.
+  Hosted CI sets `CLIPMUX_SKIP_SPEECH=1`; the real whisper.cpp tests run on the
+  self-hosted GPU runner (`gpu.yml`). What runs where is in `.github/README.md`.
 - Adapter boundaries (storage, executor, delivery) keep core logic from
   branching on a vendor; if it needs to, the interface is leaking.
 - The dashboard and CLI are API clients with no private path into the server.
