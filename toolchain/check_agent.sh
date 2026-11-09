@@ -18,6 +18,10 @@ set -euo pipefail
 if command -v ffmpeg >/dev/null; then echo "check_agent: the image has its own ffmpeg; use a clean one" >&2; exit 1; fi
 cd /tmp && tar -xzf "/in/$TARBALL" && cd clipmux-agent
 sha256sum --quiet -c SHA256SUMS
+# The licences and the written source offer ship with it (D086).
+for f in licenses/clipmux/LICENSE licenses/SOURCE.md licenses/ffmpeg/COPYING.GPLv2 licenses/packages.txt; do
+  [ -s "$f" ] || { echo "check_agent: no $f" >&2; exit 1; }
+done
 missing=0
 for f in libexec/ffmpeg libexec/ffprobe libexec/dri/*.so libexec/whisper/whisper-cli libexec/whisper/*.so; do
   if ldd "$f" | grep "not found"; then echo "check_agent: $f has unresolved libraries" >&2; missing=1; fi

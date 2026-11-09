@@ -145,6 +145,16 @@ func TestDetectionTrustsOnlyARealEncode(t *testing.T) {
 	if got := h.Encoders(); !reflect.DeepEqual(got, []string{"libx264"}) {
 		t.Fatalf("encoders = %v", got)
 	}
+	// Why each failed travels with the capabilities, so an operator (and the
+	// real-provider run) can see why a GPU isn't used.
+	want := map[Backend]string{
+		NVENC:      "ffmpeg: exit status 1: Cannot load h264_nvenc",
+		CUDADecode: "ffmpeg: exit status 1: Cannot load cuda=cu",
+		VAAPI:      "/dev/dri/renderD128: ffmpeg: exit status 1: Cannot load h264_vaapi",
+	}
+	if !reflect.DeepEqual(h.Failed, want) {
+		t.Fatalf("failed = %v, want %v", h.Failed, want)
+	}
 	ok := Tools{FFmpeg: fakeFFmpeg(t, "h264_nvenc", "cuda=cu")}
 	if h := DetectHardware(context.Background(), ok, t.TempDir(), "/dev/dri/renderD128", ""); h.VAAPIDevice != "/dev/dri/renderD128" {
 		t.Fatalf("a working VAAPI encode wasn't detected: %+v", h)

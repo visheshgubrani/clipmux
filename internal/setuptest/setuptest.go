@@ -39,6 +39,7 @@ import (
 
 	"github.com/visheshgubrani/clipmux/internal/apikeys"
 	"github.com/visheshgubrani/clipmux/internal/db"
+	"github.com/visheshgubrani/clipmux/internal/dispatch"
 	"github.com/visheshgubrani/clipmux/internal/ids"
 	"github.com/visheshgubrani/clipmux/internal/lifecycle"
 	"github.com/visheshgubrani/clipmux/internal/media"
@@ -462,10 +463,25 @@ func (r *Runner) waitReady(parent context.Context, assetID string) error {
 		case a.Status == "errored":
 			return fmt.Errorf("the sample failed to encode: %s", a.ErrorCode.String)
 		}
-		// A provider's machine that ended without claiming the sample
-		// fails the test now rather than at the timeout.
-		if d, err := q.LatestDispatchForAsset(ctx, assetID); err == nil && d.Status == "ended" && !d.AttemptID.Valid {
-			return fmt.Errorf("the %s machine never took the sample: %s", d.Kind, d.EndReason.String)
+		// A provider's machine that ended without claiming the sample fails
+		// the test now rather than at the timeout. A failed wake may be a
+		// moment without capacity, which the router retries; three in a
+		// row (when the provider backs off) fail it (D097).
+		if ds, err := q.RecentDispatchesForAsset(ctx, assetID); err == nil && len(ds) > 0 {
+			unclaimed := func(d db.Dispatch) bool { return d.Status == "ended" && !d.AttemptID.Valid }
+			d := ds[0]
+			if unclaimed(d) && d.EndReason.String != dispatch.EndWakeFailed {
+				return fmt.Errorf("the %s machine never took the sample: %s", d.Kind, d.EndReason.String)
+			}
+			failed := 0
+			for _, x := range ds {
+				if unclaimed(x) && x.EndReason.String == dispatch.EndWakeFailed {
+					failed++
+				}
+			}
+			if failed == 3 {
+				return fmt.Errorf("the %s machine never took the sample: %s, 3 times in a row", d.Kind, d.EndReason.String)
+			}
 		}
 		select {
 		case <-ctx.Done():

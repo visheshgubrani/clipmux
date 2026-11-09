@@ -117,7 +117,7 @@ const ShutdownWait = 15 * time.Second
 var passTimeouts = map[string]time.Duration{
 	"lost_leases":          time.Minute,
 	"routing":              time.Minute,
-	"dispatch":             5 * time.Minute, // provider calls, 60 s each
+	"dispatch":             5 * time.Minute, // provider calls, 3 min each, a row per transaction
 	"dispatch_reaper":      2 * time.Minute,
 	"machine_reconciler":   5 * time.Minute,
 	"stranded_pinned_jobs": time.Minute,
@@ -320,6 +320,7 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 	// PC agents pair with a code and claim with their own keys (P3-T01).
 	agentSvc := agents.New(pool, q, acct, db.DefaultProjectID, b.urls.PublicURL)
 	agentSvc.Logger = logger
+	agentSvc.Version = cfg.Version
 	// Serverless machines claim one job each with a key minted when the
 	// router sends that job to a provider (P4-T02).
 	disp := dispatch.New(pool, box, b.urls.PublicURL)

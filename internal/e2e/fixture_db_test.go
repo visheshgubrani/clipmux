@@ -24,7 +24,7 @@ import (
 // another origin the built test pages plus:
 //
 //	GET  /config                 {base_url, playback_id, api, dashboard, setup_token,
-//	                              ops, ops_email, ops_password, runpod_key, registry_*}
+//	                              ops, ops_email, ops_password, totp, runpod_key, registry_*}
 //	GET  /token?aud=v&ttl=SECS   a fresh playback token (text)
 //	POST /uploads?size=BYTES     an upload created with the app's API key
 //
@@ -32,6 +32,10 @@ import (
 func TestPlayerFixture(t *testing.T) {
 	if os.Getenv("CLIPMUX_E2E_FIXTURE") != "1" {
 		t.Skip("set CLIPMUX_E2E_FIXTURE=1 to serve the browser suites")
+	}
+	if os.Getenv("CLIPMUX_E2E_LIVE_CONFIG") != "" {
+		serveLiveFixture(t)
+		return
 	}
 	// The Workers suite connects RunPod: a fake RunPod API and a fake
 	// private registry, which serve trusts through SSL_CERT_FILE.
@@ -67,6 +71,10 @@ func TestPlayerFixture(t *testing.T) {
 	if setupToken == nil {
 		t.Fatalf("the fresh install printed no setup token:\n%s", fresh.log())
 	}
+	// The TOTP drill (P6-T04) turns on the owner's second factor, so it gets
+	// an install of its own, whose owner exists already.
+	totp := start(t)
+	totp.owner()
 	// The Workers suite signs in as the owner and finds a connected PC, one
 	// that can transcribe.
 	if _, err := in.pool.Exec(context.Background(), `INSERT INTO agents (id, project_id, name, key_hash, status, sandboxed, hostname, platform, capabilities, last_seen_at)
@@ -90,7 +98,7 @@ func TestPlayerFixture(t *testing.T) {
 			"base_url": in.url, "playback_id": pid, "api": in.url,
 			"asset_id": asset, "app_id": appID, "subtitles_track": trks["subtitles"].ID, "chapters_track": trks["chapters"].ID,
 			"cue_text": cueText, "cue_start": cueStart, "llm_url": ai.llm.URL + "/v1", "llm_key": llmKey,
-			"dashboard": fresh.url, "setup_token": setupToken[1],
+			"dashboard": fresh.url, "setup_token": setupToken[1], "totp": totp.url,
 			"ops": in.url, "ops_email": "owner@example.test", "ops_password": "a long test password",
 			"runpod_key": runpodtest.Key, "registry_username": registrytest.Username, "registry_password": registrytest.Password,
 		})

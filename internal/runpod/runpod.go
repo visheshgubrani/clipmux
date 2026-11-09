@@ -38,8 +38,10 @@ type Secret struct {
 
 // DefaultGPUTypes have NVENC, so the worker encodes on the GPU; RunPod
 // picks whichever has capacity. Data-centre cards without NVENC (A100,
-// H100) would encode on the CPU and cost more for it.
-var DefaultGPUTypes = []string{"NVIDIA L4", "NVIDIA RTX A4000", "NVIDIA RTX A5000", "NVIDIA GeForce RTX 4090"}
+// H100) would encode on the CPU and cost more for it, and so do RunPod's
+// RTX 4090 hosts, which refuse NVENC sessions ("unsupported device") even
+// outside the sandbox (D097). The L4 is proven on a real pod.
+var DefaultGPUTypes = []string{"NVIDIA L4", "NVIDIA RTX A4000", "NVIDIA RTX A5000"}
 
 // Executor starts one pod per dispatch. Pods run `clipmux worker --once`
 // with the dispatch's environment; RunPod restarts a container that exits,

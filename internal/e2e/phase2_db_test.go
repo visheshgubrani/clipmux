@@ -66,6 +66,8 @@ func (f *cfFake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		} else {
 			ok([]any{})
 		}
+	case strings.HasSuffix(p, "/workers/domains") && r.Method == http.MethodGet:
+		ok([]any{})
 	case strings.HasSuffix(p, "/subscriptions"):
 		ok([]map[string]any{{"rate_plan": map[string]string{"id": "workers_paid", "public_name": "Workers Paid"}, "state": "Paid"}})
 	case strings.Contains(p, "/r2/buckets/"):

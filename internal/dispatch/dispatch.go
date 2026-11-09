@@ -82,7 +82,17 @@ type Service struct {
 	// Resolve opens the adapter for a provider's config.
 	Resolve func(ctx context.Context, cfg db.ExecutorConfig) (Executor, error)
 	Logger  *slog.Logger
+	// CallTimeout bounds each provider call (a wake or a stop), so one stuck
+	// provider fails its own call rather than its whole pass (D097). Modal
+	// takes over a minute to create a GPU sandbox.
+	CallTimeout time.Duration
 }
+
+// ErrPreparing is a wake the provider can't start yet but will, such as
+// Modal still converting a new image: the dispatch stays waking and the
+// wake is tried again with backoff, with no failure counted. The claim
+// deadline still bounds it.
+var ErrPreparing = errors.New("dispatch: the provider is still preparing the machine")
 
 // New returns a service. Set Resolve before any provider is connected.
 func New(pool *pgxpool.Pool, box *secrets.Box, serverURL func() string) *Service {
@@ -91,7 +101,8 @@ func New(pool *pgxpool.Pool, box *secrets.Box, serverURL func() string) *Service
 		Resolve: func(context.Context, db.ExecutorConfig) (Executor, error) {
 			return nil, errors.New("dispatch: no provider adapter is available")
 		},
-		Logger: slog.New(slog.DiscardHandler),
+		Logger:      slog.New(slog.DiscardHandler),
+		CallTimeout: 3 * time.Minute,
 	}
 }
 
@@ -187,23 +198,27 @@ const (
 // Publish wakes and stops machines for pending outbox rows, up to limit,
 // and returns how many it handled. Like the route publisher, it calls the
 // provider while holding the row, rebuilds from current state rather than
-// the payload, and retries a failure with backoff.
+// the payload, and retries a failure with backoff. Each row is its own
+// transaction, stops before wakes: a pass that ends inside a slow call
+// loses only that row, never a machine already woken or stopped (D097).
 func (s *Service) Publish(ctx context.Context, limit int) (int, error) {
 	done := 0
-	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
-		qs := db.New(tx)
-		rows, err := qs.LockPendingDispatchOutbox(ctx, int32(limit))
-		if err != nil {
-			return err
-		}
-		for _, row := range rows {
+	for range limit {
+		found, ok := false, false
+		err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+			qs := db.New(tx)
+			rows, err := qs.LockPendingDispatchOutbox(ctx, 1)
+			if err != nil || len(rows) == 0 {
+				return err
+			}
+			found = true
+			row := rows[0]
 			var p struct {
 				DispatchID string `json:"dispatch_id"`
 			}
 			if err := json.Unmarshal(row.Payload, &p); err != nil {
 				return fmt.Errorf("%s %s: %w", row.Kind, row.ID, err)
 			}
-			var err error
 			if row.Kind == "wake" {
 				err = s.wake(ctx, qs, p.DispatchID)
 			} else {
@@ -213,19 +228,22 @@ func (s *Service) Publish(ctx context.Context, limit int) (int, error) {
 				if ctx.Err() != nil {
 					return ctx.Err()
 				}
-				if err := s.retry(ctx, qs, row, err); err != nil {
-					return err
-				}
-				continue
+				return s.retry(ctx, qs, row, err)
 			}
-			if err := qs.MarkOutboxDone(ctx, row.ID); err != nil {
-				return err
-			}
+			ok = true
+			return qs.MarkOutboxDone(ctx, row.ID)
+		})
+		if err != nil {
+			return done, err
+		}
+		if !found {
+			break
+		}
+		if ok {
 			done++
 		}
-		return nil
-	})
-	return done, err
+	}
+	return done, nil
 }
 
 func (s *Service) wake(ctx context.Context, qs *db.Queries, dispatchID string) error {
@@ -251,13 +269,20 @@ func (s *Service) wake(ctx context.Context, qs *db.Queries, dispatchID string) e
 	if err != nil {
 		return fmt.Errorf("open dispatch key: %w", err)
 	}
-	instance, err := ex.Wake(ctx, Wake{
+	call, cancel := context.WithTimeout(ctx, s.CallTimeout)
+	defer cancel()
+	instance, err := ex.Wake(call, Wake{
 		DispatchID: d.ID, Name: Name(d.ID), Config: cfg.Config, Lifetime: MaxLifetime,
 		Env: map[string]string{"CLIPMUX_SERVER": s.ServerURL(), "CLIPMUX_WORKER_KEY": string(key)},
 	})
 	if err != nil {
 		if ctx.Err() != nil {
 			return ctx.Err() // shutting down: wake on the next pass, same key
+		}
+		if errors.Is(err, ErrPreparing) {
+			// Not a failure: the same dispatch and key, asked again later.
+			s.Logger.Info("a provider is still preparing a machine", "dispatch", d.ID, "provider", d.Kind, "err", err)
+			return err
 		}
 		// The job returns to routing (its dispatch ends) without spending a
 		// budget, and three such failures in a row back the provider off
@@ -288,7 +313,9 @@ func (s *Service) stop(ctx context.Context, qs *db.Queries, dispatchID string) e
 	if err != nil {
 		return err
 	}
-	if err := ex.Stop(ctx, d.InstanceID.String); err != nil {
+	call, cancel := context.WithTimeout(ctx, s.CallTimeout)
+	defer cancel()
+	if err := ex.Stop(call, d.InstanceID.String); err != nil {
 		return fmt.Errorf("stop %s: %w", d.Kind, err)
 	}
 	s.Logger.Info("stopped a machine", "dispatch", d.ID, "provider", d.Kind, "instance", d.InstanceID.String)

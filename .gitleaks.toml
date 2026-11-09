@@ -1,0 +1,16 @@
+# gitleaks (ci.yml's checks, P6-T06): the default rules, minus what is
+# deliberately public in this repository.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Test fixtures and dev-only credentials, public by design"
+paths = [
+  # The delivery contract's test signing keys and the tokens they sign.
+  '''internal/delivery/testdata/vectors\.json''',
+  # The dev SeaweedFS's fixed credentials (deploy/compose.dev.yml).
+  '''deploy/seaweedfs-dev\.json''',
+]
+regexes = [
+  '''clipmuxdevsecret0123456789''',
+]

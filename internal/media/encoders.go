@@ -57,6 +57,9 @@ type Hardware struct {
 	VAAPIDevice string `json:"vaapi_device,omitempty"`
 	// Prefer is the backend to try first (--encoder), or "" for auto.
 	Prefer Backend `json:"prefer,omitempty"`
+	// Failed says why each backend that failed its test encode did, such
+	// as an NVIDIA driver too old for this FFmpeg's NVENC API.
+	Failed map[Backend]string `json:"failed,omitempty"`
 }
 
 // Backends lists what this hardware offers, best first, always ending with
@@ -278,7 +281,18 @@ func DetectHardware(ctx context.Context, t Tools, dir, vaapiDev string, prefer B
 		probe := t
 		probe.HW.VAAPIDevice = dev
 		probe = probe.In(dir).forStage(Stage{Backend: b})
-		return probe.run(ctx, t.FFmpeg, probeArgs(b, dev), dir, io.Discard) == nil
+		err := probe.run(ctx, t.FFmpeg, probeArgs(b, dev), dir, io.Discard)
+		if err != nil {
+			why := err.Error()
+			if dev != "" {
+				why = dev + ": " + why
+			}
+			if h.Failed == nil {
+				h.Failed = map[Backend]string{}
+			}
+			h.Failed[b] = why
+		}
+		return err == nil
 	}
 	h.NVENC = try(NVENC, "")
 	h.CUDA = h.NVENC || try(CUDADecode, "")
@@ -289,8 +303,12 @@ func DetectHardware(ctx context.Context, t Tools, dir, vaapiDev string, prefer B
 	for _, d := range devs {
 		if try(VAAPI, d) {
 			h.VAAPIDevice = d
+			delete(h.Failed, VAAPI) // an earlier node failed; this one works
 			break
 		}
+	}
+	if len(h.Failed) == 0 {
+		h.Failed = nil
 	}
 	return h
 }

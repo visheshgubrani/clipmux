@@ -5,8 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
+	"time"
 
 	sdk "github.com/modal-labs/modal-client/go"
+
+	"github.com/visheshgubrani/clipmux/internal/dispatch"
 )
 
 // sdkAPI is api on Modal's Go SDK. The SDK speaks gRPC to Modal, so it is
@@ -17,9 +21,25 @@ type sdkAPI struct {
 	env    string
 }
 
+// imageWait is how long a wake waits for Modal to have the image, and
+// scheduleWait how long for a sandbox to be placed on one GPU type; a wake
+// tries up to three types, inside dispatch's three-minute bound on a
+// provider call.
+const (
+	imageWait    = 30 * time.Second
+	scheduleWait = 45 * time.Second
+)
+
 // newSDK opens a client with the token. It reads no other credentials: the
 // token wins over any ~/.modal.toml profile of the user serve runs as.
 func newSDK(tokenID, tokenSecret, environment string) (*sdkAPI, error) {
+	// The SDK always reads a config file, from MODAL_CONFIG_PATH or
+	// ~/.modal.toml, and fails where there is no home directory; its Config
+	// option can't be set from outside the package. An empty file keeps the
+	// user's profiles (and their server URL) out of serve.
+	if err := os.Setenv("MODAL_CONFIG_PATH", os.DevNull); err != nil {
+		return nil, fmt.Errorf("modal client: %w", err)
+	}
 	c, err := sdk.NewClientWithOptions(&sdk.ClientParams{
 		TokenID: tokenID, TokenSecret: tokenSecret, Environment: environment,
 		Logger: slog.New(slog.DiscardHandler),
@@ -40,12 +60,12 @@ func (a *sdkAPI) appID(ctx context.Context, name string) (*sdk.App, error) {
 	return app, nil
 }
 
-func (a *sdkAPI) create(ctx context.Context, req sandboxRequest) (string, error) {
-	app, err := a.appID(ctx, req.App)
-	if err != nil {
-		return "", err
-	}
-	var img *sdk.ImageFromRegistryParams
+// image returns the request's image built on Modal, waiting at most
+// imageWait. Modal converts a registry image on its first use, which takes
+// minutes for ours, and keeps converting after the wait ends; a later call
+// finds the same build (D097). A wait that ends first is ErrPreparing.
+func (a *sdkAPI) image(ctx context.Context, app *sdk.App, req sandboxRequest) (*sdk.Image, error) {
+	var params *sdk.ImageFromRegistryParams
 	if req.RegistryUsername != "" {
 		// An ephemeral secret, never stored in Modal by name: the
 		// credentials live sealed in ClipMux's database.
@@ -53,14 +73,58 @@ func (a *sdkAPI) create(ctx context.Context, req sandboxRequest) (string, error)
 			"REGISTRY_USERNAME": req.RegistryUsername, "REGISTRY_PASSWORD": req.RegistryPassword,
 		}, &sdk.SecretFromMapParams{Environment: a.env})
 		if err != nil {
-			return "", fmt.Errorf("modal registry secret: %w", err)
+			return nil, fmt.Errorf("modal registry secret: %w", err)
 		}
-		img = &sdk.ImageFromRegistryParams{Secret: sec}
+		params = &sdk.ImageFromRegistryParams{Secret: sec}
 	}
-	sb, err := a.client.Sandboxes.Create(ctx, app, a.client.Images.FromRegistry(req.Image, img), &sdk.SandboxCreateParams{
+	build, cancel := context.WithTimeout(ctx, imageWait)
+	defer cancel()
+	image, err := a.client.Images.FromRegistry(req.Image, params).Build(build, app, nil)
+	if err != nil {
+		if ctx.Err() == nil && errors.Is(build.Err(), context.DeadlineExceeded) {
+			return nil, fmt.Errorf("modal is still converting %s, which takes minutes on its first use: %w", req.Image, dispatch.ErrPreparing)
+		}
+		return nil, fmt.Errorf("modal image %s: %w", req.Image, err)
+	}
+	return image, nil
+}
+
+// prepare starts Modal converting the image and reports whether it is ready.
+func (a *sdkAPI) prepare(ctx context.Context, req sandboxRequest) (bool, error) {
+	app, err := a.appID(ctx, req.App)
+	if err != nil {
+		return false, err
+	}
+	if _, err := a.image(ctx, app, req); errors.Is(err, dispatch.ErrPreparing) {
+		return false, nil
+	} else if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func (a *sdkAPI) create(ctx context.Context, req sandboxRequest) (string, error) {
+	app, err := a.appID(ctx, req.App)
+	if err != nil {
+		return "", err
+	}
+	image, err := a.image(ctx, app, req)
+	if err != nil {
+		return "", err
+	}
+	// Create also waits, up to 21 minutes, for Modal to place the sandbox
+	// on a GPU; past scheduleWait the SDK terminates it and the next GPU
+	// type is tried (D097).
+	sched, cancel := context.WithTimeout(ctx, scheduleWait)
+	defer cancel()
+	sb, err := a.client.Sandboxes.Create(sched, app, image, &sdk.SandboxCreateParams{
 		Name: req.Name, Command: req.Command, Env: req.Env, GPU: req.GPU, CPU: req.CPU, MemoryMiB: req.MemoryMiB,
 		Timeout: req.Timeout, Tags: req.Tags,
 	})
+	var full sdk.ResourceExhaustedError
+	if err != nil && ctx.Err() == nil && (errors.Is(sched.Err(), context.DeadlineExceeded) || errors.As(err, &full)) {
+		return "", fmt.Errorf("%s: %w", req.GPU, errNoCapacity)
+	}
 	if err != nil {
 		return "", fmt.Errorf("modal create sandbox: %w", err)
 	}

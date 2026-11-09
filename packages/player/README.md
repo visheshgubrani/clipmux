@@ -43,3 +43,36 @@ VTT with the playback token and marks the chapters on the time slider.
 `player.chapters` holds them in seconds once `clipmux-chapters` fires. For
 another player, `trackUrl` gives a track's sidecar VTT URL, `fetchTrack` loads
 it with a `TokenSession`, and `parseChapters` reads a chapters VTT.
+
+## Your backend: signing playback tokens
+
+The player never sees a key. Your backend signs a short-lived ES256 JWT with
+the app's signing key (Dashboard → Apps, or `clipmux admin create-signing-key`)
+for each viewer it allows, and `getToken()` fetches it. With
+[`jose`](https://github.com/panva/jose) in Node:
+
+```ts
+import { SignJWT, importPKCS8 } from 'jose'
+
+const key = await importPKCS8(process.env.CLIPMUX_SIGNING_KEY!, 'ES256') // the PEM
+const kid = process.env.CLIPMUX_SIGNING_KID! // kid_…
+
+// GET /api/playback-token?playback_id=…, after your own access check
+export async function playbackToken(playbackId: string): Promise<string> {
+  return new SignJWT({})
+    .setProtectedHeader({ alg: 'ES256', kid })
+    .setSubject(playbackId) // sub: the playback ID
+    .setAudience('v') // v: playback; t: the poster
+    .setIssuedAt()
+    .setExpirationTime('10m') // the player refreshes it
+    .sign(key)
+}
+```
+
+A public playback ID needs no token: set `playback-id` and leave `getToken`
+unset. The full contract, including posters and the maximum lifetime, is the
+Delivery section of [docs/api.md](https://github.com/visheshgubrani/clipmux/blob/main/docs/api.md#delivery).
+
+## Licence
+
+MIT. The ClipMux server is AGPL-3.0; this package is MIT so apps embed it freely.

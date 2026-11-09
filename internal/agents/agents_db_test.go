@@ -109,6 +109,9 @@ func TestDashboardCodePairsOnceAndArrivesApproved(t *testing.T) {
 	if want := "clipmux worker --server https://clipmux.example --pair " + code; inv["command"] != want {
 		t.Fatalf("command = %q, want %q", inv["command"], want)
 	}
+	if want := "curl -fsSL https://github.com/visheshgubrani/clipmux/releases/latest/download/install-agent.sh | sh -s -- --server https://clipmux.example --pair " + code; inv["install_command"] != want {
+		t.Fatalf("install_command = %q, want %q", inv["install_command"], want)
+	}
 
 	// A person may type the code in lower case without the dash.
 	typed := strings.ToLower(strings.ReplaceAll(code, "-", ""))

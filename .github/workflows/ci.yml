@@ -53,6 +53,13 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The secret scan reads the whole history.
+          fetch-depth: 0
+      - name: No secret anywhere in the history (gitleaks, .gitleaks.toml)
+        run: docker run --rm -v "$PWD:/repo:ro" ghcr.io/gitleaks/gitleaks:v8.28.0 git /repo --log-opts=--all --config /repo/.gitleaks.toml --redact --no-banner
+      - name: The installers are POSIX sh and shellcheck-clean
+        run: shellcheck -s sh deploy/install.sh deploy/install-agent.sh && shellcheck toolchain/check_install.sh toolchain/licenses.sh
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod

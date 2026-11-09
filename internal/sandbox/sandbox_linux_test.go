@@ -166,3 +166,20 @@ func TestGPUToolsGetCUDAsIPCSocketsAndNoOthers(t *testing.T) {
 		t.Error("a CPU tool opened a socket")
 	}
 }
+
+// CUDA's cuInit writes the tool's own /proc entries, and fails with
+// CUDA_ERROR_OPERATING_SYSTEM without (found on RunPod's L4, D096). A GPU
+// tool may write its own /proc/<pid>; any other tool only reads it.
+func TestGPUToolsMayWriteTheirOwnProcEntries(t *testing.T) {
+	need(t, "bash")
+	if st := probe(t); st.LandlockABI == 0 {
+		t.Skip("Landlock is not available on this kernel")
+	}
+	write := "echo clipmux-tool > /proc/$$/comm && read -r c < /proc/$$/comm && echo $c"
+	if code, out, stderr := sandboxed(t, Policy{Write: t.TempDir(), GPU: true}, "bash", "-c", write); code != 0 || out != "clipmux-tool\n" {
+		t.Fatalf("a GPU tool writing its own /proc entry: exit %d, %q, %q", code, out, stderr)
+	}
+	if code, _, _ := sandboxed(t, Policy{Write: t.TempDir()}, "bash", "-c", write); code == 0 {
+		t.Fatal("a CPU tool wrote its own /proc entry")
+	}
+}

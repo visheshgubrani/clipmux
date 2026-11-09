@@ -165,6 +165,9 @@ func runWorker(args []string, getenv func(string) string, stderr io.Writer) int 
 		logger.Warn("the requested encoder failed its test encode; using the others", "encoder", prefer)
 	}
 	logger.Info("encoders", "order", w.Tools.HW.Describe())
+	for b, why := range w.Tools.HW.Failed {
+		logger.Info("a GPU backend failed its test encode", "backend", b, "err", why)
+	}
 	// Each claim loop clears its own scratch directory at start, so the
 	// media and speech loops never share one.
 	speech := &worker.SpeechSlot{}

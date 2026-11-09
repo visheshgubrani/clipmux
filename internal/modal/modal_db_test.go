@@ -39,6 +39,11 @@ type fakeModal struct {
 	closed   int
 	n        int
 	tokenSec string
+	// converting: prepare reports the image still being converted.
+	converting bool
+	prepared   []string
+	// full: GPU types Modal has no capacity for.
+	full map[string]bool
 }
 
 func newFake() *fakeModal { return &fakeModal{running: map[string]sandbox{}} }
@@ -47,6 +52,9 @@ func (f *fakeModal) create(_ context.Context, req sandboxRequest) (string, error
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.creates = append(f.creates, req)
+	if f.full[req.GPU] {
+		return "", errNoCapacity
+	}
 	f.n++
 	id := "sb-" + strconv.Itoa(f.n)
 	f.running[id] = sandbox{ID: id, Tags: maps.Clone(req.Tags)}
@@ -84,6 +92,13 @@ func (f *fakeModal) check(context.Context, string) error {
 	return nil
 }
 
+func (f *fakeModal) prepare(_ context.Context, req sandboxRequest) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.prepared = append(f.prepared, req.Image)
+	return !f.converting, nil
+}
+
 func (f *fakeModal) close() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -114,7 +129,10 @@ func TestWakeStartsOneSandboxWithTheDispatchsEnvironment(t *testing.T) {
 	want := sandboxRequest{
 		App: "clipmux-inst0001", Name: "clipmux-dsp_1", Image: "ghcr.io/visheshgubrani/clipmux:sha-abc",
 		RegistryUsername: "visheshgubrani", RegistryPassword: "ghp_REGISTRY",
-		Command: []string{"/usr/local/bin/clipmux", "worker", "--once"},
+		// Modal appends the command to the image's entrypoint (tini --
+		// clipmux), as RunPod does; a sandbox given "clipmux worker" ran
+		// `clipmux clipmux worker` and exited at once (D097).
+		Command: []string{"worker", "--once"},
 		Env: map[string]string{
 			"CLIPMUX_SERVER": "https://video.example.com", "CLIPMUX_WORKER_KEY": "cmxd_secret",
 			"NVIDIA_DRIVER_CAPABILITIES": "compute,video,utility",
@@ -128,6 +146,31 @@ func TestWakeStartsOneSandboxWithTheDispatchsEnvironment(t *testing.T) {
 	again, err := ex.Wake(context.Background(), wake)
 	if err != nil || again != id || len(f.creates) != 1 {
 		t.Fatalf("a replayed wake = %s, %v with %d creates; want %s and one create", again, err, len(f.creates), id)
+	}
+}
+
+// Modal's L4 queue can stall for minutes (D051, D097): a wake takes the
+// next NVENC card in the configured order, and with none free it is asked
+// again later rather than failed.
+func TestAWakeFallsBackToTheNextGPUWithCapacity(t *testing.T) {
+	f := newFake()
+	f.full = map[string]bool{"L4": true}
+	e := executor(f)
+	e.cfg.GPU = "L4,A10G,T4"
+	id, err := e.Wake(context.Background(), wake)
+	if err != nil || id != "sb-1" { // the fake numbers only sandboxes it starts
+		t.Fatalf("wake = %q, %v", id, err)
+	}
+	if len(f.creates) != 2 || f.creates[0].GPU != "L4" || f.creates[1].GPU != "A10G" || f.creates[1].Name != "clipmux-dsp_1-a10g" {
+		t.Fatalf("creates = %+v", f.creates)
+	}
+
+	f = newFake()
+	f.full = map[string]bool{"L4": true, "A10G": true, "T4": true}
+	e = executor(f)
+	e.cfg.GPU = "L4,A10G,T4"
+	if _, err := e.Wake(context.Background(), wake); !errors.Is(err, dispatch.ErrPreparing) || err.Error() != "modal has no L4, A10G or T4 free: dispatch: the provider is still preparing the machine" {
+		t.Fatalf("with every GPU taken: %v", err)
 	}
 }
 
@@ -200,13 +243,18 @@ func TestConnectModalSealsTheTokenAndQueuesItsSetupTest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := "credentials:ok public_url:ok image:ok saved:ok setup_test:ok"; stepNames(res) != want || !res.Connected || *queued != 1 {
+	if want := "credentials:ok public_url:ok image:ok image_conversion:ok saved:ok setup_test:ok"; stepNames(res) != want || !res.Connected || *queued != 1 {
 		t.Fatalf("steps = %s (queued %d), want %s", stepNames(res), *queued, want)
+	}
+	// Connect starts Modal converting the pinned image, so the first wake
+	// doesn't wait minutes for it (D097).
+	if len(f.prepared) != 1 || !strings.Contains(f.prepared[0], "@sha256:") || res.Steps[3].Detail != "Modal has the image" {
+		t.Fatalf("prepared %v, detail %q", f.prepared, res.Steps[3].Detail)
 	}
 	row, _, _ := dispatch.Existing(ctx, c.Pool, "prj_default", "modal")
 	var cfg Config
 	_ = json.Unmarshal(row.Config, &cfg)
-	if !strings.Contains(cfg.Image, "@sha256:") || cfg.GPU != "L4" || cfg.CPU != 4 || cfg.MemoryMiB != 16384 || len(cfg.Tag) != 8 || row.DiskBytes != 50<<30 || row.RateCentsPerHour != 90 {
+	if !strings.Contains(cfg.Image, "@sha256:") || cfg.GPU != "L4,A10G,T4" || cfg.CPU != 4 || cfg.MemoryMiB != 16384 || len(cfg.Tag) != 8 || row.DiskBytes != 50<<30 || row.RateCentsPerHour != 90 {
 		t.Fatalf("config = %+v, row %+v", cfg, row)
 	}
 	for _, secret := range []string{tokenSecret, registrytest.Password, tokenID} {
@@ -237,6 +285,21 @@ func TestConnectModalSealsTheTokenAndQueuesItsSetupTest(t *testing.T) {
 	// The resolved executor carries the sealed registry credentials.
 	if _, err := second.Wake(ctx, wake); err != nil || f.creates[0].RegistryPassword != registrytest.Password || !strings.Contains(f.creates[0].Image, "@sha256:") {
 		t.Fatalf("wake with the stored config: %v", err)
+	}
+}
+
+// A conversion still running when Connect's wait ends is no failure: the
+// setup test's wake waits for it.
+func TestConnectModalLeavesALongConversionToTheSetupTest(t *testing.T) {
+	f := newFake()
+	f.converting = true
+	c, _ := connector(t, f)
+	res, err := c.Connect(context.Background(), request)
+	if err != nil || !res.Connected {
+		t.Fatalf("connect: %v %s", err, stepNames(res))
+	}
+	if want := "Modal is converting the image, which takes minutes the first time; the setup test waits for it"; res.Steps[3].Detail != want {
+		t.Fatalf("detail = %q, want %q", res.Steps[3].Detail, want)
 	}
 }
 

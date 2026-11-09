@@ -5,6 +5,13 @@ when you introduce or discover it; remove it when it is closed.
 
 ## Bootstrap (2026-11-05)
 
+- Connect Cloudflare does not configure hostname security filters. Browser
+  Integrity Check can reject legitimate API/media clients with error 1010.
+  Real staging uses an owner-approved `bic: false` configuration rule scoped
+  only to its two test hostnames (D090); production settings remain unchanged.
+- Real Cloudflare tests are opt-in local runs. The proposed main/weekly
+  real-account CI workflow and its repository secrets are still unconfigured.
+
 - Phase 1 has exited (D040): the Go, Chromium, Safari and ExoPlayer exit
   suites and the image job pass in CI. iPhone and AirPlay are checked by hand
   only; Firefox isn't in CI. The dashboard is minimal: no
@@ -54,13 +61,35 @@ when you introduce or discover it; remove it when it is closed.
   (`stores.AddS3`) until Connect Cloudflare (P2-T04); there is no API or
   dashboard form for a generic S3 bucket, and no way to remove a config or
   rotate its credentials.
-- Phase 5 exited in CI (D085). Still to run: `exit-llm.yml` and the
-  providers' speech run on real accounts, Safari and ExoPlayer showing
-  subtitles, and on the real binary the retention, backup-and-restore and
-  key-rotation drills, TOTP in a browser, the Cloudflare edge's revoked
-  track and a move to R2 with subtitles, and RunPod as a transcription's
-  fallback. The drain check doesn't yet cover a throttled segment GET or a
-  part PUT finishing.
+- Phase 5 exited in CI (D085); its drills now run on the real binary (D094)
+  and `exit-llm.yml` passed on real accounts (D095). Still to run: the
+  providers' speech on real RunPod and Modal, and Safari and ExoPlayer
+  showing subtitles. The drain check doesn't yet cover a throttled segment
+  GET or a part PUT finishing.
+- Real providers pass the Phase 4 exit (D097), but only as a local run with
+  keys in `.env`: `exit-providers.yml` needs the repository secrets and
+  `REAL_PROVIDERS` before it runs in CI. Whisper on a provider runs on
+  Vulkan, at about 3–4 times slower than real time per 11 s clip (model
+  fetch included); CUDA speech stays refused (D077). Modal's GPU type isn't
+  recorded per attempt, so a measurement can't name the card it ran on. A
+  failed real run can leave a RunPod registry credential behind when the
+  test's disconnect is refused (409); it was deleted by hand.
+- Security review findings (docs/security-review.md, D091), open until
+  fixed:
+  - Without Landlock, the built-in worker's tools can read serve's
+    `/proc/<pid>/environ`, which holds the secrets key and the database
+    password (medium).
+  - The global sign-in failure limit (20 per 15 minutes) refuses every
+    address, so anyone can lock the owner out. The setup-token and pairing
+    limits work the same way (medium).
+  - An unsandboxed agent's "owner jobs" are the Dashboard app's, which API
+    keys and URL imports can also create.
+  - Files can be added to an output after its commit; delivery serves any
+    grammar-valid name, not only the manifest's.
+  - S3/R2 part URLs don't bind the part length.
+  - Seccomp allows namespace creation.
+- Contributions are signed off with a DCO (D091), but nothing enforces the
+  sign-off yet.
 - One serve replica is the supported shape (D063). One replica runs the
   background loops (advisory-lock leader, D035), but the rate limits, the
   sign-in and setup limits, the setup token, the drain flag, the route
@@ -81,15 +110,13 @@ when you introduce or discover it; remove it when it is closed.
 - The image is ~575 MB and built from source on a cache miss (~20 min). CI
   pushes it privately to ghcr on main for serverless providers (D058), but
   it isn't public, so every install builds it until launch.
-- Phase 2's exit test passes on the binary with a fake Cloudflare API and
-  the Worker's logic on Node in front of S3 (D041). Still open before the
-  phase exits on Cloudflare: the setup test through the Worker, the Chromium
-  suites against the Worker hostname, and a run on a real test zone.
-- Connect Cloudflare is tested against a fake API, not a real account: the
-  Workers Paid check (plan name containing "workers" and "paid"), the script
-  upload format and the custom-domain call need a run against a real test
-  zone before the Phase 2 exit (D037). The manual wrangler path has no CLI
-  for adding R2 storage, switching delivery or printing `CONTENT_KEYS`.
+  `deploy/install.sh` (D093) is written and tested against images in a
+  local registry, but has no public release to install until P6-T07, and
+  the setup URL it prints is the host's first local address, which behind
+  NAT isn't the one to open.
+- The manual wrangler path has no CLI for adding R2 storage, switching
+  delivery or printing `CONTENT_KEYS`; the dashboard Connect flow is the
+  supported path, now verified on a real account (D090).
 - An asset pushed with `--local` alone re-encodes only on its PC, and only
   while the file is unchanged; `--upload-source` lifts that (D059). Each
   upload_source attempt leaves an empty `writing` output row, because every
@@ -114,15 +141,8 @@ when you introduce or discover it; remove it when it is closed.
 - Provider spend (D055) is an estimate from the hourly rate set in Connect,
   not the provider's bill, and a machine that runs past its reservation
   isn't stopped at the limit, so a month can overshoot by that much.
-- Phase 4's exit passed in CI on the real binary against a fake RunPod
-  (D062), but not yet on real accounts: `exit-providers.yml` is written and
-  needs the secrets `RUNPOD_API_KEY`, `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET`
-  and `GHCR_PULL_TOKEN`. Until it runs, these are unproven: Modal's SDK
-  (D057, tested through a seam) and the assumption that a sandbox's command
-  replaces the image's entrypoint; RunPod's real REST API (D056); both
-  providers' cold starts against the 10-minute claim deadline; and whether
-  both accept a digest-only image reference (D058). Modal has no fake
-  provider in the CI exit, only RunPod.
+- Modal has no fake provider in the CI exit, only RunPod; its real path is
+  proven only by the real-account run (D097).
 - Routing (D053) records the built-in worker's liveness per project, not per
   replica: with several serve replicas, any one worker's calls keep "the
   server" online. A job barred from the fallback because its file failed
@@ -141,7 +161,8 @@ when you introduce or discover it; remove it when it is closed.
   to its video (an A/V offset) keeps that offset dropped by the encode, as
   every output does. Language detection on the owner's own English, Hindi
   and Hinglish recordings is still unmeasured (they aren't recorded yet), as
-  is NVIDIA speech on Modal's L4 (D077).
+  is NVIDIA speech on a named Modal GPU (D077; D097 measured an unrecorded
+  one of L4, A10G or T4).
 - Chapters send the transcript's text to the connected LLM provider on
   every generation; there is no spend estimate for them either. A Claude
   refusal is final (no fallback model, by design, D083).
@@ -156,13 +177,6 @@ when you introduce or discover it; remove it when it is closed.
   provider accepts fragmented MP4 is proven only at Connect. serve sends one
   transcription to the API at a time (D080), so a burst of uploads in `api`
   mode queues behind it.
-- Phase 5 exited in CI (D085). Still to run: `exit-llm.yml` and the
-  providers' speech run on real accounts, Safari and ExoPlayer showing
-  subtitles, and on the real binary the retention, backup-and-restore and
-  key-rotation drills, TOTP in a browser, the Cloudflare edge's revoked
-  track and a move to R2 with subtitles, and RunPod as a transcription's
-  fallback. The drain check doesn't yet cover a throttled segment GET or a
-  part PUT finishing.
 - One serve replica is the supported shape (D063): rate limits, the route
   cache, the speech and chapters runners and the drain flag live in one
   process. High availability, and OpenTelemetry tracing, are not built.

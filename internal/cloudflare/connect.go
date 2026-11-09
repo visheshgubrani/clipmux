@@ -140,6 +140,23 @@ func (c *Connector) Connect(ctx context.Context, req Request) (Result, error) {
 	ok := step("token", func() (string, error) {
 		var err error
 		tokenID, err = cf.VerifyToken(ctx)
+		var apiErr *APIError
+		if errors.As(err, &apiErr) && (apiErr.Status == http.StatusUnauthorized || apiErr.Status == http.StatusForbidden) {
+			// Cloudflare rejects account-owned tokens at the user endpoint.
+			// Discover the account with the same credential, then verify there.
+			account := req.AccountID
+			if account == "" {
+				accounts, listErr := cf.Accounts(ctx)
+				if listErr != nil {
+					return "", listErr
+				}
+				if len(accounts) != 1 {
+					return "", fmt.Errorf("account-owned tokens require account_id when several accounts are accessible")
+				}
+				account = accounts[0].ID
+			}
+			tokenID, err = cf.VerifyAccountToken(ctx, account)
+		}
 		return "active", err
 	}) && step("account", func() (string, error) {
 		accts, err := cf.Accounts(ctx)
@@ -219,6 +236,13 @@ func (c *Connector) Connect(ctx context.Context, req Request) (Result, error) {
 		r, err := routes.Reconcile(ctx, q, d, bucketID, c.ProjectID)
 		return fmt.Sprintf("%d routes written; new uploads go to R2", r.Written), err
 	}) && step("dns", func() (string, error) {
+		attached, err := cf.DomainMatches(ctx, accountID, zoneID, req.Hostname, DefaultScript)
+		if err != nil {
+			return "", err
+		}
+		if attached {
+			return "already attached to this Worker; managed DNS preserved", nil
+		}
 		n, err := cf.ClearHostname(ctx, zoneID, req.Hostname)
 		return fmt.Sprintf("%d records at %s removed", n, req.Hostname), err
 	}) && step("domain", func() (string, error) {

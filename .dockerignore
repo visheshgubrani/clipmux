@@ -1,6 +1,7 @@
 # Only what the image builds from.
 *
 !go.mod
+!LICENSE
 !go.sum
 !cmd/
 !internal/

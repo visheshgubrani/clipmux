@@ -210,6 +210,9 @@ func verify(ctx context.Context, q *db.Queries, projectID string, b *Box) error 
 			return fmt.Errorf("read secrets check: %w", err)
 		}
 	}
+	if len(check) >= 5 && check[0] == format && !b.Opens(binary.BigEndian.Uint32(check[1:5])) {
+		return unopenable(checkTable+".secrets_check", binary.BigEndian.Uint32(check[1:5]), b)
+	}
 	plain, err := b.Open(checkTable, projectID, check)
 	if err != nil {
 		return fmt.Errorf("the secrets key doesn't open this database's secrets: %w", err)

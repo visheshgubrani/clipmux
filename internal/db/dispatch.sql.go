@@ -319,42 +319,6 @@ func (q *Queries) GetExecutorConfigByKind(ctx context.Context, arg GetExecutorCo
 	return i, err
 }
 
-const latestDispatchForAsset = `-- name: LatestDispatchForAsset :one
-SELECT d.id, d.project_id, d.job_id, d.executor_config_id, d.kind, d.status, d.end_reason, d.key_hash, d.key_sealed, d.instance_id, d.rate_cents_per_hour, d.claim_deadline, d.attempt_id, d.created_at, d.woken_at, d.claimed_at, d.ended_at, d.stopped_at, d.reserved_seconds FROM dispatches d JOIN jobs j ON j.id = d.job_id
-WHERE j.asset_id = $1
-ORDER BY d.created_at DESC, d.id DESC
-LIMIT 1
-`
-
-// The setup test's encode check fails at once when its dispatch ends
-// without a claim.
-func (q *Queries) LatestDispatchForAsset(ctx context.Context, assetID string) (Dispatch, error) {
-	row := q.db.QueryRow(ctx, latestDispatchForAsset, assetID)
-	var i Dispatch
-	err := row.Scan(
-		&i.ID,
-		&i.ProjectID,
-		&i.JobID,
-		&i.ExecutorConfigID,
-		&i.Kind,
-		&i.Status,
-		&i.EndReason,
-		&i.KeyHash,
-		&i.KeySealed,
-		&i.InstanceID,
-		&i.RateCentsPerHour,
-		&i.ClaimDeadline,
-		&i.AttemptID,
-		&i.CreatedAt,
-		&i.WokenAt,
-		&i.ClaimedAt,
-		&i.EndedAt,
-		&i.StoppedAt,
-		&i.ReservedSeconds,
-	)
-	return i, err
-}
-
 const listDispatchesToEnd = `-- name: ListDispatchesToEnd :many
 SELECT d.id FROM dispatches d
 JOIN jobs j ON j.id = d.job_id
@@ -536,11 +500,12 @@ func (q *Queries) LockExecutorConfigByKind(ctx context.Context, arg LockExecutor
 const lockPendingDispatchOutbox = `-- name: LockPendingDispatchOutbox :many
 SELECT id, project_id, kind, app_id, asset_id, payload, available_at, attempts, last_error, created_at, done_at FROM outbox
 WHERE kind IN ('wake', 'stop') AND done_at IS NULL AND available_at <= now()
-ORDER BY created_at, id
+ORDER BY kind = 'wake', created_at, id
 LIMIT $1
 FOR UPDATE SKIP LOCKED
 `
 
+// Stops first: a slow wake must never hold up stopping a paid machine.
 func (q *Queries) LockPendingDispatchOutbox(ctx context.Context, limit int32) ([]Outbox, error) {
 	rows, err := q.db.Query(ctx, lockPendingDispatchOutbox, limit)
 	if err != nil {
@@ -593,6 +558,55 @@ func (q *Queries) ProviderHasRoom(ctx context.Context, arg ProviderHasRoomParams
 	var column_1 bool
 	err := row.Scan(&column_1)
 	return column_1, err
+}
+
+const recentDispatchesForAsset = `-- name: RecentDispatchesForAsset :many
+SELECT d.id, d.project_id, d.job_id, d.executor_config_id, d.kind, d.status, d.end_reason, d.key_hash, d.key_sealed, d.instance_id, d.rate_cents_per_hour, d.claim_deadline, d.attempt_id, d.created_at, d.woken_at, d.claimed_at, d.ended_at, d.stopped_at, d.reserved_seconds FROM dispatches d JOIN jobs j ON j.id = d.job_id
+WHERE j.asset_id = $1
+ORDER BY d.created_at DESC, d.id DESC
+LIMIT 3
+`
+
+// The setup test's encode check fails at once when a woken machine ended
+// without a claim, or after three failed wakes in a row (D097).
+func (q *Queries) RecentDispatchesForAsset(ctx context.Context, assetID string) ([]Dispatch, error) {
+	rows, err := q.db.Query(ctx, recentDispatchesForAsset, assetID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Dispatch{}
+	for rows.Next() {
+		var i Dispatch
+		if err := rows.Scan(
+			&i.ID,
+			&i.ProjectID,
+			&i.JobID,
+			&i.ExecutorConfigID,
+			&i.Kind,
+			&i.Status,
+			&i.EndReason,
+			&i.KeyHash,
+			&i.KeySealed,
+			&i.InstanceID,
+			&i.RateCentsPerHour,
+			&i.ClaimDeadline,
+			&i.AttemptID,
+			&i.CreatedAt,
+			&i.WokenAt,
+			&i.ClaimedAt,
+			&i.EndedAt,
+			&i.StoppedAt,
+			&i.ReservedSeconds,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const recordWakeFailure = `-- name: RecordWakeFailure :exec

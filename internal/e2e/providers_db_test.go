@@ -89,6 +89,10 @@ func TestExitRealProviders(t *testing.T) {
 					t.Errorf("disconnect %s: %d", p.kind, s)
 				}
 			})
+			// Pass or fail, nothing of this run may keep billing: the
+			// database (and so the reconciler) goes with the test. Runs
+			// before the disconnect, which an active dispatch refuses.
+			t.Cleanup(func() { stopAll(t, in, p.kind) })
 			for _, step := range res.Steps {
 				t.Logf("%s: ok=%v %s", step.Name, step.OK, step.Detail)
 				if !step.OK {
@@ -137,9 +141,32 @@ func TestExitRealProviders(t *testing.T) {
 	}
 }
 
+// stopAll stops every machine of this install the provider still runs.
+func stopAll(t *testing.T, in *instance, kind string) {
+	t.Helper()
+	ex := executor(t, in, kind)
+	for _, m := range machines(t, in, kind) {
+		if err := ex.Stop(context.Background(), m.ID); err != nil {
+			t.Errorf("stop %s machine %s: %v", kind, m.Name, err)
+		} else {
+			t.Logf("stopped %s machine %s, left running by the run", kind, m.Name)
+		}
+	}
+}
+
 // machines asks the provider itself which ClipMux machines of this install
 // are running, through the stored credentials.
 func machines(t *testing.T, in *instance, kind string) []dispatch.Instance {
+	t.Helper()
+	running, err := executor(t, in, kind).Running(context.Background())
+	if err != nil {
+		t.Fatalf("list %s machines: %s", kind, strings.ReplaceAll(err.Error(), os.Getenv("RUNPOD_API_KEY"), "…"))
+	}
+	return running
+}
+
+// executor opens the provider with the credentials Connect stored.
+func executor(t *testing.T, in *instance, kind string) dispatch.Executor {
 	t.Helper()
 	ctx := context.Background()
 	box, err := secrets.Load(in.dataDir, "")
@@ -160,11 +187,7 @@ func machines(t *testing.T, in *instance, kind string) []dispatch.Instance {
 	if err != nil {
 		t.Fatal(err)
 	}
-	running, err := ex.Running(ctx)
-	if err != nil {
-		t.Fatalf("list %s machines: %s", kind, strings.ReplaceAll(err.Error(), os.Getenv("RUNPOD_API_KEY"), "…"))
-	}
-	return running
+	return ex
 }
 
 // speechOn routes to kind, transcribes 11 s of English there, checks what

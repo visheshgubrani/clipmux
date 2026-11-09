@@ -64,6 +64,8 @@ type Service struct {
 	projectID string
 	// PublicURL is the dashboard's origin, for the connect link.
 	PublicURL func() string
+	// Version is the build's (main.version), for the agent install command.
+	Version string
 	// Life creates assets on local sources for the owner's push --local;
 	// nil refuses attach.
 	Life   *lifecycle.Service
