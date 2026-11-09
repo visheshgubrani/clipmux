@@ -33,6 +33,10 @@ func TestPlayerFixture(t *testing.T) {
 	if os.Getenv("CLIPMUX_E2E_FIXTURE") != "1" {
 		t.Skip("set CLIPMUX_E2E_FIXTURE=1 to serve the browser suites")
 	}
+	if os.Getenv("CLIPMUX_E2E_LIVE_CONFIG") != "" {
+		serveLiveFixture(t)
+		return
+	}
 	// The Workers suite connects RunPod: a fake RunPod API and a fake
 	// private registry, which serve trusts through SSL_CERT_FILE.
 	rp := runpodtest.New(t)

@@ -5,6 +5,13 @@ when you introduce or discover it; remove it when it is closed.
 
 ## Bootstrap (2026-11-05)
 
+- Connect Cloudflare does not configure hostname security filters. Browser
+  Integrity Check can reject legitimate API/media clients with error 1010.
+  Real staging uses an owner-approved `bic: false` configuration rule scoped
+  only to its two test hostnames (D090); production settings remain unchanged.
+- Real Cloudflare tests are opt-in local runs. The proposed main/weekly
+  real-account CI workflow and its repository secrets are still unconfigured.
+
 - Phase 1 has exited (D040): the Go, Chromium, Safari and ExoPlayer exit
   suites and the image job pass in CI. iPhone and AirPlay are checked by hand
   only; Firefox isn't in CI. The dashboard is minimal: no
@@ -57,8 +64,7 @@ when you introduce or discover it; remove it when it is closed.
 - Phase 5 exited in CI (D085). Still to run: `exit-llm.yml` and the
   providers' speech run on real accounts, Safari and ExoPlayer showing
   subtitles, and on the real binary the retention, backup-and-restore and
-  key-rotation drills, TOTP in a browser, the Cloudflare edge's revoked
-  track and a move to R2 with subtitles, and RunPod as a transcription's
+  key-rotation drills, TOTP in a browser, and RunPod as a transcription's
   fallback. The drain check doesn't yet cover a throttled segment GET or a
   part PUT finishing.
 - One serve replica is the supported shape (D063). One replica runs the
@@ -81,15 +87,9 @@ when you introduce or discover it; remove it when it is closed.
 - The image is ~575 MB and built from source on a cache miss (~20 min). CI
   pushes it privately to ghcr on main for serverless providers (D058), but
   it isn't public, so every install builds it until launch.
-- Phase 2's exit test passes on the binary with a fake Cloudflare API and
-  the Worker's logic on Node in front of S3 (D041). Still open before the
-  phase exits on Cloudflare: the setup test through the Worker, the Chromium
-  suites against the Worker hostname, and a run on a real test zone.
-- Connect Cloudflare is tested against a fake API, not a real account: the
-  Workers Paid check (plan name containing "workers" and "paid"), the script
-  upload format and the custom-domain call need a run against a real test
-  zone before the Phase 2 exit (D037). The manual wrangler path has no CLI
-  for adding R2 storage, switching delivery or printing `CONTENT_KEYS`.
+- The manual wrangler path has no CLI for adding R2 storage, switching
+  delivery or printing `CONTENT_KEYS`; the dashboard Connect flow is the
+  supported path, now verified on a real account (D090).
 - An asset pushed with `--local` alone re-encodes only on its PC, and only
   while the file is unchanged; `--upload-source` lifts that (D059). Each
   upload_source attempt leaves an empty `writing` output row, because every
@@ -159,8 +159,7 @@ when you introduce or discover it; remove it when it is closed.
 - Phase 5 exited in CI (D085). Still to run: `exit-llm.yml` and the
   providers' speech run on real accounts, Safari and ExoPlayer showing
   subtitles, and on the real binary the retention, backup-and-restore and
-  key-rotation drills, TOTP in a browser, the Cloudflare edge's revoked
-  track and a move to R2 with subtitles, and RunPod as a transcription's
+  key-rotation drills, TOTP in a browser, and RunPod as a transcription's
   fallback. The drain check doesn't yet cover a throttled segment GET or a
   part PUT finishing.
 - One serve replica is the supported shape (D063): rate limits, the route

@@ -907,3 +907,94 @@ Consequence: Track A is the critical path. Its secrets, accounts, zone and hardw
 
 ## D007 Shaka Packager 3.9.3 — accepted (2026-11-05)
 Decision: pin v3.9.3 (`toolchain/versions.env`), the version clipmux-lms runs with AES-128 in production, which needs the init-segment workaround for Shaka issue 1616. Move to a release that fixes 1616 when one exists, re-running the Phase 1 player tests.
+
+## D089 Real Cloudflare staging preparation — partial (2026-11-08)
+The owner selected retained staging at `app-test.clipmux.com` and
+`media-test.clipmux.com`, backed by a local app through a dedicated Tunnel,
+with the `clipmux-staging` bucket and the currently unused `clipmux-media`
+Worker. The existing `media.clipmux.com` service must remain untouched.
+
+- The supplied credential is an active **account-owned** API token. Cloudflare
+  answers 401 at `/user/tokens/verify` and accepts the account verification
+  endpoint. Connect now falls back on 401/403, selecting the supplied account
+  or the only accessible account. The endpoint and Connect sequence have
+  regression tests, the latter against real Postgres.
+- The real app's authenticated Connect request passed `token`, `account` and
+  `zone`, then failed `workers_paid`. The account's subscriptions list R2 Paid
+  but no Workers Paid. No cloud resources or DNS records were changed. This
+  records a prerequisite failure, not a Phase 2 exit.
+- `deploy/cloudflare-staging.py` retains isolated local app state, private
+  credentials and a playable 70 MiB multipart fixture. The opt-in browser
+  fixture targets the retained install without deleting its database; the
+  live reporter suppresses raw failures that might expose signed URLs.
+- All 79 Worker tests passed, including workerd, vectors, ranges and cache
+  behavior. The account-token regression passed against Postgres. Browser
+  type checking and build passed. The local Chromium upload/resume regression
+  passed. `make lint` passed with Go 1.27.3; the installed 1.27.2 triggers
+  GO-2026-6809 in govulncheck. This does not establish real-R2 playback.
+- The real custom-domain, browser upload/playback, captions, move/offline,
+  revocation and key-rotation acceptance checks remain open in known gaps.
+
+## D090 Phase 2 real-account exit — passed (2026-11-08)
+The owner purchased Workers Paid and approved retaining a dedicated staging
+bucket, Worker and Tunnel. This closes the real-account part of D041 and
+P6-T02; other launch gates remain open.
+
+**Resources:** account `49b962322ece3363f6495da349dd9d9e`, zone
+`2f39459c928f5c09fced515c1a27ce56`; app `app-test.clipmux.com`, Worker custom
+domain `media-test.clipmux.com`, bucket `clipmux-staging`, script
+`clipmux-media`, Tunnel `69fccb22-af9a-41ae-aa28-cf9d940f82c3`. The previous
+`media.clipmux.com` domain remains on `delivery`, with its original DNS record.
+Private state, resource metadata, versions and sanitized logs are retained in
+ignored `data/cloudflare-staging/`; no credentials are in this record.
+
+**Real checks that passed:**
+- The dashboard connected twice, including the paid-plan check, bucket/CORS,
+  script upload, route publication and custom-domain attachment. The setup
+  test passed through the public Worker URL, including direct storage's
+  encrypted-segment check. Five Chromium tests passed: Connect/reconnect,
+  hls.js renditions/audio/keys and audience checks, player token refresh,
+  denied refresh, and a valid 70 MiB upload interrupted after part 1 and
+  resumed with only parts 2 and 3. The uploaded asset became ready in R2.
+- Existing app credentials, signing key, playback ID and media base URL played
+  the filesystem baseline through Worker origin fallback. Generated subtitles
+  were delivered through the Worker. Only speech used a deterministic local
+  provider; Cloudflare, storage, encoding, projections and delivery were real.
+- With requests warmed first, the revoked playback ID's track returned 404
+  immediately (rounded to seconds); a revoked signing key returned 403 in
+  6 seconds. Both are below the shipped 60-second cache plus 5-second margin.
+- Content-key rotation redeployed the ring, preserved old-output playback,
+  and encoded a new R2 output using the new key version. Real R2 delivery
+  passed HEAD, an exact eight-byte Range/Content-Range check, CORS, nosniff,
+  and ciphertext checks, then decoded audio and video.
+- The filesystem baseline was re-encoded to a fresh immutable output, moved
+  with its subtitles to R2, and decoded with serve stopped, without first
+  fetching that new output. The acceptance test passed in 301.48 seconds.
+  With the app, Tunnel connector and databases stopped, four more Chromium
+  tests passed: hls.js, player token refresh, denied refresh, and rendering
+  the expected subtitle cue. Playback therefore did not depend on the local
+  control plane or a cached copy of the fresh moved output.
+
+**Fixes found by the real run:** account-owned tokens need account-scoped
+verification (D089). Reconnect must inspect the hostname's Worker attachment
+and preserve DNS already managed by that same Worker; Cloudflare rejects
+attempts to delete it via the DNS API. Regression tests pass against real
+Postgres and S3 test storage. The live browser harness waits for the Connect
+response, allows asynchronous fixture loading, and accepts newer content-key
+versions. All 79 Worker tests, TypeScript checks/build, and `make lint` passed;
+lint used Go 1.27.3 because the host's 1.27.2 triggers GO-2026-6809.
+
+**Operator settings:** Browser Integrity Check produced error 1010 for API
+clients. With explicit owner approval, configuration rule
+`bcebd8d4f11245ca9069d8554dfffaac` in ruleset
+`bd76d4f27f894f37bf500df008d89151` sets `bic: false` only on the two staging
+hostnames. The zone-wide setting and production hostnames were preserved.
+Tunnel transport is HTTP/2: QUIC stalled despite passing connectivity checks.
+Cloudflare's [current CDN terms](https://www.cloudflare.com/service-specific-terms-application-services/)
+were reviewed; this run used the paid Developer Platform and R2 services.
+
+Local processes are stopped; cloud resources, database volumes and private
+credentials are retained. The move's delayed source-cleanup phase resumes
+when serve next starts. Real-account CI remains an opt-in local harness;
+main/weekly automation and real speech-provider/device tests are separate gaps.
+

@@ -118,11 +118,20 @@ func (c *Client) json(ctx context.Context, op, method, path string, in, out any)
 
 // VerifyToken returns the token's ID if it is active.
 func (c *Client) VerifyToken(ctx context.Context) (string, error) {
+	return c.verifyToken(ctx, "/user/tokens/verify")
+}
+
+// VerifyAccountToken verifies an account-owned token at its account endpoint.
+func (c *Client) VerifyAccountToken(ctx context.Context, accountID string) (string, error) {
+	return c.verifyToken(ctx, "/accounts/"+url.PathEscape(accountID)+"/tokens/verify")
+}
+
+func (c *Client) verifyToken(ctx context.Context, path string) (string, error) {
 	var r struct {
 		ID     string `json:"id"`
 		Status string `json:"status"`
 	}
-	if err := c.json(ctx, "verify token", http.MethodGet, "/user/tokens/verify", nil, &r); err != nil {
+	if err := c.json(ctx, "verify token", http.MethodGet, path, nil, &r); err != nil {
 		return "", err
 	}
 	if r.Status != "active" || r.ID == "" {
@@ -257,6 +266,26 @@ type DNSRecord struct {
 	ID   string `json:"id"`
 	Type string `json:"type"`
 	Name string `json:"name"`
+}
+
+// DomainMatches reports whether hostname is already attached to this Worker.
+// Cloudflare owns its DNS records then; they cannot be deleted through DNS API.
+func (c *Client) DomainMatches(ctx context.Context, accountID, zoneID, hostname, script string) (bool, error) {
+	var domains []struct {
+		Hostname string `json:"hostname"`
+		Service  string `json:"service"`
+		ZoneID   string `json:"zone_id"`
+	}
+	query := url.Values{"hostname": {hostname}, "zone_id": {zoneID}, "service": {script}}
+	if err := c.json(ctx, "list worker domains", http.MethodGet, "/accounts/"+accountID+"/workers/domains?"+query.Encode(), nil, &domains); err != nil {
+		return false, err
+	}
+	for _, domain := range domains {
+		if domain.Hostname == hostname && domain.Service == script && domain.ZoneID == zoneID {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // ClearHostname deletes the DNS records at hostname (the ones that pointed

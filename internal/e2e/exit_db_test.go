@@ -21,7 +21,7 @@ import (
 // returns the video and audio frames it got.
 func play(t *testing.T, url string) (video, audio int) {
 	t.Helper()
-	out, err := exec.Command("ffmpeg", "-nostdin", "-v", "error", "-protocol_whitelist", "http,tcp,crypto,data",
+	out, err := exec.Command("ffmpeg", "-nostdin", "-v", "error", "-protocol_whitelist", "http,https,tcp,tls,crypto,data",
 		"-i", url, "-map", "0:v:0", "-map", "0:a:0", "-f", "framemd5", "-").Output()
 	if err != nil {
 		t.Fatalf("ffmpeg playback: %v", err)

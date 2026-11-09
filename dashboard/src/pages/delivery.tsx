@@ -152,10 +152,10 @@ export function Delivery() {
         <CardTitle>{status?.connected ? 'Reconnect or redeploy Cloudflare' : 'Connect Cloudflare'}</CardTitle>
         <Muted>
           Create an API token with Workers Scripts, Workers Routes, R2 and DNS edit permissions for the
-          account and the media domain's zone. The account needs Workers Paid. ClipMux uses the token during
-          this request and keeps only its ID: R2's credentials are derived from it, so revoking or rolling the
-          token cuts off storage. Its Workers and DNS permissions stay live in Cloudflare until you narrow or
-          revoke it there.
+          account and the media domain's zone, plus Zone Read and Billing Read. The account needs Workers
+          Paid. ClipMux uses the token during this request and keeps only its ID: R2's credentials are derived
+          from it, so revoking or rolling the token cuts off storage. Its Workers and DNS permissions stay
+          live in Cloudflare until you narrow or revoke it there.
         </Muted>
         <form className="grid gap-3" onSubmit={connect}>
           <Input

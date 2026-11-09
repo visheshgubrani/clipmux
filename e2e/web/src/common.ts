@@ -1,4 +1,6 @@
 export interface FixtureConfig {
+  source_url?: string
+  live?: boolean
   base_url: string
   playback_id: string
   api: string

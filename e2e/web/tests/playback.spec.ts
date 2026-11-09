@@ -57,21 +57,22 @@ test('hls.js plays every rendition, separate audio and the key', async ({ page, 
     ),
   ).toBeGreaterThan(0)
 
-  const key = seen.find((s) => /\/key\/1$/.test(s.url))
+  const key = seen.find((s) => /\/key\/[1-9]\d*$/.test(s.url))
   const segment = seen.find((s) => /\/seg_\d+\.m4s$/.test(s.url))
   expect(key?.status).toBe(200)
   expect(segment?.status).toBe(200)
-  const keyBytes = await (await request.get(key!.url)).body()
+  if (!key || !segment) throw new Error('Playback did not fetch the key and segment')
+  const keyBytes = await (await request.get(key.url)).body()
   expect(keyBytes.length).toBe(16)
   // What travels is ciphertext: not an MP4 box stream.
-  const wire = await (await request.get(segment!.url)).body()
+  const wire = await (await request.get(segment.url)).body()
   expect(wire.subarray(4, 8).toString('latin1')).not.toBe('styp')
 
   // A thumbnail token gets neither the segment nor the key; no token, nothing.
   const tToken = await (await request.get('/token?aud=t')).text()
   const vToken = String(state.tok)
-  expect((await request.get(segment!.url.replace(`/v/${vToken}/`, `/v/${tToken}/`))).status()).toBe(403)
-  expect((await request.get(key!.url.replace(`/v/${vToken}/`, `/v/${tToken}/`))).status()).toBe(403)
+  expect((await request.get(segment.url.replace(`/v/${vToken}/`, `/v/${tToken}/`))).status()).toBe(403)
+  expect((await request.get(key.url.replace(`/v/${vToken}/`, `/v/${tToken}/`))).status()).toBe(403)
   const config = await (await request.get('/config')).json()
   expect((await request.get(`${config.base_url}/p/${config.playback_id}/master.m3u8`)).status()).toBe(403)
 })
@@ -96,7 +97,7 @@ test('the Video.js player refreshes an expiring token and keeps its place', asyn
     return Array.from({ length: v.played.length }, (_, i) => [v.played.start(i), v.played.end(i)])
   })
   expect(played.length, `played ranges ${JSON.stringify(played)}: one, from the start`).toBe(1)
-  expect(played[0]![0]).toBeLessThan(1)
+  expect(played[0]?.[0]).toBeLessThan(1)
 })
 
 test('a denied refresh stops playback', async ({ page }) => {
@@ -108,4 +109,37 @@ test('a denied refresh stops playback', async ({ page }) => {
       { timeout: 120_000 },
     )
     .toBe(true)
+})
+
+test('the live player renders captions through Worker delivery', async ({ page }) => {
+  const cfg = await (await page.request.get('/config')).json()
+  test.skip(!cfg.live || !cfg.subtitles_track, 'live captions fixture required')
+  await page.goto('/player.html')
+  await h264(page)
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const video = document.querySelector('hlsjs-video') as unknown as HTMLVideoElement | null
+        const track = Array.from(video?.textTracks ?? []).find((track) => track.kind === 'subtitles')
+        if (track) track.mode = 'showing'
+        return Boolean(track)
+      }),
+    )
+    .toBe(true)
+  await page.evaluate(() => {
+    const video = document.querySelector('hlsjs-video') as unknown as HTMLVideoElement
+    video.currentTime = 1.5
+    video.pause()
+  })
+  await expect
+    .poll(
+      () =>
+        page.evaluate(() => {
+          const video = document.querySelector('hlsjs-video') as unknown as HTMLVideoElement
+          const track = Array.from(video.textTracks).find((track) => track.kind === 'subtitles')
+          return (track?.activeCues?.[0] as VTTCue | undefined)?.text ?? ''
+        }),
+      { timeout: 30_000 },
+    )
+    .toBe(cfg.cue_text)
 })

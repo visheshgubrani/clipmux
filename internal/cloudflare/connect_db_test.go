@@ -71,6 +71,12 @@ func (f *fakeCloudflare) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		} else {
 			ok([]any{})
 		}
+	case p == "/accounts/acct1/workers/domains" && r.Method == http.MethodGet:
+		if f.domain != nil {
+			ok([]map[string]string{f.domain})
+		} else {
+			ok([]any{})
+		}
 	case p == "/accounts/acct1/subscriptions":
 		if f.paid {
 			ok([]map[string]any{{"rate_plan": map[string]string{"id": "workers_paid", "public_name": "Workers Paid"}, "state": "Paid"}})
@@ -233,10 +239,16 @@ func TestConnectMovesDeliveryToTheWorker(t *testing.T) {
 	if err != nil || !st.Connected || st.NeedsRedeploy || !st.StorageOK {
 		t.Fatalf("status = %+v, %v", st, err)
 	}
+	// Cloudflare adds a managed DNS record when attaching a custom domain.
+	// Reconnect must preserve that record instead of trying to delete it.
+	r.fake.records = append(r.fake.records, DNSRecord{ID: "managed-worker-dns", Type: "AAAA", Name: "media.example.com"})
 	// Connecting again (a new token, or an upgrade) reuses the config.
 	res, err = r.conn.Connect(ctx, Request{Token: testToken, Hostname: "media.example.com", Bucket: r.bucket})
 	if err != nil || !res.Connected {
 		t.Fatalf("reconnect: %+v, %v", res.Steps, err)
+	}
+	if len(r.fake.records) != 2 || r.fake.records[1].ID != "managed-worker-dns" {
+		t.Fatalf("reconnect removed Worker-managed DNS: %+v", r.fake.records)
 	}
 	configs, _ := r.pool.ListStorageConfigs(ctx, db.DefaultProjectID)
 	if len(configs) != 2 {
