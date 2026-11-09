@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -260,6 +261,9 @@ type Invitation struct {
 	Server        string    `json:"server"`
 	Command       string    `json:"command"`
 	DockerCommand string    `json:"docker_command"`
+	// InstallCommand installs the agent tarball on Linux and pairs it
+	// (deploy/install-agent.sh).
+	InstallCommand string `json:"install_command"`
 }
 
 func (s *Service) handleInvite(w http.ResponseWriter, r *http.Request) error {
@@ -279,8 +283,9 @@ func (s *Service) handleInvite(w http.ResponseWriter, r *http.Request) error {
 	server := strings.TrimRight(s.PublicURL(), "/")
 	httpjson.Write(w, http.StatusCreated, Invitation{
 		Code: code, ExpiresAt: p.ExpiresAt.Time, Server: server,
-		Command:       "clipmux worker --server " + server + " --pair " + code,
-		DockerCommand: dockerCommand(server, code),
+		Command:        "clipmux worker --server " + server + " --pair " + code,
+		DockerCommand:  dockerCommand(server, code),
+		InstallCommand: installCommand(s.Version, server, code),
 	})
 	return nil
 }
@@ -293,6 +298,21 @@ func dockerCommand(server, code string) string {
 	return `docker run -d --name clipmux-agent --restart unless-stopped --no-healthcheck --user "$(id -u):$(id -g)" ` +
 		`-v "$HOME/.config/clipmux:/var/lib/clipmux-agent" -e CLIPMUX_AGENT_DIR=/var/lib/clipmux-agent ` +
 		"ghcr.io/visheshgubrani/clipmux worker --server " + server + " --pair " + code
+}
+
+// release is a release tag, vX.Y.Z or vX.Y.Z-rc.N.
+var release = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$`)
+
+// installCommand is the Linux one-liner: the installer from this server's
+// own release, so the agent matches it, or the latest for a build that
+// isn't a release.
+func installCommand(version, server, code string) string {
+	from := "latest/download"
+	if release.MatchString(version) {
+		from = "download/" + version
+	}
+	return "curl -fsSL https://github.com/visheshgubrani/clipmux/releases/" + from +
+		"/install-agent.sh | sh -s -- --server " + server + " --pair " + code
 }
 
 // PairingView is a pairing as the owner sees it: for an agent-started one,

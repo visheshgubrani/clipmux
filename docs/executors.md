@@ -47,8 +47,8 @@ curl -X POST https://video.example.com/v1/executors/runpod/connect \
 ```
 
 Optional fields: `image` (default `CLIPMUX_WORKER_IMAGE`), `gpu_type_ids`
-(default an L4, RTX A4000, RTX A5000 or RTX 4090, whichever has capacity:
-cards with NVENC), and `disk_gb` (default 50; a machine takes only sources
+(default an L4, RTX A4000 or RTX A5000, whichever has capacity: cards with
+NVENC; RunPod's RTX 4090 hosts refuse it, D097), and `disk_gb` (default 50; a machine takes only sources
 whose size, three times over, fits).
 
 Connect checks the key and the public URL, pins the image's digest with the
@@ -81,8 +81,8 @@ Modal**, or `POST /v1/executors/modal/connect` with:
 ```
 
 Optional fields: `environment` (the Modal environment; default the account's
-own), `image` (default `CLIPMUX_WORKER_IMAGE`), `gpu` (default `L4`, which has
-NVENC; D051 also proved the A10G and T4), `cpu` (default 4 cores),
+own), `image` (default `CLIPMUX_WORKER_IMAGE`), `gpu` (default `L4,A10G,T4`: GPU
+types with NVENC, tried in order until one has capacity, D097), `cpu` (default 4 cores),
 `memory_mib` (default 16384) and `disk_gb` (default 50, held to the
 free-disk rule).
 

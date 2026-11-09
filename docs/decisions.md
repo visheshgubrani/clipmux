@@ -998,3 +998,121 @@ credentials are retained. The move's delayed source-cleanup phase resumes
 when serve next starts. Real-account CI remains an opt-in local harness;
 main/weekly automation and real speech-provider/device tests are separate gaps.
 
+## D091 Licence files, a DCO, a clean history and a security review — accepted (2026-11-08)
+P6-T06, carrying out D086 and answering P6 open question 1:
+- **The files.** `LICENSE` is the AGPL-3.0 text from gnu.org. `packages/player`, `packages/uploader` and `worker/` each have an MIT `LICENSE` and `"license": "MIT"`; the root, the dashboard and `e2e/web` say `AGPL-3.0-only`.
+- **`toolchain/licenses.sh`** writes the licences once for both binary forms. It writes ClipMux's AGPL, FFmpeg's and whisper.cpp's notices and build manifests, `packages.txt` (every Debian package with its source package and version), a README, and `SOURCE.md`. `SOURCE.md` is the written offer (GPLv2 §3(b), three years). It names every pinned source and digest from `toolchain/versions.env` and the scripts that build them.
+  - The image puts them in `/usr/share/doc/clipmux/licenses/` and carries OCI labels, with `licenses="AGPL-3.0-only AND GPL-2.0-or-later"`.
+  - The agent tarball puts them in `licenses/`, beside the bundled libraries' copyright files.
+  - `image.yml` and `toolchain/check_agent.sh` fail if either form is missing them.
+- **A DCO, not a CLA** (open question 1). `CONTRIBUTING.md` asks for `git commit -s`. This follows the plan's recommendation: with no CLA, dual licensing later needs every contributor's consent, so the owner should confirm it (or switch to a CLA) before the first outside contribution. Enforcing the sign-off (a DCO app or check) is left for when outside contributions start.
+- **`CODE_OF_CONDUCT.md`** is Contributor Covenant 2.1, from `vod`, reporting through a private GitHub report. **`SECURITY.md`** points at GitHub private vulnerability reporting, with a 3-day acknowledgement and a 90-day window.
+- **The history is clean.** gitleaks v8.28.0 and trufflehog 3.90.8 scanned all 99 commits on every ref, and neither found a live secret ([security-review.md](security-review.md), "History scan"). Every hit is a test vector or the dev SeaweedFS credential; trufflehog verified none. Nothing needed rotating or scrubbing. `.gitleaks.toml` allows exactly those files, and `ci.yml`'s checks job now scans the full history on every pull request.
+- **The threat table was reviewed against the code** ([security-review.md](security-review.md)). Of 31 rows, 22 hold and 9 hold in part; none is missing. Six findings go beyond the table, two of them medium:
+  - without Landlock, the built-in worker's tools can read serve's environment;
+  - the global sign-in failure limit lets anyone lock the owner out.
+  All six are in known gaps until they are fixed. None blocks a release candidate; both mediums should be fixed before v1.0.0.
+
+## D092 npm: both packages publish from release.yml with provenance — accepted (2026-11-08)
+P6-T09:
+- `@clipmux/player` (0.4.0) and `@clipmux/uploader` (0.3.0) drop `"private"`. Each package now has a licence, repository, homepage and keywords. Each ships `dist`, its `src` (for the source maps, without tests), `LICENSE` and `README.md`, and has `publishConfig: {access: public, provenance: true}`.
+- **Versions are the packages' own**, not the server's tag. On every `v*` tag, `release.yml`'s `npm` job builds, type-checks and tests both packages. It checks each tarball's contents (licence, README and entry point present, no tests), then publishes each version npm doesn't have yet. A prerelease version goes to the `next` dist-tag. Run by hand, the job is a dry run by default.
+- It authenticates by npm trusted publishing (OIDC), or by the `NPM_TOKEN` secret until that is configured on npmjs.com. Provenance needs the job's `id-token: write`.
+- The READMEs now show the backend half: signing ES256 playback tokens with `jose`, creating an upload with `passthrough`, and verifying `X-Webhook-Signature` in constant time.
+- **The old releases** (`@clipmux/player` 0.1.0–0.1.2 and `@clipmux/uploader` 0.1.0–0.1.1, from the TypeScript ClipMux) are still live. The owner deprecates them after the first publish, logged in to npm: `npm deprecate '@clipmux/player@0.1.x' 'Replaced by the ClipMux rewrite; use >= 0.4'`, and likewise for the uploader (`>= 0.3`).
+
+## D093 One-line installs for the server and a Linux agent — accepted (2026-11-08)
+P6-T08:
+- **`deploy/install.sh`**, POSIX sh. It checks Docker, Compose v2, the architecture, free disk (4 GiB at least, with a note under 20 GiB) and, on a first install, ports 80 and 443. It downloads `compose.yml` and `Caddyfile` from the release and checks both against `SHA256SUMS`. It writes `.env` (0600) with `CLIPMUX_VERSION`, a `POSTGRES_PASSWORD` and a `CLIPMUX_SECRETS_KEY` from `openssl rand` or `/dev/urandom`. Then it runs `docker compose up -d --wait` and prints the setup URL, the token from the logs, and the secrets key with "store this off the host".
+  - Re-run, it upgrades: it keeps `.env` and moves only `CLIPMUX_VERSION`.
+  - `--uninstall` keeps the volumes and `.env`; `--purge` deletes them and the directory.
+  - It runs nothing it downloads. The whole script is inside `main`, so a truncated pipe runs nothing.
+  - The release workflow (P6-T07) replaces `@CLIPMUX_VERSION@` with its tag; unreplaced, the script resolves `/releases/latest`.
+- **`deploy/compose.release.yml`** is the operator compose, published as `compose.yml`. It is `deploy/compose.yml` with `image: ${CLIPMUX_IMAGE}:${CLIPMUX_VERSION}` in place of the build, and `check_install.sh` fails on any other drift. Both files take `CLIPMUX_HTTP_PORT`, `CLIPMUX_HTTPS_PORT` and `CLIPMUX_ADMIN_PORT`.
+- **`deploy/install-agent.sh`**, for Linux with glibc 2.39 or newer. It downloads `clipmux-agent-linux-{amd64,arm64}.tar.gz`, checks it against `SHA256SUMS`, and swaps it into place whole.
+  - As root, it installs to `/opt/clipmux-agent` with a system unit running as a `clipmux-agent` user in `video` and `render`.
+  - Otherwise, it installs to `~/.local/share/clipmux-agent` with a user unit and asks for lingering.
+  - The unit pairs on its first start with `--pair`, as the Docker command does. Once `agent.json` appears, the installer rewrites the unit without the spent code.
+- **The Workers page's Linux tab** shows the one-liner. Invitations gain `install_command`, which names the server's own release (`releases/download/vX.Y.Z/…`) or, for a build that isn't a release, `releases/latest/download/…`. Docker stays the path for macOS and Windows; pinning its image tag is P6-T07.
+- **Tests.** `toolchain/check_install.sh` serves two release candidates from the host and checks, in order:
+  - a tampered `compose.yml` is refused;
+  - the first installs and prints a token; the owner registers through Caddy, saves the URLs, and the setup test passes;
+  - an agent installs and pairs from `install_command` and shows online, and the spent code leaves its unit;
+  - the upgrade keeps the secrets key, the owner's session and an API key, and the setup test passes again;
+  - `--uninstall` keeps the volumes, and `--purge` removes them.
+
+  `install.yml` runs it on a clean runner, as root, with images in a registry on the runner. ci.yml shellchecks the scripts. Against a real `-rc` on ghcr it waits for P6-T07.
+- **Run on this machine (2026-11-09).** `check_install.sh` passed end to end against `v0.0.0-ci.1` and `ci.2` built from this tree, pushed to a local registry, with HTTPS on 8443 because the host already serves 443. It covered the tampered file, install, the setup test through Caddy, the upgrade keeping the session, key and secrets key, uninstall and purge. Its first runs failed on the check itself: under `pipefail`, `… | grep -q` fails when grep exits early, so the check now reads into a variable.
+- In a clean `ubuntu:24.04` container, `curl … | sh -s -- --server --pair` installed the agent, verified the tarball and passed the glibc check. With no systemd, it printed the worker command, which paired with the dashboard's code; the agent showed online and sandboxed. The tarball passes `check_agent.sh`, licences included, and the image ships `/usr/share/doc/clipmux/licenses/`.
+- **Not run here:** the systemd units (system and user), lingering, and the agent's `--uninstall`. The Install workflow covers the system unit as root, and the rest waits for a real VM (exit check 2).
+
+## D094 The operator drills run on the real binary — passed (2026-11-08)
+P6-T04, closing P5 checks 3, 7, 8, 9 and 17 (D085). `internal/e2e/drills_db_test.go` and `e2e/web/tests/totp.spec.ts` join `exit.yml` with the other exit tests. All passed on this machine:
+- **Retention** (4 s). An output retired 9 days ago, a 2-day-old idempotency key, an expired pairing and a session idle 8 days are counted by `clipmux admin prune --dry-run` without deleting. `prune --files` then deletes them: the output is marked purged and its files are gone from storage, the pruned session gets 401, and the current output still plays.
+- **Backup and restore** (7 s), as docs/operations.md says. It takes a `pg_dump -Fc` of a running install (Postgres 18's tools, or the `postgres:18-alpine` image's) and a copy of the data directory. Both are restored into a new database and a new directory. With another secrets key serve refuses to boot. With the same one, the owner's session, the API key and the signing key all work, the video plays, and a new upload encodes and plays.
+- **Secrets-key rotation** (6 s). With v2 alone serve refuses, naming `CLIPMUX_SECRETS_KEY_PREVIOUS`. With v1 as the previous key it runs; after `reseal-secrets`, v2 alone serves and encodes, v1 alone is refused, and every content key secret is sealed under v2.
+  - **Found and fixed:** the boot check of `projects.secrets_check` ran before the per-column check and answered only "sealed with a different secrets key". It now names the version it needs and the variable, as D071 intended (`TestANewKeyAloneNamesThePreviousKey`).
+- **Content-key rotation** (4 s). `POST /v1/content-keys/rotate` on built-in delivery makes version 2 current. The next output uses 2 and the existing one keeps 1, and both play before and after a restart.
+- **Signing-key rotation** (8 s). After `rotate-signing-key`, the old key's tokens play until its retirement (shown by `list-keys`) and the new key's play at once. After `revoke-key` the old key's tokens get 403 within the route cache's 30 s.
+- **TOTP in Chromium** (1.1 min, its own install in the fixture). The owner enrols from the Account page with a code computed in the test, and the enrolling code can't be reused. The password alone then asks for a code, the next step's code signs in, and a wrong one is refused. A recovery code signs in once and is refused the second time.
+- **A transcription on RunPod for `primary_offline`** (93 s). With "my PCs, else RunPod" and no PC online, the encode and then the transcription each woke a pod of the fake RunPod. The pod transcribed with whisper.cpp on the CPU (`pods.speech`), the English track was ready with JFK's words, and every pod stopped. It skips where `CLIPMUX_SKIP_SPEECH=1`; exit.yml has whisper.
+
+## D095 exit-llm passed on real accounts — passed (2026-11-08)
+Part of P6-T01. The owner chose to run the real-account suites on this machine with keys in the ignored `.env`, not as repository secrets in CI. `TestExitRealLLMAndSpeech` passed in 47 s, closing P5 checks 18 and 20 on real accounts (D085):
+- OpenAI's speech API (`whisper-1`) transcribed the 11 s of JFK as English with word timings, and the subtitles were ready.
+- Chapters through Claude (`claude-opus-5-5`, structured output) and OpenAI's chat API (`gpt-4.1-mini`, `json_schema`) each became ready, starting at 0.
+- Neither key appeared in serve's logs.
+
+Still pending for T01 and the Phase 4 exit (D062): `TestExitRealProviders` on RunPod and Modal. It needs a worker image the providers can pull (none is on ghcr yet) and a `GHCR_PULL_TOKEN` (read:packages), which `.env` doesn't have.
+
+## D096 The real-provider run: RunPod half-passes, Modal never wakes — superseded by D097 (2026-11-09)
+P6-T01, `TestExitRealProviders` run from this machine.
+- **Setup.** Serve ran behind a Cloudflare quick tunnel that the owner started. The worker images were `ghcr.io/visheshgubrani/clipmux:t01-174b7b6-dirty` and `…-dirty.2`, built from the uncommitted tree and pushed to the private package with `GHCR_PULL_TOKEN`. Two runs. This does not record the Phase 4 exit.
+- **RunPod: everything but the GPU encode passed.**
+  - Connect passed every step, including the image pinned by digest (a digest-only reference is accepted, D058) and pulls with the stored registry credentials.
+  - The setup test passed through a pod. Cold starts were 42 s and 25 s after the wake, well inside the 10-minute claim deadline.
+  - With RunPod as the primary, 11 s of English were transcribed on the pod's GPU with Vulkan, in 28.4 s on one run and 231 s on the other.
+  - Every pod stopped, by the database and by RunPod's own list.
+  - **But the sample encoded on the CPU, not NVENC.** The worker's new `hardware.failed` (below) shows why: inside the media sandbox, CUDA's `cuInit(0)` fails with `CUDA_ERROR_OPERATING_SYSTEM`, for NVENC and CUDA decode alike. The pod enforced Landlock ABI 4. The sandbox's GPU allowance (`/sys`, `/proc/driver`, the `/dev/nvidia*` character devices) is missing something CUDA needs. Sandboxed NVENC was proven only on Modal (D051), so this is the first real NVIDIA host with Landlock on. The fix needs an NVIDIA machine to find the path. Until then every RunPod encode is CPU-only, at GPU prices.
+- **Modal: never claimed.**
+  - **Found and fixed:** Connect failed at `credentials` because the Go SDK reads `~/.modal.toml` and refuses with no `HOME`, as under the exit rig or a systemd unit. `newSDK` now points `MODAL_CONFIG_PATH` at an empty file, so serve never reads a user's profile either (`TestTheClientNeedsNoHomeAndReadsNoProfile`).
+  - On the second run Connect passed. Then the setup test's wake never returned: no error and no log line for 15 minutes, until the setup test gave up (`encode`: "not ready after 15m0s"). The likely cause is Modal converting the ~850 MB registry image on first use while `Sandboxes.Create` blocks; this is unconfirmed.
+  - **A sandbox was left running** after the test ended. The test's database went with it, so no reconciler would ever stop it before Modal's 6 h 15 min lifetime. It was found by listing the test's app through the SDK and terminated by hand; afterwards Modal listed 0 sandboxes and RunPod 0 pods. The exit test now stops every machine of its install through the provider at cleanup, pass or fail (`stopAll`).
+- **Worker diagnostics.** `media.Hardware.Failed` carries each GPU backend's failed probe encode (FFmpeg's stderr tail), in the claim's capabilities and the worker's log. Before this, a GPU that failed its probe was silent.
+- **Still to do for T01:**
+  - find the sandbox rule CUDA needs, and re-run RunPod for NVENC;
+  - find why Modal's wake blocks (bound the create, or pre-build the image), and re-run Modal for encode and speech, including whisper on the L4 (P5 open question 6);
+  - then record the Phase 4 exit.
+
+## D097 Phase 4 exit on real accounts — passed (2026-11-09)
+P6-T01, closing D062's real-account half and the providers' speech run (D085). `TestExitRealProviders` passed on real RunPod and Modal accounts in 9 min 10 s. It ran from this machine behind the owner's Cloudflare quick tunnel, with the worker image `ghcr.io/visheshgubrani/clipmux:t01-174b7b6-dirty.6` in the private package.
+
+**Results:**
+- **RunPod:**
+  - Connect passed every step, including a digest-only image reference and registry credentials.
+  - The setup test passed in 1 min 23 s (cold start 39 s after the wake, inside the 10-minute claim deadline). The sample encoded on **NVENC** inside the media sandbox (seccomp, rlimits, Landlock ABI 4).
+  - With RunPod as the primary, 11 s of English were transcribed on the pod's GPU (Vulkan) in 30.8 s, model fetch included.
+- **Modal:**
+  - Connect passed every step, including converting the image.
+  - The setup test passed in 1 min 46 s (cold start 47 s) on **NVENC**.
+  - 11 s were transcribed on Vulkan in 43.5 s, on the first of L4, A10G or T4 with capacity; which one isn't recorded (known gap).
+- **Cleanup:** every machine stopped, by the database and by each provider's own list.
+- **Diagnostics:** three short RunPod pods (an RTX 4090 twice, an L4) and two Modal sandboxes were started by hand to find the causes. All were removed, as were their registry credentials and a credential a failed run left behind. RunPod lists 0 pods and 0 credentials; Modal 0 sandboxes.
+
+**What the real runs found, and the fixes** (each with a test):
+1. **CUDA needs to write the tool's own `/proc/<pid>`.** Under Landlock, `cuInit` failed with `CUDA_ERROR_OPERATING_SYSTEM`; it passed once the tool could write `/proc/self`, and only that (`/proc/thread-self`, `/proc/driver` and `/proc/sys` didn't help). A GPU stage may now read and write existing files beneath its own `/proc/<pid>`, nothing else (`TestGPUToolsMayWriteTheirOwnProcEntries`). Modal runs under gVisor without Landlock, which is why D051 never saw this.
+2. **RunPod's RTX 4090 hosts refuse NVENC** ("OpenEncodeSessionEx failed: unsupported device") even outside the sandbox, while CUDA decode works. The 4090 left `runpod.DefaultGPUTypes` (now L4, RTX A4000, RTX A5000).
+3. **Modal appends the sandbox command to the image's entrypoint** (`tini -- clipmux`), as RunPod does. D062's unproven assumption was wrong: `clipmux /usr/local/bin/clipmux worker --once` exited at once, so no Modal sandbox had ever claimed. The command is now `worker --once`.
+4. **The dispatch pass held every provider call in one transaction**, and the "60 s each" in its comment was never enforced. A blocked Modal wake held the pass until its 5-minute bound, was read as a shutdown and rolled back silently. Stops queued behind it waited, and a sandbox Modal created in a rolled-back pass was recorded nowhere (the leaked sandbox of D096). Now:
+   - each wake or stop is its own transaction;
+   - stops go before wakes;
+   - every provider call has its own bound (`Service.CallTimeout`, 3 minutes).
+5. **Providers may say "not yet".** A wake returning `dispatch.ErrPreparing` keeps its dispatch waking and is retried with backoff, with no failure counted. The claim deadline still bounds it.
+6. **Modal converts a registry image on first use, for minutes**, and `Sandboxes.Create` waited for it with no bound. The adapter now builds with a 30 s wait and answers `ErrPreparing` while Modal converts. Connect starts the conversion as a new `image_conversion` step.
+7. **Modal waits up to 21 minutes to place a GPU sandbox**, and its L4 queue stalls (as in D051). The Go SDK takes one GPU type, so the adapter tries `L4,A10G,T4` (the new default; all three have NVENC) in order, 45 s each. The SDK terminates an attempt that wasn't placed. With none free, the wake is `ErrPreparing`.
+8. **Modal's SDK refused to start with no `HOME`.** It now reads an empty config, never the user's profile (D096).
+9. **A failed wake isn't a broken provider.** RunPod answered "no instances available" once and woke a pod seconds later, but the setup test had already failed. It now fails at once only when a woken machine never claimed, or after three failed wakes in a row (`TestTheEncodeCheckWaitsOutOneFailedWake`).
+10. **Errors that say why.** RunPod errors keep RunPod's reason, with every 20+ character token masked. Workers report each GPU backend's failed probe (`hardware.failed`).
+11. **The exit test cleans up after itself.** It stops every machine of its install through the provider at cleanup, pass or fail.
+
+Consequence: the Phase 4 exit is recorded; P6-T01 is done but for running `exit-providers.yml` in CI, which needs the repository secrets and `REAL_PROVIDERS` and is the owner's choice (they asked for local runs).

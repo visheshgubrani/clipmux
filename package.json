@@ -2,6 +2,7 @@
   "name": "clipmux-workspace",
   "private": true,
   "description": "TypeScript in ClipMux: the dashboard, @clipmux/player and @clipmux/uploader (D002). The Go module is the product.",
+  "license": "AGPL-3.0-only",
   "type": "module",
   "packageManager": "pnpm@12.11.2",
   "engines": {

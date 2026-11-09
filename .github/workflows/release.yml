@@ -1,0 +1,76 @@
+# Releases (docs/plans/P6-launch.md, "Releases"). On a v* tag:
+#   - npm: @clipmux/player and @clipmux/uploader, each published at its own
+#     package.json version when npm doesn't have that version yet, with
+#     provenance (P6-T09). A prerelease version (1.2.0-rc.1) goes to the
+#     `next` dist-tag and never moves `latest`.
+# The image, agent tarballs, CLI binaries, installers and SHA256SUMS on the
+# GitHub Release join this workflow with P6-T07.
+#
+# npm authenticates by trusted publishing (OIDC: on npmjs.com, each package's
+# Settings → Trusted publishing names this repository and release.yml), or
+# with the NPM_TOKEN secret, an automation token, until that is set up.
+name: Release
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Pack and show what would be published, without publishing
+        type: boolean
+        default: true
+permissions:
+  contents: read
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  npm:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      # Provenance and trusted publishing both need the OIDC token.
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+      - name: Build and test the packages
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm --filter './packages/*' run build
+          pnpm --filter './packages/*' run typecheck
+          pnpm --filter './packages/*' run test
+      - name: Publish what npm doesn't have yet
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && '1' || '' }}
+        run: |
+          set -euo pipefail
+          for dir in packages/player packages/uploader; do
+            name=$(node -p "require('./$dir/package.json').name")
+            version=$(node -p "require('./$dir/package.json').version")
+            # Licence and README ship in every tarball (D086).
+            files=$(cd "$dir" && npm pack --dry-run --json | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s)[0].files.map(f=>f.path).join("\n")))')
+            for f in LICENSE README.md package.json dist/index.js; do
+              grep -qx "$f" <<<"$files" || { echo "::error::$name's tarball lacks $f"; exit 1; }
+            done
+            if grep -q '\.test\.' <<<"$files"; then echo "::error::$name's tarball ships tests"; exit 1; fi
+            if npm view "$name@$version" version >/dev/null 2>&1; then
+              echo "$name@$version is already on npm; skipped"
+              continue
+            fi
+            tag=latest
+            case "$version" in *-*) tag=next ;; esac
+            if [ -n "$DRY_RUN" ]; then
+              echo "would publish $name@$version as $tag"
+              (cd "$dir" && npm publish --dry-run --access public --tag "$tag")
+            else
+              (cd "$dir" && npm publish --provenance --access public --tag "$tag")
+            fi
+          done

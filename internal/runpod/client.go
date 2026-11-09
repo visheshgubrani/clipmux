@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -32,14 +33,39 @@ func NewClient(base, key string) *Client {
 	return &Client{Base: strings.TrimRight(base, "/"), Key: key, HTTP: &http.Client{Timeout: 60 * time.Second}}
 }
 
-// APIError is a refused call. It carries the status only: RunPod's message
-// may echo what was sent, which can include a key or a registry password.
+// APIError is a refused call: its status and RunPod's reason. The reason
+// may echo what was sent, which can include a key or a registry password,
+// so every run of 20 or more token characters in it is masked (each secret
+// ClipMux sends is longer), and it is cut at 300 bytes.
 type APIError struct {
-	Op     string
-	Status int
+	Op      string
+	Status  int
+	Message string
 }
 
-func (e *APIError) Error() string { return fmt.Sprintf("runpod %s: HTTP %d", e.Op, e.Status) }
+func (e *APIError) Error() string {
+	if e.Message == "" {
+		return fmt.Sprintf("runpod %s: HTTP %d", e.Op, e.Status)
+	}
+	return fmt.Sprintf("runpod %s: HTTP %d: %s", e.Op, e.Status, e.Message)
+}
+
+var tokenLike = regexp.MustCompile(`[A-Za-z0-9_-]{20,}`)
+
+// reason is RunPod's error text from a refused call's body, masked.
+func reason(raw []byte) string {
+	var body struct {
+		Error string `json:"error"`
+	}
+	if json.Unmarshal(raw, &body) != nil || body.Error == "" {
+		return ""
+	}
+	msg := tokenLike.ReplaceAllString(body.Error, "…")
+	if len(msg) > 300 {
+		msg = msg[:300]
+	}
+	return msg
+}
 
 // ErrNotFound is a 404: a pod or registry auth that is already gone.
 var ErrNotFound = errors.New("runpod: not found")
@@ -73,9 +99,9 @@ func (c *Client) do(ctx context.Context, op, method, path string, body, out any)
 	}
 	switch {
 	case res.StatusCode == http.StatusNotFound:
-		return fmt.Errorf("%w: %w", ErrNotFound, &APIError{Op: op, Status: res.StatusCode})
+		return fmt.Errorf("%w: %w", ErrNotFound, &APIError{Op: op, Status: res.StatusCode, Message: reason(raw)})
 	case res.StatusCode < 200 || res.StatusCode > 299:
-		return &APIError{Op: op, Status: res.StatusCode}
+		return &APIError{Op: op, Status: res.StatusCode, Message: reason(raw)}
 	case out == nil || len(raw) == 0:
 		return nil
 	}

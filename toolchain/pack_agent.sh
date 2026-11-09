@@ -11,7 +11,8 @@
 #   clipmux-agent/clipmux            launcher: points clipmux at the tools below
 #   clipmux-agent/libexec/           clipmux, ffmpeg, ffprobe, packager, lib/, dri/,
 #                                    whisper/ (whisper-cli, its libraries and backends)
-#   clipmux-agent/licenses/          GPL notices, the toolchain manifest, copyrights
+#   clipmux-agent/licenses/          ClipMux's AGPL, GPL notices, SOURCE.md, the toolchain
+#                                    manifests, copyrights
 #   clipmux-agent/SHA256SUMS
 #
 # The tools and libraries keep everything in libexec/ (found through
@@ -87,19 +88,11 @@ exec "$here/libexec/clipmux" "$@"
 LAUNCHER
 chmod 0755 "$root/clipmux"
 
-# Licences: FFmpeg's GPL build notices and manifest (toolchain/build_ffmpeg.sh),
-# and the copyright file of every Ubuntu package a bundled file came from.
-cp -r /usr/local/share/doc/clipmux-ffmpeg "$root/licenses/ffmpeg"
-cp /usr/local/share/clipmux/toolchain.json "$root/licenses/ffmpeg/"
-cp -r /usr/local/share/doc/clipmux-whisper "$root/licenses/whisper"
-cp /usr/local/share/clipmux/whisper.json "$root/licenses/whisper/"
-cat >"$root/licenses/README" <<'README'
-FFmpeg here is built from source under the GPL (see ffmpeg/: its licence,
-the GPLv2 and LGPLv2.1 texts, and the exact sources it was built from).
-Shaka Packager is BSD-licensed. whisper.cpp is MIT-licensed (see whisper/;
-its models are fetched at run time and are MIT too). Every other library
-comes from an Ubuntu package, whose copyright file is in packages/.
-README
+# Licences: ClipMux's own, FFmpeg's GPL build notices and manifest, the
+# source offer (licenses.sh, shared with the image), and the copyright file
+# of every Ubuntu package a bundled file came from.
+here=$(cd "$(dirname "$0")" && pwd)
+bash "$here/licenses.sh" "$root/licenses" "$here/versions.env" "$here/LICENSE"
 mkdir -p "$root/licenses/packages"
 for f in "$lx"/lib/*.so* "$lx"/dri/*.so "$lx"/whisper/*.so*; do
   src=$(find /usr/lib /lib -name "$(basename "$f")" -print -quit 2>/dev/null || true)

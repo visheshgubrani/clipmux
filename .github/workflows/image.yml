@@ -76,6 +76,11 @@ jobs:
           if curl -fsS http://localhost/metrics | grep -q clipmux_; then
             echo "metrics are served through Caddy" >&2; exit 1
           fi
+      - name: The licences and the source offer ship in the image (D086)
+        run: |
+          docker run --rm --entrypoint bash clipmux:local -c 'cd /usr/share/doc/clipmux/licenses &&
+            for f in clipmux/LICENSE SOURCE.md ffmpeg/COPYING.GPLv2 ffmpeg/toolchain.json whisper/LICENSE packages.txt; do
+              [ -s "$f" ] || { echo "no $f in the image" >&2; exit 1; }; done'
       - name: The binary names its own image
         run: |
           docker run --rm --entrypoint grep clipmux:local -aqF "$IMAGE" /usr/local/bin/clipmux

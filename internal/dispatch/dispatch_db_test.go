@@ -7,9 +7,11 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -28,7 +30,12 @@ type fakeProvider struct {
 	wakes   []dispatch.Wake
 	stops   []string
 	failing int // the next n Wakes fail
-	extra   []dispatch.Instance
+	// preparing: the next n Wakes report the provider still preparing.
+	preparing int
+	// hangFrom: the hangFrom-th Wake (1-based) and later block until their
+	// context ends; 0 never.
+	hangFrom int
+	extra    []dispatch.Instance
 }
 
 func (p *fakeProvider) Running(context.Context) ([]dispatch.Instance, error) {
@@ -52,10 +59,20 @@ func (p *fakeProvider) Running(context.Context) ([]dispatch.Instance, error) {
 	return out, nil
 }
 
-func (p *fakeProvider) Wake(_ context.Context, w dispatch.Wake) (string, error) {
+func (p *fakeProvider) Wake(ctx context.Context, w dispatch.Wake) (string, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.wakes = append(p.wakes, w)
+	if p.hangFrom > 0 && len(p.wakes) >= p.hangFrom {
+		p.mu.Unlock()
+		<-ctx.Done()
+		p.mu.Lock()
+		return "", ctx.Err()
+	}
+	if p.preparing > 0 {
+		p.preparing--
+		return "", fmt.Errorf("image still converting: %w", dispatch.ErrPreparing)
+	}
 	if p.failing > 0 {
 		p.failing--
 		return "", errors.New("provider unavailable")
@@ -294,6 +311,81 @@ func TestFailedWakesReturnTheJobAndBackTheProviderOff(t *testing.T) {
 	r.publish()
 	if ds := r.dispatches(job.ID); len(ds) != 4 || !ds[3].InstanceID.Valid {
 		t.Fatalf("after the backoff: %d dispatches", len(ds))
+	}
+}
+
+// A provider still preparing (Modal converting a new image, D097) leaves
+// the dispatch waking and its wake due again later, with no failure
+// counted; the next try wakes it.
+func TestAProviderStillPreparingIsAskedAgainLater(t *testing.T) {
+	r := newRig(t)
+	r.prov.preparing = 1
+	job := r.job("ast_1")
+	r.route()
+	r.publish()
+	ds := r.dispatches(job.ID)
+	if len(ds) != 1 || ds[0].Status != "waking" || ds[0].InstanceID.Valid {
+		t.Fatalf("dispatches %+v: want one still waking", ds)
+	}
+	var failures, attempts int
+	if err := r.pool.QueryRow(context.Background(), `SELECT wake_failures FROM executor_configs WHERE id = 'exe_runpod'`).Scan(&failures); err != nil || failures != 0 {
+		t.Fatalf("wake failures %d (%v), want 0", failures, err)
+	}
+	if err := r.pool.QueryRow(context.Background(), `SELECT attempts FROM outbox WHERE kind = 'wake' AND done_at IS NULL`).Scan(&attempts); err != nil || attempts != 1 {
+		t.Fatalf("the wake row: attempts %d (%v), want 1 and pending", attempts, err)
+	}
+	r.exec(`UPDATE outbox SET available_at = now() WHERE kind = 'wake'`)
+	r.publish()
+	if ds := r.dispatches(job.ID); len(ds) != 1 || ds[0].Status != "waking" || ds[0].InstanceID.String != "pod-"+ds[0].ID {
+		t.Fatalf("after the retry: %+v, want the same dispatch woken", ds)
+	}
+}
+
+// A provider call that hangs fails at its own bound as a failed wake, so
+// one stuck provider can't hold the pass (and the stops behind it) until
+// the pass times out.
+func TestAHungWakeFailsAtItsCallTimeout(t *testing.T) {
+	r := newRig(t)
+	r.prov.hangFrom = 1
+	r.svc.CallTimeout = 200 * time.Millisecond
+	job := r.job("ast_1")
+	r.route()
+	started := time.Now()
+	r.publish()
+	if took := time.Since(started); took > 5*time.Second {
+		t.Fatalf("the pass took %s", took)
+	}
+	if ds := r.dispatches(job.ID); len(ds) != 1 || ds[0].Status != "ended" || ds[0].EndReason.String != "wake_failed" {
+		t.Fatalf("dispatches %+v: want one ended wake_failed", ds)
+	}
+}
+
+// Stops go before wakes, and each row commits on its own: a pass that ends
+// while a wake hangs has still stopped the machine queued behind it, and
+// keeps it stopped (D097).
+func TestAStopIsNeverHeldUpByAHangingWake(t *testing.T) {
+	r := newRig(t)
+	first, _ := r.woken("ast_1")
+	d := r.dispatches(first.ID)[0]
+	r.prov.hangFrom = 2
+	second := r.job("ast_2")
+	r.route() // the second job's wake is queued before the first's stop
+	if err := pgx.BeginFunc(context.Background(), r.pool, func(tx pgx.Tx) error {
+		return dispatch.End(context.Background(), db.New(tx), d.ID, "attempt_ended")
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	_, _ = r.svc.Publish(ctx, 20) // ends inside the hanging wake
+	if len(r.prov.stops) != 1 {
+		t.Fatalf("stops = %v, want the first machine's", r.prov.stops)
+	}
+	if d := r.dispatches(first.ID)[0]; !d.StoppedAt.Valid {
+		t.Fatal("the stop happened but wasn't recorded")
+	}
+	if ds := r.dispatches(second.ID); len(ds) != 1 || ds[0].Status != "waking" || ds[0].InstanceID.Valid {
+		t.Fatalf("second job's dispatches %+v: want one still waking", ds)
 	}
 }
 

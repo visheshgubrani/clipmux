@@ -23,9 +23,10 @@ RETURNING *;
 SELECT * FROM dispatches WHERE key_hash = $1 AND status = 'waking' AND claim_deadline > now();
 
 -- name: LockPendingDispatchOutbox :many
+-- Stops first: a slow wake must never hold up stopping a paid machine.
 SELECT * FROM outbox
 WHERE kind IN ('wake', 'stop') AND done_at IS NULL AND available_at <= now()
-ORDER BY created_at, id
+ORDER BY kind = 'wake', created_at, id
 LIMIT $1
 FOR UPDATE SKIP LOCKED;
 
@@ -53,13 +54,13 @@ UPDATE dispatches SET stopped_at = now() WHERE id = $1;
 -- A setup test through this provider passed.
 UPDATE executor_configs SET verified_at = now(), updated_at = now() WHERE project_id = $1 AND kind = $2;
 
--- name: LatestDispatchForAsset :one
--- The setup test's encode check fails at once when its dispatch ends
--- without a claim.
+-- name: RecentDispatchesForAsset :many
+-- The setup test's encode check fails at once when a woken machine ended
+-- without a claim, or after three failed wakes in a row (D097).
 SELECT d.* FROM dispatches d JOIN jobs j ON j.id = d.job_id
 WHERE j.asset_id = $1
 ORDER BY d.created_at DESC, d.id DESC
-LIMIT 1;
+LIMIT 3;
 
 -- name: RecordWakeFailure :exec
 -- Three failed wakes in a row put the provider in a 5-minute backoff, so

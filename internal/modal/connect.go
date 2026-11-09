@@ -79,6 +79,9 @@ type Connector struct {
 type checkedAPI interface {
 	api
 	check(ctx context.Context, app string) error
+	// prepare starts Modal converting the request's image and reports
+	// whether it is ready, after a bounded wait.
+	prepare(ctx context.Context, req sandboxRequest) (bool, error)
 	close()
 }
 
@@ -177,6 +180,22 @@ func (c *Connector) Connect(ctx context.Context, req Request) (dispatch.Result, 
 		pinned, detail, err := dispatch.PinImage(ctx, c.registry(), req.Image, req.RegistryUsername, req.RegistryPassword)
 		cfg.Image = pinned
 		return detail, err
+	})
+	steps.Do("image_conversion", func() (string, error) {
+		a, err := c.open(req.TokenID, req.TokenSecret, req.Environment)
+		if err != nil {
+			return "", err
+		}
+		defer a.close()
+		ready, err := a.prepare(ctx, sandboxRequest{App: "clipmux-" + cfg.Tag, Image: cfg.Image,
+			RegistryUsername: req.RegistryUsername, RegistryPassword: req.RegistryPassword})
+		if err != nil {
+			return "", redact(err, req.TokenSecret)
+		}
+		if !ready {
+			return "Modal is converting the image, which takes minutes the first time; the setup test waits for it", nil
+		}
+		return "Modal has the image", nil
 	})
 	steps.Do("saved", func() (string, error) {
 		sec := Secret{TokenID: req.TokenID, TokenSecret: req.TokenSecret, RegistryUsername: req.RegistryUsername, RegistryPassword: req.RegistryPassword}

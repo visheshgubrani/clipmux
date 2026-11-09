@@ -59,7 +59,7 @@ services:
     # cpus: 4
     ports:
       # For `clipmux admin` and debugging on the host only; the world goes through Caddy.
-      - 127.0.0.1:8080:8080
+      - 127.0.0.1:${CLIPMUX_ADMIN_PORT:-8080}:8080
     depends_on:
       postgres:
         condition: service_healthy
@@ -83,9 +83,9 @@ services:
     image: caddy:2
     restart: unless-stopped
     ports:
-      - 80:80
-      - 443:443
-      - 443:443/udp
+      - ${CLIPMUX_HTTP_PORT:-80}:80
+      - ${CLIPMUX_HTTPS_PORT:-443}:443
+      - ${CLIPMUX_HTTPS_PORT:-443}:443/udp
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data

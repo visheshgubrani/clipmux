@@ -6,7 +6,9 @@
 #
 #   docker build -t clipmux .
 #
-# Not published until the licence is decided (docs/decisions.md D005, D006).
+# ClipMux is AGPL-3.0; FFmpeg in it is a GPLv2+ build run as a separate
+# process (D086). /usr/share/doc/clipmux/licenses/ holds every licence and
+# SOURCE.md, the written source offer.
 
 ARG BASE=ubuntu:24.04
 
@@ -65,7 +67,8 @@ RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache
 FROM ${BASE} AS agent-pack
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 ARG DEBIAN_FRONTEND=noninteractive
-COPY toolchain/apt-packages.env toolchain/pack_agent.sh /tmp/clipmux-toolchain/
+COPY toolchain/apt-packages.env toolchain/pack_agent.sh toolchain/licenses.sh toolchain/versions.env /tmp/clipmux-toolchain/
+COPY LICENSE /tmp/clipmux-toolchain/LICENSE
 RUN set -eux; \
     . /tmp/clipmux-toolchain/apt-packages.env; \
     apt-get update; \
@@ -83,7 +86,8 @@ COPY --from=agent-pack /out/ /
 FROM ${BASE}
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 ARG DEBIAN_FRONTEND=noninteractive
-COPY toolchain/apt-packages.env toolchain/verify_toolchain.sh /tmp/clipmux-toolchain/
+COPY toolchain/apt-packages.env toolchain/verify_toolchain.sh toolchain/licenses.sh toolchain/versions.env /tmp/clipmux-toolchain/
+COPY LICENSE /tmp/clipmux-toolchain/LICENSE
 RUN set -eux; \
     . /tmp/clipmux-toolchain/apt-packages.env; \
     apt-get update; \
@@ -93,12 +97,17 @@ RUN set -eux; \
 COPY --from=toolchain /usr/local/ /usr/local/
 # The toolchain must still do what the engine asks of it on the final image.
 RUN ldconfig && bash /tmp/clipmux-toolchain/verify_toolchain.sh /usr/local/bin/ffmpeg /usr/local/bin/ffprobe /usr/local/bin/whisper-cli \
-    && packager --version && rm -rf /tmp/clipmux-toolchain
+    && packager --version \
+    && bash /tmp/clipmux-toolchain/licenses.sh /usr/share/doc/clipmux/licenses /tmp/clipmux-toolchain/versions.env /tmp/clipmux-toolchain/LICENSE \
+    && rm -rf /tmp/clipmux-toolchain
 COPY --from=build /out/clipmux /usr/local/bin/clipmux
 
 RUN useradd --system --uid 10001 --home-dir /var/lib/clipmux --create-home --shell /usr/sbin/nologin clipmux \
     && install -d -o clipmux -g clipmux -m 0750 /var/lib/clipmux/data \
     && install -d -o clipmux -g clipmux -m 0700 /var/lib/clipmux-agent
+LABEL org.opencontainers.image.source=https://github.com/visheshgubrani/clipmux \
+      org.opencontainers.image.description="ClipMux: self-hosted video infrastructure" \
+      org.opencontainers.image.licenses="AGPL-3.0-only AND GPL-2.0-or-later"
 USER 10001
 # NVENC needs the driver's video capability and whisper's Vulkan backend its
 # graphics one (the Vulkan ICD), which NVIDIA's container runtime injects

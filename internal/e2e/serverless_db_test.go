@@ -46,6 +46,9 @@ type pods struct {
 	// gate, if set, holds each new pod's process until it is closed: a
 	// cold start the test controls.
 	gate chan struct{}
+	// speech, if set, lets each pod transcribe on the CPU with this
+	// machine's whisper.cpp and the models in CLIPMUX_TEST_MODELS_DIR.
+	speech bool
 }
 
 func newPods(t *testing.T, rp *runpodtest.Fake) *pods {
@@ -119,6 +122,12 @@ func (ps *pods) run(ctx context.Context, p runpodtest.Pod) {
 	for k, v := range p.Env {
 		env = append(env, k+"="+v)
 	}
+	if ps.speech { // after the pod's own: the last value wins
+		env = append(env, "CLIPMUX_SPEECH=cpu", "CLIPMUX_MODELS_DIR="+os.Getenv("CLIPMUX_TEST_MODELS_DIR"))
+		if v := os.Getenv("CLIPMUX_WHISPER"); v != "" {
+			env = append(env, "CLIPMUX_WHISPER="+v)
+		}
+	}
 	cmd := exec.Command(bin, p.DockerStartCmd...)
 	cmd.Env = env
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -183,6 +192,8 @@ type connectOpts struct {
 	maxConcurrent    int
 	monthlyLimit     int64
 	rateCentsPerHour int
+	// speech lets the pods transcribe (pods.speech).
+	speech bool
 }
 
 func newCloud(t *testing.T, opts connectOpts) *cloud {
@@ -196,6 +207,7 @@ func newCloud(t *testing.T, opts connectOpts) *cloud {
 	}
 	rp := runpodtest.New(t)
 	ps := newPods(t, rp)
+	ps.speech = opts.speech
 	reg := registrytest.New(t)
 	certFile := filepath.Join(t.TempDir(), "registry.pem")
 	if err := os.WriteFile(certFile, reg.CertPEM, 0o600); err != nil {

@@ -6,8 +6,10 @@ package modal
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
+	"strings"
 	"time"
 
 	"github.com/visheshgubrani/clipmux/internal/db"
@@ -41,8 +43,14 @@ type Secret struct {
 	RegistryPassword string `json:"registry_password,omitempty"`
 }
 
-// DefaultGPU encodes with NVENC; D051 proved it on Modal.
-const DefaultGPU = "L4"
+// DefaultGPU are the GPU types a sandbox may take, in order: each encodes
+// with NVENC (D051), and the L4's queue can stall for minutes, so a wake
+// takes the next with capacity (D097).
+const DefaultGPU = "L4,A10G,T4"
+
+// errNoCapacity is a create Modal couldn't schedule on that GPU type in
+// time; the sandbox was terminated, and the next type may be tried.
+var errNoCapacity = errors.New("modal: no capacity for that GPU now")
 
 // Tag names on every sandbox ClipMux starts.
 const (
@@ -108,15 +116,35 @@ func (e *Executor) Wake(ctx context.Context, w dispatch.Wake) (string, error) {
 		"NVIDIA_DRIVER_CAPABILITIES": "compute,video,utility",
 	}
 	maps.Copy(env, w.Env)
-	return e.api.create(ctx, sandboxRequest{
-		App: e.app(), Name: w.Name, Image: e.cfg.Image,
-		RegistryUsername: e.secret.RegistryUsername, RegistryPassword: e.secret.RegistryPassword,
-		// Modal runs the command as given rather than the image's
-		// entrypoint, so it names the binary.
-		Command: []string{"/usr/local/bin/clipmux", "worker", "--once"},
-		Env:     env, GPU: e.cfg.GPU, CPU: e.cfg.CPU, MemoryMiB: e.cfg.MemoryMiB,
-		Timeout: w.Lifetime, Tags: tags,
-	})
+	var gpus []string
+	for g := range strings.SplitSeq(e.cfg.GPU, ",") {
+		if g = strings.TrimSpace(g); g != "" {
+			gpus = append(gpus, g)
+		}
+	}
+	for i, gpu := range gpus {
+		name := w.Name
+		if i > 0 { // the name of a sandbox Modal just terminated may linger
+			name += "-" + strings.ToLower(gpu)
+		}
+		id, err := e.api.create(ctx, sandboxRequest{
+			App: e.app(), Name: name, Image: e.cfg.Image,
+			RegistryUsername: e.secret.RegistryUsername, RegistryPassword: e.secret.RegistryPassword,
+			// Modal appends the command to the image's entrypoint (tini --
+			// clipmux), as RunPod does (D097).
+			Command: []string{"worker", "--once"},
+			Env:     env, GPU: gpu, CPU: e.cfg.CPU, MemoryMiB: e.cfg.MemoryMiB,
+			Timeout: w.Lifetime, Tags: tags,
+		})
+		if !errors.Is(err, errNoCapacity) {
+			return id, err
+		}
+	}
+	list := strings.Join(gpus, ", ")
+	if i := strings.LastIndex(list, ", "); i >= 0 {
+		list = list[:i] + " or " + list[i+2:]
+	}
+	return "", fmt.Errorf("modal has no %s free: %w", list, dispatch.ErrPreparing)
 }
 
 // Stop terminates a sandbox.

@@ -1,8 +1,24 @@
 {
   "name": "@clipmux/uploader",
   "version": "0.3.0",
-  "private": true,
   "description": "Upload files to ClipMux in resumable parts, straight to storage.",
+  "license": "MIT",
+  "keywords": [
+    "upload",
+    "multipart",
+    "resumable",
+    "video",
+    "clipmux"
+  ],
+  "homepage": "https://github.com/visheshgubrani/clipmux/tree/main/packages/uploader#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/visheshgubrani/clipmux.git",
+    "directory": "packages/uploader"
+  },
+  "bugs": {
+    "url": "https://github.com/visheshgubrani/clipmux/issues"
+  },
   "type": "module",
   "exports": {
     ".": {
@@ -11,11 +27,17 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "src",
+    "!src/**/*.test.ts"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "node --test src/*.test.ts"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
   }
 }

@@ -31,6 +31,7 @@ interface Invitation {
   expires_at: string
   command: string
   docker_command: string
+  install_command: string
 }
 
 interface Pairing {
@@ -139,7 +140,14 @@ function ConnectCard({ onConnected }: { onConnected: () => void }) {
               Docker (Windows, macOS)
             </button>
           </div>
-          <Copyable value={docker ? inv.docker_command : inv.command} />
+          <Copyable value={docker ? inv.docker_command : inv.install_command} />
+          {!docker && (
+            <Muted>
+              Installs the agent with a systemd service that starts at boot (glibc 2.39 or newer, such as
+              Ubuntu 24.04). With <code>sudo sh</code> it runs as a system service; otherwise as your user. If
+              ClipMux is already installed, run <code>{inv.command}</code> instead.
+            </Muted>
+          )}
           {docker && (
             <Muted>
               With a GPU, add <code>--gpus all</code> after <code>docker run</code> for NVIDIA (with the

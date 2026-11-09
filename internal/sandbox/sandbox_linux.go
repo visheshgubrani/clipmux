@@ -99,8 +99,16 @@ func apply(p Policy, argv []string) (Status, error) {
 	}
 	// Its own /proc entry (resolved now: the pid survives the exec), never
 	// other processes', whose environments may hold secrets.
-	reads = append(reads, fmt.Sprintf("/proc/%d", os.Getpid()))
-	abi, err := landlock(reads, p.Write, p.Devices)
+	self := fmt.Sprintf("/proc/%d", os.Getpid())
+	reads = append(reads, self)
+	// CUDA's cuInit writes the tool's own /proc entries and fails with
+	// CUDA_ERROR_OPERATING_SYSTEM without (D096); only its own, never
+	// /proc/driver or /proc/sys.
+	var writeFiles []string
+	if p.GPU {
+		writeFiles = append(writeFiles, self)
+	}
+	abi, err := landlock(reads, p.Write, p.Devices, writeFiles)
 	if err != nil {
 		return st, fmt.Errorf("landlock: %w", err)
 	}
@@ -153,7 +161,9 @@ const (
 // landlock restricts the filesystem to reads beneath reads and full access
 // beneath write, and on newer kernels TCP, abstract sockets and signals. It
 // returns the kernel's ABI version, 0 where Landlock is missing or disabled.
-func landlock(reads []string, write string, devices []string) (int, error) {
+// writeFiles may have their existing files read and written beneath them,
+// with nothing created or removed.
+func landlock(reads []string, write string, devices, writeFiles []string) (int, error) {
 	v, _, errno := syscall.RawSyscall(sysLandlockCreateRuleset, 0, 0, 1 /* LANDLOCK_CREATE_RULESET_VERSION */)
 	if errno != 0 {
 		return 0, nil // no Landlock: reported, not required
@@ -193,6 +203,11 @@ func landlock(reads []string, write string, devices []string) (int, error) {
 	}
 	if err := allow(int(fd), "/dev/null", uint64(fsReadFile|fsWriteFile|fsTruncate)&handled); err != nil {
 		return abi, err
+	}
+	for _, path := range writeFiles {
+		if err := allow(int(fd), path, uint64(fsReadFile|fsReadDir|fsWriteFile|fsTruncate)&handled); err != nil {
+			return abi, err
+		}
 	}
 	if write != "" {
 		if err := allow(int(fd), write, handled); err != nil {

@@ -51,12 +51,18 @@ func CheckVersions(ctx context.Context, pool *pgxpool.Pool, b *Box) error {
 		}
 		for _, v := range versions {
 			if len(v) == 4 && !b.Opens(binary.BigEndian.Uint32(v)) {
-				return fmt.Errorf("%s.%s holds secrets sealed with secrets key v%d, which neither CLIPMUX_SECRETS_KEY (v%d) nor CLIPMUX_SECRETS_KEY_PREVIOUS opens: %w",
-					c.Table, c.Column, binary.BigEndian.Uint32(v), b.version, ErrWrongKey)
+				return unopenable(c.Table+"."+c.Column, binary.BigEndian.Uint32(v), b)
 			}
 		}
 	}
 	return nil
+}
+
+// unopenable says which key a column needs: a rotation started without the
+// old key beside the new one.
+func unopenable(column string, version uint32, b *Box) error {
+	return fmt.Errorf("%s holds secrets sealed with secrets key v%d, which neither CLIPMUX_SECRETS_KEY (v%d) nor CLIPMUX_SECRETS_KEY_PREVIOUS opens: %w",
+		column, version, b.version, ErrWrongKey)
 }
 
 // Reseal seals every value not yet under the box's current key with it,

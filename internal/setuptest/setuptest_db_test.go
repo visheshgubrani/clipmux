@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -281,5 +282,45 @@ func TestTrackChecksWaitThenFailOnAnErroredTranscription(t *testing.T) {
 		"thumbnail_token_refused_track=skipped: subtitles_ready failed", "stored_track_encrypted=skipped: subtitles_ready failed"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("checks = %v", got)
+	}
+}
+
+// A provider with no capacity for one wake isn't a broken provider: the
+// router tries again, and the test waits (RunPod answered "no instances
+// available" once, then woke a pod seconds later, D097). Three failed wakes
+// in a row, when the provider backs off, or a machine that never claimed,
+// fail the test at once.
+func TestTheEncodeCheckWaitsOutOneFailedWake(t *testing.T) {
+	r := newRig(t, "", true)
+	ctx := context.Background()
+	if _, err := r.pool.Exec(ctx, `
+		INSERT INTO assets (id, project_id, app_id, status, storage_id) VALUES ('ast_p', 'prj_default', 'app_dashboard', 'processing', 'sto_default');
+		INSERT INTO jobs (id, project_id, asset_id, kind, status, routed_to) VALUES ('job_p', 'prj_default', 'ast_p', 'transcode', 'queued', 'runpod');
+		INSERT INTO executor_configs (id, project_id, kind, config, secrets_encrypted, max_concurrent, monthly_limit_cents, rate_cents_per_hour, disk_bytes)
+			VALUES ('exe_runpod', 'prj_default', 'runpod', '{}', 'sealed', 1, 100, 80, 1)`); err != nil {
+		t.Fatal(err)
+	}
+	ended := func(id, reason string) {
+		t.Helper()
+		if _, err := r.pool.Exec(ctx, `INSERT INTO dispatches (id, project_id, job_id, executor_config_id, kind, status, end_reason, key_hash, key_sealed, rate_cents_per_hour, claim_deadline, ended_at)
+			VALUES ($1, 'prj_default', 'job_p', 'exe_runpod', 'runpod', 'ended', $2, convert_to($1::text, 'UTF8'), 'x', 80, now(), now())`, id, reason); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r.runner.EncodeTimeout, r.runner.Poll = 500*time.Millisecond, 20*time.Millisecond
+
+	ended("dsp_1", "wake_failed")
+	if err := r.runner.waitReady(ctx, "ast_p"); err == nil || !strings.Contains(err.Error(), "not ready after") {
+		t.Fatalf("after one failed wake: %v, want the wait to run on", err)
+	}
+	ended("dsp_2", "wake_failed")
+	ended("dsp_3", "wake_failed")
+	const three = "the runpod machine never took the sample: wake_failed, 3 times in a row"
+	if err := r.runner.waitReady(ctx, "ast_p"); err == nil || err.Error() != three {
+		t.Fatalf("after three failed wakes: %v, want %q", err, three)
+	}
+	ended("dsp_4", "wake_timeout")
+	if err := r.runner.waitReady(ctx, "ast_p"); err == nil || err.Error() != "the runpod machine never took the sample: wake_timeout" {
+		t.Fatalf("a machine that never claimed: %v", err)
 	}
 }
