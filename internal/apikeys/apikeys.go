@@ -27,9 +27,12 @@ const (
 	AssetsRead   = "assets:read"
 	AssetsWrite  = "assets:write"
 	UploadsWrite = "uploads:write"
+	// AnalyticsRead reads the key's own app's analytics (P7-T03). It is
+	// opt-in: not among the scopes a new key gets by default.
+	AnalyticsRead = "analytics:read"
 )
 
-var allScopes = []string{AssetsRead, AssetsWrite, UploadsWrite}
+var allScopes = []string{AssetsRead, AssetsWrite, UploadsWrite, AnalyticsRead}
 
 // ErrInvalid means the presented secret is not a usable key.
 var ErrInvalid = errors.New("apikeys: invalid key")

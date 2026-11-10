@@ -134,6 +134,10 @@ func TestRoutesAreClassified(t *testing.T) {
 		{"POST", "/v1/setup-test", classLong},
 		{"DELETE", "/v1/assets/ast_1", classLong},
 		{"DELETE", "/v1/assets/ast_1/playback-ids/pid_1", classAPI},
+		{"POST", "/v1/storage", classLong},
+		{"PUT", "/v1/storage/sto_1/credentials", classLong},
+		{"POST", "/v1/storage/sto_1/default", classAPI},
+		{"DELETE", "/v1/cloudflare", classLong},
 		{"GET", "/v1/assets/ast_1", classAPI},
 		{"GET", "/library", classAPI},
 	} {

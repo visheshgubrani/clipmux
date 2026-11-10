@@ -260,6 +260,7 @@ func TestCreateValidatesInputAndScope(t *testing.T) {
 		{"over the instance limit", e.key, map[string]any{"size": 1001}, 413, "too_large"},
 		{"unknown policy", e.key, map[string]any{"size": 10, "playback_policy": "private"}, 400, "invalid_request"},
 		{"long passthrough", e.key, map[string]any{"size": 10, "passthrough": strings.Repeat("x", 256)}, 400, "invalid_request"},
+		{"long title", e.key, map[string]any{"size": 10, "title": strings.Repeat("x", 201)}, 400, "invalid_request"},
 	}
 	for _, c := range cases {
 		code, out, _ := e.call("POST", "/v1/uploads", c.bearer, c.body, nil)
@@ -516,5 +517,14 @@ func TestCreatedUploadShowsItsPlaybackIDActive(t *testing.T) {
 	pid := pids[0].(map[string]any)
 	if str(pid, "status") != "active" || pid["playable"] != false || str(pid, "policy") != "public" {
 		t.Fatalf("playback ID = %v, want active, not playable, public", pid)
+	}
+}
+
+// D099: an upload may name its asset for people.
+func TestAnUploadCarriesItsTitle(t *testing.T) {
+	e := newEnv(t)
+	c := e.create(10, map[string]any{"title": "Welcome to the course"}, nil)
+	if code, out, _ := e.call("GET", "/v1/assets/"+c.AssetID, e.key, nil, nil); code != http.StatusOK || out["title"] != "Welcome to the course" {
+		t.Fatalf("the asset = %d %v, want its title", code, out)
 	}
 }

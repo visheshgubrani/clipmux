@@ -12,6 +12,9 @@ RETURNING *;
 
 -- name: FindStorageConfigByBucket :one
 SELECT * FROM storage_configs
-WHERE project_id = $1 AND kind = 'r2' AND config->>'bucket' = sqlc.arg(bucket)::text AND config->>'account_id' = sqlc.arg(account_id)::text
+WHERE project_id = $1 AND kind = 'r2' AND removed_at IS NULL AND config->>'bucket' = sqlc.arg(bucket)::text AND config->>'account_id' = sqlc.arg(account_id)::text
 ORDER BY created_at DESC
 LIMIT 1;
+
+-- name: DeleteCloudflareConnection :execrows
+DELETE FROM cloudflare_connections WHERE project_id = $1;

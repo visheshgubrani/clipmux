@@ -7,6 +7,8 @@ export interface Claims {
   aud: string
   iat: number
   exp: number
+  // The optional viewer ID; delivery keeps only its keyed hash (D103).
+  vid: string
 }
 
 export interface Token {
@@ -95,7 +97,13 @@ export function parse(token: string): Token | null {
   if (sig?.length !== 64) return null
   return {
     kid: str(hdr.obj, 'kid'),
-    claims: { sub: str(payload.obj, 'sub'), aud: str(payload.obj, 'aud'), iat, exp },
+    claims: {
+      sub: str(payload.obj, 'sub'),
+      aud: str(payload.obj, 'aud'),
+      iat,
+      exp,
+      vid: str(payload.obj, 'vid'),
+    },
     input: `${h}.${p}`,
     sig,
   }

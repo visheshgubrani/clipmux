@@ -134,7 +134,7 @@ func (q *Queries) FinishUpload(ctx context.Context, arg FinishUploadParams) erro
 }
 
 const getAssetByID = `-- name: GetAssetByID :one
-SELECT id, project_id, app_id, status, error_code, version, storage_id, source_uri, agent_source_id, source_kept, current_output_id, passthrough, duration_seconds, created_at, updated_at, deleted_at FROM assets WHERE id = $1
+SELECT id, project_id, app_id, status, error_code, version, storage_id, source_uri, agent_source_id, source_kept, current_output_id, passthrough, duration_seconds, created_at, updated_at, deleted_at, title FROM assets WHERE id = $1
 `
 
 func (q *Queries) GetAssetByID(ctx context.Context, id string) (Asset, error) {
@@ -157,6 +157,7 @@ func (q *Queries) GetAssetByID(ctx context.Context, id string) (Asset, error) {
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.DeletedAt,
+		&i.Title,
 	)
 	return i, err
 }
@@ -298,28 +299,40 @@ func (q *Queries) ListPlaybackIDs(ctx context.Context, assetID string) ([]Playba
 }
 
 const listPlaybackIDsForAssets = `-- name: ListPlaybackIDsForAssets :many
-SELECT id, project_id, asset_id, policy, status, created_at, revoked_at FROM playback_ids WHERE asset_id = ANY($1::text[]) AND status <> 'revoked'
-ORDER BY asset_id, created_at, id
+SELECT p.id, p.asset_id, p.policy, p.status, s.id AS share_id, s.name AS share_name
+FROM playback_ids p
+LEFT JOIN share_links s ON s.playback_id = p.id
+WHERE p.asset_id = ANY($1::text[]) AND p.status <> 'revoked'
+ORDER BY p.asset_id, p.created_at, p.id
 `
 
+type ListPlaybackIDsForAssetsRow struct {
+	ID        string
+	AssetID   string
+	Policy    string
+	Status    string
+	ShareID   pgtype.Text
+	ShareName pgtype.Text
+}
+
 // One query for a page of assets (D072), in the order ListPlaybackIDs uses.
-func (q *Queries) ListPlaybackIDsForAssets(ctx context.Context, assetIds []string) ([]PlaybackID, error) {
+// A share link's own ID carries the link's ID and name.
+func (q *Queries) ListPlaybackIDsForAssets(ctx context.Context, assetIds []string) ([]ListPlaybackIDsForAssetsRow, error) {
 	rows, err := q.db.Query(ctx, listPlaybackIDsForAssets, assetIds)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []PlaybackID{}
+	items := []ListPlaybackIDsForAssetsRow{}
 	for rows.Next() {
-		var i PlaybackID
+		var i ListPlaybackIDsForAssetsRow
 		if err := rows.Scan(
 			&i.ID,
-			&i.ProjectID,
 			&i.AssetID,
 			&i.Policy,
 			&i.Status,
-			&i.CreatedAt,
-			&i.RevokedAt,
+			&i.ShareID,
+			&i.ShareName,
 		); err != nil {
 			return nil, err
 		}
@@ -360,7 +373,7 @@ const markAssetProcessing = `-- name: MarkAssetProcessing :one
 UPDATE assets
 SET status = 'processing', source_uri = $2, version = version + 1, updated_at = now()
 WHERE id = $1
-RETURNING id, project_id, app_id, status, error_code, version, storage_id, source_uri, agent_source_id, source_kept, current_output_id, passthrough, duration_seconds, created_at, updated_at, deleted_at
+RETURNING id, project_id, app_id, status, error_code, version, storage_id, source_uri, agent_source_id, source_kept, current_output_id, passthrough, duration_seconds, created_at, updated_at, deleted_at, title
 `
 
 type MarkAssetProcessingParams struct {
@@ -388,6 +401,7 @@ func (q *Queries) MarkAssetProcessing(ctx context.Context, arg MarkAssetProcessi
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.DeletedAt,
+		&i.Title,
 	)
 	return i, err
 }

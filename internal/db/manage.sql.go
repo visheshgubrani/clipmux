@@ -11,6 +11,41 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const countLibrary = `-- name: CountLibrary :one
+SELECT
+    count(*) FILTER (WHERE status = 'ready')::bigint AS ready,
+    count(*) FILTER (WHERE status = 'processing')::bigint AS processing,
+    count(*) FILTER (WHERE status = 'errored')::bigint AS errored,
+    count(*) FILTER (WHERE status = 'waiting_upload')::bigint AS waiting_upload
+FROM assets
+WHERE project_id = $1 AND ($2::text IS NULL OR app_id = $2)
+`
+
+type CountLibraryParams struct {
+	ProjectID string
+	AppID     pgtype.Text
+}
+
+type CountLibraryRow struct {
+	Ready         int64
+	Processing    int64
+	Errored       int64
+	WaitingUpload int64
+}
+
+// The library's assets by status, for the filter chips.
+func (q *Queries) CountLibrary(ctx context.Context, arg CountLibraryParams) (CountLibraryRow, error) {
+	row := q.db.QueryRow(ctx, countLibrary, arg.ProjectID, arg.AppID)
+	var i CountLibraryRow
+	err := row.Scan(
+		&i.Ready,
+		&i.Processing,
+		&i.Errored,
+		&i.WaitingUpload,
+	)
+	return i, err
+}
+
 const disableWebhookEndpoint = `-- name: DisableWebhookEndpoint :execrows
 UPDATE webhook_endpoints SET disabled_at = coalesce(disabled_at, now()) WHERE project_id = $1 AND id = $2
 `
@@ -52,7 +87,7 @@ func (q *Queries) GetApp(ctx context.Context, arg GetAppParams) (App, error) {
 }
 
 const getAssetInProject = `-- name: GetAssetInProject :one
-SELECT id, project_id, app_id, status, error_code, version, storage_id, source_uri, agent_source_id, source_kept, current_output_id, passthrough, duration_seconds, created_at, updated_at, deleted_at FROM assets WHERE project_id = $1 AND id = $2
+SELECT id, project_id, app_id, status, error_code, version, storage_id, source_uri, agent_source_id, source_kept, current_output_id, passthrough, duration_seconds, created_at, updated_at, deleted_at, title FROM assets WHERE project_id = $1 AND id = $2
 `
 
 type GetAssetInProjectParams struct {
@@ -80,6 +115,7 @@ func (q *Queries) GetAssetInProject(ctx context.Context, arg GetAssetInProjectPa
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.DeletedAt,
+		&i.Title,
 	)
 	return i, err
 }
@@ -442,30 +478,42 @@ func (q *Queries) ListJobs(ctx context.Context, arg ListJobsParams) ([]ListJobsR
 }
 
 const listLibrary = `-- name: ListLibrary :many
-SELECT id, project_id, app_id, status, error_code, version, storage_id, source_uri, agent_source_id, source_kept, current_output_id, passthrough, duration_seconds, created_at, updated_at, deleted_at FROM assets
+SELECT id, project_id, app_id, status, error_code, version, storage_id, source_uri, agent_source_id, source_kept, current_output_id, passthrough, duration_seconds, created_at, updated_at, deleted_at, title FROM assets
 WHERE project_id = $1
   AND ($2::text IS NULL OR app_id = $2)
   AND ($3::text IS NULL OR status = $3)
-  AND (created_at, id) < ($4::timestamptz, $5::text)
+  AND ($4::boolean OR status <> 'deleted' OR $3::text = 'deleted')
+  AND ($5::text IS NULL OR id = $5
+       OR title ILIKE $6::text OR passthrough ILIKE $6::text)
+  AND (created_at, id) < ($7::timestamptz, $8::text)
 ORDER BY created_at DESC, id DESC
-LIMIT $6
+LIMIT $9
 `
 
 type ListLibraryParams struct {
-	ProjectID  string
-	AppID      pgtype.Text
-	Status     pgtype.Text
-	BeforeTime pgtype.Timestamptz
-	BeforeID   string
-	MaxAssets  int32
+	ProjectID      string
+	AppID          pgtype.Text
+	Status         pgtype.Text
+	IncludeDeleted bool
+	Search         pgtype.Text
+	Pattern        pgtype.Text
+	BeforeTime     pgtype.Timestamptz
+	BeforeID       string
+	MaxAssets      int32
 }
 
 // Every app's assets, newest first, keyset-paged on (created_at, id).
+// Deleted assets only when asked for (include_deleted, or status deleted).
+// search is an exact asset ID; pattern an ILIKE pattern on the title or
+// the passthrough.
 func (q *Queries) ListLibrary(ctx context.Context, arg ListLibraryParams) ([]Asset, error) {
 	rows, err := q.db.Query(ctx, listLibrary,
 		arg.ProjectID,
 		arg.AppID,
 		arg.Status,
+		arg.IncludeDeleted,
+		arg.Search,
+		arg.Pattern,
 		arg.BeforeTime,
 		arg.BeforeID,
 		arg.MaxAssets,
@@ -494,6 +542,7 @@ func (q *Queries) ListLibrary(ctx context.Context, arg ListLibraryParams) ([]Ass
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.DeletedAt,
+			&i.Title,
 		); err != nil {
 			return nil, err
 		}

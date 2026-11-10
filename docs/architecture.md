@@ -621,7 +621,7 @@ Every POST accepts an `Idempotency-Key`, so a retried request can't create a dup
 
 For a course platform, `passthrough` is a lesson ID and the access rule is enrolment. A SaaS product might use a workspace ID and a seat check.
 
-Owners who don't write code can skip the API. They upload in the dashboard, then copy a share link or player embed for a public playback ID. For signed playback, the dashboard creates an expiring share link signed with the internal key. Each share link gets its own signed playback ID, so the owner can end one link without affecting the others.
+Owners who don't write code can skip the API. They upload in the dashboard, then copy a share link or player embed for a public playback ID. For signed playback, the dashboard creates an expiring share link signed with the internal key. Each share link gets its own signed playback ID, so the owner can end one link without affecting the others. A link opens a page that fetches short-lived tokens, so it can expire or be revoked on its own (D104, Phase 7).
 
 ### Webhooks
 
@@ -773,14 +773,14 @@ The terms name the Developer Platform as an example of a required Paid Service, 
 - [ ] Choose a native sandbox for Windows and macOS agents. Until then, v1 requires Docker, WSL2 or a VM there.
 - [ ] Decide whether to serve encrypted segments from an R2 custom domain on a bucket without sources, with delivery generating variant playlists that point there. Only playlists and keys would run through the Worker, cutting its requests by more than 99%, but revoking a playback ID would then stop key fetches rather than segment fetches.
 - [ ] Choose which languages get an SDK for signing tokens.
-- [ ] Decide when captions, storyboards and viewer analytics enter the roadmap. The generated master means captions won't need a new output.
+- [ ] Decide when storyboards enter the roadmap. Captions came in Phase 5 (the generated master meant no new output), and viewer analytics with D100: its UI in P6, its API in Phase 7 (D102, D103).
 - [ ] Confirm the defaults this revision picked: a 7-day maximum token lifetime, retry budgets of 5 and 3, a 15-minute reconciler, and per-output keys derived from one secret.
 
 Smaller items raised by the audit and not yet designed:
 
 - [x] If `serve` runs as more than one replica, elect one leader with `pg_try_advisory_lock` for the sweepers, dispatcher and outbox publisher. *(D035)*
 - [x] Ship one set of test vectors for the Go handler and the Worker, mapping a URL, token and route to an expected status, plus vectors for key derivation. *(D015, D036)*
-- [ ] Give the `vid` claim somewhere to be logged, such as Logpush or Analytics Engine, or drop it from the threats table.
+- [x] Give the `vid` claim somewhere to be logged, such as Logpush or Analytics Engine, or drop it from the threats table. *(D103: kept only as a keyed hash in analytics, built in Phase 7)*
 - [x] For SSRF, pin the resolved IP for each connection, and also block IPv6 ULA and IPv4-mapped ranges. *(`internal/publicnet`, D039)*
 - [ ] Time out jobs pinned to an agent that never returns, and tell the agent when its source's asset is deleted.
 - [x] Cache routes in the built-in handler, and document its revocation delay. *(D072)*

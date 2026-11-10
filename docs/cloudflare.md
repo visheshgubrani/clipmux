@@ -56,16 +56,19 @@ If you'd rather not paste a token, deploy the Worker yourself:
      "main": "worker.js",
      "compatibility_date": "2026-07-01",
      "r2_buckets": [{ "binding": "MEDIA", "bucket_name": "<bucket>" }],
-     "vars": { "ORIGIN_URL": "https://<your ClipMux public URL>" },
+     "vars": { "ORIGIN_URL": "https://<your ClipMux public URL>", "PROJECT_ID": "prj_default" },
+     "analytics_engine_datasets": [{ "binding": "ANALYTICS", "dataset": "clipmux_delivery" }],
      "routes": [{ "pattern": "<media hostname>", "custom_domain": true }]
    }
    ```
 
    and set the content key secrets, which `clipmux admin` prints:
-   `wrangler secret put CONTENT_KEYS`.
+   `wrangler secret put CONTENT_KEYS`. Without `ANALYTICS_KEY` (the
+   project's analytics key, 64 hex digits) the Worker still counts views,
+   watch time and bytes, but no unique viewers.
 4. Switch the project's delivery to the Worker on that bucket.
 
-Steps 2 and 4 and the `CONTENT_KEYS` export have no CLI yet (known gap); the
+Steps 2 and 4 and the `CONTENT_KEYS` and `ANALYTICS_KEY` exports have no CLI yet (known gap); the
 dashboard flow is the supported path in this release.
 
 

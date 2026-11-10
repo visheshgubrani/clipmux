@@ -42,7 +42,7 @@ import (
 )
 
 var (
-	errNotFound = errors.New("lifecycle: no such asset")
+	ErrNotFound = errors.New("lifecycle: no such asset")
 	// errChanged means the asset's active job changed between reading and
 	// locking it; the transaction is retried.
 	errChanged = errors.New("lifecycle: the asset's active job changed")
@@ -92,6 +92,7 @@ func New(pool *pgxpool.Pool, set *stores.Set, routes *outputs.Committer) *Servic
 func (s *Service) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/assets", s.handleImport)
 	mux.HandleFunc("DELETE /v1/assets/{id}", s.handleDelete)
+	mux.HandleFunc("PATCH /v1/assets/{id}", s.handlePatch)
 	mux.HandleFunc("POST /v1/assets/{id}/reencode", s.handleReencode)
 	mux.HandleFunc("POST /v1/assets/{id}/tracks", s.handleRegenerateTrack)
 	mux.HandleFunc("DELETE /v1/assets/{id}/tracks/{track}", s.handleDeleteTrack)
@@ -109,7 +110,7 @@ func (s *Service) handleDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	view, done, err := s.Delete(r.Context(), key, r.PathValue("id"))
 	switch {
-	case errors.Is(err, errNotFound):
+	case errors.Is(err, ErrNotFound):
 		httpjson.Error(w, http.StatusNotFound, "not_found", "no such asset")
 	case err != nil:
 		s.Logger.ErrorContext(r.Context(), "delete asset", "asset", r.PathValue("id"), "err", err)
@@ -154,7 +155,7 @@ func (s *Service) Delete(ctx context.Context, key apikeys.Key, assetID string) (
 func (s *Service) markDeleted(ctx context.Context, tx pgx.Tx, key apikeys.Key, assetID string) error {
 	q := db.New(tx)
 	if _, err := q.GetAsset(ctx, db.GetAssetParams{ID: assetID, AppID: key.AppID}); errors.Is(err, pgx.ErrNoRows) {
-		return errNotFound
+		return ErrNotFound
 	} else if err != nil {
 		return err
 	}

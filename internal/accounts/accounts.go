@@ -307,6 +307,7 @@ func (s *Service) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/session", s.handleLogin)
 	mux.HandleFunc("GET /v1/session", s.handleSession)
 	mux.HandleFunc("DELETE /v1/session", s.handleLogout)
+	mux.HandleFunc("PUT /v1/session/password", s.handleChangePassword)
 	mux.HandleFunc("POST /v1/session/totp", s.handleStartTOTP)
 	mux.HandleFunc("POST /v1/session/totp/enable", s.handleEnableTOTP)
 	mux.HandleFunc("POST /v1/session/totp/disable", s.handleDisableTOTP)
@@ -407,5 +408,42 @@ func (s *Service) handleLogout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.setCookie(w, "", -1)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleChangePassword sets a new password once the current one is given
+// again (limited like a sign-in). Every other session ends; this one stays
+// signed in.
+func (s *Service) handleChangePassword(w http.ResponseWriter, r *http.Request) {
+	owner, ok := s.ownerFor(w, r)
+	if !ok {
+		return
+	}
+	var body struct {
+		Current string `json:"current_password"`
+		New     string `json:"new_password"`
+	}
+	if !httpjson.Decode(w, r, &body) {
+		return
+	}
+	if !validPassword(body.New) {
+		s.fail(w, "password", errWeakPassword)
+		return
+	}
+	if !s.passwordOK(w, r, owner.ID, body.Current) {
+		return
+	}
+	err := pgx.BeginFunc(r.Context(), s.pool, func(tx pgx.Tx) error {
+		q := db.New(tx)
+		if err := q.SetOwnerPassword(r.Context(), db.SetOwnerPasswordParams{ID: owner.ID, PasswordHash: HashPassword(body.New)}); err != nil {
+			return err
+		}
+		return q.DeleteOtherOwnerSessions(r.Context(), db.DeleteOtherOwnerSessionsParams{OwnerID: owner.ID, TokenHash: hashToken(s.sessionToken(r))})
+	})
+	if err != nil {
+		s.fail(w, "password", err)
+		return
+	}
+	s.Logger.InfoContext(r.Context(), "password changed; other sessions ended", "owner", owner.ID)
 	w.WriteHeader(http.StatusNoContent)
 }

@@ -7,6 +7,7 @@ import { defineConfig } from 'vite'
 // proxies the API to a local `clipmux serve`.
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  resolve: { alias: { '@': resolve(import.meta.dirname, 'src') } },
   build: {
     outDir: resolve(import.meta.dirname, '../internal/web/dist'),
     emptyOutDir: true,

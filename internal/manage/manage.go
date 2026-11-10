@@ -22,6 +22,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/visheshgubrani/clipmux/internal/accounts"
+	"github.com/visheshgubrani/clipmux/internal/analytics"
 	"github.com/visheshgubrani/clipmux/internal/apikeys"
 	"github.com/visheshgubrani/clipmux/internal/assets"
 	"github.com/visheshgubrani/clipmux/internal/chapters"
@@ -38,6 +39,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/setuptest"
 	"github.com/visheshgubrani/clipmux/internal/signingkeys"
 	"github.com/visheshgubrani/clipmux/internal/speechapi"
+	"github.com/visheshgubrani/clipmux/internal/stores"
 	"github.com/visheshgubrani/clipmux/internal/tokens"
 	"github.com/visheshgubrani/clipmux/internal/webhooks"
 )
@@ -61,6 +63,8 @@ type API struct {
 	Tests *setuptest.Runner
 	// Cloudflare connects Worker delivery; nil leaves its routes 404.
 	Cloudflare *cloudflare.Connector
+	// Edge pulls the Worker's analytics with a read-only token (P7-T05).
+	Edge *analytics.Edge
 	// RunPod runs Connect RunPod; nil leaves its routes 404.
 	RunPod *runpod.Connector
 	// Modal runs Connect Modal; nil leaves its routes 404.
@@ -72,6 +76,9 @@ type API struct {
 	Chapters *chapters.Service
 	// Life queues library moves; nil leaves their routes 404.
 	Life *lifecycle.Service
+	// Stores lists, adds and removes storage configs; nil leaves their
+	// routes 404.
+	Stores *stores.Set
 	// Keys rotates the content key secret; nil leaves its route 404.
 	Keys   *ContentKeys
 	Now    func() time.Time
@@ -142,15 +149,25 @@ func (m *API) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/webhook-endpoints/{id}/deliveries", m.owned(m.listDeliveries))
 	mux.HandleFunc("POST /v1/webhook-deliveries/{id}/redeliver", m.owned(m.redeliver))
 	mux.HandleFunc("GET /v1/library", m.owned(m.library))
+	mux.HandleFunc("GET /v1/library/counts", m.owned(m.libraryCounts))
 	mux.HandleFunc("POST /v1/assets/{id}/preview-token", m.owned(m.previewToken))
 	mux.HandleFunc("POST /v1/setup-test", m.owned(m.startSetupTest))
 	mux.HandleFunc("GET /v1/setup-test/latest", m.owned(m.latestSetupTest))
 	mux.HandleFunc("GET /v1/cloudflare", m.owned(m.cloudflareStatus))
 	mux.HandleFunc("POST /v1/cloudflare/connect", m.owned(m.connectCloudflare))
+	mux.HandleFunc("DELETE /v1/cloudflare", m.owned(m.disconnectCloudflare))
+	mux.HandleFunc("GET /v1/cloudflare/analytics", m.owned(m.edgeAnalytics))
+	mux.HandleFunc("POST /v1/cloudflare/analytics", m.owned(m.connectEdgeAnalytics))
+	mux.HandleFunc("DELETE /v1/cloudflare/analytics", m.owned(m.disconnectEdgeAnalytics))
 	mux.HandleFunc("POST /v1/content-keys/rotate", m.owned(m.rotateContentKey))
 	mux.HandleFunc("GET /v1/jobs", m.owned(m.listJobs))
 	mux.HandleFunc("GET /v1/jobs/{id}", m.owned(m.getJob))
 	mux.HandleFunc("POST /v1/agents/{id}/reencode", m.owned(m.reencodeAgentOutputs))
+	mux.HandleFunc("GET /v1/storage", m.owned(m.listStorage))
+	mux.HandleFunc("POST /v1/storage", m.owned(m.addStorage))
+	mux.HandleFunc("PUT /v1/storage/{id}/credentials", m.owned(m.rotateStorageCredentials))
+	mux.HandleFunc("POST /v1/storage/{id}/default", m.owned(m.setDefaultStorage))
+	mux.HandleFunc("DELETE /v1/storage/{id}", m.owned(m.removeStorage))
 	mux.HandleFunc("GET /v1/storage/moves", m.owned(m.moveProgress))
 	mux.HandleFunc("POST /v1/storage/moves", m.owned(m.moveLibrary))
 }
@@ -231,6 +248,74 @@ func (m *API) connectCloudflare(w http.ResponseWriter, r *http.Request, _ accoun
 		return err
 	}
 	httpjson.Write(w, http.StatusOK, res)
+	return nil
+}
+
+// disconnectCloudflare moves delivery back to the built-in handler.
+func (m *API) disconnectCloudflare(w http.ResponseWriter, r *http.Request, _ accounts.Owner) error {
+	if m.Cloudflare == nil {
+		return errNotFound
+	}
+	res, err := m.Cloudflare.Disconnect(r.Context())
+	switch {
+	case errors.Is(err, cloudflare.ErrNotConnected):
+		return httpjson.Fail(http.StatusNotFound, "not_connected", "Cloudflare isn't connected")
+	case errors.Is(err, cloudflare.ErrMediaURLPinned):
+		return httpjson.Fail(http.StatusConflict, "pinned", "CLIPMUX_MEDIA_URL names the Worker; change it to the public URL and restart first")
+	case err != nil:
+		return err
+	}
+	httpjson.Write(w, http.StatusOK, res)
+	return nil
+}
+
+// edgeAnalytics reports the edge analytics connection and its last pull.
+func (m *API) edgeAnalytics(w http.ResponseWriter, r *http.Request, _ accounts.Owner) error {
+	if m.Edge == nil {
+		return errNotFound
+	}
+	st, err := m.Edge.Status(r.Context())
+	if err != nil {
+		return err
+	}
+	httpjson.Write(w, http.StatusOK, st)
+	return nil
+}
+
+// connectEdgeAnalytics keeps a read-only Cloudflare token (Account
+// Analytics: Read) that serve pulls the Worker's counts with.
+func (m *API) connectEdgeAnalytics(w http.ResponseWriter, r *http.Request, _ accounts.Owner) error {
+	if m.Edge == nil {
+		return errNotFound
+	}
+	var req struct {
+		Token string `json:"token"`
+	}
+	if err := decode(w, r, &req); err != nil {
+		return err
+	}
+	switch err := m.Edge.Connect(r.Context(), req.Token); {
+	case errors.Is(err, analytics.ErrNoCloudflare):
+		return httpjson.Fail(http.StatusConflict, "not_connected", "connect Cloudflare delivery first")
+	case errors.Is(err, analytics.ErrTokenRejected):
+		return httpjson.Fail(http.StatusBadRequest, "token_rejected", "Cloudflare rejected the token; it needs Account Analytics: Read on the delivery account")
+	case err != nil:
+		return err
+	}
+	return m.edgeAnalytics(w, r, accounts.Owner{})
+}
+
+// disconnectEdgeAnalytics forgets the token; counts already pulled stay.
+func (m *API) disconnectEdgeAnalytics(w http.ResponseWriter, r *http.Request, _ accounts.Owner) error {
+	if m.Edge == nil {
+		return errNotFound
+	}
+	if err := m.Edge.Disconnect(r.Context()); errors.Is(err, analytics.ErrEdgeNotConnected) {
+		return httpjson.Fail(http.StatusNotFound, "not_connected", "edge analytics isn't connected")
+	} else if err != nil {
+		return err
+	}
+	w.WriteHeader(http.StatusNoContent)
 	return nil
 }
 
@@ -486,8 +571,12 @@ func (m *API) createAPIKey(w http.ResponseWriter, r *http.Request, o accounts.Ow
 	if !m.urls.KeysAllowed() {
 		return httpjson.Fail(http.StatusConflict, "public_url_required", "set a public URL reachable from outside this machine before creating API keys")
 	}
+	body.Name = strings.TrimSpace(body.Name)
 	if body.Name == "" {
 		body.Name = "default"
+	}
+	if len([]rune(body.Name)) > 100 {
+		return httpjson.Fail(http.StatusBadRequest, "invalid_request", "a key name is at most 100 characters")
 	}
 	if len(body.Scopes) == 0 {
 		body.Scopes = []string{apikeys.UploadsWrite, apikeys.AssetsRead, apikeys.AssetsWrite}
@@ -718,7 +807,10 @@ func (m *API) redeliver(w http.ResponseWriter, r *http.Request, o accounts.Owner
 
 const maxPage = 100
 
-// library lists every app's assets, newest first.
+// library lists every app's assets, newest first. Deleted assets are left
+// out unless include_deleted=true (or status=deleted); q finds an exact
+// asset ID, or a title or passthrough containing it (D099). Each item
+// carries a poster URL the dashboard can show as it is.
 func (m *API) library(w http.ResponseWriter, r *http.Request, o accounts.Owner) error {
 	query := r.URL.Query()
 	before, beforeID := time.Date(9999, 1, 1, 0, 0, 0, 0, time.UTC), "~"
@@ -736,9 +828,21 @@ func (m *API) library(w http.ResponseWriter, r *http.Request, o accounts.Owner) 
 		}
 		limit = n
 	}
+	withDeleted := false
+	if d := query.Get("include_deleted"); d != "" {
+		var err error
+		if withDeleted, err = strconv.ParseBool(d); err != nil {
+			return httpjson.Fail(http.StatusBadRequest, "invalid_request", "include_deleted must be true or false")
+		}
+	}
+	search := strings.TrimSpace(query.Get("q"))
+	if len(search) > maxSearch {
+		return httpjson.Fail(http.StatusBadRequest, "invalid_request", "q is limited to 255 bytes")
+	}
 	q := db.New(m.pool)
 	rows, err := q.ListLibrary(r.Context(), db.ListLibraryParams{
 		ProjectID: o.ProjectID, AppID: optText(query.Get("app_id")), Status: optText(query.Get("status")),
+		IncludeDeleted: withDeleted, Search: optText(search), Pattern: optText(likePattern(search)),
 		BeforeTime: pgtype.Timestamptz{Time: before, Valid: true}, BeforeID: beforeID, MaxAssets: int32(limit + 1),
 	})
 	if err != nil {
@@ -749,7 +853,90 @@ func (m *API) library(w http.ResponseWriter, r *http.Request, o accounts.Owner) 
 		rows = rows[:limit]
 		next = assets.EncodeCursor(rows[limit-1].CreatedAt.Time, rows[limit-1].ID)
 	}
-	return assets.WriteList(r.Context(), w, q, rows, next)
+	views, err := assets.LoadMany(r.Context(), q, rows)
+	if err != nil {
+		return err
+	}
+	items := make([]libraryItem, len(views))
+	var signer signingkeys.Signer
+	signed := false
+	for i, v := range views {
+		items[i].View = v
+		pid, public := posterID(v)
+		switch {
+		case pid == "":
+		case public:
+			u := v.BaseURL + "/p/" + pid + "/poster.jpg"
+			items[i].PosterURL = &u
+		default:
+			if !signed {
+				if signer, err = signingkeys.Internal(r.Context(), m.pool, m.box, o.ProjectID); err != nil {
+					return err
+				}
+				signed = true
+			}
+			tok, _, err := m.preview(signer, pid, tokens.AudienceThumbnail)
+			if err != nil {
+				return err
+			}
+			u := v.BaseURL + "/v/" + tok + "/" + pid + "/poster.jpg"
+			items[i].PosterURL = &u
+		}
+	}
+	body := map[string]any{"data": items}
+	if next != "" {
+		body["next_cursor"] = next
+	}
+	httpjson.Write(w, http.StatusOK, body)
+	return nil
+}
+
+// maxSearch bounds the library's q, the length of a passthrough.
+const maxSearch = 255
+
+// libraryItem is an asset in the library: its view, and where its poster
+// is, null until it has a playable ID.
+type libraryItem struct {
+	assets.View
+	PosterURL *string `json:"poster_url"`
+}
+
+// posterID picks the playback ID a poster is fetched through: a public one
+// needs no token, so it wins; else the first playable signed one. A share
+// link's own ID is never used, so revoking a link leaves the poster alone.
+func posterID(v assets.View) (string, bool) {
+	pick := ""
+	for _, p := range v.PlaybackIDs {
+		if !p.Playable || p.Share != nil {
+			continue
+		}
+		if p.Policy == "public" {
+			return p.ID, true
+		}
+		if pick == "" {
+			pick = p.ID
+		}
+	}
+	return pick, false
+}
+
+// likePattern matches s anywhere, with LIKE's wildcards in s taken
+// literally; "" stays "" (no search).
+func likePattern(s string) string {
+	if s == "" {
+		return ""
+	}
+	return "%" + strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(s) + "%"
+}
+
+// libraryCounts counts the library's assets by status, for the filter chips.
+func (m *API) libraryCounts(w http.ResponseWriter, r *http.Request, o accounts.Owner) error {
+	c, err := db.New(m.pool).CountLibrary(r.Context(), db.CountLibraryParams{ProjectID: o.ProjectID, AppID: optText(r.URL.Query().Get("app_id"))})
+	if err != nil {
+		return err
+	}
+	httpjson.Write(w, http.StatusOK, map[string]int64{"ready": c.Ready, "processing": c.Processing, "errored": c.Errored, "waiting_upload": c.WaitingUpload})
+	return nil
 }
 
 func optText(s string) pgtype.Text { return pgtype.Text{String: s, Valid: s != ""} }
@@ -773,9 +960,7 @@ func (m *API) previewToken(w http.ResponseWriter, r *http.Request, o accounts.Ow
 	if err != nil {
 		return err
 	}
-	now := m.Now().Unix()
-	exp := now + int64(PreviewLifetime/time.Second)
-	tok, err := signer.Sign(tokens.Claims{Sub: pid, Aud: tokens.AudiencePlayback, Iat: now, Exp: exp})
+	tok, exp, err := m.preview(signer, pid, tokens.AudiencePlayback)
 	if err != nil {
 		return err
 	}
@@ -784,16 +969,26 @@ func (m *API) previewToken(w http.ResponseWriter, r *http.Request, o accounts.Ow
 		return err
 	}
 	httpjson.Write(w, http.StatusOK, map[string]any{
-		"playback_id": pid, "token": tok, "expires_at": time.Unix(exp, 0).UTC(),
+		"playback_id": pid, "token": tok, "expires_at": exp,
 		"url": base + "/v/" + tok + "/" + pid + "/master.m3u8",
 	})
 	return nil
 }
 
+// preview signs a PreviewLifetime token for one playback ID with the
+// server's internal key: aud v plays it, aud t fetches only its poster.
+func (m *API) preview(signer signingkeys.Signer, pid, aud string) (string, time.Time, error) {
+	now := m.Now().Unix()
+	exp := now + int64(PreviewLifetime/time.Second)
+	tok, err := signer.Sign(tokens.Claims{Sub: pid, Aud: aud, Iat: now, Exp: exp})
+	return tok, time.Unix(exp, 0).UTC(), err
+}
+
 // firstLive picks the asset's first active playback ID, preferring a signed
-// one (a public one plays under a token URL too).
+// one (a public one plays under a token URL too). Share links' IDs are left
+// out (D104), so revoking a link never ends a preview.
 func firstLive(ctx context.Context, q *db.Queries, assetID string) (string, error) {
-	pids, err := q.ListPlaybackIDs(ctx, assetID)
+	pids, err := q.ListPreviewPlaybackIDs(ctx, assetID)
 	if err != nil {
 		return "", err
 	}

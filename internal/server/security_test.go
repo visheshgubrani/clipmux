@@ -109,3 +109,36 @@ func TestPlaybackIsLimitedByRefusalsOnly(t *testing.T) {
 		t.Fatalf("only playback paths are limited by refusals: %d", code)
 	}
 }
+
+// Guessing share secrets (D104) spends the same budget: unknown links
+// answer 404 and expired ones 410, and either way the address is limited.
+func TestShareSecretsAreLimitedByRefusals(t *testing.T) {
+	f := newRefusals(func(*http.Request) netip.Addr { return netip.MustParseAddr("203.0.113.66") })
+	h := f.wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/s/EXPIRED/playback":
+			w.WriteHeader(http.StatusGone)
+		case "/s/GOOD/playback":
+			w.WriteHeader(http.StatusOK)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	do := func(path string) int {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest("POST", path, nil))
+		return rec.Code
+	}
+	for i := 1; i <= RefusalsPerWindow; i++ {
+		path := "/s/GUESS/playback"
+		if i%2 == 0 {
+			path = "/s/EXPIRED/playback"
+		}
+		if code := do(path); code == http.StatusTooManyRequests {
+			t.Fatalf("refusal %d was limited before the budget was spent", i)
+		}
+	}
+	if code := do("/s/GOOD/playback"); code != http.StatusTooManyRequests {
+		t.Fatalf("after %d refusals: %d, want 429", RefusalsPerWindow, code)
+	}
+}

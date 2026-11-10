@@ -57,7 +57,11 @@ func classify(r *http.Request) routeClass {
 	case r.Method == http.MethodPost && (p == "/v1/cloudflare/connect" || p == "/v1/setup-test" || p == "/v1/content-keys/rotate" ||
 		strings.HasPrefix(p, "/v1/executors/") && strings.HasSuffix(p, "/connect") ||
 		strings.HasPrefix(p, "/worker/v1/attempts/") && strings.HasSuffix(p, "/complete")),
-		r.Method == http.MethodDelete && strings.HasPrefix(p, "/v1/assets/") && !strings.Contains(p, "/playback-ids/"):
+		r.Method == http.MethodDelete && strings.HasPrefix(p, "/v1/assets/") && !strings.Contains(p, "/playback-ids/"),
+		// Checking a bucket, or clearing the Worker's routes from one.
+		r.Method == http.MethodPost && p == "/v1/storage",
+		r.Method == http.MethodPut && strings.HasPrefix(p, "/v1/storage/") && strings.HasSuffix(p, "/credentials"),
+		r.Method == http.MethodDelete && p == "/v1/cloudflare":
 		return classLong
 	}
 	return classAPI

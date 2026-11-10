@@ -1,263 +1,363 @@
-import { type FormEvent, useCallback, useEffect, useState } from 'react'
-import { ApiError, api, post, type Step } from '../api.ts'
-import { Button } from '../components/ui/button.tsx'
-import { Card, CardTitle, Muted } from '../components/ui/card.tsx'
-import { Input } from '../components/ui/input.tsx'
-import { Steps } from './routing.tsx'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import * as React from 'react'
+import { type ChaptersStatus, del, describe, post, put, type SpeechStatus, type Step } from '@/api'
+import { useConfirm } from '@/components/confirm'
+import { PageBody, PageHeader, Section } from '@/components/page'
+import { QueryState } from '@/components/query-state'
+import { Steps } from '@/components/steps'
+import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
+import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from '@/components/ui/field'
+import { Input } from '@/components/ui/input'
+import { Item, ItemActions, ItemContent, ItemDescription, ItemTitle } from '@/components/ui/item'
+import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
+import { Skeleton } from '@/components/ui/skeleton'
+import { Spinner } from '@/components/ui/spinner'
+import { notify } from '@/lib/notify'
+import { q } from '@/queries'
 
-// Captions (P5 track B): where transcriptions run (D075), the speech API
-// that can take them, and the LLM that makes chapters (D083). Each Connect
-// runs its steps and saves only if they all pass.
+// Captions & AI (P5 track B): where transcriptions run (D075), the speech
+// API that can take them, and the LLM that makes chapters (D083). Each
+// option says what, if anything, leaves your infrastructure.
 
-interface SpeechStatus {
-  mode: 'local' | 'api' | 'local_then_api'
-  connection: { base_url: string; model: string; has_key: boolean; verified_at: string } | null
-}
-
-interface ChaptersStatus {
-  connection: {
-    provider: 'openai_compatible' | 'anthropic'
-    base_url?: string
-    model: string
-    response_format?: string
-    has_key: boolean
-    verified_at: string
-  } | null
-}
-
-const selectClass = 'h-9 w-full rounded-md border border-zinc-300 bg-white px-2 text-sm'
-
-const modes: Record<SpeechStatus['mode'], string> = {
-  local: 'On this server and your PCs (whisper.cpp)',
-  local_then_api: 'Locally, else the speech API',
-  api: 'Always the speech API',
-}
-
-function useConnect(path: string, onDone: () => void) {
-  const [steps, setSteps] = useState<Step[]>([])
-  const [busyState, setBusy] = useState(false)
-  const [error, setError] = useState('')
-  const connect = async (e: FormEvent<HTMLFormElement>, body: Record<string, unknown>) => {
-    e.preventDefault()
-    const el = e.currentTarget
-    setBusy(true)
-    setError('')
-    setSteps([])
-    try {
-      const res = await post<{ connected: boolean; steps: Step[] }>(path, body)
-      setSteps(res.steps)
-      if (res.connected) el.reset()
-      onDone()
-    } catch (err) {
-      setError(err instanceof ApiError ? err.message : String(err))
-    } finally {
-      setBusy(false)
-    }
-  }
-  return { steps, busy: busyState, error, setError, connect }
-}
-
-function SpeechCard() {
-  const [st, setSt] = useState<SpeechStatus | null>(null)
-  const load = useCallback(async () => setSt(await api<SpeechStatus>('/v1/settings/speech')), [])
-  useEffect(() => {
-    void load()
-  }, [load])
-  const c = useConnect('/v1/settings/speech/connect', load)
-  if (!st) return null
-  const setMode = async (mode: string) => {
-    c.setError('')
-    try {
-      setSt(await api<SpeechStatus>('/v1/settings/speech', { method: 'PUT', body: JSON.stringify({ mode }) }))
-    } catch (err) {
-      c.setError(err instanceof ApiError ? err.message : String(err))
-    }
-  }
-  const disconnect = async () => {
-    if (!confirm('Disconnect the speech API? Transcriptions go back to this server and your PCs.')) return
-    setSt(await api<SpeechStatus>('/v1/settings/speech/connect', { method: 'DELETE' }))
-  }
-  return (
-    <Card className="grid gap-4" aria-label="Speech">
-      <CardTitle>Subtitles</CardTitle>
-      <Muted>
-        Subtitles are transcribed with whisper.cpp on workers that can (see Workers), or by a speech API you
-        connect. <strong>With a speech API, the video's audio leaves your infrastructure.</strong>
-      </Muted>
-      <label className="grid gap-1.5 text-sm font-medium">
-        Transcribe
-        <select
-          className={selectClass}
-          value={st.mode}
-          onChange={(e) => void setMode(e.target.value)}
-          aria-label="Transcribe"
-        >
-          {Object.entries(modes).map(([v, label]) => (
-            <option key={v} value={v} disabled={v !== 'local' && !st.connection}>
-              {label}
-            </option>
-          ))}
-        </select>
-      </label>
-      {st.connection ? (
-        <div className="flex items-center justify-between rounded-md border border-zinc-200 p-3 text-sm">
-          <span>
-            {st.connection.model} at <span className="font-mono text-xs">{st.connection.base_url}</span>
-          </span>
-          <Button variant="outline" size="sm" onClick={() => void disconnect()}>
-            Disconnect
-          </Button>
-        </div>
-      ) : null}
-      <details className="rounded-md border border-zinc-200 p-3">
-        <summary className="cursor-pointer text-sm font-medium">Connect a speech API</summary>
-        <form
-          className="mt-3 grid gap-3"
-          aria-label="Connect a speech API"
-          onSubmit={(e) => {
-            const f = new FormData(e.currentTarget)
-            void c.connect(e, {
-              base_url: f.get('base_url'),
-              model: f.get('model'),
-              api_key: f.get('api_key'),
-            })
-          }}
-        >
-          <Input
-            name="base_url"
-            placeholder="https://api.groq.com/openai/v1"
-            aria-label="Speech API URL"
-            required
-          />
-          <Input name="model" placeholder="whisper-large-v3-turbo" aria-label="Speech model" required />
-          <Input
-            name="api_key"
-            type="password"
-            placeholder="API key (empty for a server that needs none)"
-            aria-label="Speech API key"
-            autoComplete="off"
-          />
-          <div>
-            <Button type="submit" disabled={c.busy}>
-              {c.busy ? 'Connecting…' : 'Connect'}
-            </Button>
-          </div>
-        </form>
-        <div className="mt-2">
-          <Steps steps={c.steps} />
-        </div>
-      </details>
-      {c.error && <p className="text-sm text-red-700">{c.error}</p>}
-    </Card>
-  )
-}
-
-function ChaptersCard() {
-  const [st, setSt] = useState<ChaptersStatus | null>(null)
-  const [provider, setProvider] = useState<'openai_compatible' | 'anthropic'>('anthropic')
-  const load = useCallback(async () => setSt(await api<ChaptersStatus>('/v1/settings/chapters')), [])
-  useEffect(() => {
-    void load()
-  }, [load])
-  const c = useConnect('/v1/settings/chapters/connect', load)
-  if (!st) return null
-  const disconnect = async () => {
-    if (!confirm('Disconnect the LLM? Chapters already made keep playing.')) return
-    setSt(await api<ChaptersStatus>('/v1/settings/chapters/connect', { method: 'DELETE' }))
-  }
-  return (
-    <Card className="grid gap-4" aria-label="Chapters">
-      <CardTitle>Chapters</CardTitle>
-      <Muted>
-        Chapters are made from a video's transcript by an LLM you connect: Claude, or any OpenAI-compatible
-        API such as OpenAI, Ollama or vLLM. <strong>The transcript's text is sent to that provider.</strong>
-      </Muted>
-      {st.connection ? (
-        <div
-          className="flex items-center justify-between rounded-md border border-zinc-200 p-3 text-sm"
-          data-connected="chapters"
-        >
-          <span>
-            {st.connection.provider === 'anthropic' ? 'Claude' : 'OpenAI-compatible'}: {st.connection.model}
-            {st.connection.base_url && (
-              <span className="font-mono text-xs"> at {st.connection.base_url}</span>
-            )}
-          </span>
-          <Button variant="outline" size="sm" onClick={() => void disconnect()}>
-            Disconnect
-          </Button>
-        </div>
-      ) : (
-        <Muted>No LLM connected: uploads asking for chapters get them errored with llm_not_connected.</Muted>
-      )}
-      <details className="rounded-md border border-zinc-200 p-3" open={!st.connection}>
-        <summary className="cursor-pointer text-sm font-medium">Connect an LLM</summary>
-        <form
-          className="mt-3 grid gap-3"
-          aria-label="Connect an LLM"
-          onSubmit={(e) => {
-            const f = new FormData(e.currentTarget)
-            void c.connect(e, {
-              provider,
-              base_url: f.get('base_url') ?? '',
-              model: f.get('model') ?? '',
-              api_key: f.get('api_key'),
-            })
-          }}
-        >
-          <select
-            className={selectClass}
-            value={provider}
-            onChange={(e) => setProvider(e.target.value as typeof provider)}
-            aria-label="LLM provider"
-          >
-            <option value="anthropic">Claude (Anthropic)</option>
-            <option value="openai_compatible">OpenAI-compatible (OpenAI, Ollama, vLLM, Groq…)</option>
-          </select>
-          {provider === 'openai_compatible' && (
-            <Input
-              name="base_url"
-              placeholder="https://api.openai.com/v1 or http://ollama.lan:11434/v1"
-              aria-label="LLM API URL"
-              required
-            />
-          )}
-          <Input
-            name="model"
-            placeholder={provider === 'anthropic' ? 'claude-opus-5-5' : 'gpt-5-mini'}
-            aria-label="LLM model"
-            required={provider === 'openai_compatible'}
-          />
-          <Input
-            name="api_key"
-            type="password"
-            placeholder={
-              provider === 'anthropic' ? 'Anthropic API key' : 'API key (empty for a server that needs none)'
-            }
-            aria-label="LLM API key"
-            autoComplete="off"
-            required={provider === 'anthropic'}
-          />
-          <div>
-            <Button type="submit" disabled={c.busy}>
-              {c.busy ? 'Connecting…' : 'Connect'}
-            </Button>
-          </div>
-        </form>
-        <div className="mt-2">
-          <Steps steps={c.steps} />
-        </div>
-      </details>
-      {c.error && <p className="text-sm text-red-700">{c.error}</p>}
-    </Card>
-  )
-}
+const modes: { value: SpeechStatus['mode']; title: string; leaves: string; needsApi: boolean }[] = [
+  {
+    value: 'local',
+    title: 'On this server and your PCs (whisper.cpp)',
+    leaves: 'Nothing leaves your infrastructure.',
+    needsApi: false,
+  },
+  {
+    value: 'local_then_api',
+    title: 'Locally, else the speech API',
+    leaves: 'Audio goes to the speech API only when no machine with speech is free.',
+    needsApi: true,
+  },
+  {
+    value: 'api',
+    title: 'Always the speech API',
+    leaves: "Every video's audio goes to the speech API.",
+    needsApi: true,
+  },
+]
 
 export function Captions() {
   return (
-    <>
-      <SpeechCard />
-      <ChaptersCard />
-    </>
+    <PageBody className="max-w-[880px]">
+      <PageHeader
+        title="Captions & AI"
+        description="Subtitles are made on your own machines by default. Each option says what, if anything, leaves your infrastructure."
+      />
+      <SpeechSection />
+      <ChaptersSection />
+    </PageBody>
+  )
+}
+
+function useConnect(path: string, invalidate: string) {
+  const qc = useQueryClient()
+  const [steps, setSteps] = React.useState<Step[]>([])
+  const m = useMutation({
+    mutationFn: (body: object) => post<{ connected: boolean; steps: Step[] }>(path, body),
+    onMutate: () => setSteps([]),
+    onSuccess: (res) => {
+      setSteps(res.steps)
+      void qc.invalidateQueries({ queryKey: [invalidate] })
+    },
+  })
+  return { ...m, steps }
+}
+
+function SpeechSection() {
+  const qc = useQueryClient()
+  const confirm = useConfirm()
+  const speech = useQuery(q.speech())
+  const connect = useConnect('/v1/settings/speech/connect', 'speech')
+  const setMode = useMutation({
+    mutationFn: (mode: string) => put<SpeechStatus>('/v1/settings/speech', { mode }),
+    onSuccess: (next) => qc.setQueryData(['speech'], next),
+    onError: (err) => notify.failed("Couldn't change where subtitles are made", err),
+  })
+  const disconnect = useMutation({
+    mutationFn: () => del<SpeechStatus>('/v1/settings/speech/connect'),
+    onSuccess: (next) => {
+      qc.setQueryData(['speech'], next)
+      notify.done('Speech API disconnected')
+    },
+  })
+  return (
+    <Section title="Subtitles" aria-label="Speech">
+      <QueryState query={speech} what="the speech settings" skeleton={<Skeleton className="h-40 w-full" />}>
+        {(st) => (
+          <div className="flex flex-col gap-4">
+            <Field>
+              <FieldLabel htmlFor="transcribe">Transcribe</FieldLabel>
+              <NativeSelect
+                id="transcribe"
+                aria-label="Transcribe"
+                value={st.mode}
+                onChange={(e) => setMode.mutate(e.target.value)}
+                className="w-full sm:w-96"
+              >
+                {modes.map((m) => (
+                  <NativeSelectOption key={m.value} value={m.value} disabled={m.needsApi && !st.connection}>
+                    {m.title}
+                  </NativeSelectOption>
+                ))}
+              </NativeSelect>
+              <FieldDescription className={st.mode === 'local' ? 'text-success' : 'text-warning'}>
+                {modes.find((m) => m.value === st.mode)?.leaves}
+              </FieldDescription>
+            </Field>
+            {st.connection && (
+              <Item variant="outline" className="bg-card" data-connected="speech">
+                <ItemContent>
+                  <ItemTitle>{st.connection.model}</ItemTitle>
+                  <ItemDescription className="truncate font-mono text-xs">
+                    {st.connection.base_url}
+                  </ItemDescription>
+                </ItemContent>
+                <ItemActions>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="text-destructive"
+                    onClick={async () => {
+                      const ok = await confirm({
+                        title: 'Disconnect the speech API?',
+                        description: 'Transcriptions go back to this server and your PCs.',
+                        action: 'Disconnect',
+                      })
+                      if (ok) disconnect.mutate()
+                    }}
+                  >
+                    Disconnect
+                  </Button>
+                </ItemActions>
+              </Item>
+            )}
+            <Collapsible defaultOpen={false}>
+              <CollapsibleTrigger render={<Button variant="outline" size="sm" />}>
+                {st.connection ? 'Connect a different speech API' : 'Connect a speech API'}
+              </CollapsibleTrigger>
+              <CollapsibleContent className="pt-4">
+                <form
+                  aria-label="Connect a speech API"
+                  className="rounded-lg border bg-card p-4"
+                  onSubmit={(e) => {
+                    e.preventDefault()
+                    const f = new FormData(e.currentTarget)
+                    connect.mutate({
+                      base_url: f.get('base_url'),
+                      model: f.get('model'),
+                      api_key: f.get('api_key'),
+                    })
+                  }}
+                >
+                  <FieldGroup>
+                    <p className="text-sm text-muted-foreground">
+                      Any OpenAI-compatible transcription API. With it, the video's audio leaves your
+                      infrastructure.
+                    </p>
+                    <Field>
+                      <FieldLabel htmlFor="sp-url">Speech API URL</FieldLabel>
+                      <Input
+                        id="sp-url"
+                        name="base_url"
+                        placeholder="https://api.groq.com/openai/v1"
+                        required
+                      />
+                    </Field>
+                    <div className="grid gap-4 sm:grid-cols-2">
+                      <Field>
+                        <FieldLabel htmlFor="sp-model">Speech model</FieldLabel>
+                        <Input id="sp-model" name="model" placeholder="whisper-large-v3-turbo" required />
+                      </Field>
+                      <Field>
+                        <FieldLabel htmlFor="sp-key">Speech API key</FieldLabel>
+                        <Input
+                          id="sp-key"
+                          name="api_key"
+                          type="password"
+                          placeholder="Empty for a server that needs none"
+                          autoComplete="off"
+                        />
+                      </Field>
+                    </div>
+                    {connect.isError && <FieldError>{describe(connect.error)}</FieldError>}
+                    <Steps steps={connect.steps} />
+                    <div>
+                      <Button type="submit" disabled={connect.isPending}>
+                        {connect.isPending && <Spinner data-icon="inline-start" />}
+                        {connect.isPending ? 'Connecting…' : 'Connect'}
+                      </Button>
+                    </div>
+                  </FieldGroup>
+                </form>
+              </CollapsibleContent>
+            </Collapsible>
+          </div>
+        )}
+      </QueryState>
+    </Section>
+  )
+}
+
+function ChaptersSection() {
+  const qc = useQueryClient()
+  const confirm = useConfirm()
+  const chapters = useQuery(q.chapters())
+  const connect = useConnect('/v1/settings/chapters/connect', 'chapters')
+  const [provider, setProvider] = React.useState<'anthropic' | 'openai_compatible'>('anthropic')
+  const disconnect = useMutation({
+    mutationFn: () => del<ChaptersStatus>('/v1/settings/chapters/connect'),
+    onSuccess: (next) => {
+      qc.setQueryData(['chapters'], next)
+      notify.done('LLM disconnected')
+    },
+  })
+  return (
+    <Section
+      title="Chapters"
+      description="An LLM reads a video's transcript and titles its chapters. Only the transcript's text is sent, never the video or its audio."
+      actions={
+        <Badge variant={chapters.data?.connection ? 'success' : 'secondary'}>
+          {chapters.data?.connection ? 'On' : 'Off'}
+        </Badge>
+      }
+      aria-label="Chapters"
+    >
+      <QueryState
+        query={chapters}
+        what="the chapters settings"
+        skeleton={<Skeleton className="h-32 w-full" />}
+      >
+        {(st) => (
+          <div className="flex flex-col gap-4">
+            {st.connection ? (
+              <Item variant="outline" className="bg-card" data-connected="chapters">
+                <ItemContent>
+                  <ItemTitle>
+                    {st.connection.provider === 'anthropic' ? 'Claude' : 'OpenAI-compatible'}:{' '}
+                    {st.connection.model}
+                  </ItemTitle>
+                  {st.connection.base_url && (
+                    <ItemDescription className="truncate font-mono text-xs">
+                      {st.connection.base_url}
+                    </ItemDescription>
+                  )}
+                </ItemContent>
+                <ItemActions>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="text-destructive"
+                    onClick={async () => {
+                      const ok = await confirm({
+                        title: 'Disconnect the LLM?',
+                        description:
+                          'Chapters already made keep playing. New uploads asking for chapters get none.',
+                        action: 'Disconnect',
+                      })
+                      if (ok) disconnect.mutate()
+                    }}
+                  >
+                    Disconnect
+                  </Button>
+                </ItemActions>
+              </Item>
+            ) : (
+              <p className="text-sm text-muted-foreground">
+                No LLM connected, so uploads asking for chapters get none (llm_not_connected).
+              </p>
+            )}
+            <Collapsible defaultOpen={!st.connection}>
+              <CollapsibleTrigger render={<Button variant="outline" size="sm" />}>
+                Connect an LLM
+              </CollapsibleTrigger>
+              <CollapsibleContent className="pt-4">
+                <form
+                  aria-label="Connect an LLM"
+                  className="rounded-lg border bg-card p-4"
+                  onSubmit={(e) => {
+                    e.preventDefault()
+                    const f = new FormData(e.currentTarget)
+                    connect.mutate({
+                      provider,
+                      base_url: f.get('base_url') ?? '',
+                      model: f.get('model') ?? '',
+                      api_key: f.get('api_key'),
+                    })
+                  }}
+                >
+                  <FieldGroup>
+                    <Field>
+                      <FieldLabel htmlFor="llm-provider">LLM provider</FieldLabel>
+                      <NativeSelect
+                        id="llm-provider"
+                        aria-label="LLM provider"
+                        value={provider}
+                        onChange={(e) => setProvider(e.target.value as typeof provider)}
+                      >
+                        <NativeSelectOption value="anthropic">Claude (Anthropic)</NativeSelectOption>
+                        <NativeSelectOption value="openai_compatible">
+                          OpenAI-compatible (OpenAI, Ollama, vLLM, Groq…)
+                        </NativeSelectOption>
+                      </NativeSelect>
+                    </Field>
+                    {provider === 'openai_compatible' && (
+                      <Field>
+                        <FieldLabel htmlFor="llm-url">LLM API URL</FieldLabel>
+                        <Input
+                          id="llm-url"
+                          name="base_url"
+                          placeholder="https://api.openai.com/v1 or http://ollama.lan:11434/v1"
+                          required
+                        />
+                      </Field>
+                    )}
+                    <div className="grid gap-4 sm:grid-cols-2">
+                      <Field>
+                        <FieldLabel htmlFor="llm-model">LLM model</FieldLabel>
+                        <Input
+                          id="llm-model"
+                          name="model"
+                          placeholder={provider === 'anthropic' ? 'claude-sonnet-5-5' : 'gpt-5-mini'}
+                          required={provider === 'openai_compatible'}
+                        />
+                      </Field>
+                      <Field>
+                        <FieldLabel htmlFor="llm-key">LLM API key</FieldLabel>
+                        <Input
+                          id="llm-key"
+                          name="api_key"
+                          type="password"
+                          placeholder={
+                            provider === 'anthropic'
+                              ? 'Anthropic API key'
+                              : 'Empty for a server that needs none'
+                          }
+                          autoComplete="off"
+                          required={provider === 'anthropic'}
+                        />
+                      </Field>
+                    </div>
+                    {connect.isError && <FieldError>{describe(connect.error)}</FieldError>}
+                    <Steps steps={connect.steps} />
+                    <div>
+                      <Button type="submit" disabled={connect.isPending}>
+                        {connect.isPending && <Spinner data-icon="inline-start" />}
+                        {connect.isPending ? 'Connecting…' : 'Connect'}
+                      </Button>
+                    </div>
+                  </FieldGroup>
+                </form>
+              </CollapsibleContent>
+            </Collapsible>
+          </div>
+        )}
+      </QueryState>
+    </Section>
   )
 }

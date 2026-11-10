@@ -57,6 +57,12 @@ type Record struct {
 	// empty, so records of assets without tracks, and their ETags, don't
 	// change (P5-T15).
 	Tracks map[string]Track `json:"tracks,omitempty"`
+	// NoAudio lists the outputs with no audio rendition, in ID order: their
+	// video segments carry the watch time (D103). Omitted when empty.
+	NoAudio []string `json:"no_audio,omitempty"`
+	// Share marks a share link's playback ID, which delivery counts even
+	// under the internal key (D103, D104). Set from P7-T06.
+	Share bool `json:"share,omitempty"`
 }
 
 // Track is one track in a route record.
@@ -202,9 +208,13 @@ func Desired(ctx context.Context, q *db.Queries, playbackID, bucketID string) (*
 	r := &Record{
 		V: 1, AppID: rt.AppID, AssetID: rt.AssetID, OutputID: rt.CurrentOutputID.String, Policy: rt.Policy,
 		Backend: backend(rt.StorageID, bucketID), Outputs: make(map[string]int32, len(outs)), Denied: rt.AppDisabled,
+		Share: rt.Share,
 	}
 	for _, o := range outs {
 		r.Outputs[o.ID] = o.KeyVersion
+		if o.NoAudio {
+			r.NoAudio = append(r.NoAudio, o.ID)
+		}
 	}
 	trks, err := q.ListServableTracks(ctx, rt.AssetID)
 	if err != nil {
@@ -352,11 +362,15 @@ func desiredAll(ctx context.Context, q *db.Queries, projectID, bucketID string) 
 		return nil, err
 	}
 	byAsset := map[string]map[string]int32{}
+	silent := map[string][]string{}
 	for _, o := range outs {
 		if byAsset[o.AssetID] == nil {
 			byAsset[o.AssetID] = map[string]int32{}
 		}
 		byAsset[o.AssetID][o.ID] = o.KeyVersion
+		if o.NoAudio {
+			silent[o.AssetID] = append(silent[o.AssetID], o.ID)
+		}
 	}
 	trks, err := q.ListServableTracksForProject(ctx, projectID)
 	if err != nil {
@@ -378,7 +392,7 @@ func desiredAll(ctx context.Context, q *db.Queries, projectID, bucketID string) 
 		want[rt.PlaybackID] = encode(Record{
 			V: 1, AppID: rt.AppID, AssetID: rt.AssetID, OutputID: rt.CurrentOutputID.String, Policy: rt.Policy,
 			Backend: backend(rt.StorageID, bucketID), Outputs: outputs, Denied: rt.AppDisabled,
-			Tracks: tracksOf[rt.AssetID],
+			Tracks: tracksOf[rt.AssetID], NoAudio: silent[rt.AssetID], Share: rt.Share,
 		})
 	}
 	return want, nil

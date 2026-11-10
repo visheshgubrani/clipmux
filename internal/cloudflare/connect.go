@@ -45,6 +45,10 @@ const (
 	DefaultScript = "clipmux-media"
 )
 
+// AnalyticsDataset is the Analytics Engine dataset the Worker writes to.
+// Installs sharing an account share it; each data point names its project.
+const AnalyticsDataset = "clipmux_delivery"
+
 // Request is what the owner gives: a token, the media hostname, and
 // optionally the bucket (create it first to scope the token to it) and the
 // account when the token reaches several.
@@ -75,6 +79,9 @@ type Connector struct {
 	Keys      contentkey.Ring
 	URLs      *settings.Store
 	ProjectID string
+	// AnalyticsKey hashes viewer IDs (analytics.ViewerKey); the Worker gets
+	// it as a secret so edge and origin viewer keys agree.
+	AnalyticsKey []byte
 	// API is Cloudflare's API base, and R2Endpoint an account's S3
 	// endpoint; tests point both at fakes.
 	API        string
@@ -218,6 +225,9 @@ func (c *Connector) Connect(ctx context.Context, req Request) (Result, error) {
 			{Type: "r2_bucket", Name: "MEDIA", BucketName: req.Bucket},
 			{Type: "plain_text", Name: "ORIGIN_URL", Text: c.URLs.PublicURL()},
 			{Type: "secret_text", Name: "CONTENT_KEYS", Text: c.Keys.WorkerSecret()},
+			{Type: "analytics_engine", Name: "ANALYTICS", Dataset: AnalyticsDataset},
+			{Type: "plain_text", Name: "PROJECT_ID", Text: c.ProjectID},
+			{Type: "secret_text", Name: "ANALYTICS_KEY", Text: hex.EncodeToString(c.AnalyticsKey)},
 		})
 	}) && step("routes", func() (string, error) {
 		// The bucket gets every route before the hostname moves, so the
@@ -269,6 +279,87 @@ func (c *Connector) Connect(ctx context.Context, req Request) (Result, error) {
 		ok = step("setup_test", func() (string, error) { return "queued", c.SetupTest(ctx) })
 	}
 	res.Connected = ok
+	return res, nil
+}
+
+// ErrNotConnected means there is no Cloudflare connection to undo.
+var ErrNotConnected = errors.New("cloudflare: not connected")
+
+// ErrMediaURLPinned means CLIPMUX_MEDIA_URL names the Worker's hostname, so
+// delivery can't move back while the environment says so.
+var ErrMediaURLPinned = errors.New("cloudflare: the environment pins the media URL to the Worker")
+
+// Disconnected is Disconnect's report, step by step like Connect's.
+type Disconnected struct {
+	Disconnected bool   `json:"disconnected"`
+	Steps        []Step `json:"steps"`
+}
+
+// Disconnect returns the project to built-in delivery (D099). The R2 store
+// stays a storage config, still the default if it was: its assets play
+// through this server. Steps stop at the first failure, and each is safe
+// to repeat:
+//
+//   - media_url: back to the public URL, so new playback URLs reach origin;
+//   - delivery: the built-in handler;
+//   - routes: the Worker's route records and _keys.json leave the bucket, so
+//     a request that still reaches the Worker is refused rather than served
+//     from records no one updates any more;
+//   - forgotten: the connection row goes.
+//
+// The Worker, its custom domain and the token stay in the Cloudflare
+// account, since no token is kept to remove them.
+func (c *Connector) Disconnect(ctx context.Context) (Disconnected, error) {
+	q := db.New(c.Pool)
+	conn, err := q.GetCloudflareConnection(ctx, c.ProjectID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Disconnected{}, ErrNotConnected
+	}
+	if err != nil {
+		return Disconnected{}, fmt.Errorf("cloudflare connection: %w", err)
+	}
+	worker := "https://" + conn.Hostname
+	if c.URLs.URLs().Pinned && c.URLs.MediaURL() == worker {
+		return Disconnected{}, ErrMediaURLPinned
+	}
+	var res Disconnected
+	step := func(name string, fn func() (string, error)) bool {
+		detail, err := fn()
+		s := Step{Name: name, OK: err == nil, Detail: detail}
+		if err != nil {
+			s.Detail = err.Error()
+		}
+		res.Steps = append(res.Steps, s)
+		return err == nil
+	}
+	ok := step("media_url", func() (string, error) {
+		if c.URLs.MediaURL() != worker {
+			return c.URLs.MediaURL() + " (unchanged)", nil
+		}
+		u, err := c.URLs.Set(ctx, c.URLs.PublicURL(), "")
+		return u.Media, err
+	}) && step("delivery", func() (string, error) {
+		return "built-in", q.SetProjectDelivery(ctx, db.SetProjectDeliveryParams{ID: c.ProjectID, Delivery: "builtin"})
+	}) && step("routes", func() (string, error) {
+		bucket, err := c.Stores.Get(ctx, conn.StorageID)
+		if err != nil {
+			return "", err
+		}
+		if err := bucket.DeletePrefix(ctx, "_routes/"); err != nil {
+			return "", fmt.Errorf("remove the Worker's routes (fix the R2 credentials, or remove the Worker in Cloudflare): %w", err)
+		}
+		if err := bucket.Delete(ctx, routes.KeysKey); err != nil {
+			return "", fmt.Errorf("remove the Worker's keys: %w", err)
+		}
+		return "the Worker refuses every playback ID from now on", nil
+	}) && step("forgotten", func() (string, error) {
+		_, err := q.DeleteCloudflareConnection(ctx, c.ProjectID)
+		return "the Worker " + conn.ScriptName + " and " + conn.Hostname + " stay in your Cloudflare account; remove them there", err
+	})
+	if ok && c.SetupTest != nil {
+		ok = step("setup_test", func() (string, error) { return "queued", c.SetupTest(ctx) })
+	}
+	res.Disconnected = ok
 	return res, nil
 }
 

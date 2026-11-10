@@ -46,9 +46,13 @@ func (s *Service) AttachLocal(ctx context.Context, key apikeys.Key, req ImportRe
 	case len(req.Passthrough) > 255:
 		return assets.View{}, httpjson.Fail(http.StatusBadRequest, "invalid_request", "passthrough is limited to 255 bytes")
 	}
+	title, err := assets.Title(req.Title)
+	if err != nil {
+		return assets.View{}, err
+	}
 	body, _ := json.Marshal(req)
 	var out assets.View
-	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+	err = pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 		q := db.New(tx)
 		claim, err := idempotency.Begin(ctx, q, key.ProjectID, key.AppID, idemKey, "POST /v1/assets", body)
 		if err != nil {
@@ -76,6 +80,7 @@ func (s *Service) AttachLocal(ctx context.Context, key apikeys.Key, req ImportRe
 			SourceUri:     pgtype.Text{String: agentSourceURI(src.AgentID, src.ID), Valid: true},
 			AgentSourceID: pgtype.Text{String: src.ID, Valid: true},
 			Passthrough:   pgtype.Text{String: req.Passthrough, Valid: req.Passthrough != ""},
+			Title:         title,
 		})
 		if err != nil {
 			return err

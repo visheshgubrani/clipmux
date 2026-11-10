@@ -136,9 +136,9 @@ func (q *Queries) CreateAgentSource(ctx context.Context, arg CreateAgentSourcePa
 }
 
 const createLocalAsset = `-- name: CreateLocalAsset :one
-INSERT INTO assets (id, project_id, app_id, status, storage_id, source_uri, agent_source_id, passthrough)
-VALUES ($1, $2, $3, 'processing', $4, $5, $6, $7)
-RETURNING id, project_id, app_id, status, error_code, version, storage_id, source_uri, agent_source_id, source_kept, current_output_id, passthrough, duration_seconds, created_at, updated_at, deleted_at
+INSERT INTO assets (id, project_id, app_id, status, storage_id, source_uri, agent_source_id, passthrough, title)
+VALUES ($1, $2, $3, 'processing', $4, $5, $6, $7, $8)
+RETURNING id, project_id, app_id, status, error_code, version, storage_id, source_uri, agent_source_id, source_kept, current_output_id, passthrough, duration_seconds, created_at, updated_at, deleted_at, title
 `
 
 type CreateLocalAssetParams struct {
@@ -149,6 +149,7 @@ type CreateLocalAssetParams struct {
 	SourceUri     pgtype.Text
 	AgentSourceID pgtype.Text
 	Passthrough   pgtype.Text
+	Title         pgtype.Text
 }
 
 func (q *Queries) CreateLocalAsset(ctx context.Context, arg CreateLocalAssetParams) (Asset, error) {
@@ -160,6 +161,7 @@ func (q *Queries) CreateLocalAsset(ctx context.Context, arg CreateLocalAssetPara
 		arg.SourceUri,
 		arg.AgentSourceID,
 		arg.Passthrough,
+		arg.Title,
 	)
 	var i Asset
 	err := row.Scan(
@@ -179,6 +181,7 @@ func (q *Queries) CreateLocalAsset(ctx context.Context, arg CreateLocalAssetPara
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.DeletedAt,
+		&i.Title,
 	)
 	return i, err
 }

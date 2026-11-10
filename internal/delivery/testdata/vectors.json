@@ -1,5 +1,5 @@
 {
-  "description": "Delivery contract shared by the built-in Go handler and the Phase 2 Cloudflare Worker. Each case is a GET relative to the media origin; {name} in a path is replaced by tokens[name]. Signing keys here are test-only. Tokens: claim names are exact (last duplicate wins, as in JSON.parse), base64url is strict, and both ECDSA forms (r, s) and (r, n-s) verify. Regenerate keys and tokens with: go test ./internal/delivery -run TestVectors -update",
+  "description": "Delivery contract shared by the built-in Go handler and the Phase 2 Cloudflare Worker. Each case is a GET relative to the media origin; {name} in a path is replaced by tokens[name]. Signing keys here are test-only. Tokens: claim names are exact (last duplicate wins, as in JSON.parse), base64url is strict, and both ECDSA forms (r, s) and (r, n-s) verify. Regenerate keys and tokens with: go test ./internal/delivery -run TestVectors -update Each counted case carries the analytics event delivery must record (D103); a case without one records nothing. viewer_keys pin ViewerKey under analytics_key_hex.",
   "now": 1800000000,
   "content_key_secret_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
   "content_key_version": 1,
@@ -107,7 +107,8 @@
       "id": "out_p",
       "asset_id": "ast_p",
       "status": "committed",
-      "key_version": 1
+      "key_version": 1,
+      "no_audio": true
     },
     {
       "id": "out_x",
@@ -170,6 +171,13 @@
       "asset_id": "ast_t",
       "policy": "public",
       "status": "active"
+    },
+    {
+      "id": "pid_share",
+      "asset_id": "ast_v",
+      "policy": "signed",
+      "status": "active",
+      "share": true
     }
   ],
   "tracks": [
@@ -270,6 +278,7 @@
     "360p/index.m3u8": "#EXTM3U\n#EXT-X-MAP:URI=\"init.mp4\"\n#EXT-X-KEY:METHOD=AES-128,URI=\"../key/1\",IV=0x00000000000000000000000000000001\n#EXTINF:6.000,\nseg_00001.m4s\n#EXT-X-ENDLIST\n",
     "360p/init.mp4": "init",
     "360p/seg_00001.m4s": "segment-one",
+    "audio/seg_00001.m4s": "audio-one",
     "manifest.json": "{}",
     "master.m3u8": "#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,URI=\"audio/index.m3u8\",GROUP-ID=\"a\",NAME=\"x\"\n#EXT-X-STREAM-INF:BANDWIDTH=800000,AUDIO=\"a\"\n360p/index.m3u8\n",
     "poster.jpg": "jpeg-bytes"
@@ -309,6 +318,14 @@
       "aud": "v",
       "iat": 1799999940,
       "exp": 1800003600
+    },
+    "internal_share": {
+      "kid": "kid_internal",
+      "sub": "pid_share",
+      "aud": "v",
+      "iat": 1799999940,
+      "exp": 1800003600,
+      "vid": "stu_8f3a2c"
     },
     "other_app": {
       "kid": "kid_app_b",
@@ -379,7 +396,8 @@
       "sub": "pid_signed",
       "aud": "v",
       "iat": 1799999940,
-      "exp": 1800003600
+      "exp": 1800003600,
+      "vid": "stu_8f3a2c"
     },
     "v_tracks": {
       "kid": "kid_app_a",
@@ -390,25 +408,26 @@
     }
   },
   "tokens": {
-    "alt_form": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9hcHBfYSIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJwaWRfc2lnbmVkIiwiYXVkIjoidiIsImlhdCI6MTc5OTk5OTk0MCwiZXhwIjoxODAwMDAzNjAwfQ.qh0i48e-KWHnvPLMdheN-SZl27a09HHlBZJUXGdTIbjWtwNH4QYc4CqpUFoecJMnMZCrbnn_imDUnWZWNPKQXg",
-    "bad_aud": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9hcHBfYSIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJwaWRfc2lnbmVkIiwiYXVkIjoieCIsImlhdCI6MTc5OTk5OTk0MCwiZXhwIjoxODAwMDAzNjAwfQ.9XTa-lZMz8wD5QDDOQw2dX9BxxpHb0-7zLr2L3ae7LKruJPi02tPEk3Z3HJQuQlwC29F_yHX5B6N2qt_WXgPJA",
-    "disabled_app": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9hcHBfYyIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJwaWRfZGlzYWJsZWRfYXBwIiwiYXVkIjoidiIsImlhdCI6MTc5OTk5OTk0MCwiZXhwIjoxODAwMDAzNjAwfQ.GK8aBih7fZlxPj4N8Ce0bgtFJeB7DiHAjJFFMGt3mojwdxU_rlk1QyLL4HFRFNp854a6RekavJcYqZr5NoldJg",
-    "expired": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9hcHBfYSIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJwaWRfc2lnbmVkIiwiYXVkIjoidiIsImlhdCI6MTc5OTk5MjgwMCwiZXhwIjoxNzk5OTk5OTQwfQ.2fjTkIM8muWu2JQ8kG36CoKepB1n85vY8iMOYFP8xqyIYzX4krI8LqU0NlMonXQuyIJhjbT1COMFWb33Nz3vQg",
-    "future_iat": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9hcHBfYSIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJwaWRfc2lnbmVkIiwiYXVkIjoidiIsImlhdCI6MTgwMDAwMzYwMCwiZXhwIjoxODAwMDA3MjAwfQ.k4bfInETyfJEyOS7Lf-YGP9HDzRJa6EL4HBIYSdfhUs7l95YUXnwpKELamJq24itWyIgoG9QFWiWvMoJ0IWgKw",
-    "internal": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9pbnRlcm5hbCIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJwaWRfc2lnbmVkIiwiYXVkIjoidiIsImlhdCI6MTc5OTk5OTk0MCwiZXhwIjoxODAwMDAzNjAwfQ.1rsoAAsVNA65V0jKoidmCvZCEoIzgD6Nyu5ZgvEJgQ6jGMsOd411a2avdRNnbtmBXLOl8vH-bKiI0SMSKv8Vfw",
-    "noncanonical": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9hcHBfYSIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJwaWRfc2lnbmVkIiwiYXVkIjoidiIsImlhdCI6MTc5OTk5OTk0MCwiZXhwIjoxODAwMDAzNjAwfQ.qh0i48e-KWHnvPLMdheN-SZl27a09HHlBZJUXGdTIbgpSPy3HvnjINVWr6Xhj2zYi1ZPPy0YFCQfHGRsx3CU8x",
-    "other_app": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9hcHBfYiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJwaWRfc2lnbmVkIiwiYXVkIjoidiIsImlhdCI6MTc5OTk5OTk0MCwiZXhwIjoxODAwMDAzNjAwfQ.lTPyjPMMogpdJQJQAuFsrEKENepwd4qEJgafRG6wuI7ScfpzYAm4TKahEn2WdkFlEqGus8P8LoM-eo4_qMrFDg",
-    "other_sub": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9hcHBfYSIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJwaWRfcHVibGljIiwiYXVkIjoidiIsImlhdCI6MTc5OTk5OTk0MCwiZXhwIjoxODAwMDAzNjAwfQ.pXs4B06KFUmM-xRBSAJ5RnLgGS79U6bA76JtPVqopGJrsnmUhTf5KUFREUK-Z4gOOALlx73UY9BT0no3uV2cYw",
-    "retired_key": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9yZXRpcmVkIiwidHlwIjoiSldUIn0.eyJzdWIiOiJwaWRfc2lnbmVkIiwiYXVkIjoidiIsImlhdCI6MTc5OTk5OTk0MCwiZXhwIjoxODAwMDAzNjAwfQ.qmqbAobFzDb7XauumIeUvgzCuYXjgdPlC6ae5UMsmoMFEJFSHBJpXha8RqhxMbySUcu3JtQCewtMK_6lUMXPHA",
-    "revoked": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9yZXZva2VkIiwidHlwIjoiSldUIn0.eyJzdWIiOiJwaWRfc2lnbmVkIiwiYXVkIjoidiIsImlhdCI6MTc5OTk5OTk0MCwiZXhwIjoxODAwMDAzNjAwfQ.NQ3I_XcpWU_NvA08oETq4oExq-LbdcF8hBmx-n53gxIHs0hAhAgPWy-dMFtwAnC02NUH8LYh02akWV3XQsbQ4Q",
-    "t": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9hcHBfYSIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJwaWRfc2lnbmVkIiwiYXVkIjoidCIsImlhdCI6MTc5OTk5OTk0MCwiZXhwIjoxODAwMDAzNjAwfQ.oGDnby1iw5b-lcCfdH3al6rF4pcgH_O2p2ZTeeUasnvfo9aNXXXui8phgxVB8a7nEcIkgbNOpRREpkHjufagig",
-    "t_tracks": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9hcHBfYSIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJwaWRfdHJhY2tzIiwiYXVkIjoidCIsImlhdCI6MTc5OTk5OTk0MCwiZXhwIjoxODAwMDAzNjAwfQ.s-FFons3loZ_FF8ER80w898PSLPEqMfgd1su4xiJMFPRgDSS9BP4ZmyYvc2N7UVO3kLG6H7zil9BfpA9mFQyFQ",
-    "tampered": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9hcHBfYSIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJwaWRfc2lnbmVkIiwiYXVkIjoidiIsImlhdCI6MTc5OTk5OTk0MCwiZXhwIjoxODAwMDAzNjAwfQ.qh0i48e-KWHnvPLMdheN-SZl27a09HHlBZJUXGdTIbgpSPy3HvnjINVWr6Xhj2zYi1ZPPy0YFCQfHGRsx2CU8w",
-    "too_long": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9hcHBfYSIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJwaWRfc2lnbmVkIiwiYXVkIjoidiIsImlhdCI6MTc5OTk5OTk0MCwiZXhwIjoxODAwNjkxMjAwfQ.jNmMG8hoBHHq8ewJC8NDeuy6SB4vRgoFJEOjVSJEGU0lhK-S_pIiRctcgWvdCjrlUekSVqPeTiiLDJ5gqw_lcg",
-    "unknown_kid": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9ub2JvZHkiLCJ0eXAiOiJKV1QifQ.eyJzdWIiOiJwaWRfc2lnbmVkIiwiYXVkIjoidiIsImlhdCI6MTc5OTk5OTk0MCwiZXhwIjoxODAwMDAzNjAwfQ.uPCAsWiyOdOXXuwgUrKLhfuL4ZqvKkdTT7ilZ-V8kvOAB335Cf1PfLOCEh0AoJDhvPGrhBS3sMkL4E6YBoi5_w",
-    "upper_sub": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9hcHBfYSIsInR5cCI6IkpXVCJ9.eyJTVUIiOiJwaWRfc2lnbmVkIiwiYXVkIjoidiIsImlhdCI6MTc5OTk5OTk0MCwiZXhwIjoxODAwMDAzNjAwfQ.w_NI9ZDAWscEn1zJpDo3Ursxwi8tp59KC9tx5TZ7GzZ58NeXUZvwXZZg3dHAJMKBWW5uOAc1SKjUuoUUKygh3g",
-    "v": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9hcHBfYSIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJwaWRfc2lnbmVkIiwiYXVkIjoidiIsImlhdCI6MTc5OTk5OTk0MCwiZXhwIjoxODAwMDAzNjAwfQ.qh0i48e-KWHnvPLMdheN-SZl27a09HHlBZJUXGdTIbgpSPy3HvnjINVWr6Xhj2zYi1ZPPy0YFCQfHGRsx3CU8w",
-    "v_tracks": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9hcHBfYSIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJwaWRfdHJhY2tzIiwiYXVkIjoidiIsImlhdCI6MTc5OTk5OTk0MCwiZXhwIjoxODAwMDAzNjAwfQ.nQ07MAlmQryNsh6UTJRXfNB8i6J1EZdpmpkaFpXvJRfrW7KyhMC_t22_X741XnPVPCglzx6zyFwPIuVWCguA2g"
+    "alt_form": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9hcHBfYSIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJwaWRfc2lnbmVkIiwiYXVkIjoidiIsImlhdCI6MTc5OTk5OTk0MCwiZXhwIjoxODAwMDAzNjAwLCJ2aWQiOiJzdHVfOGYzYTJjIn0.AaIw8KQyfF8FXoHbCt7cC7CgYAETRL_G3PV0ZESaaJuh9qFyGLgHGWdOLTmiiQciXZWINt655FAnJh2T45lzGQ",
+    "bad_aud": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9hcHBfYSIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJwaWRfc2lnbmVkIiwiYXVkIjoieCIsImlhdCI6MTc5OTk5OTk0MCwiZXhwIjoxODAwMDAzNjAwfQ.leczTXt9HzUvk7I4keLDnxhmL0WtURZZwXhyCu5nyVKrVypWsKsU_Luqc0iZhVvCGXDrq3rHmJ3TbRx1W28fbQ",
+    "disabled_app": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9hcHBfYyIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJwaWRfZGlzYWJsZWRfYXBwIiwiYXVkIjoidiIsImlhdCI6MTc5OTk5OTk0MCwiZXhwIjoxODAwMDAzNjAwfQ.Ki2-UXUlLsR3J0ezFS5LJQBl2eN93jpHeykqpQEwtNK0piRW0VGMHdBB6P23y7vWCd86CsxBN1dkm97hyuCoHg",
+    "expired": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9hcHBfYSIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJwaWRfc2lnbmVkIiwiYXVkIjoidiIsImlhdCI6MTc5OTk5MjgwMCwiZXhwIjoxNzk5OTk5OTQwfQ.ERpslXavIQw52AVWaYQWfJAWL2BfPOuqKgQ9E6PgRkYZBG2Efhf40IxIUvs-EsXiM-i0ZcDQqriRVciROjZ8kQ",
+    "future_iat": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9hcHBfYSIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJwaWRfc2lnbmVkIiwiYXVkIjoidiIsImlhdCI6MTgwMDAwMzYwMCwiZXhwIjoxODAwMDA3MjAwfQ.K9INS_AnSpZBiTUnx28KjxMZl52uyP8BkqjubnBoMRJ2AuU7EqPbANoM_fxiBfnQm98ygVcZw7iAvAae-77NXw",
+    "internal": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9pbnRlcm5hbCIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJwaWRfc2lnbmVkIiwiYXVkIjoidiIsImlhdCI6MTc5OTk5OTk0MCwiZXhwIjoxODAwMDAzNjAwfQ.LW0QF9JFxIrXfoW8mHQ0lT6Fo1FGdXzMXfKVTCdqgBoXtka77wSsjo-49Wc_dgWrglwX1_S00eWwIU1jqdR5wA",
+    "internal_share": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9pbnRlcm5hbCIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJwaWRfc2hhcmUiLCJhdWQiOiJ2IiwiaWF0IjoxNzk5OTk5OTQwLCJleHAiOjE4MDAwMDM2MDAsInZpZCI6InN0dV84ZjNhMmMifQ.X8t25hRZC1PC25GnNRze3P9QRh-9XMYovDUv9dj2HQ_cpVhj7VMvNE4YeMmprpANGWUGH19SoHBsH2uSb3PkNA",
+    "noncanonical": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9hcHBfYSIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJwaWRfc2lnbmVkIiwiYXVkIjoidiIsImlhdCI6MTc5OTk5OTk0MCwiZXhwIjoxODAwMDAzNjAwLCJ2aWQiOiJzdHVfOGYzYTJjIn0.AaIw8KQyfF8FXoHbCt7cC7CgYAETRL_G3PV0ZESaaJteCV6M50f455ix0sZddvjdX1FydshdujTMk60vGMmyOB",
+    "other_app": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9hcHBfYiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJwaWRfc2lnbmVkIiwiYXVkIjoidiIsImlhdCI6MTc5OTk5OTk0MCwiZXhwIjoxODAwMDAzNjAwfQ.-HHillSyCy6SWX95I36rmR706wAZA7g4R50xF36vIdJRFmbzIz0lxHIz5qoiL_b56WjVc_uuNzVsD1Pb0UEG9w",
+    "other_sub": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9hcHBfYSIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJwaWRfcHVibGljIiwiYXVkIjoidiIsImlhdCI6MTc5OTk5OTk0MCwiZXhwIjoxODAwMDAzNjAwfQ.zKktk2VcOLj4C4rwrLbnG70eJIkzAkBXb8wHlt9gRHmdr0UBnhu1XeZPGVSy-f3Vc0t8PrKU1agPCrI4Ok9u6w",
+    "retired_key": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9yZXRpcmVkIiwidHlwIjoiSldUIn0.eyJzdWIiOiJwaWRfc2lnbmVkIiwiYXVkIjoidiIsImlhdCI6MTc5OTk5OTk0MCwiZXhwIjoxODAwMDAzNjAwfQ.x8ktI-HUbgBnnD4ezja8mZzUEbtuYvgPKpz8MOPJJnJgRtMdjaDGSdlh9SMLEdP_qCVEfVWu0ei-QRU0atbS7A",
+    "revoked": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9yZXZva2VkIiwidHlwIjoiSldUIn0.eyJzdWIiOiJwaWRfc2lnbmVkIiwiYXVkIjoidiIsImlhdCI6MTc5OTk5OTk0MCwiZXhwIjoxODAwMDAzNjAwfQ.ebgp1zHZfIhUFdokaxEfTnyW4BPBDllFqZz8fqWJ0nJCRDH5iXwPZ8Q_w6XCtu6vXdADNzaFv-x82_e6c9YQIw",
+    "t": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9hcHBfYSIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJwaWRfc2lnbmVkIiwiYXVkIjoidCIsImlhdCI6MTc5OTk5OTk0MCwiZXhwIjoxODAwMDAzNjAwfQ.fMrutnFRuR37eoavN5JFDZQHsgcghamP-vn-F44ggAgV9YHv4efotKGenCkUD5EPUnCdccfdVhKJSRO8nvOm-g",
+    "t_tracks": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9hcHBfYSIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJwaWRfdHJhY2tzIiwiYXVkIjoidCIsImlhdCI6MTc5OTk5OTk0MCwiZXhwIjoxODAwMDAzNjAwfQ.Ty28hLOJEn9_u2--cd-QMe20UwVygjhYIvwyqa2aQYGbtAO5Mu6fkfmn38Q0AelFyoQcp0kHW7NtE0TwUm_AbA",
+    "tampered": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9hcHBfYSIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJwaWRfc2lnbmVkIiwiYXVkIjoidiIsImlhdCI6MTc5OTk5OTk0MCwiZXhwIjoxODAwMDAzNjAwLCJ2aWQiOiJzdHVfOGYzYTJjIn0.AaIw8KQyfF8FXoHbCt7cC7CgYAETRL_G3PV0ZESaaJteCV6M50f455ix0sZddvjdX1FydshdujTMk60vGLmyOA",
+    "too_long": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9hcHBfYSIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJwaWRfc2lnbmVkIiwiYXVkIjoidiIsImlhdCI6MTc5OTk5OTk0MCwiZXhwIjoxODAwNjkxMjAwfQ.w0eCDhbiq6qzASr1udy6X51sDDz9dqQiRBOaaIZ5bW5M1m8unL10SRXmczalxtLsoHadvck9tFQjzz0cJe8xNw",
+    "unknown_kid": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9ub2JvZHkiLCJ0eXAiOiJKV1QifQ.eyJzdWIiOiJwaWRfc2lnbmVkIiwiYXVkIjoidiIsImlhdCI6MTc5OTk5OTk0MCwiZXhwIjoxODAwMDAzNjAwfQ.cpUXMpkL19FIrtLE_pNZrXJVD_pAPp0NTP78Dg0DbddvS_NHE9OELMDUR9LJgZ5XZeJf1052Arr3UdMD3gIRcg",
+    "upper_sub": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9hcHBfYSIsInR5cCI6IkpXVCJ9.eyJTVUIiOiJwaWRfc2lnbmVkIiwiYXVkIjoidiIsImlhdCI6MTc5OTk5OTk0MCwiZXhwIjoxODAwMDAzNjAwfQ.bESKQhET_LP_SqaNiU-JiX0gSgU4TukurVOHCV9DsypmvlNyUfeTkagQJzDx0Ku1N6qAUh8ox65Ih9B1mx6TvQ",
+    "v": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9hcHBfYSIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJwaWRfc2lnbmVkIiwiYXVkIjoidiIsImlhdCI6MTc5OTk5OTk0MCwiZXhwIjoxODAwMDAzNjAwLCJ2aWQiOiJzdHVfOGYzYTJjIn0.AaIw8KQyfF8FXoHbCt7cC7CgYAETRL_G3PV0ZESaaJteCV6M50f455ix0sZddvjdX1FydshdujTMk60vGMmyOA",
+    "v_tracks": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9hcHBfYSIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJwaWRfdHJhY2tzIiwiYXVkIjoidiIsImlhdCI6MTc5OTk5OTk0MCwiZXhwIjoxODAwMDAzNjAwfQ.KDw_7__eHhNndxNlPWOkO7QGQ74dahapNRntklHv-MjEE5ywliChimuhBrFKMY9NM_zzwstJIM6yAnnh4CGaEw"
   },
   "cases": [
     {
@@ -417,7 +436,17 @@
       "status": 200,
       "content_type": "application/vnd.apple.mpegurl",
       "cache_control": "no-store",
-      "body": "#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,URI=\"out_v/audio/index.m3u8\",GROUP-ID=\"a\",NAME=\"x\"\n#EXT-X-STREAM-INF:BANDWIDTH=800000,AUDIO=\"a\"\nout_v/360p/index.m3u8\n"
+      "body": "#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,URI=\"out_v/audio/index.m3u8\",GROUP-ID=\"a\",NAME=\"x\"\n#EXT-X-STREAM-INF:BANDWIDTH=800000,AUDIO=\"a\"\nout_v/360p/index.m3u8\n",
+      "analytics": {
+        "app_id": "app_a",
+        "asset_id": "ast_v",
+        "playback_id": "pid_signed",
+        "kind": "master",
+        "bytes": 150,
+        "views": 1,
+        "watch_seconds": 0,
+        "vid": "stu_8f3a2c"
+      }
     },
     {
       "name": "a signed ID without a token is denied",
@@ -445,20 +474,50 @@
       "status": 200,
       "content_type": "video/iso.segment",
       "cache_control": "private, max-age=31536000, immutable",
-      "body": "segment-one"
+      "body": "segment-one",
+      "analytics": {
+        "app_id": "app_a",
+        "asset_id": "ast_v",
+        "playback_id": "pid_signed",
+        "kind": "segment",
+        "bytes": 11,
+        "views": 0,
+        "watch_seconds": 0,
+        "vid": "stu_8f3a2c"
+      }
     },
     {
       "name": "a pinned media playlist",
       "path": "/v/{v}/pid_signed/out_v/360p/index.m3u8",
       "status": 200,
-      "content_type": "application/vnd.apple.mpegurl"
+      "content_type": "application/vnd.apple.mpegurl",
+      "analytics": {
+        "app_id": "app_a",
+        "asset_id": "ast_v",
+        "playback_id": "pid_signed",
+        "kind": "playlist",
+        "bytes": 157,
+        "views": 0,
+        "watch_seconds": 0,
+        "vid": "stu_8f3a2c"
+      }
     },
     {
       "name": "an init segment",
       "path": "/v/{v}/pid_signed/out_v/360p/init.mp4",
       "status": 200,
       "content_type": "video/mp4",
-      "body": "init"
+      "body": "init",
+      "analytics": {
+        "app_id": "app_a",
+        "asset_id": "ast_v",
+        "playback_id": "pid_signed",
+        "kind": "init",
+        "bytes": 4,
+        "views": 0,
+        "watch_seconds": 0,
+        "vid": "stu_8f3a2c"
+      }
     },
     {
       "name": "the content key",
@@ -466,13 +525,33 @@
       "status": 200,
       "content_type": "application/octet-stream",
       "cache_control": "no-store",
-      "body_hex": "8d33a325736d6290dd0b4d1bcb9bab85"
+      "body_hex": "8d33a325736d6290dd0b4d1bcb9bab85",
+      "analytics": {
+        "app_id": "app_a",
+        "asset_id": "ast_v",
+        "playback_id": "pid_signed",
+        "kind": "key",
+        "bytes": 16,
+        "views": 0,
+        "watch_seconds": 0,
+        "vid": "stu_8f3a2c"
+      }
     },
     {
       "name": "a retired output still serves its key",
       "path": "/v/{v}/pid_signed/out_v_old/key/1",
       "status": 200,
-      "body_hex": "3d0827ee773ac15123957d5e1d34d0c5"
+      "body_hex": "3d0827ee773ac15123957d5e1d34d0c5",
+      "analytics": {
+        "app_id": "app_a",
+        "asset_id": "ast_v",
+        "playback_id": "pid_signed",
+        "kind": "key",
+        "bytes": 16,
+        "views": 0,
+        "watch_seconds": 0,
+        "vid": "stu_8f3a2c"
+      }
     },
     {
       "name": "a key version the output doesn't use",
@@ -490,7 +569,16 @@
       "status": 200,
       "content_type": "image/jpeg",
       "cache_control": "private, max-age=300",
-      "body": "jpeg-bytes"
+      "body": "jpeg-bytes",
+      "analytics": {
+        "app_id": "app_a",
+        "asset_id": "ast_v",
+        "playback_id": "pid_signed",
+        "kind": "poster",
+        "bytes": 10,
+        "views": 0,
+        "watch_seconds": 0
+      }
     },
     {
       "name": "a thumbnail token can't fetch a segment",
@@ -558,7 +646,16 @@
       "status": 200,
       "content_type": "image/jpeg",
       "cache_control": "private, max-age=31536000, immutable",
-      "body": "jpeg-bytes"
+      "body": "jpeg-bytes",
+      "analytics": {
+        "app_id": "app_a",
+        "asset_id": "ast_v",
+        "playback_id": "pid_signed",
+        "kind": "poster",
+        "bytes": 10,
+        "views": 0,
+        "watch_seconds": 0
+      }
     },
     {
       "name": "a disabled app's playback ID is denied",
@@ -583,7 +680,17 @@
     {
       "name": "the (r, n-s) signature form of a valid token is also valid",
       "path": "/v/{alt_form}/pid_signed/master.m3u8",
-      "status": 200
+      "status": 200,
+      "analytics": {
+        "app_id": "app_a",
+        "asset_id": "ast_v",
+        "playback_id": "pid_signed",
+        "kind": "master",
+        "bytes": 150,
+        "views": 1,
+        "watch_seconds": 0,
+        "vid": "stu_8f3a2c"
+      }
     },
     {
       "name": "a malformed token",
@@ -594,6 +701,24 @@
       "name": "the server's internal key signs for any app",
       "path": "/v/{internal}/pid_signed/master.m3u8",
       "status": 200
+    },
+    {
+      "name": "a share link's playback ID counts under the internal key",
+      "path": "/v/{internal_share}/pid_share/master.m3u8",
+      "status": 200,
+      "content_type": "application/vnd.apple.mpegurl",
+      "cache_control": "no-store",
+      "body": "#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,URI=\"out_v/audio/index.m3u8\",GROUP-ID=\"a\",NAME=\"x\"\n#EXT-X-STREAM-INF:BANDWIDTH=800000,AUDIO=\"a\"\nout_v/360p/index.m3u8\n",
+      "analytics": {
+        "app_id": "app_a",
+        "asset_id": "ast_v",
+        "playback_id": "pid_share",
+        "kind": "master",
+        "bytes": 150,
+        "views": 1,
+        "watch_seconds": 0,
+        "vid": "stu_8f3a2c"
+      }
     },
     {
       "name": "manifest.json is never served",
@@ -624,30 +749,132 @@
       "name": "a retired output's segment",
       "path": "/v/{v}/pid_signed/out_v_old/360p/seg_00001.m4s",
       "status": 200,
-      "body": "segment-one"
+      "body": "segment-one",
+      "analytics": {
+        "app_id": "app_a",
+        "asset_id": "ast_v",
+        "playback_id": "pid_signed",
+        "kind": "segment",
+        "bytes": 11,
+        "views": 0,
+        "watch_seconds": 0,
+        "vid": "stu_8f3a2c"
+      }
+    },
+    {
+      "name": "an audio segment counts six seconds of watch time",
+      "path": "/v/{v}/pid_signed/out_v/audio/seg_00001.m4s",
+      "status": 200,
+      "body": "audio-one",
+      "analytics": {
+        "app_id": "app_a",
+        "asset_id": "ast_v",
+        "playback_id": "pid_signed",
+        "kind": "segment",
+        "bytes": 9,
+        "views": 0,
+        "watch_seconds": 6,
+        "vid": "stu_8f3a2c"
+      }
+    },
+    {
+      "name": "a range from the first byte counts the watch time once",
+      "range": "bytes=0-4",
+      "path": "/v/{v}/pid_signed/out_v/audio/seg_00001.m4s",
+      "status": 206,
+      "body": "audio",
+      "analytics": {
+        "app_id": "app_a",
+        "asset_id": "ast_v",
+        "playback_id": "pid_signed",
+        "kind": "segment",
+        "bytes": 5,
+        "views": 0,
+        "watch_seconds": 6,
+        "vid": "stu_8f3a2c"
+      }
+    },
+    {
+      "name": "a later range counts its bytes only",
+      "range": "bytes=5-",
+      "path": "/v/{v}/pid_signed/out_v/audio/seg_00001.m4s",
+      "status": 206,
+      "body": "-one",
+      "analytics": {
+        "app_id": "app_a",
+        "asset_id": "ast_v",
+        "playback_id": "pid_signed",
+        "kind": "segment",
+        "bytes": 4,
+        "views": 0,
+        "watch_seconds": 0,
+        "vid": "stu_8f3a2c"
+      }
+    },
+    {
+      "name": "HEAD is never counted",
+      "method": "HEAD",
+      "path": "/v/{v}/pid_signed/out_v/audio/seg_00001.m4s",
+      "status": 200
     },
     {
       "name": "a public master needs no token",
       "path": "/p/pid_public/master.m3u8",
       "status": 200,
-      "body": "#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,URI=\"out_p/audio/index.m3u8\",GROUP-ID=\"a\",NAME=\"x\"\n#EXT-X-STREAM-INF:BANDWIDTH=800000,AUDIO=\"a\"\nout_p/360p/index.m3u8\n"
+      "body": "#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,URI=\"out_p/audio/index.m3u8\",GROUP-ID=\"a\",NAME=\"x\"\n#EXT-X-STREAM-INF:BANDWIDTH=800000,AUDIO=\"a\"\nout_p/360p/index.m3u8\n",
+      "analytics": {
+        "app_id": "app_a",
+        "asset_id": "ast_p",
+        "playback_id": "pid_public",
+        "kind": "master",
+        "bytes": 150,
+        "views": 1,
+        "watch_seconds": 0
+      }
     },
     {
       "name": "a public key needs no token",
       "path": "/p/pid_public/out_p/key/1",
       "status": 200,
-      "body_hex": "c72b246e1df8074226fe2c9e0f8d2894"
+      "body_hex": "c72b246e1df8074226fe2c9e0f8d2894",
+      "analytics": {
+        "app_id": "app_a",
+        "asset_id": "ast_p",
+        "playback_id": "pid_public",
+        "kind": "key",
+        "bytes": 16,
+        "views": 0,
+        "watch_seconds": 0
+      }
     },
     {
       "name": "a public segment is cacheable",
       "path": "/p/pid_public/out_p/360p/seg_00001.m4s",
       "status": 200,
-      "cache_control": "public, max-age=31536000, immutable"
+      "cache_control": "public, max-age=31536000, immutable",
+      "analytics": {
+        "app_id": "app_a",
+        "asset_id": "ast_p",
+        "playback_id": "pid_public",
+        "kind": "segment",
+        "bytes": 11,
+        "views": 0,
+        "watch_seconds": 6
+      }
     },
     {
       "name": "a public ID also plays under a token URL",
       "path": "/v/{v}/pid_public/master.m3u8",
-      "status": 200
+      "status": 200,
+      "analytics": {
+        "app_id": "app_a",
+        "asset_id": "ast_p",
+        "playback_id": "pid_public",
+        "kind": "master",
+        "bytes": 150,
+        "views": 1,
+        "watch_seconds": 0
+      }
     },
     {
       "name": "tracks: the master lists the subtitles tracks being published or ready, chapters never",
@@ -655,7 +882,16 @@
       "status": 200,
       "content_type": "application/vnd.apple.mpegurl",
       "cache_control": "no-store",
-      "body": "#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,URI=\"out_t/audio/index.m3u8\",GROUP-ID=\"a\",NAME=\"x\"\n#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID=\"subs\",NAME=\"English\",LANGUAGE=\"en\",AUTOSELECT=YES,DEFAULT=NO,URI=\"tracks/trk_en.m3u8\"\n#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID=\"subs\",NAME=\"Hindi\",LANGUAGE=\"hi\",AUTOSELECT=YES,DEFAULT=NO,URI=\"tracks/trk_hi.m3u8\"\n#EXT-X-STREAM-INF:BANDWIDTH=800000,AUDIO=\"a\",SUBTITLES=\"subs\"\nout_t/360p/index.m3u8\n"
+      "body": "#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,URI=\"out_t/audio/index.m3u8\",GROUP-ID=\"a\",NAME=\"x\"\n#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID=\"subs\",NAME=\"English\",LANGUAGE=\"en\",AUTOSELECT=YES,DEFAULT=NO,URI=\"tracks/trk_en.m3u8\"\n#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID=\"subs\",NAME=\"Hindi\",LANGUAGE=\"hi\",AUTOSELECT=YES,DEFAULT=NO,URI=\"tracks/trk_hi.m3u8\"\n#EXT-X-STREAM-INF:BANDWIDTH=800000,AUDIO=\"a\",SUBTITLES=\"subs\"\nout_t/360p/index.m3u8\n",
+      "analytics": {
+        "app_id": "app_a",
+        "asset_id": "ast_t",
+        "playback_id": "pid_tracks",
+        "kind": "master",
+        "bytes": 413,
+        "views": 1,
+        "watch_seconds": 0
+      }
     },
     {
       "name": "tracks: a subtitles playlist is the whole VTT as one segment",
@@ -663,7 +899,16 @@
       "status": 200,
       "content_type": "application/vnd.apple.mpegurl",
       "cache_control": "no-store",
-      "body": "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:31\n#EXT-X-MEDIA-SEQUENCE:0\n#EXT-X-PLAYLIST-TYPE:VOD\n#EXTINF:30.789,\ntrk_en.vtt\n#EXT-X-ENDLIST\n"
+      "body": "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:31\n#EXT-X-MEDIA-SEQUENCE:0\n#EXT-X-PLAYLIST-TYPE:VOD\n#EXTINF:30.789,\ntrk_en.vtt\n#EXT-X-ENDLIST\n",
+      "analytics": {
+        "app_id": "app_a",
+        "asset_id": "ast_t",
+        "playback_id": "pid_tracks",
+        "kind": "track_playlist",
+        "bytes": 141,
+        "views": 0,
+        "watch_seconds": 0
+      }
     },
     {
       "name": "tracks: a VTT is decrypted and immutable",
@@ -671,7 +916,16 @@
       "status": 200,
       "content_type": "text/vtt; charset=utf-8",
       "cache_control": "private, max-age=31536000, immutable",
-      "body": "WEBVTT\nX-TIMESTAMP-MAP=MPEGTS:0,LOCAL:00:00:00.000\n\n1\n00:00:01.234 --\u003e 00:00:02.345\nHello world.\n\n"
+      "body": "WEBVTT\nX-TIMESTAMP-MAP=MPEGTS:0,LOCAL:00:00:00.000\n\n1\n00:00:01.234 --\u003e 00:00:02.345\nHello world.\n\n",
+      "analytics": {
+        "app_id": "app_a",
+        "asset_id": "ast_t",
+        "playback_id": "pid_tracks",
+        "kind": "track",
+        "bytes": 98,
+        "views": 0,
+        "watch_seconds": 0
+      }
     },
     {
       "name": "tracks: HEAD on a VTT",
@@ -685,26 +939,62 @@
       "path": "/v/{v_tracks}/pid_tracks/tracks/trk_hi.vtt",
       "status": 200,
       "content_type": "text/vtt; charset=utf-8",
-      "body": "WEBVTT\nX-TIMESTAMP-MAP=MPEGTS:0,LOCAL:00:00:00.000\n\n1\n00:00:01.234 --\u003e 00:00:02.345\nनमस्ते दुनिया\n\n"
+      "body": "WEBVTT\nX-TIMESTAMP-MAP=MPEGTS:0,LOCAL:00:00:00.000\n\n1\n00:00:01.234 --\u003e 00:00:02.345\nनमस्ते दुनिया\n\n",
+      "analytics": {
+        "app_id": "app_a",
+        "asset_id": "ast_t",
+        "playback_id": "pid_tracks",
+        "kind": "track",
+        "bytes": 123,
+        "views": 0,
+        "watch_seconds": 0
+      }
     },
     {
       "name": "tracks: a retired track still plays for a session holding the old master",
       "path": "/v/{v_tracks}/pid_tracks/tracks/trk_old.vtt",
       "status": 200,
-      "body": "WEBVTT\nX-TIMESTAMP-MAP=MPEGTS:0,LOCAL:00:00:00.000\n\n1\n00:00:01.000 --\u003e 00:00:02.000\nOld words.\n\n"
+      "body": "WEBVTT\nX-TIMESTAMP-MAP=MPEGTS:0,LOCAL:00:00:00.000\n\n1\n00:00:01.000 --\u003e 00:00:02.000\nOld words.\n\n",
+      "analytics": {
+        "app_id": "app_a",
+        "asset_id": "ast_t",
+        "playback_id": "pid_tracks",
+        "kind": "track",
+        "bytes": 96,
+        "views": 0,
+        "watch_seconds": 0
+      }
     },
     {
       "name": "tracks: a retired track keeps its playlist",
       "path": "/v/{v_tracks}/pid_tracks/tracks/trk_old.m3u8",
       "status": 200,
-      "body": "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:31\n#EXT-X-MEDIA-SEQUENCE:0\n#EXT-X-PLAYLIST-TYPE:VOD\n#EXTINF:30.789,\ntrk_old.vtt\n#EXT-X-ENDLIST\n"
+      "body": "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:31\n#EXT-X-MEDIA-SEQUENCE:0\n#EXT-X-PLAYLIST-TYPE:VOD\n#EXTINF:30.789,\ntrk_old.vtt\n#EXT-X-ENDLIST\n",
+      "analytics": {
+        "app_id": "app_a",
+        "asset_id": "ast_t",
+        "playback_id": "pid_tracks",
+        "kind": "track_playlist",
+        "bytes": 142,
+        "views": 0,
+        "watch_seconds": 0
+      }
     },
     {
       "name": "tracks: chapters are served at the same path",
       "path": "/v/{v_tracks}/pid_tracks/tracks/trk_ch.vtt",
       "status": 200,
       "content_type": "text/vtt; charset=utf-8",
-      "body": "WEBVTT\nX-TIMESTAMP-MAP=MPEGTS:0,LOCAL:00:00:00.000\n\n1\n00:00:00.000 --\u003e 00:00:21.234\nIntro\n\n2\n00:00:21.234 --\u003e 00:00:30.789\nNew topic\n\n"
+      "body": "WEBVTT\nX-TIMESTAMP-MAP=MPEGTS:0,LOCAL:00:00:00.000\n\n1\n00:00:00.000 --\u003e 00:00:21.234\nIntro\n\n2\n00:00:21.234 --\u003e 00:00:30.789\nNew topic\n\n",
+      "analytics": {
+        "app_id": "app_a",
+        "asset_id": "ast_t",
+        "playback_id": "pid_tracks",
+        "kind": "track",
+        "bytes": 134,
+        "views": 0,
+        "watch_seconds": 0
+      }
     },
     {
       "name": "tracks: chapters have no playlist",
@@ -767,24 +1057,69 @@
       "status": 200,
       "content_type": "text/vtt; charset=utf-8",
       "cache_control": "public, max-age=31536000, immutable",
-      "body": "WEBVTT\nX-TIMESTAMP-MAP=MPEGTS:0,LOCAL:00:00:00.000\n\n1\n00:00:01.234 --\u003e 00:00:02.345\nHello world.\n\n"
+      "body": "WEBVTT\nX-TIMESTAMP-MAP=MPEGTS:0,LOCAL:00:00:00.000\n\n1\n00:00:01.234 --\u003e 00:00:02.345\nHello world.\n\n",
+      "analytics": {
+        "app_id": "app_a",
+        "asset_id": "ast_t",
+        "playback_id": "pid_tracks_pub",
+        "kind": "track",
+        "bytes": 98,
+        "views": 0,
+        "watch_seconds": 0
+      }
     },
     {
       "name": "tracks: a public master lists them too",
       "path": "/p/pid_tracks_pub/master.m3u8",
       "status": 200,
-      "body": "#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,URI=\"out_t/audio/index.m3u8\",GROUP-ID=\"a\",NAME=\"x\"\n#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID=\"subs\",NAME=\"English\",LANGUAGE=\"en\",AUTOSELECT=YES,DEFAULT=NO,URI=\"tracks/trk_en.m3u8\"\n#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID=\"subs\",NAME=\"Hindi\",LANGUAGE=\"hi\",AUTOSELECT=YES,DEFAULT=NO,URI=\"tracks/trk_hi.m3u8\"\n#EXT-X-STREAM-INF:BANDWIDTH=800000,AUDIO=\"a\",SUBTITLES=\"subs\"\nout_t/360p/index.m3u8\n"
+      "body": "#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,URI=\"out_t/audio/index.m3u8\",GROUP-ID=\"a\",NAME=\"x\"\n#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID=\"subs\",NAME=\"English\",LANGUAGE=\"en\",AUTOSELECT=YES,DEFAULT=NO,URI=\"tracks/trk_en.m3u8\"\n#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID=\"subs\",NAME=\"Hindi\",LANGUAGE=\"hi\",AUTOSELECT=YES,DEFAULT=NO,URI=\"tracks/trk_hi.m3u8\"\n#EXT-X-STREAM-INF:BANDWIDTH=800000,AUDIO=\"a\",SUBTITLES=\"subs\"\nout_t/360p/index.m3u8\n",
+      "analytics": {
+        "app_id": "app_a",
+        "asset_id": "ast_t",
+        "playback_id": "pid_tracks_pub",
+        "kind": "master",
+        "bytes": 413,
+        "views": 1,
+        "watch_seconds": 0
+      }
     },
     {
       "name": "tracks: an asset whose only track is chapters keeps its master as it was",
       "path": "/p/pid_public/tracks/trk_other.vtt",
       "status": 200,
-      "body": "WEBVTT\nX-TIMESTAMP-MAP=MPEGTS:0,LOCAL:00:00:00.000\n\n1\n00:00:00.000 --\u003e 00:00:10.000\nAnother asset's chapter\n\n"
+      "body": "WEBVTT\nX-TIMESTAMP-MAP=MPEGTS:0,LOCAL:00:00:00.000\n\n1\n00:00:00.000 --\u003e 00:00:10.000\nAnother asset's chapter\n\n",
+      "analytics": {
+        "app_id": "app_a",
+        "asset_id": "ast_p",
+        "playback_id": "pid_public",
+        "kind": "track",
+        "bytes": 109,
+        "views": 0,
+        "watch_seconds": 0
+      }
     },
     {
       "name": "tracks: a signed ID's track needs its token",
       "path": "/p/pid_tracks/tracks/trk_en.vtt",
       "status": 403
+    }
+  ],
+  "analytics_key_hex": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+  "viewer_keys": [
+    {
+      "app_id": "app_a",
+      "vid": "stu_8f3a2c",
+      "key_hex": "4687a687f4ac9c03299afb2103b29a7c"
+    },
+    {
+      "app_id": "app_b",
+      "vid": "stu_8f3a2c",
+      "key_hex": "84d637517f5c4582be357c66db5f1963"
+    },
+    {
+      "app_id": "app_a",
+      "vid": "étudiant-7",
+      "key_hex": "189558c2a7c212b590e31c4d1c14d0f0"
     }
   ]
 }

@@ -37,13 +37,29 @@ UPDATE webhook_endpoints SET disabled_at = coalesce(disabled_at, now()) WHERE pr
 
 -- name: ListLibrary :many
 -- Every app's assets, newest first, keyset-paged on (created_at, id).
+-- Deleted assets only when asked for (include_deleted, or status deleted).
+-- search is an exact asset ID; pattern an ILIKE pattern on the title or
+-- the passthrough.
 SELECT * FROM assets
 WHERE project_id = sqlc.arg(project_id)
   AND (sqlc.narg(app_id)::text IS NULL OR app_id = sqlc.narg(app_id))
   AND (sqlc.narg(status)::text IS NULL OR status = sqlc.narg(status))
+  AND (sqlc.arg(include_deleted)::boolean OR status <> 'deleted' OR sqlc.narg(status)::text = 'deleted')
+  AND (sqlc.narg(search)::text IS NULL OR id = sqlc.narg(search)
+       OR title ILIKE sqlc.narg(pattern)::text OR passthrough ILIKE sqlc.narg(pattern)::text)
   AND (created_at, id) < (sqlc.arg(before_time)::timestamptz, sqlc.arg(before_id)::text)
 ORDER BY created_at DESC, id DESC
 LIMIT sqlc.arg(max_assets);
+
+-- name: CountLibrary :one
+-- The library's assets by status, for the filter chips.
+SELECT
+    count(*) FILTER (WHERE status = 'ready')::bigint AS ready,
+    count(*) FILTER (WHERE status = 'processing')::bigint AS processing,
+    count(*) FILTER (WHERE status = 'errored')::bigint AS errored,
+    count(*) FILTER (WHERE status = 'waiting_upload')::bigint AS waiting_upload
+FROM assets
+WHERE project_id = sqlc.arg(project_id) AND (sqlc.narg(app_id)::text IS NULL OR app_id = sqlc.narg(app_id));
 
 -- name: GetAssetInProject :one
 SELECT * FROM assets WHERE project_id = $1 AND id = $2;

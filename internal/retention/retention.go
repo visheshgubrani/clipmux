@@ -37,6 +37,13 @@ const (
 	OutboxWindow = 7 * 24 * time.Hour
 	// SetupTestsKept are the newest finished setup tests kept.
 	SetupTestsKept = 20
+	// AnalyticsWindow keeps daily analytics and viewers 180 days: the API's
+	// longest range is 90 days, compared with the 90 before it (D105).
+	AnalyticsWindow = 180 * 24 * time.Hour
+	// HourlyAnalyticsWindow keeps hourly analytics 14 days: only the 24-hour
+	// range and the 24 hours before it read them, and an edge pull
+	// recomputes recent hours (D105).
+	HourlyAnalyticsWindow = 14 * 24 * time.Hour
 	// StuckAfter is when a pending publication or stop counts as stuck.
 	StuckAfter = time.Hour
 )
@@ -70,6 +77,7 @@ func (s *Service) rules(now time.Time) []struct {
 	run  func(ctx context.Context, q *db.Queries) (int64, error)
 } {
 	ts := func(t time.Time) pgtype.Timestamptz { return pgtype.Timestamptz{Time: t, Valid: true} }
+	analyticsDay := pgtype.Date{Time: now.Add(-AnalyticsWindow).UTC(), Valid: true}
 	return []struct {
 		name string
 		run  func(ctx context.Context, q *db.Queries) (int64, error)
@@ -97,6 +105,18 @@ func (s *Service) rules(now time.Time) []struct {
 		}},
 		{"dispatch_keys", func(ctx context.Context, q *db.Queries) (int64, error) {
 			return q.ForgetSpentDispatchKeys(ctx, batch)
+		}},
+		{"playback_hourly", func(ctx context.Context, q *db.Queries) (int64, error) {
+			return q.PrunePlaybackHourly(ctx, db.PrunePlaybackHourlyParams{Before: ts(now.Add(-HourlyAnalyticsWindow)), MaxRows: batch})
+		}},
+		{"playback_daily", func(ctx context.Context, q *db.Queries) (int64, error) {
+			return q.PrunePlaybackDaily(ctx, db.PrunePlaybackDailyParams{Before: analyticsDay, MaxRows: batch})
+		}},
+		{"playback_viewers", func(ctx context.Context, q *db.Queries) (int64, error) {
+			return q.PrunePlaybackViewers(ctx, db.PrunePlaybackViewersParams{Before: analyticsDay, MaxRows: batch})
+		}},
+		{"playback_viewer_days", func(ctx context.Context, q *db.Queries) (int64, error) {
+			return q.PrunePlaybackViewerDays(ctx, db.PrunePlaybackViewerDaysParams{Before: analyticsDay, MaxRows: batch})
 		}},
 	}
 }

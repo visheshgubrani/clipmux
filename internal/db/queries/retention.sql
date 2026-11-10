@@ -96,3 +96,23 @@ SELECT id, project_id, app_id FROM assets WHERE id > $1 AND status <> 'deleted' 
 -- name: KnownOutputs :many
 -- An asset's outputs whose files may still be needed.
 SELECT id FROM outputs WHERE asset_id = $1 AND purged_at IS NULL;
+
+-- name: PrunePlaybackHourly :execrows
+DELETE FROM playback_hourly WHERE (project_id, source, hour, asset_id, playback_id) IN (
+    SELECT h.project_id, h.source, h.hour, h.asset_id, h.playback_id FROM playback_hourly h
+    WHERE h.hour < sqlc.arg(before) LIMIT sqlc.arg(max_rows));
+
+-- name: PrunePlaybackDaily :execrows
+DELETE FROM playback_daily WHERE (project_id, source, day, asset_id, playback_id) IN (
+    SELECT d.project_id, d.source, d.day, d.asset_id, d.playback_id FROM playback_daily d
+    WHERE d.day < sqlc.arg(before)::date LIMIT sqlc.arg(max_rows));
+
+-- name: PrunePlaybackViewerDays :execrows
+DELETE FROM playback_viewer_days WHERE (project_id, day, app_id, viewer) IN (
+    SELECT v.project_id, v.day, v.app_id, v.viewer FROM playback_viewer_days v
+    WHERE v.day < sqlc.arg(before)::date LIMIT sqlc.arg(max_rows));
+
+-- name: PrunePlaybackViewers :execrows
+DELETE FROM playback_viewers WHERE (project_id, day, asset_id, viewer) IN (
+    SELECT v.project_id, v.day, v.asset_id, v.viewer FROM playback_viewers v
+    WHERE v.day < sqlc.arg(before)::date LIMIT sqlc.arg(max_rows));

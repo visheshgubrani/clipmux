@@ -33,6 +33,7 @@ const (
 	Dispatch   = "dsp"
 	Track      = "trk"
 	Connection = "aic"
+	ShareLink  = "shr"
 )
 
 const alphabet = "0123456789abcdefghjkmnpqrstvwxyz" // Crockford, lowercase

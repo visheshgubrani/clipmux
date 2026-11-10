@@ -21,6 +21,10 @@ func TestScrub(t *testing.T) {
 		"/_storage/objects/k?exp=17&sig=ff":                                  "/_storage/objects/k?exp=REDACTED&sig=REDACTED",
 		"ast_01 committed":                                                   "ast_01 committed",
 		"route GET /v/{token}/{pid}":                                         "route GET /v/{token}/{pid}",
+		"POST /s/K7QW2M4XRT5VZ3NB6YHC8DJF2A/playback":                        "POST /s/REDACTED/playback",
+		"opened https://clipmux.example/s/K7QW2M4XRT5VZ3NB6YHC8DJF2A":        "opened https://clipmux.example/s/REDACTED",
+		"route POST /s/{token}/playback":                                     "route POST /s/{token}/playback",
+		"GET /assets/ast_1":                                                  "GET /assets/ast_1",
 		"plain message":                                                      "plain message",
 	}
 	for in, want := range cases {
@@ -35,6 +39,7 @@ func TestRedactURL(t *testing.T) {
 		"https://media.example/v/eyJx.eyJy.sig/pid_1/720p/index.m3u8": "https://media.example/v/REDACTED/pid_1/720p/index.m3u8",
 		"https://u:p@r2.example/b/k?X-Amz-Signature=abc#frag":         "https://r2.example/b/k?REDACTED",
 		"https://example.com/video.mp4":                               "https://example.com/video.mp4",
+		"https://clipmux.example/s/K7QW2M4XRT5VZ3NB6YHC8DJF2A":        "https://clipmux.example/s/REDACTED",
 	}
 	for in, want := range cases {
 		if got := RedactURL(in); got != want {

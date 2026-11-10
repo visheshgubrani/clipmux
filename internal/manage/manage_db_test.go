@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/visheshgubrani/clipmux/internal/accounts"
+	"github.com/visheshgubrani/clipmux/internal/analytics"
 	"github.com/visheshgubrani/clipmux/internal/apikeys"
 	"github.com/visheshgubrani/clipmux/internal/assets"
 	"github.com/visheshgubrani/clipmux/internal/chapters"
@@ -64,6 +65,18 @@ func newRig(t *testing.T, cfg config.Config) *rig {
 	m := manage.New(pool, box, acct, urls)
 	m.Speech = speechapi.NewService(pool, box, "prj_default")
 	m.Chapters = chapters.NewService(pool, box, "prj_default")
+	// Cloudflare's Analytics Engine SQL API, accepting one token.
+	sqlAPI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer cf-analytics-read" {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		_, _ = io.WriteString(w, `{"data":[],"rows":0}`)
+	}))
+	t.Cleanup(sqlAPI.Close)
+	m.Edge = analytics.NewEdge(pool, box, "prj_default")
+	m.Edge.API = sqlAPI.URL
+	m.Stores = stores.New(pool, box, store)
 	upl := uploads.New(pool, stores.Fixed(store))
 	upl.Auth.Session = m.ActAsApp
 	a := assets.New(pool)
@@ -203,6 +216,16 @@ func TestAPIKeysWaitForAPublicURLAndAreShownOnce(t *testing.T) {
 	if listed.status != 200 || len(listed.list) != 1 || strings.Contains(string(raw), secret) {
 		t.Fatalf("listed keys = %s; want one, never its secret", raw)
 	}
+	if k := listed.list[0].(map[string]any); k["name"] != "backend" || !reflect.DeepEqual(k["scopes"], []any{"assets:read"}) {
+		t.Fatalf("listed key = %v, want its name and scopes", k)
+	}
+	if got := r.call("POST", "/v1/apps/"+appID+"/api-keys", map[string]any{"name": strings.Repeat("k", 101)}, ""); got.status != http.StatusBadRequest {
+		t.Fatalf("a 101-character key name = %d, want 400", got.status)
+	}
+	if got := r.call("POST", "/v1/apps/"+appID+"/api-keys", map[string]any{"name": "  "}, ""); got.status != http.StatusCreated || got.body["name"] != "default" {
+		t.Fatalf("a blank key name = %d %v, want 201 named default", got.status, got.body)
+	}
+	r.exec(`DELETE FROM api_keys WHERE name = 'default'`)
 	if got := r.call("GET", "/v1/assets?updated_since=2020-01-01T00:00:00Z", nil, secret); got.status != 200 {
 		t.Fatalf("the new key authenticates: %d", got.status)
 	}
@@ -526,5 +549,155 @@ func TestChaptersSettingsAreTheOwners(t *testing.T) {
 	}
 	if got := r.call("GET", "/v1/settings/chapters", nil, key); got.status != http.StatusUnauthorized {
 		t.Fatalf("an API key read the chapters settings: %d", got.status)
+	}
+}
+
+// D099: the library searches titles and passthroughs, leaves deleted assets
+// out on the server, and gives each item a poster URL.
+func TestLibrarySearchesTitlesAndHidesDeletedAssets(t *testing.T) {
+	r := newRig(t, config.Config{})
+	r.exec(`INSERT INTO assets (id, project_id, app_id, status, error_code, storage_id, title, passthrough, created_at) VALUES
+	          ('ast_frac', 'prj_default', 'app_dashboard', 'processing', NULL, 'sto_default', 'Fractions, part 1', 'lesson-9', '2026-11-05T10:00:00Z'),
+	          ('ast_pct', 'prj_default', 'app_dashboard', 'processing', NULL, 'sto_default', '100% of a number', 'lesson_10', '2026-11-05T10:01:00Z'),
+	          ('ast_gone', 'prj_default', 'app_dashboard', 'deleted', NULL, 'sto_default', 'Fractions, old', NULL, '2026-11-05T10:02:00Z'),
+	          ('ast_up', 'prj_default', 'app_dashboard', 'waiting_upload', NULL, 'sto_default', NULL, NULL, '2026-11-05T10:03:00Z'),
+	          ('ast_bad', 'prj_default', 'app_dashboard', 'errored', 'upload_expired', 'sto_default', NULL, 'lesson-11', '2026-11-05T10:04:00Z')`)
+	ids := func(path string) []string {
+		t.Helper()
+		got := r.call("GET", path, nil, "")
+		if got.status != 200 {
+			t.Fatalf("%s = %d %v", path, got.status, got.body)
+		}
+		out := []string{}
+		for _, a := range got.list {
+			out = append(out, a.(map[string]any)["id"].(string))
+		}
+		return out
+	}
+	for path, want := range map[string][]string{
+		"/v1/library":                                  {"ast_bad", "ast_up", "ast_pct", "ast_frac"},
+		"/v1/library?include_deleted=true":             {"ast_bad", "ast_up", "ast_gone", "ast_pct", "ast_frac"},
+		"/v1/library?status=deleted":                   {"ast_gone"},
+		"/v1/library?q=fractions":                      {"ast_frac"},
+		"/v1/library?q=FRACTIONS&include_deleted=true": {"ast_gone", "ast_frac"},
+		"/v1/library?q=lesson-1":                       {"ast_bad"},
+		"/v1/library?q=lesson_":                        {"ast_pct"}, // _ is a character, not a wildcard
+		"/v1/library?q=100%25":                         {"ast_pct"},
+		"/v1/library?q=%25":                            {"ast_pct"},
+		"/v1/library?q=ast_up":                         {"ast_up"}, // an exact asset ID
+		"/v1/library?q=ast_u":                          {},
+	} {
+		if got := ids(path); !reflect.DeepEqual(got, want) {
+			t.Errorf("%s = %v, want %v", path, got, want)
+		}
+	}
+	if got := r.call("GET", "/v1/library?include_deleted=maybe", nil, ""); got.status != http.StatusBadRequest {
+		t.Errorf("include_deleted=maybe = %d, want 400", got.status)
+	}
+	first := r.call("GET", "/v1/library?q=fractions", nil, "").list[0].(map[string]any)
+	if first["title"] != "Fractions, part 1" || first["poster_url"] != nil {
+		t.Errorf("item = %v; want its title, and no poster before an output", first)
+	}
+
+	counts := r.call("GET", "/v1/library/counts", nil, "")
+	if want := map[string]any{"ready": 0.0, "processing": 2.0, "errored": 1.0, "waiting_upload": 1.0}; counts.status != 200 || !reflect.DeepEqual(counts.body, want) {
+		t.Errorf("counts = %d %v, want %v", counts.status, counts.body, want)
+	}
+	if got := r.call("GET", "/v1/library/counts?app_id=app_other", nil, ""); !reflect.DeepEqual(got.body, map[string]any{"ready": 0.0, "processing": 0.0, "errored": 0.0, "waiting_upload": 0.0}) {
+		t.Errorf("another app's counts = %v, want zeros", got.body)
+	}
+}
+
+func TestLibraryPostersUseAPublicIDOrAThumbnailToken(t *testing.T) {
+	r := newRig(t, config.Config{})
+	r.exec(`INSERT INTO assets (id, project_id, app_id, status, storage_id, created_at) VALUES
+	          ('ast_pub', 'prj_default', 'app_dashboard', 'processing', 'sto_default', '2026-11-05T10:00:00Z'),
+	          ('ast_sig', 'prj_default', 'app_dashboard', 'processing', 'sto_default', '2026-11-05T10:01:00Z');
+	        INSERT INTO outputs (id, project_id, asset_id, key_version, status, manifest) VALUES
+	          ('out_p', 'prj_default', 'ast_pub', 1, 'committed', '{}'), ('out_s', 'prj_default', 'ast_sig', 1, 'committed', '{}');
+	        UPDATE assets SET status = 'ready', current_output_id = CASE id WHEN 'ast_pub' THEN 'out_p' ELSE 'out_s' END;
+	        INSERT INTO playback_ids (id, project_id, asset_id, policy, created_at) VALUES
+	          ('pid_ps', 'prj_default', 'ast_pub', 'signed', '2026-11-05T10:00:00Z'),
+	          ('pid_pp', 'prj_default', 'ast_pub', 'public', '2026-11-05T10:00:01Z'),
+	          ('pid_ss', 'prj_default', 'ast_sig', 'signed', '2026-11-05T10:01:00Z')`)
+	got := r.call("GET", "/v1/library", nil, "")
+	poster := map[string]string{}
+	for _, a := range got.list {
+		m := a.(map[string]any)
+		poster[m["id"].(string)], _ = m["poster_url"].(string)
+	}
+	if want := config.DefaultPublicURL + "/p/pid_pp/poster.jpg"; poster["ast_pub"] != want {
+		t.Errorf("public poster = %q, want %q", poster["ast_pub"], want)
+	}
+	prefix, suffix := config.DefaultPublicURL+"/v/", "/pid_ss/poster.jpg"
+	tok := strings.TrimSuffix(strings.TrimPrefix(poster["ast_sig"], prefix), suffix)
+	parsed, err := tokens.Parse(tok)
+	if !strings.HasPrefix(poster["ast_sig"], prefix) || !strings.HasSuffix(poster["ast_sig"], suffix) || err != nil {
+		t.Fatalf("signed poster = %q (%v)", poster["ast_sig"], err)
+	}
+	var internal string
+	_ = r.pool.QueryRow(context.Background(), `SELECT id FROM signing_keys WHERE app_id IS NULL`).Scan(&internal)
+	if parsed.Kid != internal || parsed.Claims.Sub != "pid_ss" || parsed.Claims.Aud != "t" || parsed.Claims.Exp-parsed.Claims.Iat != 3600 {
+		t.Errorf("poster token kid %s claims %+v; want the internal key, pid_ss, aud t, one hour", parsed.Kid, parsed.Claims)
+	}
+	r.exec(`UPDATE playback_ids SET status = 'revoked', revoked_at = now() WHERE asset_id = 'ast_sig'`)
+	for _, a := range r.call("GET", "/v1/library", nil, "").list {
+		if m := a.(map[string]any); m["id"] == "ast_sig" && m["poster_url"] != nil {
+			t.Errorf("an asset with no live ID has poster %v, want null", m["poster_url"])
+		}
+	}
+}
+
+// A share link's own playback ID (D104) is never a preview's or a poster's:
+// revoking the link must not end either.
+func TestPreviewsAndPostersLeaveShareLinksAlone(t *testing.T) {
+	r := newRig(t, config.Config{})
+	r.exec(`INSERT INTO assets (id, project_id, app_id, status, storage_id) VALUES ('ast_1', 'prj_default', 'app_dashboard', 'processing', 'sto_default');
+	        INSERT INTO outputs (id, project_id, asset_id, key_version, status, manifest) VALUES ('out_1', 'prj_default', 'ast_1', 1, 'committed', '{}');
+	        UPDATE assets SET status = 'ready', current_output_id = 'out_1';
+	        INSERT INTO playback_ids (id, project_id, asset_id, policy) VALUES ('pid_shr', 'prj_default', 'ast_1', 'signed');
+	        INSERT INTO share_links (id, project_id, app_id, asset_id, playback_id, secret_hash, secret_sealed)
+	          VALUES ('shr_1', 'prj_default', 'app_dashboard', 'ast_1', 'pid_shr', sha256('s'), '\x00')`)
+	if got := r.call("POST", "/v1/assets/ast_1/preview-token", nil, ""); got.status != http.StatusConflict {
+		t.Errorf("preview with only a share link's ID = %d %v, want 409", got.status, got.body)
+	}
+	for _, a := range r.call("GET", "/v1/library", nil, "").list {
+		if m := a.(map[string]any); m["poster_url"] != nil {
+			t.Errorf("poster through a share link's ID = %v, want null", m["poster_url"])
+		}
+	}
+	r.exec(`INSERT INTO playback_ids (id, project_id, asset_id, policy, created_at) VALUES ('pid_own', 'prj_default', 'ast_1', 'signed', now() + interval '1 second')`)
+	if got := r.call("POST", "/v1/assets/ast_1/preview-token", nil, ""); got.body["playback_id"] != "pid_own" {
+		t.Errorf("preview = %d %v, want pid_own", got.status, got.body)
+	}
+}
+
+// Edge analytics (P7-T05): the owner connects a read-only token once
+// Cloudflare delivery is on; a bad token is refused and nothing is kept.
+func TestEdgeAnalyticsConnectsWithAReadOnlyToken(t *testing.T) {
+	r := newRig(t, config.Config{})
+	if got := r.call("GET", "/v1/cloudflare/analytics", nil, ""); got.status != 200 || got.body["connected"] != false {
+		t.Fatalf("before = %d %v", got.status, got.body)
+	}
+	if got := r.call("POST", "/v1/cloudflare/analytics", map[string]string{"token": "cf-analytics-read"}, ""); got.status != 409 || code(got) != "not_connected" {
+		t.Fatalf("without Cloudflare = %d %v", got.status, got.body)
+	}
+	r.exec(`INSERT INTO cloudflare_connections (project_id, account_id, zone_id, hostname, bucket, script_name, token_id, storage_id, worker_version)
+	        VALUES ('prj_default', 'acc_1', 'zone_1', 'media.example.com', 'clipmux-media', 'clipmux-media', 'tok_1', 'sto_default', 'v1')`)
+	if got := r.call("POST", "/v1/cloudflare/analytics", map[string]string{"token": "cf-wrong"}, ""); got.status != 400 || code(got) != "token_rejected" {
+		t.Fatalf("a bad token = %d %v", got.status, got.body)
+	}
+	got := r.call("POST", "/v1/cloudflare/analytics", map[string]string{"token": "cf-analytics-read"}, "")
+	if got.status != 200 || got.body["connected"] != true || got.body["account_id"] != "acc_1" {
+		t.Fatalf("connect = %d %v", got.status, got.body)
+	}
+	if _, ok := got.body["token"]; ok {
+		t.Fatal("the token came back")
+	}
+	if got := r.call("DELETE", "/v1/cloudflare/analytics", nil, ""); got.status != 204 {
+		t.Fatalf("disconnect = %d %v", got.status, got.body)
+	}
+	if got := r.call("DELETE", "/v1/cloudflare/analytics", nil, ""); got.status != 404 || code(got) != "not_connected" {
+		t.Fatalf("a second disconnect = %d %v", got.status, got.body)
 	}
 }

@@ -99,6 +99,12 @@ func runWorker(args []string, getenv func(string) string, stderr io.Writer) int 
 		logger.Error("invalid configuration", "err", err)
 		return 1
 	}
+	// Each tool runs from its attempt's directory with paths beneath it, so
+	// a relative work dir (serve's default ./data) would name the wrong file.
+	if *workDir, err = filepath.Abs(*workDir); err != nil {
+		logger.Error("work dir", "err", err)
+		return 1
+	}
 	if err := os.MkdirAll(*workDir, 0o750); err != nil {
 		logger.Error("work dir", "err", err)
 		return 1

@@ -118,9 +118,10 @@ func (t transportSecurity) scheme(r *http.Request) string {
 
 // refusals limits playback by its failures (D067). A classroom behind one
 // NAT makes thousands of good requests, so successes never count; a client
-// scanning for playback IDs or replaying stale tokens makes refusals. An
-// address with RefusalsPerWindow refusals (401, 403, 404) in RefusalWindow
-// gets 429 for every playback request until they age out.
+// scanning for playback IDs or share secrets (/s/, D104), or replaying stale
+// tokens, makes refusals. An address with RefusalsPerWindow refusals (401,
+// 403, 404, 410) in RefusalWindow gets 429 for every playback request until
+// they age out.
 type refusals struct {
 	limit    *ratelimit.Failures
 	clientIP func(*http.Request) netip.Addr
@@ -138,7 +139,7 @@ func newRefusals(clientIP func(*http.Request) netip.Addr) refusals {
 
 func (f refusals) wrap(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.HasPrefix(r.URL.Path, "/v/") && !strings.HasPrefix(r.URL.Path, "/p/") {
+		if !strings.HasPrefix(r.URL.Path, "/v/") && !strings.HasPrefix(r.URL.Path, "/p/") && !strings.HasPrefix(r.URL.Path, "/s/") {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -151,7 +152,7 @@ func (f refusals) wrap(next http.Handler) http.Handler {
 		st := &statusOnly{ResponseWriter: w}
 		next.ServeHTTP(st, r)
 		switch st.status {
-		case http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound:
+		case http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusGone:
 			f.limit.Fail(key)
 		}
 	})

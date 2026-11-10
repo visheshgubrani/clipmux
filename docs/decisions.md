@@ -1116,3 +1116,167 @@ P6-T01, closing D062's real-account half and the providers' speech run (D085). `
 11. **The exit test cleans up after itself.** It stops every machine of its install through the provider at cleanup, pass or fail.
 
 Consequence: the Phase 4 exit is recorded; P6-T01 is done but for running `exit-providers.yml` in CI, which needs the repository secrets and `REAL_PROVIDERS` and is the owner's choice (they asked for local runs).
+
+## D098 The dashboard design, signed off: design v2 and its toolset — accepted (2026-11-09)
+P6-T10. The owner reviewed the clickable mock ([ClipMux dashboard mock](https://claude.ai/artifact/XMu8H6RAk33jUTVdaktxbf)) and the written spec, [design.md](design.md), and signed them off after one round of changes.
+- **v1 → v2.** The owner asked for a leaner Home, "no KPI cards, it's looking bloated", and a redesign using the `frontend-design` and `shadcn` skills. The v1 mock read as the generic dashboard kit:
+  - Inter;
+  - everything boxed in identical cards;
+  - icon-in-a-tinted-square tiles;
+  - "A · B · C" meta strings;
+  - a split sign-in panel with a headline.
+- **v2 is rooted in the editing room.**
+  - **Type:** Archivo, with page titles set wide (`font-stretch: 118%`); durations as tabular timecode.
+  - **Colour:** one tally violet; status colours only with a word.
+  - **Layout:** rows and sections instead of cards, and a radius ladder (4, 6, 8, 12 px).
+  - **The poster is the one memorable element:** on black, with burned-in timecode, a tally lamp only when the video isn't ready, a globe only when it's public, and a playhead line while it encodes.
+- **Home:** what's left to set up as rows, what needs attention, the newest videos, and a status line. No number tiles; numbers live on Analytics, in one chart panel.
+- **Navigation:** a left sidebar, a sheet on phones.
+  - Home, Videos, Analytics, Jobs; then Connections (Encoding, Delivery, Captions & AI, Apps & API); then Settings and the account menu.
+  - `/library`, `/assets/:id`, `/workers` and `/account` redirect to the new pages. `/workers/connect` stays where the CLI opens it.
+- **The toolset:**
+  - **Components:** shadcn 4.23 on Base UI (`base-nova`), only the components used, restyled through tokens.
+  - **Server state:** TanStack Query v5.
+  - **Also:** lucide, recharts through shadcn's chart, `input-otp`, self-hosted Archivo, `tw-animate-css`.
+  - **Rejected:**
+    - Aceternity and `motion`: their effects work against "lean", and `motion` adds about 40 KB.
+    - A form library, a date library and `cmdk`: not needed.
+    - shadcn's new `cn` package: clsx and tailwind-merge stay.
+  - All run under the CSP (D065). The player and the chart load only on the pages that use them.
+- **Accounts stay as the architecture has them.** One owner; sign-up is the first-run account with the setup token, then sign-in only; a lost password is reset on the host.
+
+Consequence: P6-T11 and T13 build v2; [design.md](design.md) is the spec and wins over the mock.
+
+## D099 The owner routes the redesigned dashboard needs — accepted (2026-11-09)
+P6-T12. The owner chose to build the small owner routes the new pages need now, with the analytics API deferred (D100). Every route is public `/v1` with the owner's session (no private path), tested on real Postgres, and in [api.md](api.md).
+- **Asset titles.** `assets.title` (migration 00026) is optional, trimmed, one line and at most 200 characters. It is for people only: not unique, never in a URL, ignored by delivery.
+  - `POST /v1/uploads` and `POST /v1/assets` take `title`, and the asset view shows it.
+  - `PATCH /v1/assets/{id}` `{title}` (`assets:write`) renames an asset, and `""` or `null` clears the title. It is an integration route, so an app can keep titles in sync too. A change bumps `version` and writes `video.asset.updated`, like any other change an app might miss. The same title again changes nothing. A deleted asset is `409 asset_deleted`.
+- **The library searches on the server.** `GET /v1/library` leaves deleted assets out unless `include_deleted=true` (or `status=deleted`). This fixes "No videos yet." showing beside a "More" button.
+  - `q` matches an exact asset ID, or a title or passthrough containing it, case-insensitively. LIKE's `%` and `_` are taken literally.
+  - Each item adds `poster_url`. With a public playback ID, it is `{base_url}/p/{pid}/poster.jpg`. Otherwise it uses a one-hour `t`-audience token signed with the internal key, the preview token's signer. It is null until a playback ID is playable.
+  - `GET /v1/library/counts` gives `{ready, processing, errored, waiting_upload}` for the filter chips.
+- **Changing the password**, `PUT /v1/session/password` `{current_password, new_password}`, re-checks the current password under the sign-in limiter. Every other session ends and this one stays, as when TOTP is turned on.
+- **Disconnecting Cloudflare**, `DELETE /v1/cloudflare`, runs steps the way Connect does. Each step is safe to repeat:
+  1. the media URL goes back to the public URL;
+  2. delivery goes back to the built-in handler;
+  3. the Worker's `_routes/` and `_keys.json` are deleted from the bucket. A request that still reaches the Worker is then refused, rather than served from records nothing updates any more;
+  4. the connection is forgotten.
+
+  The R2 store stays a storage config, and stays the default if it was: its assets play through this server. The Worker and its domain stay in the Cloudflare account, because no token is kept to remove them. It is `409 pinned` while `CLIPMUX_MEDIA_URL` names the Worker.
+- **Storage configs.**
+  - `GET /v1/storage` lists the configs with their asset counts.
+  - `POST /v1/storage` adds a generic S3 bucket only after `stores.AddS3`'s test write, read, list and delete and CORS pass (`400 storage_check_failed` otherwise). R2 still comes from Connect Cloudflare.
+  - `PUT /v1/storage/{id}/credentials` checks new keys the same way before sealing them, and the open store is replaced at once.
+  - `POST /v1/storage/{id}/default` picks where new uploads go.
+  - `DELETE /v1/storage/{id}` retires a config that nothing needs. It is refused (409) for the filesystem store, for the default, while any asset may have files there (a deleted asset counts until its files are gone), during a move to or from it, and while Cloudflare delivery reads it.
+  - **A removed config stays as a row** (migration 00027, `removed_at`), with its credentials dropped. Assets, move jobs and the delivery history keep naming it, and a hard delete would break those references or force rewriting history. It is never listed, made the default, or matched by Connect Cloudflare again.
+- **API key names** were already stored and listed. A name is now trimmed and at most 100 characters, and a blank name is still `default`.
+- Adding a bucket, rotating its keys, and disconnecting Cloudflare (which clears a bucket's routes) get the long request deadline, as Connect does.
+
+## D100 Analytics enters the roadmap: the UI now, the API next phase — accepted (2026-11-09)
+The dashboard redesign (P6 Track C, D098) draws an analytics page. Its API is deferred, so the page ships with its empty state, and ClipMux doesn't yet record views.
+- **The contract is fixed now** as "Planned" in [api.md](api.md), so the page is built against it:
+  - `GET /v1/analytics?range=24h|7d|30d|90d&app_id=` returns `totals`, the same for the `previous` range, a `series` of buckets, and `top_assets`.
+  - `GET /v1/analytics/assets/{id}?range=` returns the same for one asset.
+- **`unique_viewers` may be null.** Counting viewers needs an identifier that playback tokens don't carry today. The UI shows "—" rather than a guess.
+- **Where the numbers come from is the next phase's decision.** The options are built-in delivery's logs, the Worker's analytics, or a player beacon. Whichever it is, it must keep D067's limits and never log tokens.
+- The route answers 404 until then. The dashboard treats a 404 as "not available on this server", not as an error.
+
+## D101 Track C passes: the dashboard redesigned and built — passed (2026-11-09)
+P6-T11, T13 and T14, on the design D098 signed off and the routes of D099.
+- **Built:**
+  - **Design layer:** the v2 tokens and dark mode in `dashboard/src/index.css`, Archivo, the brand mark and favicon, and a pre-paint theme script.
+  - **Components:** shadcn on Base UI in `components/ui/`, and the app pieces in `components/`: `PageHeader`, `Section`, `Poster`, the status badges, `QueryState` with `ErrorState`, `useConfirm`, the copy fields, the error boundary and the Upload dialog.
+  - **Data:** TanStack Query in `src/queries.ts`.
+  - **Pages:** every page in `src/pages/`.
+- **The P6 exit check 6, as run:**
+  - **Every dashboard suite runs twice,** in desktop Chromium and at 375 × 812 (`phone`). Each project has a fixture of its own, so suites that change their install start from the same state.
+  - **New suites:**
+    - apps: secrets once, signing keys, webhooks with deliveries and two-step rotation, disable;
+    - connect: `/workers/connect` approve and deny;
+    - settings: change password, with other browsers signed out;
+    - delivery: S3 storage added, rotated and removed against SeaweedFS;
+    - home;
+    - analytics: the not-collecting state;
+    - errors: each page's API failing, then Try again recovering;
+    - upload: titled public upload → poster → search → private → delete.
+  - **Existing suites** were moved to the new pages: dashboard, totp, tracks and workers.
+  - **Every visited page is checked** for horizontal scroll (`noHorizontalScroll`) and for CSP violations (`watchCSP`). Every destructive action is confirmed in a dialog; no native `confirm()` is left.
+  - **Result on this machine:** 38 passed across both projects (34 in one full run, then the last two suites again after fixing them), with 1 skipped: the live Cloudflare captions test, which needs a live config.
+- **Found and fixed by the suites:**
+  - A wrong current password (401 `invalid_credentials`) signed the owner out. Only `unauthorized` now does.
+  - The routing form lost its "Saved." because it remounted on new data.
+  - Toast and section names collided with dialogs and fields. Sections are now named by their headings, and the tests name the dialog they mean.
+- **Not covered:** Firefox and Safari for the dashboard; the live Cloudflare suite was updated to the dialog but not run here.
+
+Consequence: P6-T10 to T14 are done. Analytics' API (D100) is the next piece of work.
+
+## D102 Phase 7 scope: sharing and analytics, before the LMS cutover — accepted (2026-11-10)
+Context: two things the architecture promised are missing. Share links for signed videos were never built (architecture "Integration flow", known gaps), so a private video plays only through the owner's preview or an app's token. The analytics API's contract was fixed in D100, and the dashboard is built against it, but nothing records views. Phase 6's remaining tasks are releases, docs, devices, by-hand checks and the LMS cutover with its soak. The owner chose the scope and the timing; the plan is [plans/P7-sharing-analytics.md](plans/P7-sharing-analytics.md).
+Decision:
+- **Next phase:** Phase 7, "Sharing and analytics". Its exit has three parts:
+  - a share link plays a signed video in a fresh browser, and stops when revoked or expired;
+  - both delivery adapters count to the same vectors;
+  - `/v1/analytics` gives exact numbers for scripted playback, through built-in delivery and through the Worker on a real zone.
+- **It runs now, beside Phase 6's remaining tasks.** P6-T19, the LMS cutover, waits for Phase 7's exit. The release candidate the LMS installs then carries Phase 7, so the soak tests delivery counting on real traffic, and v1.0 doesn't launch with an empty Analytics page. This is a stated exception to "each phase starts only after the previous exit test passes", because Phase 6's exit is the launch itself.
+- **Scope:** share links with an expiry and a plain HLS URL for other players (D104), and analytics counted at delivery and stored in Postgres (D103). No player beacon, no password on links and no embed this phase.
+Consequence: P6's order changes (T19 after the P7 exit). The integration API only grows; the output format, the path grammar and the token claims don't change.
+
+## D103 Analytics: counted at delivery, rolled up in Postgres — accepted (2026-11-10)
+Context: D100 left open where the numbers come from (built-in delivery's logs, the Worker's analytics or a player beacon) and fixed the response. The owner asked whether a separate analytics database, such as ClickHouse, was the right tool for a self-hosted product. clipmux-lms used a player beacon written to ClickHouse and Workers Analytics Engine for bandwidth; the LMS turned the beacon off, and its schema was never committed. The image is built with `CGO_ENABLED=0`.
+Decision:
+- **Postgres, not a second database.** The API needs hourly totals per playback ID and a per-day set of viewers per asset. A busy LMS adds about 12,000 hourly rows a day, which Postgres serves without a new service.
+  - **ClickHouse** would be a second stateful container (about 1–2 GB of memory) to install, upgrade, secure and back up. It pays for itself only at billions of raw events, such as a multi-tenant cloud edition.
+  - **TimescaleDB** would replace the stock Postgres image, and parts of it are under the Timescale License.
+  - **DuckDB** needs cgo and a single writer.
+- **Counted where delivery answers the viewer,** so every player counts, including native Safari, ExoPlayer and AirPlay. No player beacon this phase; exact watch time and drop-off curves would need one later.
+- **What counts:** a `GET` on an active route answered 200 or 206. Refusals never count. A 206 that doesn't start at byte 0 adds its bytes only; views and watch time need the first byte.
+  - **`views`:** one per generated `master.m3u8`.
+  - **`watch_seconds`:** 6 per audio segment, or per video segment for an output with no audio. It overcounts by the player's buffer-ahead, about 30 s per view, and the docs say so.
+  - **`bytes_delivered`:** the body bytes of every counted response.
+  - **`unique_viewers`:** distinct viewer keys, kept per day per asset. A viewer key is HMAC-SHA256 under a per-project analytics key over the app ID and the token's `vid`, cut to 16 bytes. The count is `null` when no counted view in the range carried a `vid`.
+- **What doesn't count:**
+  - tokens signed by the internal key, unless the playback ID belongs to a share link, which leaves out previews, posters and the setup test;
+  - fetches the Worker forwards to origin (marked `X-ClipMux-Edge: 1`), which are counted at the edge.
+- **Privacy:** no IP, User-Agent, referrer, token or raw `vid` is stored anywhere. This settles the architecture's open item on where `vid` is logged: only as a keyed hash, in analytics.
+- **Built-in delivery** aggregates in memory and flushes an additive upsert every 15 s, plus a last flush on shutdown, so each replica counts on its own.
+- **The Worker** writes one Analytics Engine data point per counted response, with the viewer key computed under a new `ANALYTICS_KEY` secret. The dataset is `clipmux_delivery`, one per account; a point is blobs `[project, app, asset, playback ID, kind, viewer key hex]`, doubles `[views, watch seconds, bytes]` and index the asset (P7-T04). The project comes from a `PROJECT_ID` binding; route records gain `no_audio` (outputs whose video segments carry the watch time) and `share`. serve pulls the edge into the same tables with a separate read-only token (Account Analytics: Read), sealed like the AI keys, because Connect Cloudflare's token is forgotten after setup. Each pull recomputes whole hours and replaces their edge rows, so a pull repeated never counts twice.
+- **Rollups:** hourly totals for the 24-hour range, daily totals for the others, and viewers both per asset and per app per day, all written in one flush (P7-T03 measured a 90-day read without them at up to 5.7 s).
+- **Retention (D105):** hourly rows 14 days; daily rows and viewers 180 days, the span two 90-day ranges need. There are no lifetime totals.
+- **The API** is D100's contract with two additions:
+  - `collecting`, saying whether built-in and edge counting are on;
+  - an opt-in `analytics:read` API-key scope for an app's own assets.
+Consequence: P7-T01 to T05. The analytics key and the edge token join `secrets.Columns`. The edge token is kept in `edge_analytics` with a watermark; each 5-minute pass recomputes at most a day from an hour before it, never further back than 13 days so the hourly rows hold every hour of a day it rebuilds (P7-T05). Analytics Engine keeps three months and samples at high volume, which can drop viewer keys; both go in known gaps.
+
+## D104 Share links: a page on the public URL, a playback ID each — accepted (2026-11-10)
+Context: the architecture promises an expiring share link signed with the internal key, each with its own signed playback ID. The owner asked whether a presigned URL would do. It can't: outputs are AES-128 ciphertext whose keys are derived at delivery, so a presigned storage URL hands out segments with no key. It also can't be revoked, and it bypasses the route record.
+Decision:
+- **A link is a page, not a token.** `{public_url}/s/{secret}` opens a small page that fetches short-lived tokens from `POST /s/{secret}/playback`, so a link can outlive the 7-day token maximum, and expire or be revoked on its own.
+- **Each link owns one signed playback ID,** created with it. Revoking the link revokes the ID through the existing unpublish, and the link's views are that ID's views. Previews, posters and "Make private" leave share IDs alone.
+- **The secret** is `crypto/rand.Text()`, about 130 bits. It is looked up by its SHA-256 and sealed for the owner to copy again. Failed lookups count toward the playback refusal limiter.
+- **Tokens:**
+  - signed with the internal key, `aud` `v`, `sub` the link's ID;
+  - `exp` is the earlier of the link's expiry and now + max(2 × duration, 4 h);
+  - `vid` is a random per-browser ID from the page, so share links count unique viewers.
+- **Options this phase:**
+  - an optional expiry, enforced by the tokens and by a loop that revokes expired links' IDs;
+  - a plain HLS URL for other players, which can't refresh and lasts at most the project maximum.
+  No password, no embed and no changing an expiry.
+- **The page** is a second Vite entry with its own CSP and `frame-ancestors 'none'`, `noindex` and no referrer. Its path wildcard is named `{token}`, so the access line redacts it.
+- **The routes** are integration routes (`assets:write`, `assets:read`), so an app can create links too. The owner reaches them as the asset's app.
+Consequence: P7-T06 to T08. The threats table gains a passed-on link, guessed secrets and a leaked HLS URL.
+Built in P7-T06 (package `internal/shares`, migration 00030):
+- **No `revoked_at` on a link.** Its state is read from its expiry and its playback ID: past the expiry it is `expired`, whatever stopped the ID; before it, a stopped ID is `revoked`. Only the service's clock is compared, never Postgres's.
+- **Each link's ID** is created through `lifecycle.AddPlaybackIDIn`, in the link's transaction, so it keeps the 1000-ID cap and the deleted-asset check. Route records mark it `share`, so the Worker counts it; the vectors have a case for it.
+- **An idempotent replay** stores only the link's ID, never its secret; the response is rebuilt from the sealed copy.
+- **Tokens** are also capped by the project's longest token lifetime, which delivery enforces.
+- **A disabled app's links** answer `404 share_not_found`, as its playback IDs answer 403.
+- **The per-address limit** spends a request only on a link that would play; refusals (404, 410) go to delivery's refusal limiter, which now covers `/s/`.
+
+## D105 Analytics are kept 180 days, fixed — accepted (2026-11-10)
+Context: P7 open question 2. The API's longest range is 90 days, compared with the 90 days before it. T03 added daily rollups, so hourly rows serve only the 24-hour range.
+Decision: the retention loop (D069) deletes analytics older than its window. These are constants like the other windows, not settings; one can come when someone asks for longer.
+- `playback_daily`, `playback_viewers` and `playback_viewer_days`: 180 days (`retention.AnalyticsWindow`).
+- `playback_hourly`: 14 days (`retention.HourlyAnalyticsWindow`). The 24-hour range and the 24 hours before it need two days; the rest is room for an edge pull to recompute recent hours.
+Consequence: no lifetime totals (known gaps). A backup holds at most 180 days of analytics.

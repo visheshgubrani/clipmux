@@ -47,7 +47,7 @@ func (s *Service) RegenerateTrack(ctx context.Context, key apikeys.Key, assetID 
 		return TrackJob{}, httpjson.Fail(http.StatusBadRequest, "invalid_request", `kind must be "subtitles" or "chapters"`)
 	}
 	if _, err := db.New(s.pool).GetAsset(ctx, db.GetAssetParams{ID: assetID, AppID: key.AppID}); errors.Is(err, pgx.ErrNoRows) {
-		return TrackJob{}, errNotFound
+		return TrackJob{}, ErrNotFound
 	} else if err != nil {
 		return TrackJob{}, err
 	}
@@ -160,7 +160,7 @@ func (s *Service) queueTrack(ctx context.Context, q *db.Queries, asset db.Asset,
 // subtitles error subtitles_failed.
 func (s *Service) DeleteTrack(ctx context.Context, key apikeys.Key, assetID, trackID string) (assets.View, bool, error) {
 	if _, err := db.New(s.pool).GetAsset(ctx, db.GetAssetParams{ID: assetID, AppID: key.AppID}); errors.Is(err, pgx.ErrNoRows) {
-		return assets.View{}, false, errNotFound
+		return assets.View{}, false, ErrNotFound
 	} else if err != nil {
 		return assets.View{}, false, err
 	}
@@ -175,7 +175,7 @@ func (s *Service) DeleteTrack(ctx context.Context, key apikeys.Key, assetID, tra
 			}
 			t, err := q.LockTrack(ctx, trackID)
 			if errors.Is(err, pgx.ErrNoRows) || (err == nil && (t.AssetID != asset.ID || t.Status == tracks.Deleted)) {
-				return errNotFound
+				return ErrNotFound
 			}
 			if err != nil {
 				return err

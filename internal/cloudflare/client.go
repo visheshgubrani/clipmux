@@ -222,6 +222,7 @@ type Binding struct {
 	Name       string `json:"name"`
 	BucketName string `json:"bucket_name,omitempty"`
 	Text       string `json:"text,omitempty"`
+	Dataset    string `json:"dataset,omitempty"`
 }
 
 // UploadWorker deploys a module Worker with its bindings. Secret bindings

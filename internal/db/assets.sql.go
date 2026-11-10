@@ -37,9 +37,9 @@ func (q *Queries) CreateApp(ctx context.Context, arg CreateAppParams) (App, erro
 }
 
 const createAsset = `-- name: CreateAsset :one
-INSERT INTO assets (id, project_id, app_id, status, storage_id, passthrough)
-VALUES ($1, $2, $3, 'waiting_upload', $4, $5)
-RETURNING id, project_id, app_id, status, error_code, version, storage_id, source_uri, agent_source_id, source_kept, current_output_id, passthrough, duration_seconds, created_at, updated_at, deleted_at
+INSERT INTO assets (id, project_id, app_id, status, storage_id, passthrough, title)
+VALUES ($1, $2, $3, 'waiting_upload', $4, $5, $6)
+RETURNING id, project_id, app_id, status, error_code, version, storage_id, source_uri, agent_source_id, source_kept, current_output_id, passthrough, duration_seconds, created_at, updated_at, deleted_at, title
 `
 
 type CreateAssetParams struct {
@@ -48,6 +48,7 @@ type CreateAssetParams struct {
 	AppID       string
 	StorageID   string
 	Passthrough pgtype.Text
+	Title       pgtype.Text
 }
 
 func (q *Queries) CreateAsset(ctx context.Context, arg CreateAssetParams) (Asset, error) {
@@ -57,6 +58,7 @@ func (q *Queries) CreateAsset(ctx context.Context, arg CreateAssetParams) (Asset
 		arg.AppID,
 		arg.StorageID,
 		arg.Passthrough,
+		arg.Title,
 	)
 	var i Asset
 	err := row.Scan(
@@ -76,12 +78,13 @@ func (q *Queries) CreateAsset(ctx context.Context, arg CreateAssetParams) (Asset
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.DeletedAt,
+		&i.Title,
 	)
 	return i, err
 }
 
 const getAsset = `-- name: GetAsset :one
-SELECT id, project_id, app_id, status, error_code, version, storage_id, source_uri, agent_source_id, source_kept, current_output_id, passthrough, duration_seconds, created_at, updated_at, deleted_at FROM assets WHERE id = $1 AND app_id = $2
+SELECT id, project_id, app_id, status, error_code, version, storage_id, source_uri, agent_source_id, source_kept, current_output_id, passthrough, duration_seconds, created_at, updated_at, deleted_at, title FROM assets WHERE id = $1 AND app_id = $2
 `
 
 type GetAssetParams struct {
@@ -110,6 +113,7 @@ func (q *Queries) GetAsset(ctx context.Context, arg GetAssetParams) (Asset, erro
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.DeletedAt,
+		&i.Title,
 	)
 	return i, err
 }
@@ -188,7 +192,7 @@ func (q *Queries) ListAppEvents(ctx context.Context, arg ListAppEventsParams) ([
 }
 
 const listAssetsByPassthrough = `-- name: ListAssetsByPassthrough :many
-SELECT id, project_id, app_id, status, error_code, version, storage_id, source_uri, agent_source_id, source_kept, current_output_id, passthrough, duration_seconds, created_at, updated_at, deleted_at FROM assets
+SELECT id, project_id, app_id, status, error_code, version, storage_id, source_uri, agent_source_id, source_kept, current_output_id, passthrough, duration_seconds, created_at, updated_at, deleted_at, title FROM assets
 WHERE app_id = $1 AND passthrough = $2 AND status <> 'deleted'
 ORDER BY created_at DESC, id DESC
 LIMIT $3
@@ -227,6 +231,7 @@ func (q *Queries) ListAssetsByPassthrough(ctx context.Context, arg ListAssetsByP
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.DeletedAt,
+			&i.Title,
 		); err != nil {
 			return nil, err
 		}
@@ -239,7 +244,7 @@ func (q *Queries) ListAssetsByPassthrough(ctx context.Context, arg ListAssetsByP
 }
 
 const listAssetsUpdatedSince = `-- name: ListAssetsUpdatedSince :many
-SELECT id, project_id, app_id, status, error_code, version, storage_id, source_uri, agent_source_id, source_kept, current_output_id, passthrough, duration_seconds, created_at, updated_at, deleted_at FROM assets
+SELECT id, project_id, app_id, status, error_code, version, storage_id, source_uri, agent_source_id, source_kept, current_output_id, passthrough, duration_seconds, created_at, updated_at, deleted_at, title FROM assets
 WHERE app_id = $1
   AND (updated_at, id) > ($2::timestamptz, $3::text)
 ORDER BY updated_at, id
@@ -286,6 +291,7 @@ func (q *Queries) ListAssetsUpdatedSince(ctx context.Context, arg ListAssetsUpda
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.DeletedAt,
+			&i.Title,
 		); err != nil {
 			return nil, err
 		}
@@ -295,4 +301,42 @@ func (q *Queries) ListAssetsUpdatedSince(ctx context.Context, arg ListAssetsUpda
 		return nil, err
 	}
 	return items, nil
+}
+
+const setAssetTitle = `-- name: SetAssetTitle :one
+UPDATE assets SET title = $1, version = version + 1, updated_at = now()
+WHERE id = $2
+RETURNING id, project_id, app_id, status, error_code, version, storage_id, source_uri, agent_source_id, source_kept, current_output_id, passthrough, duration_seconds, created_at, updated_at, deleted_at, title
+`
+
+type SetAssetTitleParams struct {
+	Title pgtype.Text
+	ID    string
+}
+
+// A title change is a change: version and updated_at move, so catch-up
+// with updated_since sees it.
+func (q *Queries) SetAssetTitle(ctx context.Context, arg SetAssetTitleParams) (Asset, error) {
+	row := q.db.QueryRow(ctx, setAssetTitle, arg.Title, arg.ID)
+	var i Asset
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.AppID,
+		&i.Status,
+		&i.ErrorCode,
+		&i.Version,
+		&i.StorageID,
+		&i.SourceUri,
+		&i.AgentSourceID,
+		&i.SourceKept,
+		&i.CurrentOutputID,
+		&i.Passthrough,
+		&i.DurationSeconds,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DeletedAt,
+		&i.Title,
+	)
+	return i, err
 }

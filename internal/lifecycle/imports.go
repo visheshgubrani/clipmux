@@ -38,6 +38,8 @@ type ImportRequest struct {
 	AgentSourceID  string `json:"agent_source_id,omitempty"`
 	PlaybackPolicy string `json:"playback_policy,omitempty"`
 	Passthrough    string `json:"passthrough,omitempty"`
+	// Title is an optional name for people (D099), up to 200 characters.
+	Title string `json:"title,omitempty"`
 	// Generate asks for subtitles and chapters (P5-T16); chapters imply
 	// subtitles. They are made after the video is ready.
 	Generate tracks.Generate `json:"generate,omitzero"`
@@ -73,9 +75,13 @@ func (s *Service) Import(ctx context.Context, key apikeys.Key, req ImportRequest
 	case len(req.Passthrough) > 255:
 		return assets.View{}, httpjson.Fail(http.StatusBadRequest, "invalid_request", "passthrough is limited to 255 bytes")
 	}
+	title, err := assets.Title(req.Title)
+	if err != nil {
+		return assets.View{}, err
+	}
 	body, _ := json.Marshal(req)
 	var out assets.View
-	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+	err = pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 		q := db.New(tx)
 		claim, err := idempotency.Begin(ctx, q, key.ProjectID, key.AppID, idemKey, "POST /v1/assets", body)
 		if err != nil {
@@ -90,7 +96,7 @@ func (s *Service) Import(ctx context.Context, key apikeys.Key, req ImportRequest
 		}
 		asset, err := q.CreateImportedAsset(ctx, db.CreateImportedAssetParams{
 			ID: ids.New(ids.Asset), ProjectID: key.ProjectID, AppID: key.AppID, StorageID: st.ID,
-			Passthrough: pgtype.Text{String: req.Passthrough, Valid: req.Passthrough != ""},
+			Passthrough: pgtype.Text{String: req.Passthrough, Valid: req.Passthrough != ""}, Title: title,
 		})
 		if err != nil {
 			return err

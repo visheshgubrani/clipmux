@@ -15,6 +15,7 @@ import (
 
 	"github.com/visheshgubrani/clipmux/internal/registry/registrytest"
 	"github.com/visheshgubrani/clipmux/internal/runpod/runpodtest"
+	"github.com/visheshgubrani/clipmux/internal/storage/s3test"
 	"github.com/visheshgubrani/clipmux/internal/tokens"
 )
 
@@ -24,7 +25,8 @@ import (
 // another origin the built test pages plus:
 //
 //	GET  /config                 {base_url, playback_id, api, dashboard, setup_token,
-//	                              ops, ops_email, ops_password, totp, runpod_key, registry_*}
+//	                              ops, ops_email, ops_password, totp, runpod_key, registry_*,
+//	                              s3?}
 //	GET  /token?aud=v&ttl=SECS   a fresh playback token (text)
 //	POST /uploads?size=BYTES     an upload created with the app's API key
 //
@@ -81,6 +83,13 @@ func TestPlayerFixture(t *testing.T) {
 		VALUES ('agt_studio', 'prj_default', 'studio-pc', 'fixture', 'approved', true, 'studio', 'linux/amd64', '{"encoders": ["h264_vaapi", "libx264"], "speech": {"backends": ["vulkan", "cpu"], "model": "large-v3-turbo-q8_0"}}', now() + interval '1 day')`); err != nil {
 		t.Fatal(err)
 	}
+	// The Delivery suite adds, rotates and removes a storage config: a bucket
+	// of its own on the S3 test store, when there is one.
+	var s3 map[string]string
+	if os.Getenv("CLIPMUX_TEST_S3_ENDPOINT") != "" {
+		b := s3test.New(t)
+		s3 = map[string]string{"endpoint": b.Endpoint, "bucket": b.Name, "access_key_id": b.AccessKeyID, "secret_access_key": b.SecretAccessKey}
+	}
 	signer, err := tokens.ParsePrivateKey(priv)
 	if err != nil {
 		t.Fatal(err)
@@ -101,6 +110,7 @@ func TestPlayerFixture(t *testing.T) {
 			"dashboard": fresh.url, "setup_token": setupToken[1], "totp": totp.url,
 			"ops": in.url, "ops_email": "owner@example.test", "ops_password": "a long test password",
 			"runpod_key": runpodtest.Key, "registry_username": registrytest.Username, "registry_password": registrytest.Password,
+			"s3": s3,
 		})
 	})
 	mux.HandleFunc("GET /token", func(w http.ResponseWriter, r *http.Request) {

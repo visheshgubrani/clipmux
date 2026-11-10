@@ -76,5 +76,9 @@ UPDATE uploads SET token_hash = $2 WHERE id = $1 AND status = 'active';
 
 -- name: ListPlaybackIDsForAssets :many
 -- One query for a page of assets (D072), in the order ListPlaybackIDs uses.
-SELECT * FROM playback_ids WHERE asset_id = ANY(sqlc.arg(asset_ids)::text[]) AND status <> 'revoked'
-ORDER BY asset_id, created_at, id;
+-- A share link's own ID carries the link's ID and name.
+SELECT p.id, p.asset_id, p.policy, p.status, s.id AS share_id, s.name AS share_name
+FROM playback_ids p
+LEFT JOIN share_links s ON s.playback_id = p.id
+WHERE p.asset_id = ANY(sqlc.arg(asset_ids)::text[]) AND p.status <> 'revoked'
+ORDER BY p.asset_id, p.created_at, p.id;

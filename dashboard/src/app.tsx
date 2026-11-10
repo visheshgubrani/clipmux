@@ -1,64 +1,150 @@
-import { useCallback, useEffect, useState } from 'react'
-import { BrowserRouter, Link, Navigate, NavLink, Route, Routes, useLocation, useNavigate } from 'react-router'
-import { api, type Setup } from './api.ts'
-import { Account } from './pages/account.tsx'
-import { AppDetail, Apps } from './pages/apps.tsx'
-import { AssetPage } from './pages/asset.tsx'
-import { Captions } from './pages/captions.tsx'
-import { Delivery } from './pages/delivery.tsx'
-import { Jobs } from './pages/jobs.tsx'
-import { Library } from './pages/library.tsx'
-import { Login } from './pages/login.tsx'
-import { SetupWizard } from './pages/setup.tsx'
-import { Upload } from './pages/upload.tsx'
-import { ConnectPC, Workers } from './pages/workers.tsx'
-
-type Session = { email: string } | null
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { UploadIcon } from 'lucide-react'
+import * as React from 'react'
+import { Navigate, Outlet, Route, Routes, useLocation, useNavigate } from 'react-router'
+import { whenSignedOut } from '@/api'
+import { AppSidebar } from '@/components/app-sidebar'
+import { ErrorBoundary } from '@/components/error-boundary'
+import { ErrorState } from '@/components/query-state'
+import { Button } from '@/components/ui/button'
+import { SidebarInset, SidebarProvider, SidebarTrigger } from '@/components/ui/sidebar'
+import { Skeleton } from '@/components/ui/skeleton'
+import { UploadProvider, useUpload } from '@/components/upload'
+import { Mark } from '@/components/wordmark'
+import { AnalyticsPage } from '@/pages/analytics'
+import { AppDetail, Apps } from '@/pages/apps'
+import { Captions } from '@/pages/captions'
+import { Delivery } from '@/pages/delivery'
+import { ConnectPC, Encoding } from '@/pages/encoding'
+import { Home } from '@/pages/home'
+import { Jobs } from '@/pages/jobs'
+import { Login } from '@/pages/login'
+import { NotFound } from '@/pages/not-found'
+import { Settings } from '@/pages/settings'
+import { SetupWizard } from '@/pages/setup'
+import { UploadPage } from '@/pages/upload'
+import { VideoPage } from '@/pages/video'
+import { Videos } from '@/pages/videos'
+import { q } from '@/queries'
 
 export function App() {
-  const [setup, setSetup] = useState<Setup | null>(null)
-  const [session, setSession] = useState<Session | undefined>(undefined)
-  const refresh = useCallback(async () => {
-    setSetup(await api<Setup>('/v1/setup'))
-    setSession(await api<{ email: string }>('/v1/session').catch(() => null))
-  }, [])
-  useEffect(() => {
-    void refresh()
-  }, [refresh])
-  if (!setup || session === undefined) return <p className="p-8 text-sm text-zinc-500">Loading…</p>
-  const needsSetup =
-    !setup.owner_exists || !setup.urls.confirmed || !setup.setup_test || setup.setup_test.status !== 'passed'
+  const setup = useQuery(q.setup())
+  const session = useQuery(q.session())
+  const qc = useQueryClient()
+  const navigate = useNavigate()
+  const loc = useLocation()
+
+  // A request that finds the session gone sends the owner to sign in and back.
+  React.useEffect(() => {
+    whenSignedOut(() => {
+      qc.setQueryData(['session'], null)
+      const here = window.location.pathname + window.location.search
+      if (!here.startsWith('/login') && !here.startsWith('/setup'))
+        navigate(`/login?next=${encodeURIComponent(here)}`, { replace: true })
+    })
+  }, [qc, navigate])
+
+  if (setup.isPending || session.isPending) return <Boot />
+  if (setup.isError || session.isError)
+    return (
+      <div className="mx-auto w-full max-w-lg px-4 pt-24">
+        <ErrorState
+          what="ClipMux"
+          error={setup.error ?? session.error}
+          onRetry={() => {
+            void setup.refetch()
+            void session.refetch()
+          }}
+          retrying={setup.isFetching || session.isFetching}
+        />
+      </div>
+    )
+
+  const s = setup.data
+  const signedIn = !!session.data
   return (
-    <BrowserRouter>
-      {session && <Nav email={session.email} onSignOut={refresh} />}
-      <main className="mx-auto grid max-w-5xl gap-6 p-6">
-        <Routes>
-          <Route
-            path="/setup"
-            element={<SetupWizard setup={setup} signedIn={!!session} onChange={refresh} />}
-          />
-          <Route path="/login" element={session ? <AfterSignIn /> : <Login onSignIn={refresh} />} />
-          {session ? (
-            <>
-              <Route path="/" element={needsSetup ? <Navigate to="/setup" /> : <Navigate to="/library" />} />
-              <Route path="/library" element={<Library />} />
-              <Route path="/upload" element={<Upload />} />
-              <Route path="/assets/:id" element={<AssetPage />} />
-              <Route path="/apps" element={<Apps />} />
-              <Route path="/apps/:id" element={<AppDetail keysAllowed={setup.keys_allowed} />} />
-              <Route path="/delivery" element={<Delivery />} />
-              <Route path="/workers" element={<Workers />} />
-              <Route path="/captions" element={<Captions />} />
-              <Route path="/jobs" element={<Jobs />} />
-              <Route path="/workers/connect" element={<ConnectPC />} />
-              <Route path="/account" element={<Account />} />
-            </>
-          ) : (
-            <Route path="*" element={setup.owner_exists ? <ToSignIn /> : <Navigate to="/setup" />} />
-          )}
-        </Routes>
-      </main>
-    </BrowserRouter>
+    <ErrorBoundary resetKey={loc.pathname}>
+      <Routes>
+        <Route path="/setup" element={<SetupWizard setup={s} signedIn={signedIn} />} />
+        <Route path="/login" element={signedIn ? <AfterSignIn /> : <Login />} />
+        {signedIn ? (
+          <Route element={<Shell email={session.data?.email ?? ''} />}>
+            {/* Until the URLs are set, the first-run flow is the place to be. */}
+            <Route
+              path="/"
+              element={s.urls.confirmed ? <Home setup={s} /> : <Navigate to="/setup" replace />}
+            />
+            <Route path="/videos" element={<Videos />} />
+            <Route path="/videos/:id" element={<VideoPage />} />
+            <Route path="/upload" element={<UploadPage />} />
+            <Route path="/analytics" element={<AnalyticsPage />} />
+            <Route path="/jobs" element={<Jobs />} />
+            <Route path="/encoding" element={<Encoding />} />
+            <Route path="/workers/connect" element={<ConnectPC />} />
+            <Route path="/delivery" element={<Delivery />} />
+            <Route path="/captions" element={<Captions />} />
+            <Route path="/apps" element={<Apps />} />
+            <Route path="/apps/:id" element={<AppDetail keysAllowed={s.keys_allowed} />} />
+            <Route path="/settings" element={<Settings setup={s} />} />
+            {/* Where older links and the CLI point. */}
+            <Route path="/library" element={<Navigate to="/videos" replace />} />
+            <Route path="/assets/:id" element={<AssetRedirect />} />
+            <Route path="/workers" element={<Navigate to="/encoding" replace />} />
+            <Route path="/account" element={<Navigate to="/settings?tab=account" replace />} />
+            <Route path="*" element={<NotFound />} />
+          </Route>
+        ) : (
+          <Route path="*" element={s.owner_exists ? <ToSignIn /> : <Navigate to="/setup" replace />} />
+        )}
+      </Routes>
+    </ErrorBoundary>
+  )
+}
+
+function Shell({ email }: { email: string }) {
+  const loc = useLocation()
+  return (
+    <UploadProvider>
+      <SidebarProvider>
+        <AppSidebar email={email} />
+        <SidebarInset>
+          <MobileBar />
+          <ErrorBoundary resetKey={loc.pathname}>
+            <Outlet />
+          </ErrorBoundary>
+        </SidebarInset>
+      </SidebarProvider>
+    </UploadProvider>
+  )
+}
+
+/** Phones: the sidebar becomes a sheet behind this bar. */
+function MobileBar() {
+  const upload = useUpload()
+  return (
+    <div className="sticky top-0 z-10 flex h-14 items-center justify-between border-b bg-sidebar px-2 md:hidden">
+      <SidebarTrigger className="size-10" aria-label="Open menu" />
+      <span className="flex items-center gap-2">
+        <Mark className="size-5" />
+        <span className="font-semibold [font-stretch:118%]">ClipMux</span>
+      </span>
+      <Button size="icon-lg" aria-label="Upload" onClick={() => upload.open()}>
+        <UploadIcon />
+      </Button>
+    </div>
+  )
+}
+
+function Boot() {
+  return (
+    <div
+      className="flex min-h-svh items-center justify-center"
+      role="status"
+      aria-busy="true"
+      aria-label="Loading ClipMux"
+    >
+      <Skeleton className="size-10 rounded-lg" />
+    </div>
   )
 }
 
@@ -76,55 +162,7 @@ function AfterSignIn() {
   return <Navigate to={next.startsWith('/') && !next.startsWith('//') ? next : '/'} replace />
 }
 
-function Nav({ email, onSignOut }: { email: string; onSignOut: () => void }) {
-  const navigate = useNavigate()
-  const link = ({ isActive }: { isActive: boolean }) =>
-    isActive ? 'font-semibold' : 'text-zinc-600 hover:text-zinc-900'
-  return (
-    <header className="border-b border-zinc-200 bg-white">
-      <nav className="mx-auto flex max-w-5xl flex-wrap items-center gap-x-6 gap-y-2 px-6 py-3 text-sm">
-        <Link to="/" className="font-bold">
-          ClipMux
-        </Link>
-        <NavLink to="/library" className={link}>
-          Library
-        </NavLink>
-        <NavLink to="/upload" className={link}>
-          Upload
-        </NavLink>
-        <NavLink to="/apps" className={link}>
-          Apps
-        </NavLink>
-        <NavLink to="/delivery" className={link}>
-          Delivery
-        </NavLink>
-        <NavLink to="/jobs" className={link}>
-          Jobs
-        </NavLink>
-        <NavLink to="/workers" className={link} end>
-          Workers
-        </NavLink>
-        <NavLink to="/captions" className={link}>
-          Captions
-        </NavLink>
-        <NavLink to="/setup" className={link}>
-          Setup
-        </NavLink>
-        <NavLink to="/account" className={({ isActive }) => `ml-auto ${link({ isActive })}`}>
-          {email}
-        </NavLink>
-        <button
-          type="button"
-          className="text-zinc-600 hover:text-zinc-900"
-          onClick={async () => {
-            await api('/v1/session', { method: 'DELETE' })
-            onSignOut()
-            navigate('/login')
-          }}
-        >
-          Sign out
-        </button>
-      </nav>
-    </header>
-  )
+function AssetRedirect() {
+  const loc = useLocation()
+  return <Navigate to={loc.pathname.replace(/^\/assets\//, '/videos/') + loc.search} replace />
 }

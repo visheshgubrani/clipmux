@@ -15,7 +15,20 @@ export interface Env {
   CONTENT_KEYS: string
   // The built-in handler, for routes whose backend is "origin".
   ORIGIN_URL?: string
+  // Analytics (D103): the Analytics Engine dataset, the project every data
+  // point names, and the 64-hex-digit key viewer IDs are hashed under.
+  // Without the dataset nothing is counted.
+  ANALYTICS?: AnalyticsEngineDataset
+  PROJECT_ID?: string
+  ANALYTICS_KEY?: string
 }
+
+// The header origin fetches carry, so the built-in handler doesn't count
+// what the edge already counted (delivery.EdgeHeader).
+export const EDGE_HEADER = 'X-ClipMux-Edge'
+
+// One segment's playback time (media.SegmentSeconds).
+const SEGMENT_SECONDS = 6
 
 interface Route {
   v: number
@@ -28,6 +41,20 @@ interface Route {
   denied?: boolean
   // The tracks tracks/{id}.vtt may name (internal/routes.Track).
   tracks?: Record<string, Track>
+  // Outputs without an audio rendition: their video segments carry the
+  // watch time instead.
+  no_audio?: string[]
+  // A share link's playback ID: counted even under the internal key.
+  share?: boolean
+}
+
+// What the counting step needs to know about a request that reached a route.
+interface Seen {
+  route?: Route
+  pid?: string
+  path?: string
+  internal?: boolean
+  vid?: string
 }
 
 interface Track {
@@ -140,8 +167,13 @@ export function createWorker(opts: Options = {}) {
     return secrets.ring.get(version)
   }
 
-  // authorize returns the token's audience, or a refusal (D015's order).
-  async function authorize(env: Env, r: Route, pid: string, raw: string): Promise<string | Response> {
+  // authorize returns what the token grants, or a refusal (D015's order).
+  async function authorize(
+    env: Env,
+    r: Route,
+    pid: string,
+    raw: string,
+  ): Promise<{ aud: string; vid: string; internal: boolean } | Response> {
     const tok = parse(raw)
     if (!tok) return denied()
     const ks = await signingKeys(env)
@@ -162,7 +194,7 @@ export function createWorker(opts: Options = {}) {
       return denied()
     }
     if (c.exp <= t) return expired()
-    return c.aud
+    return { aud: c.aud, vid: c.vid, internal: key.app_id === null }
   }
 
   async function contentKey(env: Env, r: Route, outputID: string, version: string): Promise<Response> {
@@ -175,6 +207,7 @@ export function createWorker(opts: Options = {}) {
       new TextEncoder().encode(`clipmux-content-key-v1\n${r.asset_id}\n${outputID}`),
     )
     const h = common(new Headers({ 'Content-Type': 'application/octet-stream', 'Cache-Control': 'no-store' }))
+    h.set('Content-Length', '16')
     return new Response(new Uint8Array(mac).slice(0, 16), { headers: h })
   }
 
@@ -192,12 +225,7 @@ export function createWorker(opts: Options = {}) {
       .filter(([, t]) => t.listed)
       .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
       .map(([id, t]) => ({ id, name: t.name, language: t.language }))
-    return new Response(
-      req.method === 'HEAD' ? null : masterWithSubtitles(rewriteMaster(text, r.output_id), subs),
-      {
-        headers: h,
-      },
-    )
+    return text_(req, masterWithSubtitles(rewriteMaster(text, r.output_id), subs), h)
   }
 
   // track serves tracks/{id}.m3u8 (subtitles only) or tracks/{id}.vtt:
@@ -213,7 +241,7 @@ export function createWorker(opts: Options = {}) {
       const h = common(
         new Headers({ 'Content-Type': CONTENT_TYPES['.m3u8'] ?? '', 'Cache-Control': 'no-store' }),
       )
-      return new Response(req.method === 'HEAD' ? null : subtitlePlaylist(id, t.duration_ms), { headers: h })
+      return text_(req, subtitlePlaylist(id, t.duration_ms), h)
     }
     const scope = r.policy === 'signed' ? 'private' : 'public'
     if (r.backend === 'origin') {
@@ -288,7 +316,7 @@ export function createWorker(opts: Options = {}) {
     const u = new URL(req.url)
     const upstream = new Request(env.ORIGIN_URL.replace(/\/$/, '') + u.pathname, {
       method: req.method,
-      headers: req.headers.has('Range') ? { Range: req.headers.get('Range') ?? '' } : {},
+      headers: { ...rangeOnly(req), [EDGE_HEADER]: '1' },
     })
     const res = await (opts.fetchOrigin ?? fetch)(upstream)
     const h = common(new Headers(res.headers))
@@ -376,7 +404,78 @@ export function createWorker(opts: Options = {}) {
     return new Response(req.method === 'HEAD' ? null : obj.body, { status: 206, headers: h })
   }
 
-  async function serve(req: Request, env: Env): Promise<Response> {
+  let viewerKeyring: { raw: string; key: Promise<CryptoKey> } | undefined
+
+  // viewerKey is HMAC-SHA256(ANALYTICS_KEY, app_id || 0x00 || vid)[:16] in
+  // hex (analytics.ViewerKey); empty without a vid or a key.
+  async function viewerKey(env: Env, appID: string, vid: string): Promise<string> {
+    const raw = env.ANALYTICS_KEY ?? ''
+    if (vid === '' || !/^[0-9a-f]{64}$/.test(raw)) return ''
+    if (viewerKeyring?.raw !== raw) {
+      const bytes = new Uint8Array((raw.match(/../g) ?? []).map((b) => Number.parseInt(b, 16)))
+      viewerKeyring = {
+        raw,
+        key: crypto.subtle.importKey('raw', bytes, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']),
+      }
+    }
+    const enc = new TextEncoder()
+    const a = enc.encode(appID)
+    const v = enc.encode(vid)
+    const msg = new Uint8Array(a.length + 1 + v.length)
+    msg.set(a)
+    msg.set(v, a.length + 1)
+    const mac = new Uint8Array(await crypto.subtle.sign('HMAC', await viewerKeyring.key, msg))
+    return [...mac.slice(0, 16)].map((b) => b.toString(16).padStart(2, '0')).join('')
+  }
+
+  // count writes one data point for a response delivery counts (D103): a
+  // GET answered 200 or 206 on a route, never under the internal key unless
+  // the ID is a share link's. A range not starting at byte 0 adds its bytes
+  // only. A body without a Content-Length is counted as it streams.
+  async function count(env: Env, req: Request, res: Response, seen: Seen): Promise<Response> {
+    const r = seen.route
+    const dataset = env.ANALYTICS
+    if (!dataset || !r || req.method !== 'GET' || (res.status !== 200 && res.status !== 206)) return res
+    if (seen.internal && !r.share) return res
+    const k = kindOf(seen.path ?? '')
+    if (!k) return res
+    let views = 0
+    let watch = 0
+    if (res.status === 200 || (res.headers.get('Content-Range') ?? '').startsWith('bytes 0-')) {
+      if (k.kind === 'master') views = 1
+      else if (k.kind === 'segment' && (k.rendition === 'audio' || r.no_audio?.includes(k.outputID)))
+        watch = SEGMENT_SECONDS
+    }
+    const viewer = await viewerKey(env, r.app_id, seen.vid ?? '')
+    const write = (bytes: number) =>
+      dataset.writeDataPoint({
+        blobs: [env.PROJECT_ID ?? '', r.app_id, r.asset_id, seen.pid ?? '', k.kind, viewer],
+        doubles: [views, watch, bytes],
+        indexes: [r.asset_id],
+      })
+    const length = res.headers.get('Content-Length')
+    if (length !== null && /^[0-9]+$/.test(length)) {
+      write(Number(length))
+      return res
+    }
+    if (!res.body) {
+      write(0)
+      return res
+    }
+    let n = 0
+    const counter = new TransformStream<Uint8Array, Uint8Array>({
+      transform(chunk, c) {
+        n += chunk.byteLength
+        c.enqueue(chunk)
+      },
+      flush() {
+        write(n)
+      },
+    })
+    return new Response(res.body.pipeThrough(counter), { status: res.status, headers: res.headers })
+  }
+
+  async function serve(req: Request, env: Env, seen: Seen): Promise<Response> {
     const url = new URL(req.url)
     if (req.method === 'OPTIONS' && /^\/[vp]\//.test(url.pathname)) {
       const h = common(new Headers())
@@ -404,8 +503,11 @@ export function createWorker(opts: Options = {}) {
       if (token === undefined) return denied()
       const a = await authorize(env, r, pid, token)
       if (a instanceof Response) return a
-      audience = a
+      audience = a.aud
+      seen.internal = a.internal
+      seen.vid = a.vid
     }
+    Object.assign(seen, { route: r, pid, path })
 
     if (path === 'master.m3u8' && audience === 'v') return master(env, r, req)
     if (path === 'poster.jpg') return object(env, req, r, r.output_id, 'poster.jpg', 'max-age=300')
@@ -427,7 +529,8 @@ export function createWorker(opts: Options = {}) {
   return {
     async fetch(req: Request, env: Env): Promise<Response> {
       try {
-        return await serve(req, env)
+        const seen: Seen = {}
+        return await count(env, req, await serve(req, env, seen), seen)
       } catch (err) {
         console.error('delivery', err instanceof Error ? err.message : String(err))
         return error(500, 'internal', 'internal error')
@@ -487,7 +590,31 @@ export function subtitlePlaylist(trackID: string, durationMS: number): string {
   return `#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:${target}\n#EXT-X-MEDIA-SEQUENCE:0\n#EXT-X-PLAYLIST-TYPE:VOD\n#EXTINF:${extinf},\n${trackID}.vtt\n#EXT-X-ENDLIST\n`
 }
 
-function rangeOnly(req: Request): HeadersInit {
+// text_ answers a generated playlist with its length, which counting reads.
+function text_(req: Request, body: string, h: Headers): Response {
+  const bytes = new TextEncoder().encode(body)
+  h.set('Content-Length', String(bytes.length))
+  return new Response(req.method === 'HEAD' ? null : bytes, { headers: h })
+}
+
+// kindOf names what a served path is (delivery.kindOf); only paths that
+// passed the grammar reach it.
+export function kindOf(p: string): { kind: string; rendition: string; outputID: string } | null {
+  if (p === 'master.m3u8') return { kind: 'master', rendition: '', outputID: '' }
+  if (p === 'poster.jpg' || p.endsWith('/poster.jpg')) return { kind: 'poster', rendition: '', outputID: '' }
+  if (p.startsWith('tracks/'))
+    return { kind: p.endsWith('.m3u8') ? 'track_playlist' : 'track', rendition: '', outputID: '' }
+  const parts = p.split('/')
+  if (parts.length !== 3) return null
+  const [outputID = '', rendition = '', file = ''] = parts
+  let kind = 'segment'
+  if (rendition === 'key') kind = 'key'
+  else if (file === 'index.m3u8') kind = 'playlist'
+  else if (file === 'init.mp4') kind = 'init'
+  return { kind, rendition, outputID }
+}
+
+function rangeOnly(req: Request): Record<string, string> {
   const r = req.headers.get('Range')
   return r ? { Range: r } : {}
 }

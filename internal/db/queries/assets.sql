@@ -9,8 +9,8 @@ INSERT INTO apps (id, project_id, name) VALUES ($1, $2, $3)
 RETURNING *;
 
 -- name: CreateAsset :one
-INSERT INTO assets (id, project_id, app_id, status, storage_id, passthrough)
-VALUES ($1, $2, $3, 'waiting_upload', $4, $5)
+INSERT INTO assets (id, project_id, app_id, status, storage_id, passthrough, title)
+VALUES ($1, $2, $3, 'waiting_upload', $4, $5, $6)
 RETURNING *;
 
 -- name: GetAsset :one
@@ -39,3 +39,10 @@ SELECT id, payload, created_at FROM outbox
 WHERE app_id = sqlc.arg(app_id) AND kind = 'webhook' AND created_at >= sqlc.arg(since)::timestamptz
 ORDER BY created_at, id
 LIMIT sqlc.arg(max_events);
+
+-- name: SetAssetTitle :one
+-- A title change is a change: version and updated_at move, so catch-up
+-- with updated_since sees it.
+UPDATE assets SET title = sqlc.narg(title), version = version + 1, updated_at = now()
+WHERE id = sqlc.arg(id)
+RETURNING *;

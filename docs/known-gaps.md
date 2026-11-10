@@ -14,9 +14,17 @@ when you introduce or discover it; remove it when it is closed.
 
 - Phase 1 has exited (D040): the Go, Chromium, Safari and ExoPlayer exit
   suites and the image job pass in CI. iPhone and AirPlay are checked by hand
-  only; Firefox isn't in CI. The dashboard is minimal: no
-  share links, no playback-ID management in the UI, and a sample preview
-  that waits for Play rather than autoplaying.
+  only; Firefox isn't in CI.
+- Share links (D104) have their API (P7-T06) but not yet their page
+  (P7-T07) or a place in the dashboard (P7-T08), so a link's URL opens
+  nothing yet. A link's expiry can't be changed: revoke it and make another.
+  Built-in delivery refuses a revoked link's ID at once; the Worker within
+  its 60 s route cache, so a token already issued plays at the edge until
+  then. The sample preview waits for Play rather than autoplaying.
+  There is no audit log of owner actions, and no per-attempt GPU or cost
+  on Jobs.
+- The dashboard's main bundle is about 230 KB gzipped; the player and the
+  chart load on their own pages, but the other pages aren't split by route.
 - Built-in delivery caches routes, signing keys and outputs for 30 s
   (D072). On one node every published change is seen at the next request;
   a change that publishes nothing (the project's maximum token lifetime)
@@ -57,10 +65,13 @@ when you introduce or discover it; remove it when it is closed.
   not reserved up front; a full disk fails the part write. Abandoned
   multipart uploads are cleaned up by the upload sweeper (T05), and `tmp/`
   leftovers after 24 hours (D070).
-- Storage configs other than the filesystem can be added only from code
-  (`stores.AddS3`) until Connect Cloudflare (P2-T04); there is no API or
-  dashboard form for a generic S3 bucket, and no way to remove a config or
-  rotate its credentials.
+- Storage configs have routes (D099) but no dashboard page until P6-T13.
+  A removed config stays as a row without its credentials, since assets,
+  move jobs and the delivery history still name it. Rotated credentials
+  reach this serve's open stores at once; a second replica keeps the old
+  ones until it restarts.
+- The library's `q` is an ILIKE scan of titles and passthroughs, with no
+  trigram index: fine for tens of thousands of assets, not millions.
 - Phase 5 exited in CI (D085); its drills now run on the real binary (D094)
   and `exit-llm.yml` passed on real accounts (D095). Still to run: the
   providers' speech on real RunPod and Modal, and Safari and ExoPlayer
@@ -133,11 +144,48 @@ when you introduce or discover it; remove it when it is closed.
   AMD cards encode fine but print a warning about their name.
 - Phase 3's exit passed on the real binary (D050), and NVIDIA on Modal
   (D051); still by hand: a real suspend of the M4 Mac's Docker agent, and
-  registering the self-hosted GPU runner. The pairing page
-  (`/workers/connect`) has no Playwright suite yet; the Workers and Jobs
-  pages do (D060). The Jobs page shows which provider ran an attempt, but not
-  its GPU or its estimated cost.
-- Disconnecting Cloudflare (back to built-in delivery) has no endpoint yet.
+  registering the self-hosted GPU runner. The Jobs page shows which
+  provider ran an attempt, but not its GPU or its estimated cost.
+- Disconnecting Cloudflare (D099) leaves the Worker, its custom domain and
+  the token in the Cloudflare account, since no token is kept to remove
+  them; the bucket loses the Worker's route records and keys, so the Worker
+  refuses what it is asked. A route sync already in flight as delivery
+  switches may write one record back; it names an ID that was live then.
+- Analytics (D100, D103): edge counts reach `/v1/analytics` only once the
+  owner connects edge analytics with a second, read-only Cloudflare token
+  (P7-T05); until then `collecting.edge` says `not_connected`. Installs
+  connected before P7-T04 count at the edge only once Connect is run again
+  (`needs_redeploy`).
+  - A first connect pulls 13 days back, inside the hourly retention, not
+    Analytics Engine's three months. A pull stalled longer than that resumes
+    13 days back, and the gap is lost.
+  - Each pass asks for a whole day of hourly rows per playback ID in one
+    query. A project busy enough to hit the SQL API's result limits would
+    need smaller passes; none is known to.
+  - Analytics Engine samples at high volume. Sums are weighted by
+    `_sample_interval`, but sampled-out points take their viewer keys with
+    them, so edge unique viewers can undercount.
+  - The dashboard has no card for it yet (P7-T08); use the API. The dashboard's Analytics page still shows its empty
+  state until P7-T08. There is no player beacon, so watch time is segments
+  served, not seconds watched.
+  - Unique viewers are kept per UTC day, so a range counts the days it
+    touches: `24h` counts yesterday's and today's viewers.
+  - The dashboard can't create an `analytics:read` key yet; ask for it in
+    `POST /v1/apps/{id}/api-keys`.
+  - A replica killed without SIGTERM loses the counts since its last flush,
+    at most 15 seconds. A full recorder (100,000 keys between flushes)
+    drops new keys and counts them in `clipmux_analytics_dropped_total`.
+  - Daily rows go after 180 days and hourly ones after 14 (D105), so there
+    are no lifetime totals.
+  - The Worker counts a response's bytes from its Content-Length, so a
+    viewer who aborts a segment counts it whole at the edge; built-in
+    delivery counts the bytes it wrote. Only a body without a length is
+    counted as it streams, and then only if it is read to the end.
+  - Built-in delivery doesn't yet honour a route's `share` flag; share
+    links arrive with it in P7-T06.
+  - The dashboard previews a public playback ID through its plain public
+    URL, with no token, so those previews count as views. Signed IDs are
+    previewed under the internal key and don't count.
 - Provider spend (D055) is an estimate from the hourly rate set in Connect,
   not the provider's bill, and a machine that runs past its reservation
   isn't stopped at the limit, so a month can overshoot by that much.
@@ -200,9 +248,9 @@ when you introduce or discover it; remove it when it is closed.
 - Native sandbox for Windows/macOS agents (v1 requires Docker, WSL2 or a VM).
 - Serving segments from an R2 custom domain with only playlists/keys through the Worker.
 - Token-signing SDK languages (P6 open question 2).
-- When captions, storyboards and viewer analytics enter the roadmap.
+- When storyboards enter the roadmap (viewer analytics did, D100, built in Phase 7; captions in Phase 5).
 - Confirm defaults: 7-day max token lifetime, retry budgets 5/3, 15-minute
   reconciler, per-output keys derived from one secret (P6 open question 7).
-- Audit leftovers: where the `vid` claim is logged. (The shared Go/Worker
-  vectors are D015/D036, pinned-job timeouts D045, the route cache D072 and
-  the backup docs docs/operations.md.)
+- Audit leftovers: none open. (`vid` is kept as a keyed hash in analytics,
+  D103; the shared Go/Worker vectors are D015/D036, pinned-job timeouts
+  D045, the route cache D072 and the backup docs docs/operations.md.)

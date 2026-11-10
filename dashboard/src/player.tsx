@@ -45,7 +45,6 @@ export function Preview({
 }
 
 declare module 'react' {
-  // biome-ignore lint/style/noNamespace: JSX augmentation
   namespace JSX {
     interface IntrinsicElements {
       'clipmux-player': React.DetailedHTMLProps<React.HTMLAttributes<HTMLElement>, HTMLElement> & {

@@ -33,7 +33,23 @@
           "key_version": 1,
           "listed": false
         }
-      }
+      },
+      "no_audio": [
+        "out_p"
+      ]
+    },
+    "pid_share": {
+      "v": 1,
+      "app_id": "app_a",
+      "asset_id": "ast_v",
+      "output_id": "out_v",
+      "policy": "signed",
+      "backend": "r2",
+      "outputs": {
+        "out_v": 1,
+        "out_v_old": 1
+      },
+      "share": true
     },
     "pid_signed": {
       "v": 1,

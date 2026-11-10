@@ -170,6 +170,7 @@ func newRig(t *testing.T) *rig {
 	conn := &Connector{
 		Pool: pool, Stores: set, Keys: contentkey.NewRing(ring), URLs: urls, ProjectID: db.DefaultProjectID,
 		API: api.URL, R2Endpoint: func(string) string { return b.Endpoint },
+		AnalyticsKey: bytes.Repeat([]byte{0xab}, 32),
 	}
 	return &rig{conn: conn, fake: fake, urls: urls, pool: db.New(pool), raw: pool, stash: set, bucket: b.Name}
 }
@@ -203,6 +204,10 @@ func TestConnectMovesDeliveryToTheWorker(t *testing.T) {
 		`{"bucket_name":"` + r.bucket + `","name":"MEDIA","type":"r2_bucket"}`,
 		`{"name":"ORIGIN_URL","text":"https://video.example.org","type":"plain_text"}`,
 		`{"name":"CONTENT_KEYS","text":"{\"1\":\"000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f\"}","type":"secret_text"}`,
+		// Counting at the edge (D103): one dataset, every point naming its project.
+		`{"dataset":"clipmux_delivery","name":"ANALYTICS","type":"analytics_engine"}`,
+		`{"name":"PROJECT_ID","text":"prj_default","type":"plain_text"}`,
+		`{"name":"ANALYTICS_KEY","text":"abababababababababababababababababababababababababababababababab","type":"secret_text"}`,
 	} {
 		if !strings.Contains(string(bindings), want) {
 			t.Fatalf("bindings %s lack %s", bindings, want)
