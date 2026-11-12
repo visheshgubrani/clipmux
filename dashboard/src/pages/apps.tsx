@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ChevronRightIcon, PlusIcon } from 'lucide-react'
 import * as React from 'react'
 import { Link, useParams } from 'react-router'
-import { type App, del, describe, post, type WebhookEndpoint } from '@/api'
+import { type App, type Credentials, del, describe, post, type WebhookEndpoint } from '@/api'
 import { useConfirm } from '@/components/confirm'
 import { CopyBlock, CopyField } from '@/components/copy'
 import { PageBody, PageHeader, Section } from '@/components/page'
@@ -79,7 +79,123 @@ function SecretsDialog({ shown, onClose }: { shown: SecretShown | null; onClose:
   )
 }
 
-export function Apps() {
+/** The one command that connects an app's backend: it pairs through /connect. */
+function initCommand(server: string) {
+  return `npx @clipmux/node init --server ${server.replace(/\/+$/, '')}`
+}
+
+/**
+ * Connect your app (P6-T23): the init one-liner, which pairs the backend and
+ * writes its env file without anyone copying a secret, and for an app's page
+ * the same credentials as a .env block shown once.
+ */
+function ConnectYourApp({
+  server,
+  app,
+  keysAllowed,
+  onSecret,
+}: {
+  server: string
+  app?: App
+  keysAllowed: boolean
+  onSecret?: (s: SecretShown) => void
+}) {
+  const qc = useQueryClient()
+  const [creating, setCreating] = React.useState(false)
+  const [local, setLocal] = React.useState(false)
+  const create = useMutation({
+    mutationFn: (webhook: string) =>
+      post<Credentials>(`/v1/apps/${app?.id}/credentials`, {
+        ...(webhook ? { webhook_url: webhook } : {}),
+        ...(keysAllowed ? {} : { local: true }),
+      }),
+    onSuccess: (c) => {
+      // Its keys and endpoint show in the tabs below.
+      void qc.invalidateQueries({ queryKey: ['apps', c.app_id] })
+      setCreating(false)
+      onSecret?.({
+        title: `Credentials for ${c.app_name}`,
+        items: [{ label: '.env', value: c.env, multiline: true }],
+      })
+    },
+  })
+  return (
+    <Section
+      title="Connect your app"
+      description="Run this in your app's project. It shows a code, you approve it here, and it writes the CLIPMUX_* variables to .env.local without printing a secret."
+      actions={
+        app && (
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => {
+              setLocal(false)
+              create.reset()
+              setCreating(true)
+            }}
+          >
+            Create credentials
+          </Button>
+        )
+      }
+    >
+      <CopyField label="Connect command" value={initCommand(server)} />
+      {app && (
+        <Dialog open={creating} onOpenChange={setCreating}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Create credentials</DialogTitle>
+              <DialogDescription>
+                A new API key and signing key for {app.name}, as a .env block for your backend. It's shown
+                once.
+              </DialogDescription>
+            </DialogHeader>
+            <form
+              onSubmit={(e) => {
+                e.preventDefault()
+                create.mutate(String(new FormData(e.currentTarget).get('webhook_url') ?? '').trim())
+              }}
+            >
+              <FieldGroup>
+                <Field data-invalid={create.isError || undefined}>
+                  <FieldLabel htmlFor="credentials-webhook">Webhook URL (optional)</FieldLabel>
+                  <Input
+                    id="credentials-webhook"
+                    name="webhook_url"
+                    type="url"
+                    placeholder="https://example.com/api/clipmux/webhook"
+                  />
+                  <FieldDescription>Adds an endpoint and its secret to the block.</FieldDescription>
+                  {create.isError && <FieldError>{describe(create.error)}</FieldError>}
+                </Field>
+                {!keysAllowed && (
+                  <Field orientation="horizontal">
+                    <Checkbox
+                      id="credentials-local"
+                      checked={local}
+                      onCheckedChange={(v) => setLocal(v === true)}
+                    />
+                    <FieldLabel htmlFor="credentials-local" className="font-normal">
+                      These are for apps on this computer (the public URL is localhost)
+                    </FieldLabel>
+                  </Field>
+                )}
+                <DialogFooter>
+                  <Button type="submit" disabled={create.isPending || (!keysAllowed && !local)}>
+                    {create.isPending && <Spinner data-icon="inline-start" />}
+                    Create credentials
+                  </Button>
+                </DialogFooter>
+              </FieldGroup>
+            </form>
+          </DialogContent>
+        </Dialog>
+      )}
+    </Section>
+  )
+}
+
+export function Apps({ server, keysAllowed }: { server: string; keysAllowed: boolean }) {
   const qc = useQueryClient()
   const apps = useQuery(q.apps())
   const [creating, setCreating] = React.useState(false)
@@ -88,7 +204,10 @@ export function Apps() {
     onSuccess: (app) => {
       void qc.invalidateQueries({ queryKey: ['apps'] })
       setCreating(false)
-      notify.done(`${app.name} created`, 'Create an API key and a signing key on its page.')
+      notify.done(
+        `${app.name} created`,
+        'Connect it with the command below, or create its credentials on its page.',
+      )
     },
   })
   return (
@@ -128,6 +247,7 @@ export function Apps() {
           </ul>
         )}
       </QueryState>
+      <ConnectYourApp server={server} keysAllowed={keysAllowed} />
       <Dialog open={creating} onOpenChange={setCreating}>
         <DialogContent>
           <DialogHeader>
@@ -167,7 +287,7 @@ export function Apps() {
   )
 }
 
-export function AppDetail({ keysAllowed }: { keysAllowed: boolean }) {
+export function AppDetail({ server, keysAllowed }: { server: string; keysAllowed: boolean }) {
   const { id = '' } = useParams()
   const apps = useQuery(q.apps())
   const app = apps.data?.data.find((a) => a.id === id)
@@ -207,6 +327,9 @@ export function AppDetail({ keysAllowed }: { keysAllowed: boolean }) {
                   )
                 }
               />
+              {!app.builtin && (
+                <ConnectYourApp server={server} app={app} keysAllowed={keysAllowed} onSecret={setSecret} />
+              )}
               <Tabs defaultValue="keys">
                 <TabsList
                   variant="line"

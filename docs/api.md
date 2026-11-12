@@ -37,12 +37,20 @@ are per serve process.
 | `POST /worker/v1/pair` | address, and overall | 10 wrong codes per address and 100 overall in 15 minutes |
 | `POST /worker/v1/pairings` | address | 20 an hour (and at most 10 waiting at once, `too_many_pairings`) |
 | `POST /worker/v1/pairings/poll` | address | 2 a second, bursts of 4 |
+| `POST /v1/app-pairings` | address | 20 an hour (and at most 10 waiting at once, `too_many_pairings`) |
+| `POST /v1/app-pairings/poll` | address | 2 a second, bursts of 4 |
 | Playback (`/v/`, `/p/`) | address | only refusals count: after 300 answers of 401, 403 or 404 in 5 minutes, every playback request from that address gets 429 until they age out; successful requests are never limited |
 
 An address is the client's as `CLIPMUX_TRUSTED_PROXIES` (Caddy) reports it;
 IPv6 addresses are grouped by their /64.
 
 ## Integration API
+
+The routes below, the delivery URLs and the webhooks are also described as
+OpenAPI 3.1 at `GET /openapi.json` (no credential; `internal/openapi`,
+D112). `TestOpenAPICoversTheDocumentedIntegrationRoutes` keeps this section,
+App pairing, Analytics and Share links in step with it, and
+`TestOpenAPIOperationsAreRouted` proves every operation reaches a handler.
 
 | Route | Scope | Notes |
 | --- | --- | --- |
@@ -52,6 +60,7 @@ IPv6 addresses are grouped by their /64.
 | `POST /v1/uploads/{id}/complete` | upload token | `{parts: [{part_number, etag}]}` → the asset, `processing` |
 | `POST /v1/uploads/{id}/cancel` | upload token or `uploads:write` | the asset becomes `errored` / `upload_cancelled` |
 | `POST /v1/assets` | `assets:write` | `{agent_source_id, playback_policy?, passthrough?, title?, generate?}` → `201` the asset, `processing`, on a file a PC agent registered for `clipmux push --local`; its jobs run only on that agent. `404 agent_source_not_found` once attached; `409 source_unavailable` if the agent was revoked. Or `{url, playback_policy?, passthrough?, title?}` → `201` the asset, `processing`; serve fetches the public http(s) URL and transcodes it. `400 import_url_refused` for a non-public or credentialed URL; a fetch that fails ends `errored` with `import_url_refused`, `import_failed` or `import_too_large` |
+| `GET /v1/app` | any scope | the key's own app: `{id, name, scopes, public_url, base_url, max_token_lifetime_seconds, signing_keys: [{kid, public_key_pem, created_at, retired_at?}]}`. `signing_keys` are the app's keys that still verify tokens (not revoked, not past `retired_at`), newest first; `base_url` is the media origin playback URLs start with, and a token's `exp − iat` may not exceed `max_token_lifetime_seconds`. For the SDK's `doctor` |
 | `GET /v1/assets/{id}` | `assets:read` | the asset (below) |
 | `PATCH /v1/assets/{id}` | `assets:write` | `{title}` → the asset; `""` or `null` clears it. A change bumps `version` and sends `video.asset.updated`; the same title changes nothing. `409 asset_deleted` |
 | `GET /v1/events?since=&after=&wait=` | `assets:read` | the app's webhook events created at or after `since` (default now), oldest first, ≤ 100: `{data: [{id, created_at, body}]}`, `body` being exactly what an endpoint receives. Long-polls up to `wait` seconds (≤ 25) until one is newer than `after`. For `clipmux listen` |
@@ -96,6 +105,39 @@ unique and never part of a URL; `passthrough` and `title` are left out when
 unset. `status` is `waiting_upload`, `processing`, `ready`, `errored` or `deleted`.
 `version` rises on every change; keep the highest you have seen.
 
+## App pairing
+
+`npx @clipmux/node init --server URL` gets an app's credentials without
+anyone copying a secret (P6-T23, D113). It mirrors agent pairing: the CLI
+starts a pairing, shows the code and opens `verify_url`, and polls; the owner
+checks the code matches on `/connect`, picks or creates the app and approves.
+None of these routes needs a key.
+
+| Route | Request → response |
+| --- | --- |
+| `POST /v1/app-pairings` | `{name?, hostname?, client?}` (≤ 100, 253 and 100 characters; `name` defaults to `hostname`) → `201 {code, poll_token, verify_url, expires_at, interval_seconds}`. The code (`KXFT-9M2Q`, any case, the dash optional) works for 10 minutes; `verify_url` is `{public_url}/connect?code=…`. `429 too_many_pairings` while 10 wait for the owner |
+| `POST /v1/app-pairings/poll` | `{poll_token}` → `{status: pending \| approved \| denied \| expired, credentials?}`. Poll every `interval_seconds`. The first poll after approval carries `credentials` (below) and is the only one that ever does: they are sealed with the secrets key until then and deleted as they are returned, so a later poll is `404 pairing_not_found`. A pairing approved but not collected before it expires (approval leaves it at least a minute) drops its credentials and reads `expired` |
+
+`credentials` here and from `POST /v1/apps/{id}/credentials` are
+`{url, app_id, app_name, api_key_id, api_key, signing_kid, signing_key, webhook_endpoint_id?, webhook_secret?, env}`:
+a new API key with the default scopes (named after the pairing's `name`, or
+`integration`), a new signing key (`signing_key` is its PKCS #8 PEM, kept by
+nobody but you), and with a webhook URL a new endpoint and its secret. `env`
+is the same as a `.env` block:
+
+```bash
+# ClipMux credentials for Course site (app_…)
+CLIPMUX_URL=https://video.example.com
+CLIPMUX_API_KEY=cmx_…
+CLIPMUX_SIGNING_KID=kid_…
+CLIPMUX_SIGNING_KEY="-----BEGIN PRIVATE KEY-----\nMIG…\n-----END PRIVATE KEY-----"
+CLIPMUX_WEBHOOK_SECRET=whsec_…
+```
+
+`CLIPMUX_WEBHOOK_SECRET` is there only with a webhook URL. `clipmux admin
+create-integration --app NAME [--webhook-url URL] [--allow-loopback]` prints
+the same block from the host.
+
 ## Webhooks
 
 Each app's endpoints receive its assets' events: `video.asset.ready`,
@@ -120,7 +162,9 @@ X-Webhook-Signature: sha256=<hex HMAC-SHA256(secret, "1700000000." + raw body)>
 
 Verify the signature over the raw body with the endpoint's `whsec_…` secret and
 reject a timestamp more than 5 minutes off. Any 2xx is success; redirects are
-not followed.
+not followed. A receiver in any language can check itself against
+`internal/webhooks/testdata/vectors.json` (D112): the same secret, clock,
+body and headers must give each case's `valid` and `reason`.
 
 ## Delivery
 
@@ -169,6 +213,10 @@ means stop; `404` means the ID is unknown or revoked.
 | `GET /v1/apps` · `POST /v1/apps` | `{name}` |
 | `POST /v1/apps/{id}/disable` · `…/enable` | a disabled app's keys, upload tokens and playback stop; the Dashboard app can't be disabled |
 | `GET`/`POST /v1/apps/{id}/api-keys` · `DELETE /v1/api-keys/{id}` | create `{name?, scopes?, local?}` → `201 {id, name, scopes, created_at, key}`; `name` ≤ 100 characters, `default` when blank; `scopes` default to `uploads:write`, `assets:read`, `assets:write`; `analytics:read` is only given when asked for. List `{data: [{id, name, scopes, created_at, last_used_at?, revoked_at?}]}`. The secret (`key`) is in the create response only; `409 public_url_required` while the public URL is loopback, unless `local: true` confirms the key is for apps on this machine (D108) |
+| `POST /v1/apps/{id}/credentials` | `{webhook_url?, local?}` → `201` the app's credentials (see App pairing), made in one transaction and shown once: an API key, a signing key, and with `webhook_url` an endpoint. `409 public_url_required` on a loopback public URL unless `local: true` (D108); `400 invalid_request` for a refused webhook URL, which creates nothing |
+| `GET /v1/app-pairings/{code}` | an app pairing as `/connect` shows it: `{status: pending \| approved \| denied \| consumed \| expired, name, hostname, client, ip?, app_id?, expires_at}`; `404 pairing_not_found` |
+| `POST /v1/app-pairings/{code}/approve` | `{app_id \| new_app_name, webhook_url?, local?}` → the pairing, `approved`, with its credentials sealed for the CLI's next poll. Exactly one of `app_id` and `new_app_name` (`400 invalid_request`); `404 not_found` for an unknown app, `409 name_taken`, `409 public_url_required` as above. A pairing already decided or expired is returned as it is |
+| `POST /v1/app-pairings/{code}/deny` | → the pairing, `denied`; its CLI stops |
 | `GET`/`POST /v1/apps/{id}/signing-keys` · `DELETE /v1/signing-keys/{kid}` | `private_key_pem` in the create response only |
 | `GET`/`POST /v1/apps/{id}/webhook-endpoints` · `DELETE /v1/webhook-endpoints/{id}` | `secret` in the create response only |
 | `POST /v1/webhook-endpoints/{id}/secret` | `201 {secret, active: false}`: a new secret, shown once; deliveries stay signed with the old one until it is activated (D069) |

@@ -204,6 +204,7 @@ func (a *API) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/assets/{id}/tracks/{track}/transcript", a.getTranscript)
 	mux.HandleFunc("GET /v1/assets", a.list)
 	mux.HandleFunc("GET /v1/events", a.events)
+	mux.HandleFunc("GET /v1/app", a.getApp)
 }
 
 func (a *API) authorize(w http.ResponseWriter, r *http.Request) (apikeys.Key, bool) {

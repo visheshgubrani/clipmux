@@ -21,6 +21,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/agents"
 	"github.com/visheshgubrani/clipmux/internal/analytics"
 	"github.com/visheshgubrani/clipmux/internal/apikeys"
+	"github.com/visheshgubrani/clipmux/internal/apppairings"
 	"github.com/visheshgubrani/clipmux/internal/assets"
 	"github.com/visheshgubrani/clipmux/internal/chapters"
 	"github.com/visheshgubrani/clipmux/internal/cloudflare"
@@ -32,6 +33,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/lifecycle"
 	"github.com/visheshgubrani/clipmux/internal/manage"
 	"github.com/visheshgubrani/clipmux/internal/modal"
+	"github.com/visheshgubrani/clipmux/internal/openapi"
 	"github.com/visheshgubrani/clipmux/internal/outputs"
 	"github.com/visheshgubrani/clipmux/internal/queue"
 	"github.com/visheshgubrani/clipmux/internal/retention"
@@ -196,6 +198,9 @@ func Handler(d Deps) http.Handler {
 	for _, api := range d.APIs {
 		api.Register(mux)
 	}
+	// The integration API's description, for agents and code generators
+	// (D112): no credential, and the version this binary serves.
+	mux.Handle("GET /openapi.json", openapi.Handler())
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		text(w, http.StatusOK, "ok")
 	})
@@ -376,6 +381,10 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 	shareSvc.ClientIP = acct.ClientIP
 	mgmt := manage.New(pool, box, acct, b.urls)
 	mgmt.Logger = logger
+	// Apps get their credentials from the dashboard or by pairing with
+	// `npx @clipmux/node init` (P6-T23).
+	appPairings := apppairings.New(pool, box, acct, b.urls, db.DefaultProjectID)
+	appPairings.Logger = logger
 	tests := setuptest.New(pool, set, box, b.urls, upl, life, cfg.SelfDial)
 	tests.Logger = logger
 	mgmt.Tests = tests
@@ -562,7 +571,7 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 		Handler: reqLog.wrap(secure.wrap(newRefusals(acct.ClientIP).wrap(defaultDeadlines.wrap(Handler(Deps{
 			DB: pool, Worker: worker.Handler(), Storage: store.Handler(), ServesHost: b.urls.ServesHost, Drain: drain, CSP: csp,
 			ShareCSP: func(*http.Request) string { return shareCSP(b.urls.MediaURL()) },
-			APIs:     []Registrar{acct, mgmt, agentSvc, upl, assetsAPI, life, playback, analyticsAPI, shareSvc},
+			APIs:     []Registrar{acct, mgmt, appPairings, agentSvc, upl, assetsAPI, life, playback, analyticsAPI, shareSvc},
 		}))))),
 		// The server's own errors (TLS, a panicking handler) go to the same log.
 		ErrorLog:          slog.NewLogLogger(logger.Handler(), slog.LevelWarn),

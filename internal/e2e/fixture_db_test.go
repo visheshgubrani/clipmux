@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -29,6 +30,12 @@ import (
 //	                              s3?}
 //	GET  /token?aud=v&ttl=SECS   a fresh playback token (text)
 //	POST /uploads?size=BYTES     an upload created with the app's API key
+//	POST /session?ttl=SECS&n=KEY&deny_after=CALLS
+//	                             a session-url answer for {playback_id, native}, as
+//	                             POST /s/{secret}/playback answers; 403 after
+//	                             deny_after calls with the same n
+//	POST /create-upload?deny=1   a createUrl answer for {size, name, type}: the
+//	                             upload plus endpoint; 403 with deny
 //
 // It runs until interrupted. Playwright starts it as its web server.
 func TestPlayerFixture(t *testing.T) {
@@ -136,6 +143,74 @@ func TestPlayerFixture(t *testing.T) {
 		var created map[string]any
 		status := in.call("POST", "/v1/uploads", key, map[string]any{"size": size, "playback_policy": "signed"}, &created)
 		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_ = json.NewEncoder(w).Encode(created)
+	})
+	// What @clipmux/node's handler answers the browser packages with.
+	var sessionsMu sync.Mutex
+	sessions := map[string]int{}
+	mux.HandleFunc("POST /session", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			PlaybackID string `json:"playback_id"`
+			Native     *bool  `json:"native"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Native == nil {
+			http.Error(w, "want {playback_id, native}", http.StatusBadRequest)
+			return
+		}
+		if req.PlaybackID != pid {
+			http.Error(w, "no such playback", http.StatusNotFound)
+			return
+		}
+		q := r.URL.Query()
+		sessionsMu.Lock()
+		sessions[q.Get("n")]++
+		calls := sessions[q.Get("n")]
+		sessionsMu.Unlock()
+		if after, err := strconv.Atoi(q.Get("deny_after")); err == nil && calls > after {
+			http.Error(w, `{"error":{"code":"forbidden","message":"denied"}}`, http.StatusForbidden)
+			return
+		}
+		ttl, _ := strconv.Atoi(q.Get("ttl"))
+		if ttl <= 0 {
+			ttl = 3600
+		}
+		now := time.Now()
+		exp := now.Add(time.Duration(ttl) * time.Second)
+		tok, err := tokens.Sign(signer, kid, tokens.Claims{Sub: pid, Aud: tokens.AudiencePlayback, Iat: now.Unix(), Exp: exp.Unix()})
+		if err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"playback_id": pid, "base_url": in.url, "token": tok, "expires_at": exp.UTC().Format(time.RFC3339),
+			"poster_url": in.url + "/v/" + tok + "/" + pid + "/poster.jpg",
+			"tracks":     []trackView{trks["subtitles"], trks["chapters"]},
+		})
+	})
+	mux.HandleFunc("POST /create-upload", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Size int64  `json:"size"`
+			Name string `json:"name"`
+			Type string `json:"type"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Size <= 0 || req.Name == "" {
+			http.Error(w, "want {size, name, type}", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Query().Get("deny") == "1" {
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"error":{"code":"forbidden","message":"you may not upload here"}}`))
+			return
+		}
+		var created map[string]any
+		status := in.call("POST", "/v1/uploads", key, map[string]any{"size": req.Size, "playback_policy": "signed", "title": req.Name}, &created)
+		if status == http.StatusCreated {
+			created["endpoint"] = in.url
+		}
 		w.WriteHeader(status)
 		_ = json.NewEncoder(w).Encode(created)
 	})

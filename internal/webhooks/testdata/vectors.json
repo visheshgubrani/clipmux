@@ -1,0 +1,224 @@
+{
+  "description": "Webhook signature vectors (D018, D112). Regenerate with: go test ./internal/webhooks -run TestVectors -update",
+  "tolerance_seconds": 300,
+  "cases": [
+    {
+      "name": "lms",
+      "secret": "test-secret",
+      "now": 1700000000,
+      "body": "{\"job_id\":\"abc\",\"stage\":\"video\"}",
+      "headers": {
+        "X-Webhook-Event": "video.asset.ready",
+        "X-Webhook-Id": "evt_01jd0000000000000000000000",
+        "X-Webhook-Signature": "sha256=fac6876fcc981593ebc1248ba3ce771b001862c52f3863ff0a728f73c6a44e2f",
+        "X-Webhook-Timestamp": "1700000000"
+      },
+      "valid": true
+    },
+    {
+      "name": "ready",
+      "secret": "whsec_TESTSECRETNOTREAL0000000000000",
+      "now": 1800000000,
+      "body": "{\"id\":\"evt_01jd0000000000000000000000\",\"type\":\"video.asset.ready\",\"created_at\":\"2027-01-15T08:00:00Z\",\"data\":{\"id\":\"ast_01jd0000000000000000000000\",\"status\":\"ready\",\"version\":3,\"passthrough\":\"lesson-42\"}}",
+      "headers": {
+        "X-Webhook-Event": "video.asset.ready",
+        "X-Webhook-Id": "evt_01jd0000000000000000000000",
+        "X-Webhook-Signature": "sha256=2efc953e06016fe9b4da70ab219f4420b381a8d5ad1a9f253f9e31da718a15d1",
+        "X-Webhook-Timestamp": "1800000000"
+      },
+      "valid": true
+    },
+    {
+      "name": "clock_behind_within_tolerance",
+      "secret": "whsec_TESTSECRETNOTREAL0000000000000",
+      "now": 1799999700,
+      "body": "{\"id\":\"evt_01jd0000000000000000000000\",\"type\":\"video.asset.ready\",\"created_at\":\"2027-01-15T08:00:00Z\",\"data\":{\"id\":\"ast_01jd0000000000000000000000\",\"status\":\"ready\",\"version\":3,\"passthrough\":\"lesson-42\"}}",
+      "headers": {
+        "X-Webhook-Event": "video.asset.ready",
+        "X-Webhook-Id": "evt_01jd0000000000000000000000",
+        "X-Webhook-Signature": "sha256=2efc953e06016fe9b4da70ab219f4420b381a8d5ad1a9f253f9e31da718a15d1",
+        "X-Webhook-Timestamp": "1800000000"
+      },
+      "valid": true
+    },
+    {
+      "name": "clock_ahead_within_tolerance",
+      "secret": "whsec_TESTSECRETNOTREAL0000000000000",
+      "now": 1800000300,
+      "body": "{\"id\":\"evt_01jd0000000000000000000000\",\"type\":\"video.asset.ready\",\"created_at\":\"2027-01-15T08:00:00Z\",\"data\":{\"id\":\"ast_01jd0000000000000000000000\",\"status\":\"ready\",\"version\":3,\"passthrough\":\"lesson-42\"}}",
+      "headers": {
+        "X-Webhook-Event": "video.asset.ready",
+        "X-Webhook-Id": "evt_01jd0000000000000000000000",
+        "X-Webhook-Signature": "sha256=2efc953e06016fe9b4da70ab219f4420b381a8d5ad1a9f253f9e31da718a15d1",
+        "X-Webhook-Timestamp": "1800000000"
+      },
+      "valid": true
+    },
+    {
+      "name": "stale",
+      "secret": "whsec_TESTSECRETNOTREAL0000000000000",
+      "now": 1800000301,
+      "body": "{\"id\":\"evt_01jd0000000000000000000000\",\"type\":\"video.asset.ready\",\"created_at\":\"2027-01-15T08:00:00Z\",\"data\":{\"id\":\"ast_01jd0000000000000000000000\",\"status\":\"ready\",\"version\":3,\"passthrough\":\"lesson-42\"}}",
+      "headers": {
+        "X-Webhook-Event": "video.asset.ready",
+        "X-Webhook-Id": "evt_01jd0000000000000000000000",
+        "X-Webhook-Signature": "sha256=2efc953e06016fe9b4da70ab219f4420b381a8d5ad1a9f253f9e31da718a15d1",
+        "X-Webhook-Timestamp": "1800000000"
+      },
+      "valid": false,
+      "reason": "stale"
+    },
+    {
+      "name": "future",
+      "secret": "whsec_TESTSECRETNOTREAL0000000000000",
+      "now": 1799999699,
+      "body": "{\"id\":\"evt_01jd0000000000000000000000\",\"type\":\"video.asset.ready\",\"created_at\":\"2027-01-15T08:00:00Z\",\"data\":{\"id\":\"ast_01jd0000000000000000000000\",\"status\":\"ready\",\"version\":3,\"passthrough\":\"lesson-42\"}}",
+      "headers": {
+        "X-Webhook-Event": "video.asset.ready",
+        "X-Webhook-Id": "evt_01jd0000000000000000000000",
+        "X-Webhook-Signature": "sha256=2efc953e06016fe9b4da70ab219f4420b381a8d5ad1a9f253f9e31da718a15d1",
+        "X-Webhook-Timestamp": "1800000000"
+      },
+      "valid": false,
+      "reason": "stale"
+    },
+    {
+      "name": "tampered_body",
+      "secret": "whsec_TESTSECRETNOTREAL0000000000000",
+      "now": 1800000000,
+      "body": "{\"id\":\"evt_01jd0000000000000000000000\",\"type\":\"video.asset.ready\",\"created_at\":\"2027-01-15T08:00:00Z\",\"data\":{\"id\":\"ast_01jd0000000000000000000000\",\"status\":\"ready\",\"version\":3,\"passthrough\":\"lesson-42\" }",
+      "headers": {
+        "X-Webhook-Event": "video.asset.ready",
+        "X-Webhook-Id": "evt_01jd0000000000000000000000",
+        "X-Webhook-Signature": "sha256=2efc953e06016fe9b4da70ab219f4420b381a8d5ad1a9f253f9e31da718a15d1",
+        "X-Webhook-Timestamp": "1800000000"
+      },
+      "valid": false,
+      "reason": "bad_signature"
+    },
+    {
+      "name": "reformatted_body",
+      "secret": "whsec_TESTSECRETNOTREAL0000000000000",
+      "now": 1800000000,
+      "body": "  {\"id\":\"evt_01jd0000000000000000000000\",\"type\":\"video.asset.ready\",\"created_at\":\"2027-01-15T08:00:00Z\",\"data\":{\"id\":\"ast_01jd0000000000000000000000\",\"status\":\"ready\",\"version\":3,\"passthrough\":\"lesson-42\"}}",
+      "headers": {
+        "X-Webhook-Event": "video.asset.ready",
+        "X-Webhook-Id": "evt_01jd0000000000000000000000",
+        "X-Webhook-Signature": "sha256=2efc953e06016fe9b4da70ab219f4420b381a8d5ad1a9f253f9e31da718a15d1",
+        "X-Webhook-Timestamp": "1800000000"
+      },
+      "valid": false,
+      "reason": "bad_signature"
+    },
+    {
+      "name": "wrong_secret",
+      "secret": "whsec_SOMEOTHERSECRET000000000000000",
+      "now": 1800000000,
+      "body": "{\"id\":\"evt_01jd0000000000000000000000\",\"type\":\"video.asset.ready\",\"created_at\":\"2027-01-15T08:00:00Z\",\"data\":{\"id\":\"ast_01jd0000000000000000000000\",\"status\":\"ready\",\"version\":3,\"passthrough\":\"lesson-42\"}}",
+      "headers": {
+        "X-Webhook-Event": "video.asset.ready",
+        "X-Webhook-Id": "evt_01jd0000000000000000000000",
+        "X-Webhook-Signature": "sha256=2efc953e06016fe9b4da70ab219f4420b381a8d5ad1a9f253f9e31da718a15d1",
+        "X-Webhook-Timestamp": "1800000000"
+      },
+      "valid": false,
+      "reason": "bad_signature"
+    },
+    {
+      "name": "secret_without_prefix",
+      "secret": "TESTSECRETNOTREAL0000000000000",
+      "now": 1800000000,
+      "body": "{\"id\":\"evt_01jd0000000000000000000000\",\"type\":\"video.asset.ready\",\"created_at\":\"2027-01-15T08:00:00Z\",\"data\":{\"id\":\"ast_01jd0000000000000000000000\",\"status\":\"ready\",\"version\":3,\"passthrough\":\"lesson-42\"}}",
+      "headers": {
+        "X-Webhook-Event": "video.asset.ready",
+        "X-Webhook-Id": "evt_01jd0000000000000000000000",
+        "X-Webhook-Signature": "sha256=2efc953e06016fe9b4da70ab219f4420b381a8d5ad1a9f253f9e31da718a15d1",
+        "X-Webhook-Timestamp": "1800000000"
+      },
+      "valid": false,
+      "reason": "bad_signature"
+    },
+    {
+      "name": "timestamp_changed",
+      "secret": "whsec_TESTSECRETNOTREAL0000000000000",
+      "now": 1800000000,
+      "body": "{\"id\":\"evt_01jd0000000000000000000000\",\"type\":\"video.asset.ready\",\"created_at\":\"2027-01-15T08:00:00Z\",\"data\":{\"id\":\"ast_01jd0000000000000000000000\",\"status\":\"ready\",\"version\":3,\"passthrough\":\"lesson-42\"}}",
+      "headers": {
+        "X-Webhook-Event": "video.asset.ready",
+        "X-Webhook-Id": "evt_01jd0000000000000000000000",
+        "X-Webhook-Signature": "sha256=2efc953e06016fe9b4da70ab219f4420b381a8d5ad1a9f253f9e31da718a15d1",
+        "X-Webhook-Timestamp": "1800000001"
+      },
+      "valid": false,
+      "reason": "bad_signature"
+    },
+    {
+      "name": "missing_prefix",
+      "secret": "whsec_TESTSECRETNOTREAL0000000000000",
+      "now": 1800000000,
+      "body": "{\"id\":\"evt_01jd0000000000000000000000\",\"type\":\"video.asset.ready\",\"created_at\":\"2027-01-15T08:00:00Z\",\"data\":{\"id\":\"ast_01jd0000000000000000000000\",\"status\":\"ready\",\"version\":3,\"passthrough\":\"lesson-42\"}}",
+      "headers": {
+        "X-Webhook-Event": "video.asset.ready",
+        "X-Webhook-Id": "evt_01jd0000000000000000000000",
+        "X-Webhook-Signature": "2efc953e06016fe9b4da70ab219f4420b381a8d5ad1a9f253f9e31da718a15d1",
+        "X-Webhook-Timestamp": "1800000000"
+      },
+      "valid": false,
+      "reason": "bad_signature"
+    },
+    {
+      "name": "uppercase_hex",
+      "secret": "whsec_TESTSECRETNOTREAL0000000000000",
+      "now": 1800000000,
+      "body": "{\"id\":\"evt_01jd0000000000000000000000\",\"type\":\"video.asset.ready\",\"created_at\":\"2027-01-15T08:00:00Z\",\"data\":{\"id\":\"ast_01jd0000000000000000000000\",\"status\":\"ready\",\"version\":3,\"passthrough\":\"lesson-42\"}}",
+      "headers": {
+        "X-Webhook-Event": "video.asset.ready",
+        "X-Webhook-Id": "evt_01jd0000000000000000000000",
+        "X-Webhook-Signature": "sha256=2EFC953E06016FE9B4DA70AB219F4420B381A8D5AD1A9F253F9E31DA718A15D1",
+        "X-Webhook-Timestamp": "1800000000"
+      },
+      "valid": false,
+      "reason": "bad_signature"
+    },
+    {
+      "name": "missing_signature",
+      "secret": "whsec_TESTSECRETNOTREAL0000000000000",
+      "now": 1800000000,
+      "body": "{\"id\":\"evt_01jd0000000000000000000000\",\"type\":\"video.asset.ready\",\"created_at\":\"2027-01-15T08:00:00Z\",\"data\":{\"id\":\"ast_01jd0000000000000000000000\",\"status\":\"ready\",\"version\":3,\"passthrough\":\"lesson-42\"}}",
+      "headers": {
+        "X-Webhook-Event": "video.asset.ready",
+        "X-Webhook-Id": "evt_01jd0000000000000000000000",
+        "X-Webhook-Timestamp": "1800000000"
+      },
+      "valid": false,
+      "reason": "missing_header"
+    },
+    {
+      "name": "missing_timestamp",
+      "secret": "whsec_TESTSECRETNOTREAL0000000000000",
+      "now": 1800000000,
+      "body": "{\"id\":\"evt_01jd0000000000000000000000\",\"type\":\"video.asset.ready\",\"created_at\":\"2027-01-15T08:00:00Z\",\"data\":{\"id\":\"ast_01jd0000000000000000000000\",\"status\":\"ready\",\"version\":3,\"passthrough\":\"lesson-42\"}}",
+      "headers": {
+        "X-Webhook-Event": "video.asset.ready",
+        "X-Webhook-Id": "evt_01jd0000000000000000000000",
+        "X-Webhook-Signature": "sha256=2efc953e06016fe9b4da70ab219f4420b381a8d5ad1a9f253f9e31da718a15d1"
+      },
+      "valid": false,
+      "reason": "missing_header"
+    },
+    {
+      "name": "timestamp_not_a_number",
+      "secret": "whsec_TESTSECRETNOTREAL0000000000000",
+      "now": 1800000000,
+      "body": "{\"id\":\"evt_01jd0000000000000000000000\",\"type\":\"video.asset.ready\",\"created_at\":\"2027-01-15T08:00:00Z\",\"data\":{\"id\":\"ast_01jd0000000000000000000000\",\"status\":\"ready\",\"version\":3,\"passthrough\":\"lesson-42\"}}",
+      "headers": {
+        "X-Webhook-Event": "video.asset.ready",
+        "X-Webhook-Id": "evt_01jd0000000000000000000000",
+        "X-Webhook-Signature": "sha256=2efc953e06016fe9b4da70ab219f4420b381a8d5ad1a9f253f9e31da718a15d1",
+        "X-Webhook-Timestamp": "1800000000.0"
+      },
+      "valid": false,
+      "reason": "stale"
+    }
+  ]
+}

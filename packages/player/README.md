@@ -3,6 +3,39 @@
 Plays ClipMux videos with Video.js 10 and refreshes expired playback tokens
 without losing the viewer's place.
 
+```html
+<script type="module">import '@clipmux/player/element'</script>
+<clipmux-player playback-id="pid_…" session-url="/api/clipmux/playback"></clipmux-player>
+```
+
+With `session-url` the page needs only the playback ID: the element POSTs
+`{"playback_id": "pid_…", "native": false}` to your backend, which checks the
+viewer and answers with the playback session, the same shape as ClipMux's
+`POST /s/{secret}/playback`:
+
+```json
+{
+  "playback_id": "pid_…",
+  "base_url": "https://media.example.net",
+  "token": "eyJ…",
+  "expires_at": "…",
+  "poster_url": "https://media.example.net/v/eyJ…/pid_…/poster.jpg",
+  "tracks": [{ "id": "trk_…", "kind": "chapters", "status": "ready" }]
+}
+```
+
+The `@clipmux/node` handler's `/playback` route answers exactly this. The
+element plays from `base_url` with `token`, shows `poster_url` unless you set
+`poster`, marks the first ready chapters track unless you set
+`chapters-track`, and asks the same URL again whenever the token expires. A
+`401` or `403` from it fires `clipmux-denied`; any other failure,
+`clipmux-error` with its `status`. `native` is `true` when the browser will
+play HLS itself (no MediaSource), where tokens can't be refreshed, so the
+backend signs one that outlives the session. A `getToken` you set as well wins
+for refreshes; `player.session` holds the answer in use.
+
+Or bring your own token, as before:
+
 ```ts
 import '@clipmux/player/element'
 
@@ -27,6 +60,27 @@ larger of 2 × the video's duration or 4 hours. iOS 17.1+ plays through hls.js
 
 For another player, `rewriteTokenUrl`, `TokenSession` and `createRefreshLoader`
 (an hls.js `loader`) are exported without the UI.
+
+## Events and types
+
+| Event              | `detail`                                                                                                  |
+| ------------------ | --------------------------------------------------------------------------------------------------------- |
+| `clipmux-token`    | `{ token }`: a fresh token is in use                                                                      |
+| `clipmux-denied`   | `{}`: the app said no (`null`, `401`/`403` from `session-url`) or delivery answered `403`; playback stops |
+| `clipmux-error`    | `{ status, track? }`: `0` for a network or media error                                                    |
+| `clipmux-chapters` | `{ chapters }`, in seconds                                                                                |
+
+They bubble and are typed on `HTMLElementEventMap`, so
+`player.addEventListener('clipmux-chapters', (e) => e.detail.chapters)` needs
+no cast. For React 19, import the JSX types once; they type the attributes,
+the `token`/`getToken`/`hls` properties and `onclipmux-*` handlers, and add no
+React dependency:
+
+```ts
+import type {} from '@clipmux/player/react'
+
+<clipmux-player playback-id={pid} session-url="/api/clipmux/playback" onclipmux-denied={() => setDenied(true)} />
+```
 
 ## Subtitles and chapters
 

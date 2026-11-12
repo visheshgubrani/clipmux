@@ -1,6 +1,15 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { ClipMuxUpload, type ClipMuxUploadError, type PutPart, planParts, rememberUpload } from './index.ts'
+import { accepts, formatBytes } from './files.ts'
+import {
+  ClipMuxUpload,
+  type ClipMuxUploadError,
+  type CreatedUpload,
+  type PutPart,
+  planParts,
+  rememberUpload,
+  type UploadStore,
+} from './index.ts'
 
 // A fake ClipMux: the upload endpoints and the storage behind part URLs,
 // with hooks to script failures. Parts are a few bytes each.
@@ -128,7 +137,7 @@ function fakeClipMux(opts: { partSize?: number; size?: number; stored?: number[]
       concurrency: 1,
       ...extra,
     })
-  return Object.assign(state, { upload, state })
+  return Object.assign(state, { upload, state, fetch, put, delay, size, partSize })
 }
 
 test('the part plan for 73400320 bytes is three 32 MiB parts and the remainder', () => {
@@ -338,4 +347,176 @@ test('a pause between parts stops before the next part is sent', async () => {
     f.calls.filter((c) => c.startsWith('PUT')),
     ['PUT 1'],
   )
+})
+
+// createUrl: the app's backend creates the upload and relays it with the
+// ClipMux URL. The fake backend answers from its script, then with upl_1.
+function appBackend(f: ReturnType<typeof fakeClipMux>, script: number[] = []) {
+  const bodies: unknown[] = []
+  const items = new Map<string, string>()
+  const store: UploadStore = {
+    getItem: (k) => items.get(k) ?? null,
+    setItem: (k, v) => void items.set(k, v),
+    removeItem: (k) => void items.delete(k),
+  }
+  const fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    if (String(input) !== 'https://app.test/api/clipmux/upload') return f.fetch(input, init)
+    assert.equal(
+      (init?.headers as Record<string, string> | undefined)?.Authorization,
+      undefined,
+      'no key leaves the page',
+    )
+    bodies.push(JSON.parse(String(init?.body)))
+    f.calls.push('POST create')
+    const status = script.shift() ?? 201
+    if (status !== 201)
+      return new Response(JSON.stringify({ error: { code: 'nope', message: 'no' } }), { status })
+    const created: CreatedUpload = {
+      upload_id: 'upl_1',
+      upload_token: 'tok',
+      part_size: f.partSize,
+      part_count: planParts(f.size, f.partSize).length,
+      endpoint: 'https://video.example.com',
+    }
+    return new Response(JSON.stringify(created), { status: 201 })
+  }) as typeof globalThis.fetch
+  const file = new File([f.file], 'lesson.mp4', { type: 'video/mp4', lastModified: 1700000000000 })
+  const upload = (extra: Partial<ConstructorParameters<typeof ClipMuxUpload>[1]> = {}) =>
+    new ClipMuxUpload(file, {
+      ...extra,
+      createUrl: 'https://app.test/api/clipmux/upload',
+      store,
+      fetch,
+      put: f.put,
+      delay: f.delay,
+      random: () => 0,
+      now: f.now,
+      concurrency: 1,
+    })
+  return { bodies, items, upload }
+}
+
+test('createUrl creates the upload with the file size, name and type, and finds ClipMux from it', async () => {
+  const f = fakeClipMux()
+  const app = appBackend(f)
+  const asset = await app.upload().start()
+  assert.equal(asset.id, 'ast_1')
+  assert.deepEqual(app.bodies, [{ size: 10, name: 'lesson.mp4', type: 'video/mp4' }])
+  assert.deepEqual(f.calls.slice(0, 2), ['POST create', 'GET /v1/uploads/upl_1/parts'])
+  assert.equal(app.items.size, 0, 'a completed upload is forgotten')
+})
+
+test('a createUrl upload interrupted after one part resumes after a reload without creating another', async () => {
+  const f = fakeClipMux()
+  const app = appBackend(f)
+  const first = app.upload({
+    onProgress: (p) => {
+      if (p.partsDone === 1) first.pause() // as a closed tab would
+    },
+  })
+  void first.start()
+  await new Promise((r) => setTimeout(r, 20))
+  assert.deepEqual(
+    [...app.items.values()].map((v) => JSON.parse(v)),
+    [
+      {
+        upload_id: 'upl_1',
+        upload_token: 'tok',
+        part_size: 4,
+        part_count: 3,
+        endpoint: 'https://video.example.com',
+      },
+    ],
+  )
+  f.calls.length = 0
+  await app.upload().start() // the page reloaded
+  assert.deepEqual(app.bodies.length, 1)
+  assert.deepEqual(
+    f.calls.filter((c) => c.startsWith('PUT') || c === 'POST create'),
+    ['PUT 2', 'PUT 3'],
+  )
+})
+
+test('a remembered upload that is no longer active is replaced by a new one', async () => {
+  const f = fakeClipMux()
+  const app = appBackend(f)
+  app.items.set(
+    'clipmux:upload:lesson.mp4:10:1700000000000',
+    JSON.stringify({
+      upload_id: 'upl_old',
+      upload_token: 'tok',
+      part_size: 4,
+      part_count: 3,
+      endpoint: 'https://video.example.com',
+    }),
+  )
+  f.state.listStatus = 409
+  f.state.completeScript.push(409)
+  const asset = await app.upload().start()
+  assert.equal(asset.id, 'ast_1')
+  assert.deepEqual(f.calls.slice(0, 3), [
+    'GET /v1/uploads/upl_old/parts',
+    'POST /v1/uploads/upl_old/complete',
+    'POST create',
+  ])
+})
+
+test('the backend refusing to create rejects with create_denied and is not retried', async () => {
+  const f = fakeClipMux()
+  const app = appBackend(f, [403])
+  await assert.rejects(
+    app.upload().start(),
+    (e: ClipMuxUploadError) => e.code === 'create_denied' && e.status === 403,
+  )
+  assert.deepEqual(f.calls, ['POST create'])
+  assert.deepEqual(f.delays, [])
+})
+
+test('the backend failing to create is retried with backoff', async () => {
+  const f = fakeClipMux()
+  const app = appBackend(f, [503])
+  await app.upload().start()
+  assert.deepEqual(f.delays, [1000])
+  assert.equal(app.bodies.length, 2)
+})
+
+test('an upload needs upload or createUrl, and an endpoint from somewhere', () => {
+  assert.throws(() => new ClipMuxUpload(new Blob([]), {}), /upload or createUrl/)
+  assert.throws(
+    () =>
+      new ClipMuxUpload(new Blob([]), {
+        upload: { upload_id: 'upl_1', upload_token: 'tok', part_size: 4, part_count: 0 },
+      }),
+    /endpoint/,
+  )
+})
+
+test('accept lists match extensions, wildcards and exact types', () => {
+  const mp4 = { name: 'Lesson.MP4', type: 'video/mp4' }
+  const mkv = { name: 'lesson.mkv', type: '' }
+  assert.deepEqual(
+    [null, '', 'video/*', '.mkv', 'video/mp4, .mkv', 'audio/*'].map((a) => [
+      accepts(a, mp4),
+      accepts(a, mkv),
+    ]),
+    [
+      [true, true],
+      [true, true],
+      [true, false],
+      [false, true],
+      [true, true],
+      [false, false],
+    ],
+  )
+})
+
+test('sizes read as people say them', () => {
+  assert.deepEqual([0, 999, 1000, 33554432, 2_000_000_000, 150_000_000].map(formatBytes), [
+    '0 B',
+    '999 B',
+    '1.0 KB',
+    '33.6 MB',
+    '2.0 GB',
+    '150 MB',
+  ])
 })

@@ -90,7 +90,7 @@ func TestEachRuleDeletesExactlyWhatIsPastItsWindow(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := map[string]int64{
-		"idempotency_keys": 1, "owner_sessions": 2, "agent_pairings": 1, "webhook_deliveries": 1,
+		"idempotency_keys": 1, "owner_sessions": 2, "agent_pairings": 1, "app_pairings": 0, "webhook_deliveries": 1,
 		"webhook_events": 1, "outbox": 1, "setup_tests": 2, "dispatch_keys": 0,
 		"playback_hourly": 2, "playback_daily": 1, "playback_viewers": 1, "playback_viewer_days": 1,
 	}

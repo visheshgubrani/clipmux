@@ -42,7 +42,13 @@ export default defineConfig({
       : [
           {
             name: 'phone',
-            testIgnore: ['**/playback.spec.ts', '**/uploader.spec.ts', '**/cloudflare.spec.ts'],
+            testIgnore: [
+              '**/playback.spec.ts',
+              '**/session.spec.ts',
+              '**/uploader.spec.ts',
+              '**/uploader-element.spec.ts',
+              '**/cloudflare.spec.ts',
+            ],
             use: {
               ...desktop,
               viewport: { width: 375, height: 812 },

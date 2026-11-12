@@ -91,6 +91,9 @@ func (s *Service) rules(now time.Time) []struct {
 		{"agent_pairings", func(ctx context.Context, q *db.Queries) (int64, error) {
 			return q.PruneAgentPairings(ctx, db.PruneAgentPairingsParams{Before: ts(now.Add(-PairingWindow)), MaxRows: batch})
 		}},
+		{"app_pairings", func(ctx context.Context, q *db.Queries) (int64, error) {
+			return q.PruneAppPairings(ctx, db.PruneAppPairingsParams{Before: ts(now.Add(-PairingWindow)), MaxRows: batch})
+		}},
 		{"webhook_deliveries", func(ctx context.Context, q *db.Queries) (int64, error) {
 			return q.PruneWebhookDeliveries(ctx, db.PruneWebhookDeliveriesParams{Before: ts(now.Add(-WebhookWindow)), MaxRows: batch})
 		}},

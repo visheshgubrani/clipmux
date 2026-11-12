@@ -256,6 +256,29 @@ export interface Pairing {
   agent_id?: string
   expires_at: string
 }
+/** An app pairing started by `npx @clipmux/node init`, as /connect shows it. */
+export interface AppPairing {
+  status: 'pending' | 'approved' | 'denied' | 'consumed' | 'expired'
+  name: string
+  hostname: string
+  client: string
+  ip?: string
+  app_id?: string
+  expires_at: string
+}
+/** An app's credentials, shown once (POST /v1/apps/{id}/credentials). */
+export interface Credentials {
+  url: string
+  app_id: string
+  app_name: string
+  api_key_id: string
+  api_key: string
+  signing_kid: string
+  signing_key: string
+  webhook_endpoint_id?: string
+  webhook_secret?: string
+  env: string
+}
 export interface Routing {
   primary_executor: string
   fallback_executor: string | null

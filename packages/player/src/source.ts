@@ -46,4 +46,13 @@ export function clipmuxSource(o: SourceOptions, session?: TokenSession): ClipMux
   }
 }
 
+/**
+ * Whether <hlsjs-video> will hand the source to the browser's own HLS
+ * player (no MediaSource or ManagedMediaSource), where tokens can't be
+ * refreshed. It decides with the same check.
+ */
+export function playsNatively(): boolean {
+  return !Hls.isSupported()
+}
+
 export type { GetToken }

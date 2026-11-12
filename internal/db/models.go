@@ -87,6 +87,22 @@ type App struct {
 	CreatedAt  pgtype.Timestamptz
 }
 
+type AppPairing struct {
+	ID                string
+	ProjectID         string
+	CodeHash          []byte
+	PollTokenHash     []byte
+	Status            string
+	Name              string
+	Hostname          string
+	Client            string
+	Ip                *netip.Addr
+	AppID             pgtype.Text
+	CredentialsSealed []byte
+	CreatedAt         pgtype.Timestamptz
+	ExpiresAt         pgtype.Timestamptz
+}
+
 type Asset struct {
 	ID              string
 	ProjectID       string

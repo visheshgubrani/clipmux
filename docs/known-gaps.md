@@ -260,7 +260,6 @@ when you introduce or discover it; remove it when it is closed.
 
 - Native sandbox for Windows/macOS agents (v1 requires Docker, WSL2 or a VM).
 - Serving segments from an R2 custom domain with only playlists/keys through the Worker.
-- Token-signing SDK languages (P6 open question 2).
 - When storyboards enter the roadmap (viewer analytics did, D100, built in Phase 7; captions in Phase 5).
 - Confirm defaults: 7-day max token lifetime, retry budgets 5/3, 15-minute
   reconciler, per-output keys derived from one secret (P6 open question 7).
@@ -298,3 +297,16 @@ when you introduce or discover it; remove it when it is closed.
   from modal.com/pricing on 2026-11-12, since Modal has no price API; the
   spend estimate drifts when Modal changes its prices until the table is
   refreshed. The NVENC lists for both providers are hand-kept too.
+
+## SDK and agents (D112)
+
+- No MCP server yet: `clipmux mcp` (stdio, an API key, tools from the
+  OpenAPI operations) comes after launch.
+- The only server SDK is TypeScript (`@clipmux/node`); Python, Go and PHP
+  have tested snippets for tokens and webhooks, not clients.
+- The OpenAPI spec covers the integration API, not the management API.
+- An app pairing approved but never collected (the CLI was closed) leaves
+  the API key and signing key it issued, live and unknown to anyone; the
+  sealed copy is dropped, so they can't be recovered. The owner revokes
+  them on the app's page (the API key is named after the pairing). Revoking
+  them automatically at expiry needs a sweep that doesn't exist yet (D113).

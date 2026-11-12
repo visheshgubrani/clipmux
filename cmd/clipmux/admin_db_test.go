@@ -191,3 +191,55 @@ func TestAdminSetupTestWaitExitsNonZeroOnFailure(t *testing.T) {
 		t.Fatalf("a passed test: %v\n%s", err, out.String())
 	}
 }
+
+func TestCreateIntegrationPrintsAWorkingEnvBlock(t *testing.T) {
+	ctx := context.Background()
+	pool := dbtest.New(t)
+	getenv := func(k string) string {
+		return map[string]string{"CLIPMUX_PUBLIC_URL": "https://video.example.test"}[k]
+	}
+	box, _ := secrets.NewBox(1, bytes.Repeat([]byte{4}, 32))
+	var out bytes.Buffer
+	if err := createIntegration(ctx, pool, box, getenv, "LMS", "https://lms.example.test/hooks", false, &out); err != nil {
+		t.Fatal(err)
+	}
+	vars := map[string]string{}
+	for line := range strings.SplitSeq(out.String(), "\n") {
+		if k, v, ok := strings.Cut(line, "="); ok && !strings.HasPrefix(line, "#") {
+			vars[k] = v
+		}
+	}
+	for _, k := range []string{"CLIPMUX_URL", "CLIPMUX_API_KEY", "CLIPMUX_SIGNING_KID", "CLIPMUX_SIGNING_KEY", "CLIPMUX_WEBHOOK_SECRET"} {
+		if vars[k] == "" {
+			t.Errorf("%s missing from:\n%s", k, out.String())
+		}
+	}
+	if vars["CLIPMUX_URL"] != "https://video.example.test" {
+		t.Errorf("CLIPMUX_URL = %q", vars["CLIPMUX_URL"])
+	}
+	key, err := apikeys.Authenticate(ctx, pool, vars["CLIPMUX_API_KEY"])
+	if err != nil || !key.Can(apikeys.AssetsWrite) {
+		t.Fatalf("printed key: %+v, %v", key, err)
+	}
+	pem := strings.ReplaceAll(strings.Trim(vars["CLIPMUX_SIGNING_KEY"], `"`), `\n`, "\n")
+	if _, err := tokens.ParsePrivateKey(pem); err != nil {
+		t.Fatalf("printed signing key: %v", err)
+	}
+}
+
+func TestCreateIntegrationRefusesLoopbackUnlessAllowed(t *testing.T) {
+	ctx := context.Background()
+	pool := dbtest.New(t)
+	none := func(string) string { return "" }
+	var out bytes.Buffer
+	err := createIntegration(ctx, pool, nil, none, "LMS", "", false, &out)
+	if err == nil || !strings.Contains(err.Error(), "--allow-loopback") || out.Len() != 0 {
+		t.Fatalf("loopback: %v, printed %q", err, out.String())
+	}
+	if err := createIntegration(ctx, pool, nil, none, "LMS", "", true, &out); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "CLIPMUX_URL=http://localhost:8080\n") || strings.Contains(out.String(), "CLIPMUX_WEBHOOK_SECRET") {
+		t.Fatalf("output:\n%s", out.String())
+	}
+}

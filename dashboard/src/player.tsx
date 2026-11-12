@@ -1,4 +1,6 @@
 import '@clipmux/player/element'
+import type { ClipMuxPlayerElement } from '@clipmux/player/element'
+import type {} from '@clipmux/player/react'
 import { useEffect, useRef } from 'react'
 import { post } from './api.ts'
 
@@ -15,7 +17,7 @@ export function Preview({
   /** A ready chapters track, marked on the time slider. */
   chaptersTrack?: string | undefined
 }) {
-  const ref = useRef<HTMLElement & { getToken?: () => Promise<string | null>; token?: string }>(null)
+  const ref = useRef<ClipMuxPlayerElement>(null)
   useEffect(() => {
     const el = ref.current
     if (!el) return
@@ -42,15 +44,4 @@ export function Preview({
       className="block overflow-hidden rounded-lg bg-black"
     />
   )
-}
-
-declare module 'react' {
-  namespace JSX {
-    interface IntrinsicElements {
-      'clipmux-player': React.DetailedHTMLProps<React.HTMLAttributes<HTMLElement>, HTMLElement> & {
-        muted?: boolean | undefined
-        autoplay?: boolean | undefined
-      }
-    }
-  }
 }

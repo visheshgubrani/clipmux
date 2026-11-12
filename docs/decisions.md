@@ -1364,3 +1364,54 @@ Decision:
 - **RunPod is a key field**, like Cloudflare's token: "Get a key from RunPod" opens the approval page that creates a key and shows it (D109), and the pasted key lists the GPUs. Modal keeps "Connect with Modal", with pasting a token one click away.
 - `CLIPMUX_RUNPOD_CATALOG` points serve at a test double, as `CLIPMUX_RUNPOD_API` does.
 Consequence: a first connect is a key (or an approval) and a GPU choice. Modal's prices are a table to refresh when Modal changes them (known gaps).
+
+## D112 A TypeScript SDK, an OpenAPI spec and a four-step integration — accepted (2026-11-12)
+Context: integrating took about 120 lines of glue: raw `fetch` to `/v1/uploads`, a hand-rolled webhook HMAC, `jose` for ES256 tokens, five env vars copied from three dashboard tabs (one a multi-line PEM), a headless uploader, and a player wired with `base-url`, `token` and `getToken`. Most integrations are now written by coding agents, which get exactly these details subtly wrong: the HMAC over a re-serialized body, an API key in the browser, a token too short for native HLS. P6 open question 2 recommended tested snippets, not SDKs, and D087 said no OpenAPI spec and no MCP server in v1. The owner chose otherwise.
+Decision:
+- **One server SDK, `@clipmux/node`** (`packages/node`, MIT):
+  - TypeScript only, with zero runtime dependencies on Web APIs (`fetch`, `crypto.subtle`), so it runs on Node ≥ 20, Bun, Deno and edge runtimes.
+  - It holds the client, the resources, offline token signing, webhook verification, Web `Request`→`Response` handlers with default-deny callbacks, and a CLI (`init`, `doctor`, `listen`, `upload`).
+  - Python, Go and PHP get tested snippets for token signing and webhook verification instead (this answers open question 2).
+- **Shared vectors for every language:**
+  - tokens from `internal/delivery/testdata/vectors.json` (D015);
+  - webhooks from `internal/webhooks/testdata/vectors.json`, built from `webhooks.Sign` (16 cases, including the LMS's openssl-checked vector), regenerated with `go test ./internal/webhooks -run TestVectors -update`.
+- **An OpenAPI 3.1 spec of the integration API in v1**:
+  - It covers the integration routes, delivery URLs, `GET /v1/app`, the public app-pairing routes, and webhooks.
+  - It is embedded in serve, served unauthenticated, and checked against the routes.
+  - The SDK's types are generated from it.
+  - The management API stays out of it.
+  - This amends D087.
+  - It is JSON (`internal/openapi/openapi.json`, `GET /openapi.json`), not YAML, so the standard library parses it for the route tests.
+- **One command to credentials.** `npx @clipmux/node init` runs a device flow: the owner approves in the dashboard, and it writes the five `CLIPMUX_*` variables to an env file without printing a secret, so agent transcripts stay clean. An owner route and `clipmux admin create-integration` make the same bundle.
+- **The browser needs no configuration.**
+  - `<clipmux-player session-url>` and `<clipmux-uploader create-url>` talk only to the app's own handler, whose responses carry `base_url` and `endpoint`.
+  - The player says when it plays native HLS, so the handler signs the longer token D014 requires.
+- **An MCP server comes after launch,** built on the spec's operations (known gaps).
+- The work is P6 Track E (T21–T28), before the LMS cutover (T19) and launch.
+Consequence:
+- P6 now adds integration routes (`GET /v1/app`, app pairings) as well as owner routes; the integration API still only grows.
+- T15–T17 are rescoped around the SDK.
+- The LMS adapter becomes a thin layer over `@clipmux/node`.
+- AGENTS.md allows TypeScript in `examples/`.
+Built (T24–T26), where it differs from the plan:
+- **Types come from a 100-line generator** (`packages/node/scripts/generate.ts`, zero dependencies), not `openapi-typescript`, which needs TypeScript 5's compiler API and the workspace is on TypeScript 7. `pnpm test` fails when `schema.gen.ts` is stale.
+- **The webhook route answers 500 when the app's `asset` callback throws,** so ClipMux retries the delivery (24 hours, D018) instead of the event being lost to a transient error. Verified deliveries otherwise answer 200, and forged ones 400 with the reason.
+- **`init` takes no `--webhook-url`:** the owner enters it on `/connect` (D113). Without an endpoint, `init` writes a local `whsec_local_…` secret so `listen` and the handler agree while developing; `doctor` flags it.
+- **The CLI's bin is `clipmux-node`,** run as `npx @clipmux/node <command>`, so it never shadows the server's `clipmux` binary.
+- **`upload` in the CLI reuses `@clipmux/uploader`,** the SDK's only runtime dependency; `release.yml` pins its `workspace:^` range to the version it publishes.
+- **A playback session without the asset** takes `base_url` from `GET /v1/app`, has no tracks, and a native token of 12 hours, since the duration is unknown.
+
+## D113 How an app gets its credentials: one bundle, three ways in — accepted (2026-11-12)
+Context: D112 asks for one command to credentials. P6-T23 builds the server half: `GET /v1/app` for `doctor`, a credentials bundle, and an app-pairing device flow for `init`. The plan fixed the routes; these are the choices within them.
+Decision:
+- **The bundle** (`apppairings.Issue`) makes, in the caller's transaction, a new API key with the default scopes (`uploads:write`, `assets:read`, `assets:write`, now `apikeys.DefaultScopes`), a new signing key, and with a webhook URL a new endpoint. A refused webhook URL or a loopback refusal creates nothing. It always makes new keys rather than reusing an app's: the private key and API key exist nowhere else to reuse. The API key is named after the pairing's `name`, or `integration` from the dashboard and the CLI, so the owner knows what to revoke.
+- **D108 applies to all three ways in.** `POST /v1/apps/{id}/credentials` and `…/approve` take `local`; `create-integration` takes `--allow-loopback`. `/connect` and the dialog ask the owner to tick "this app runs on this computer" while the public URL is loopback.
+- **The `.env` block** has the five variables, `CLIPMUX_WEBHOOK_SECRET` only with a webhook. The PEM is one double-quoted line with `\n` escapes, which dotenv, Next.js and `node --env-file` all expand, so the block can be appended to any env file. A comment line names the app.
+- **App pairing mirrors agent pairing (D042, D067)** in a new table, `app_pairings`:
+  - The code format, the SHA-256 storage of codes and poll tokens, the 10-pending cap and the start and poll limits move to `internal/pairing`, shared by both flows. Each flow keeps its own buckets, at the same numbers. App codes hash under their own prefix, so an agent code never matches an app pairing.
+  - A pairing lasts 10 minutes, not agent pairing's 15: `init` runs with the developer at the screen.
+  - Approval issues the bundle and seals it as JSON (`secrets.Columns`: `app_pairings.credentials_sealed`). The CLI's next poll opens it, marks the pairing consumed and clears the column in the same transaction, so credentials are handed over once; a check constraint keeps sealed credentials only on `approved` rows. Approval leaves the pairing at least a minute to be collected. Approved but uncollected past expiry, the sealed copy is dropped at the next poll or by retention, which prunes app pairings a day after expiry as it does agent pairings.
+  - There is no dashboard-first code (agent pairing's `Invite`): the dashboard's "Create credentials" covers that case directly.
+- **`GET /v1/app`** answers any valid key whatever its scopes (`apikeys.AnyScope`), beside the asset routes. `signing_keys` lists the keys that still verify tokens (not revoked, not past `retired_at`), with their public PEM, so `doctor` can check the private key it holds matches one of them. `scopes` is the key's own.
+- **The dashboard** gets `/connect` (pick an app or "New app…", which defaults to the CLI's name, an optional webhook URL, the code shown large so it can be matched) and a "Connect your app" panel with the `init` one-liner on Apps & API and on each app's page (not the built-in Dashboard app), where "Create credentials" shows the `.env` block once.
+Consequence: docs/api.md has an App pairing section and the new routes; docs/configuration.md lists the five app-side variables. An approval nobody collects leaves an API key and a signing key the owner revokes by hand (known gaps).

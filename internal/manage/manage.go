@@ -619,7 +619,7 @@ func (m *API) createAPIKey(w http.ResponseWriter, r *http.Request, o accounts.Ow
 		return httpjson.Fail(http.StatusBadRequest, "invalid_request", "a key name is at most 100 characters")
 	}
 	if len(body.Scopes) == 0 {
-		body.Scopes = []string{apikeys.UploadsWrite, apikeys.AssetsRead, apikeys.AssetsWrite}
+		body.Scopes = apikeys.DefaultScopes()
 	}
 	for _, s := range body.Scopes {
 		if !slices.Contains(apikeys.AllScopes(), s) {

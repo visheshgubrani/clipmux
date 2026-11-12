@@ -14,6 +14,7 @@ import { Mark } from '@/components/wordmark'
 import { AnalyticsPage } from '@/pages/analytics'
 import { AppDetail, Apps } from '@/pages/apps'
 import { Captions } from '@/pages/captions'
+import { ConnectApp } from '@/pages/connect'
 import { Delivery } from '@/pages/delivery'
 import { ConnectPC, Encoding } from '@/pages/encoding'
 import { Home } from '@/pages/home'
@@ -85,8 +86,12 @@ export function App() {
             <Route path="/delivery" element={<Delivery />} />
             <Route path="/storage" element={<Storage />} />
             <Route path="/captions" element={<Captions />} />
-            <Route path="/apps" element={<Apps />} />
-            <Route path="/apps/:id" element={<AppDetail keysAllowed={s.keys_allowed} />} />
+            <Route path="/apps" element={<Apps server={s.urls.public_url} keysAllowed={s.keys_allowed} />} />
+            <Route
+              path="/apps/:id"
+              element={<AppDetail server={s.urls.public_url} keysAllowed={s.keys_allowed} />}
+            />
+            <Route path="/connect" element={<ConnectApp keysAllowed={s.keys_allowed} />} />
             <Route path="/settings" element={<Settings setup={s} />} />
             {/* Where older links and the CLI point. */}
             <Route path="/library" element={<Navigate to="/videos" replace />} />

@@ -805,7 +805,7 @@ The terms name the Developer Platform as an example of a required Paid Service, 
 - [x] Choose the project name and licence, including how the image complies with ffmpeg's licence when it bundles a GPL build. Shaka Packager is BSD-licensed and adds no such constraint. *(ClipMux, D006; AGPL-3.0 core with MIT player, uploader and Worker, D086)*
 - [ ] Choose a native sandbox for Windows and macOS agents. Until then, v1 requires Docker, WSL2 or a VM there.
 - [ ] Decide whether to serve encrypted segments from an R2 custom domain on a bucket without sources, with delivery generating variant playlists that point there. Only playlists and keys would run through the Worker, cutting its requests by more than 99%, but revoking a playback ID would then stop key fetches rather than segment fetches.
-- [ ] Choose which languages get an SDK for signing tokens.
+- [x] Choose which languages get an SDK for signing tokens: TypeScript (`@clipmux/node`), with tested snippets for Python, Go and PHP (D112).
 - [ ] Decide when storyboards enter the roadmap. Captions came in Phase 5 (the generated master meant no new output), and viewer analytics with D100: its UI in P6, its API in Phase 7 (D102, D103).
 - [ ] Confirm the defaults this revision picked: a 7-day maximum token lifetime, retry budgets of 5 and 3, a 15-minute reconciler, and per-output keys derived from one secret.
 

@@ -17,7 +17,6 @@ package agents
 import (
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -36,6 +35,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/httpjson"
 	"github.com/visheshgubrani/clipmux/internal/ids"
 	"github.com/visheshgubrani/clipmux/internal/lifecycle"
+	"github.com/visheshgubrani/clipmux/internal/pairing"
 	"github.com/visheshgubrani/clipmux/internal/queue"
 	"github.com/visheshgubrani/clipmux/internal/ratelimit"
 )
@@ -45,15 +45,11 @@ const (
 	PairingLifetime = 15 * time.Minute
 	// MaxPendingPairings bounds the agent-started pairings waiting for the
 	// owner, because anyone who can reach the server can start one.
-	MaxPendingPairings = 10
+	MaxPendingPairings = pairing.MaxPending
 	// PollInterval is how often an agent should poll its pairing.
-	PollInterval = 2 * time.Second
+	PollInterval = pairing.PollInterval
 
 	keyPrefix = "cmxa_"
-	// codeAlphabet has no look-alikes (no 0/O, 1/I/L), so a code read off a
-	// screen types back correctly.
-	codeAlphabet = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
-	codeLength   = 8
 )
 
 // Service pairs, authenticates and manages agents.
@@ -72,22 +68,18 @@ type Service struct {
 	Logger *slog.Logger
 
 	// Limits on the routes anyone can reach (D067): wrong pairing codes per
-	// address and overall, which bound guessing a 39-bit code; pairings an
-	// address may start; and how fast it may poll.
+	// address and overall, which bound guessing a 39-bit code; and the
+	// pairings an address may start and how fast it may poll.
 	redeems *ratelimit.Failures
-	starts  *ratelimit.Buckets
-	polls   *ratelimit.Buckets
+	limits  *pairing.Limits
 }
 
-// Limits for the pairing routes: 10 wrong codes per address and 100 overall
-// in 15 minutes, 20 pairings per address an hour, 2 polls a second (the
-// agent polls every 2 s).
+// Limits for redeeming a code: 10 wrong codes per address and 100 overall
+// in 15 minutes. Starting and polling are pairing.Limits.
 const (
 	redeemWindow  = 15 * time.Minute
 	redeemPerAddr = 10
 	redeemAll     = 100
-	startsPerHour = 20
-	pollsPerSec   = 2
 )
 
 // New returns the agent service.
@@ -95,50 +87,13 @@ func New(pool *pgxpool.Pool, q *queue.Queue, acct *accounts.Service, projectID s
 	return &Service{
 		pool: pool, queue: q, accounts: acct, projectID: projectID, PublicURL: publicURL, Logger: slog.New(slog.DiscardHandler),
 		redeems: ratelimit.NewFailures(redeemWindow, redeemPerAddr, redeemAll),
-		starts:  ratelimit.NewBuckets(startsPerHour/3600.0, startsPerHour),
-		polls:   ratelimit.NewBuckets(pollsPerSec, 2*pollsPerSec),
+		limits:  pairing.NewLimits(),
 	}
 }
 
-// newCode returns a code such as KXFT-9M2Q (about 39 bits).
-func newCode() string {
-	b := make([]byte, codeLength)
-	for i := range b {
-		var r [1]byte
-		for {
-			_, _ = rand.Read(r[:]) // crypto/rand.Read never returns an error.
-			if int(r[0]) < 256-256%len(codeAlphabet) {
-				break
-			}
-		}
-		b[i] = codeAlphabet[int(r[0])%len(codeAlphabet)]
-	}
-	return string(b[:4]) + "-" + string(b[4:])
-}
+func normalizeCode(s string) string { return pairing.NormalizeCode(s) }
 
-// normalizeCode accepts a code as a person types it: any case, with or
-// without the dash or spaces. It returns "" for anything that can't be one.
-func normalizeCode(s string) string {
-	var b strings.Builder
-	for _, r := range strings.ToUpper(s) {
-		switch {
-		case r == '-' || r == ' ':
-		case strings.ContainsRune(codeAlphabet, r):
-			b.WriteRune(r)
-		default:
-			return ""
-		}
-	}
-	if b.Len() != codeLength {
-		return ""
-	}
-	return b.String()
-}
-
-func hash(s string) []byte {
-	sum := sha256.Sum256([]byte(s))
-	return sum[:]
-}
+func hash(s string) []byte { return pairing.Hash(s) }
 
 func codeHash(code string) []byte { return hash("clipmux-pairing-v1\n" + code) }
 
@@ -179,13 +134,7 @@ var (
 	errTooMany  = httpjson.Fail(http.StatusTooManyRequests, "too_many_pairings", "too many machines are waiting to be approved; approve or let them expire first")
 )
 
-func inet(a netip.Addr) *netip.Addr {
-	if !a.IsValid() {
-		return nil
-	}
-	a = a.Unmap()
-	return &a
-}
+func inet(a netip.Addr) *netip.Addr { return pairing.Inet(a) }
 
 // mint creates the agent for a pairing and consumes the pairing, in tx.
 func (s *Service) mint(ctx context.Context, qs *db.Queries, p db.AgentPairing, d Description, ip netip.Addr) (Credentials, error) {
@@ -205,7 +154,7 @@ func (s *Service) mint(ctx context.Context, qs *db.Queries, p db.AgentPairing, d
 
 // Invite mints a code the owner has already approved (dashboard first).
 func (s *Service) Invite(ctx context.Context, name string) (string, db.AgentPairing, error) {
-	code := newCode()
+	code := pairing.NewCode()
 	p, err := db.New(s.pool).CreatePairing(ctx, db.CreatePairingParams{
 		ID: ids.New(ids.Pairing), ProjectID: s.projectID, CodeHash: codeHash(normalizeCode(code)),
 		Status: "approved", Name: strings.TrimSpace(name), TtlSeconds: PairingLifetime.Seconds(),
@@ -258,7 +207,7 @@ type Request struct {
 // Start opens an agent-started pairing, waiting for the owner.
 func (s *Service) Start(ctx context.Context, d Description, ip netip.Addr) (Request, error) {
 	d = d.clean()
-	code, poll := newCode(), rand.Text()
+	code, poll := pairing.NewCode(), pairing.NewPollToken()
 	var p db.AgentPairing
 	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 		qs := db.New(tx)

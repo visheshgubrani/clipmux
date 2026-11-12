@@ -3,6 +3,51 @@
 Uploads a file to ClipMux in parts, straight to storage, resuming from what
 storage already holds. No dependencies.
 
+```html
+<script type="module">import '@clipmux/uploader/element'</script>
+<clipmux-uploader create-url="/api/clipmux/upload" accept="video/*" max-size="5000000000"></clipmux-uploader>
+```
+
+```ts
+document.querySelector('clipmux-uploader')!.addEventListener('clipmux-uploaded', (e) => {
+  console.log(e.detail.asset.id) // processing; your webhook hears when it's ready
+})
+```
+
+`<clipmux-uploader>` is a drop zone with a file button, progress, Cancel and
+Retry. It POSTs `{"size", "name", "type"}` to `create-url` (with the page's
+cookies), which is your backend's route that creates the upload with its API
+key and answers with it plus `endpoint`, the ClipMux URL; the `@clipmux/node`
+handler's `/upload` route does exactly that. The upload is remembered in
+`localStorage` until it completes, so choosing the same file after a reload
+resumes it.
+
+- **Attributes:** `create-url`; `accept`, as on `<input type=file>`, checked
+  for dropped files too; `max-size` in bytes. The host's `state` attribute is
+  `idle`, `uploading`, `done` or `error`. `el.options` takes further
+  `ClipMuxUpload` options (`concurrency`, `store`, …).
+- **Events** (they bubble, typed): `clipmux-progress` (`Progress`),
+  `clipmux-uploaded` (`{ asset }`), `clipmux-error` (`{ code, message, status, error }`;
+  `file_too_large`, `file_type_rejected`, `create_denied` for a `401`/`403`
+  from `create-url`, or a `ClipMuxUploadError` code).
+- **Styling:** the parts `dropzone`, `label`, `button`, `progress`, `bar`,
+  `status`, `cancel` and `retry` (`clipmux-uploader::part(bar) { … }`), the
+  custom properties `--clipmux-uploader-accent`, `-border`, `-radius`,
+  `-background`, `-color` and `-font`, and the default slot for the drop
+  zone's text.
+- **React 19:** `import type {} from '@clipmux/uploader/react'` types the
+  element in JSX, including `onclipmux-uploaded`, with no React dependency.
+
+The same without the element:
+
+```ts
+import { ClipMuxUpload } from '@clipmux/uploader'
+
+const asset = await new ClipMuxUpload(file, { createUrl: '/api/clipmux/upload' }).start()
+```
+
+With your own backend route instead:
+
 ```ts
 import { ClipMuxUpload, rememberUpload } from '@clipmux/uploader'
 
@@ -25,6 +70,8 @@ memory.forget(file)
   a failure rejects with a `ClipMuxUploadError` (`code`, `status`, `retryable`) and leaves the upload
   resumable for 24 hours. `cancel()` ends it for good.
 - Storage must expose the `ETag` header to the page (ClipMux's own storage does).
+- With `createUrl`, a remembered upload that has expired or was cancelled is
+  replaced by a new one; `store: null` turns the memory off.
 
 Uppy users can map its `@uppy/aws-s3` callbacks to the same endpoints instead (docs/api.md).
 
