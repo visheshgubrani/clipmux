@@ -19,7 +19,9 @@ import (
 
 	"github.com/visheshgubrani/clipmux/internal/accounts"
 	"github.com/visheshgubrani/clipmux/internal/agents"
+	"github.com/visheshgubrani/clipmux/internal/analytics"
 	"github.com/visheshgubrani/clipmux/internal/apikeys"
+	"github.com/visheshgubrani/clipmux/internal/apppairings"
 	"github.com/visheshgubrani/clipmux/internal/assets"
 	"github.com/visheshgubrani/clipmux/internal/chapters"
 	"github.com/visheshgubrani/clipmux/internal/cloudflare"
@@ -31,6 +33,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/lifecycle"
 	"github.com/visheshgubrani/clipmux/internal/manage"
 	"github.com/visheshgubrani/clipmux/internal/modal"
+	"github.com/visheshgubrani/clipmux/internal/openapi"
 	"github.com/visheshgubrani/clipmux/internal/outputs"
 	"github.com/visheshgubrani/clipmux/internal/queue"
 	"github.com/visheshgubrani/clipmux/internal/retention"
@@ -39,6 +42,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/secrets"
 	"github.com/visheshgubrani/clipmux/internal/settings"
 	"github.com/visheshgubrani/clipmux/internal/setuptest"
+	"github.com/visheshgubrani/clipmux/internal/shares"
 	"github.com/visheshgubrani/clipmux/internal/signingkeys"
 	"github.com/visheshgubrani/clipmux/internal/speechapi"
 	"github.com/visheshgubrani/clipmux/internal/storage"
@@ -99,6 +103,14 @@ const ChaptersInterval = 5 * time.Second
 // (D069).
 const RetentionInterval = time.Hour
 
+// EdgeAnalyticsInterval is how often serve pulls the Worker's analytics
+// from Cloudflare (P7-T05); each pass recomputes the hour before it too.
+const EdgeAnalyticsInterval = 5 * time.Minute
+
+// ShareExpiryInterval is how often serve revokes the playback IDs of share
+// links past their expiry (P7-T06); their tokens already stop at it.
+const ShareExpiryInterval = time.Minute
+
 // SetupTestInterval is how often a queued setup test is picked up.
 const SetupTestInterval = 5 * time.Second
 
@@ -131,6 +143,8 @@ var passTimeouts = map[string]time.Duration{
 	"setup_tests":          30 * time.Minute, // waits up to 15 minutes for its encode
 	"retention":            10 * time.Minute,
 	"file_retention":       30 * time.Minute, // deletes whole output prefixes
+	"analytics_edge":       2 * time.Minute,  // two SQL API queries and one transaction
+	"shares":               2 * time.Minute,  // 100 revokes, each publishing its route
 }
 
 // Registrar adds an API's routes to the root mux.
@@ -158,6 +172,9 @@ type Deps struct {
 	// CSP is the dashboard's Content-Security-Policy for a request; nil
 	// allows only the server's own origin.
 	CSP func(*http.Request) string
+	// ShareCSP is the share page's (D104); nil allows only the server's
+	// own origin.
+	ShareCSP func(*http.Request) string
 	// Drain is done once the server starts shutting down; /readyz then
 	// fails so a load balancer stops sending new work. nil never drains.
 	Drain context.Context
@@ -181,6 +198,9 @@ func Handler(d Deps) http.Handler {
 	for _, api := range d.APIs {
 		api.Register(mux)
 	}
+	// The integration API's description, for agents and code generators
+	// (D112): no credential, and the version this binary serves.
+	mux.Handle("GET /openapi.json", openapi.Handler())
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		text(w, http.StatusOK, "ok")
 	})
@@ -206,6 +226,9 @@ func Handler(d Deps) http.Handler {
 		}
 		text(w, http.StatusOK, "ok")
 	})
+	// The share page's wildcard is named token, so the access line redacts
+	// the link's secret (D064).
+	mux.Handle("GET /s/{token}", web.Share(web.Dist(), d.ShareCSP))
 	mux.Handle("GET /", web.Handler(web.Dist(), d.CSP))
 	return mux
 }
@@ -335,6 +358,15 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 	upl.Logger = logger
 	playback := delivery.New(pool, set, keys)
 	playback.Logger = logger
+	// Playback is counted where it is answered (D103); viewers are kept
+	// only as keys under the project's analytics key.
+	analyticsKey, err := analytics.LoadKey(ctx, pool, box, db.DefaultProjectID)
+	if err != nil {
+		return err
+	}
+	recorder := analytics.NewRecorder(pool, analyticsKey)
+	recorder.Logger = logger
+	playback.Record = recorder.Record
 	committer.OnPublished, committer.OnKeys = playback.Invalidate, playback.InvalidateKeys
 	if cfg.MaxUploadBytes > 0 {
 		upl.MaxSize = cfg.MaxUploadBytes
@@ -344,21 +376,33 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 	life := lifecycle.New(pool, set, committer)
 	life.Logger = logger
 	agentSvc.Life = life
+	shareSvc := shares.New(pool, box, life)
+	shareSvc.Logger = logger
+	shareSvc.ClientIP = acct.ClientIP
 	mgmt := manage.New(pool, box, acct, b.urls)
 	mgmt.Logger = logger
+	// Apps get their credentials from the dashboard or by pairing with
+	// `npx @clipmux/node init` (P6-T23).
+	appPairings := apppairings.New(pool, box, acct, b.urls, db.DefaultProjectID)
+	appPairings.Logger = logger
 	tests := setuptest.New(pool, set, box, b.urls, upl, life, cfg.SelfDial)
 	tests.Logger = logger
 	mgmt.Tests = tests
 	mgmt.Life = life
+	mgmt.Stores = set
 	mgmt.Keys = &manage.ContentKeys{Ring: keys, DataDir: cfg.DataDir}
+	edge := analytics.NewEdge(pool, box, db.DefaultProjectID)
+	edge.API = cmp.Or(cfg.CloudflareAPI, analytics.DefaultCloudflareAPI)
+	edge.Logger = logger
+	mgmt.Edge = edge
 	mgmt.Cloudflare = &cloudflare.Connector{
-		Pool: pool, Stores: set, Keys: keys, URLs: b.urls, ProjectID: db.DefaultProjectID,
+		Pool: pool, Stores: set, Keys: keys, URLs: b.urls, ProjectID: db.DefaultProjectID, AnalyticsKey: analyticsKey,
 		API: cfg.CloudflareAPI, R2Endpoint: cloudflare.EndpointTemplate(cfg.R2Endpoint),
 		SetupTest: func(ctx context.Context) error { _, err := tests.Queue(ctx, "urls_saved"); return err },
 	}
 	// Providers (P4-T04): each kind opens its adapter from its stored row.
 	rp := &runpod.Connector{
-		Pool: pool, Box: box, ProjectID: db.DefaultProjectID, API: cmp.Or(cfg.RunPodAPI, runpod.DefaultAPI),
+		Pool: pool, Box: box, ProjectID: db.DefaultProjectID, API: cmp.Or(cfg.RunPodAPI, runpod.DefaultAPI), Catalog: cfg.RunPodCatalog,
 		PublicURL: b.urls.PublicURL, AllowPrivateURL: cfg.ExecutorsAllowPrivateURL, DefaultImage: cfg.WorkerImage,
 		Resolver: net.DefaultResolver, Logger: logger,
 		SetupTest: func(ctx context.Context) error {
@@ -398,7 +442,9 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 	// One set of per-key limits, so a key's budget is the same whichever
 	// API it calls (D067).
 	apiLimits := apikeys.NewLimits()
-	for _, auth := range []*apikeys.Authenticator{upl.Auth, life.Auth, assetsAPI.Auth} {
+	analyticsAPI := analytics.NewAPI(pool)
+	analyticsAPI.Logger = logger
+	for _, auth := range []*apikeys.Authenticator{upl.Auth, life.Auth, assetsAPI.Auth, analyticsAPI.Auth, shareSvc.Auth} {
 		auth.Session = mgmt.ActAsApp
 		auth.Limits = apiLimits
 	}
@@ -451,6 +497,14 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 			cacheLookups.Inc(table, "miss")
 		}
 	})
+	flushRows := obs.reg.Counter("clipmux_analytics_flush_rows_total", "Analytics rows this replica's flushes wrote.")
+	droppedKeys := obs.reg.Counter("clipmux_analytics_dropped_total",
+		"Analytics keys dropped because the recorder was full between flushes.")
+	recorder.OnFlush = func(n int) { flushRows.Add(float64(n)) }
+	recorder.OnDrop = func() { droppedKeys.Add(1) }
+	// Not a leader loop: every replica flushes its own counts. It stops with
+	// the loops, which is after srv.Shutdown, and flushes once more then.
+	wg.Go(func() { recorder.Run(ctx) })
 	speechAudio := obs.reg.Counter("clipmux_speech_api_audio_seconds_total", "Seconds of audio sent to the speech API.")
 	speechRunner := &speechapi.Runner{
 		Pool: pool, Queue: q, Stores: set, Keys: keys, Box: box, Publisher: worker.Tracks,
@@ -468,6 +522,8 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 	prune := retention.New(pool)
 	prune.Logger = logger
 	loop(RetentionInterval, "retention", prune.Run)
+	loop(EdgeAnalyticsInterval, "analytics_edge", edge.Pull)
+	loop(ShareExpiryInterval, "shares", func(ctx context.Context) (int, error) { return shareSvc.Expire(ctx, 100) })
 	files := retention.NewFiles(pool, set, store)
 	files.Logger = logger
 	loop(RetentionInterval, "file_retention", files.Run)
@@ -514,7 +570,8 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 	srv := &http.Server{
 		Handler: reqLog.wrap(secure.wrap(newRefusals(acct.ClientIP).wrap(defaultDeadlines.wrap(Handler(Deps{
 			DB: pool, Worker: worker.Handler(), Storage: store.Handler(), ServesHost: b.urls.ServesHost, Drain: drain, CSP: csp,
-			APIs: []Registrar{acct, mgmt, agentSvc, upl, assetsAPI, life, playback},
+			ShareCSP: func(*http.Request) string { return shareCSP(b.urls.MediaURL()) },
+			APIs:     []Registrar{acct, mgmt, appPairings, agentSvc, upl, assetsAPI, life, playback, analyticsAPI, shareSvc},
 		}))))),
 		// The server's own errors (TLS, a panicking handler) go to the same log.
 		ErrorLog:          slog.NewLogLogger(logger.Handler(), slog.LevelWarn),

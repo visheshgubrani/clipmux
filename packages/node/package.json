@@ -1,0 +1,66 @@
+{
+  "name": "@clipmux/node",
+  "version": "0.1.0",
+  "description": "The ClipMux server SDK: uploads, assets, signed playback tokens, webhook verification, drop-in route handlers and a CLI that sets it all up.",
+  "license": "MIT",
+  "keywords": [
+    "video",
+    "vod",
+    "hls",
+    "streaming",
+    "upload",
+    "webhooks",
+    "clipmux",
+    "mux-alternative"
+  ],
+  "homepage": "https://github.com/visheshgubrani/clipmux/tree/main/packages/node#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/visheshgubrani/clipmux.git",
+    "directory": "packages/node"
+  },
+  "bugs": {
+    "url": "https://github.com/visheshgubrani/clipmux/issues"
+  },
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./handlers": {
+      "types": "./dist/handlers.d.ts",
+      "default": "./dist/handlers.js"
+    },
+    "./express": {
+      "types": "./dist/express.d.ts",
+      "default": "./dist/express.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src",
+    "!src/**/*.test.ts",
+    "AGENTS.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node scripts/generate.ts --check && node --test src/*.test.ts",
+    "generate": "node scripts/generate.ts",
+    "generate:check": "node scripts/generate.ts --check"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "bin": {
+    "clipmux-node": "./dist/bin.js"
+  },
+  "dependencies": {
+    "@clipmux/uploader": "workspace:^"
+  }
+}

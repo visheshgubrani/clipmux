@@ -7,6 +7,8 @@ package db
 
 import (
 	"context"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const assetStorageID = `-- name: AssetStorageID :one
@@ -32,7 +34,7 @@ func (q *Queries) ClearDefaultStorage(ctx context.Context, projectID string) err
 const createStorageConfig = `-- name: CreateStorageConfig :one
 INSERT INTO storage_configs (id, project_id, kind, config, secrets_encrypted)
 VALUES ($1, $2, $3, $4, $5)
-RETURNING id, project_id, kind, config, secrets_encrypted, is_default, created_at
+RETURNING id, project_id, kind, config, secrets_encrypted, is_default, created_at, removed_at
 `
 
 type CreateStorageConfigParams struct {
@@ -60,13 +62,14 @@ func (q *Queries) CreateStorageConfig(ctx context.Context, arg CreateStorageConf
 		&i.SecretsEncrypted,
 		&i.IsDefault,
 		&i.CreatedAt,
+		&i.RemovedAt,
 	)
 	return i, err
 }
 
 const getStorageConfig = `-- name: GetStorageConfig :one
 
-SELECT id, project_id, kind, config, secrets_encrypted, is_default, created_at FROM storage_configs WHERE id = $1
+SELECT id, project_id, kind, config, secrets_encrypted, is_default, created_at, removed_at FROM storage_configs WHERE id = $1
 `
 
 // Storage configs (docs/architecture.md, "Per-asset storage").
@@ -81,12 +84,13 @@ func (q *Queries) GetStorageConfig(ctx context.Context, id string) (StorageConfi
 		&i.SecretsEncrypted,
 		&i.IsDefault,
 		&i.CreatedAt,
+		&i.RemovedAt,
 	)
 	return i, err
 }
 
 const listStorageConfigs = `-- name: ListStorageConfigs :many
-SELECT id, project_id, kind, config, secrets_encrypted, is_default, created_at FROM storage_configs WHERE project_id = $1 ORDER BY created_at, id
+SELECT id, project_id, kind, config, secrets_encrypted, is_default, created_at, removed_at FROM storage_configs WHERE project_id = $1 AND removed_at IS NULL ORDER BY created_at, id
 `
 
 func (q *Queries) ListStorageConfigs(ctx context.Context, projectID string) ([]StorageConfig, error) {
@@ -106,6 +110,7 @@ func (q *Queries) ListStorageConfigs(ctx context.Context, projectID string) ([]S
 			&i.SecretsEncrypted,
 			&i.IsDefault,
 			&i.CreatedAt,
+			&i.RemovedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -117,8 +122,91 @@ func (q *Queries) ListStorageConfigs(ctx context.Context, projectID string) ([]S
 	return items, nil
 }
 
+const listStorageSummaries = `-- name: ListStorageSummaries :many
+SELECT c.id, c.kind, c.config, c.is_default, c.created_at,
+    (SELECT count(*) FROM assets a WHERE a.storage_id = c.id AND a.status <> 'deleted')::bigint AS asset_count,
+    EXISTS (SELECT 1 FROM projects p WHERE p.id = c.project_id AND p.delivery = 'worker' AND p.delivery_storage_id = c.id)::boolean AS delivery
+FROM storage_configs c
+WHERE c.project_id = $1 AND c.removed_at IS NULL
+ORDER BY c.created_at, c.id
+`
+
+type ListStorageSummariesRow struct {
+	ID         string
+	Kind       string
+	Config     []byte
+	IsDefault  bool
+	CreatedAt  pgtype.Timestamptz
+	AssetCount int64
+	Delivery   bool
+}
+
+// Each config the owner can see, with how many assets (deleted ones
+// aside) it holds, and whether Cloudflare delivery reads it.
+func (q *Queries) ListStorageSummaries(ctx context.Context, projectID string) ([]ListStorageSummariesRow, error) {
+	rows, err := q.db.Query(ctx, listStorageSummaries, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListStorageSummariesRow{}
+	for rows.Next() {
+		var i ListStorageSummariesRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Kind,
+			&i.Config,
+			&i.IsDefault,
+			&i.CreatedAt,
+			&i.AssetCount,
+			&i.Delivery,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const lockStorageConfig = `-- name: LockStorageConfig :one
+SELECT id, project_id, kind, config, secrets_encrypted, is_default, created_at, removed_at FROM storage_configs WHERE project_id = $1 AND id = $2 AND removed_at IS NULL FOR UPDATE
+`
+
+type LockStorageConfigParams struct {
+	ProjectID string
+	ID        string
+}
+
+func (q *Queries) LockStorageConfig(ctx context.Context, arg LockStorageConfigParams) (StorageConfig, error) {
+	row := q.db.QueryRow(ctx, lockStorageConfig, arg.ProjectID, arg.ID)
+	var i StorageConfig
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.Kind,
+		&i.Config,
+		&i.SecretsEncrypted,
+		&i.IsDefault,
+		&i.CreatedAt,
+		&i.RemovedAt,
+	)
+	return i, err
+}
+
+const removeStorageConfig = `-- name: RemoveStorageConfig :exec
+UPDATE storage_configs SET removed_at = now(), secrets_encrypted = NULL WHERE id = $1 AND NOT is_default
+`
+
+func (q *Queries) RemoveStorageConfig(ctx context.Context, id string) error {
+	_, err := q.db.Exec(ctx, removeStorageConfig, id)
+	return err
+}
+
 const setDefaultStorage = `-- name: SetDefaultStorage :execrows
-UPDATE storage_configs SET is_default = true WHERE project_id = $1 AND id = $2
+UPDATE storage_configs SET is_default = true WHERE project_id = $1 AND id = $2 AND removed_at IS NULL
 `
 
 type SetDefaultStorageParams struct {
@@ -134,8 +222,32 @@ func (q *Queries) SetDefaultStorage(ctx context.Context, arg SetDefaultStoragePa
 	return result.RowsAffected(), nil
 }
 
-const updateStorageSecrets = `-- name: UpdateStorageSecrets :exec
-UPDATE storage_configs SET secrets_encrypted = $2 WHERE id = $1
+const storageUsage = `-- name: StorageUsage :one
+SELECT
+    (SELECT count(*) FROM assets a WHERE a.storage_id = $1::text AND (a.status <> 'deleted' OR a.deleted_at IS NULL))::bigint AS assets,
+    (SELECT count(*) FROM jobs j WHERE j.status IN ('queued', 'running')
+        AND (j.source_storage_id = $1::text OR j.target_storage_id = $1::text))::bigint AS jobs,
+    EXISTS (SELECT 1 FROM projects p WHERE p.delivery_storage_id = $1::text AND p.delivery = 'worker')::boolean AS delivery
+`
+
+type StorageUsageRow struct {
+	Assets   int64
+	Jobs     int64
+	Delivery bool
+}
+
+// What still needs a store: assets whose files may be on it (a deleted
+// asset until its files are gone), active jobs moving to or from it, and
+// Cloudflare delivery reading from it.
+func (q *Queries) StorageUsage(ctx context.Context, id string) (StorageUsageRow, error) {
+	row := q.db.QueryRow(ctx, storageUsage, id)
+	var i StorageUsageRow
+	err := row.Scan(&i.Assets, &i.Jobs, &i.Delivery)
+	return i, err
+}
+
+const updateStorageSecrets = `-- name: UpdateStorageSecrets :execrows
+UPDATE storage_configs SET secrets_encrypted = $2 WHERE id = $1 AND removed_at IS NULL
 `
 
 type UpdateStorageSecretsParams struct {
@@ -143,7 +255,10 @@ type UpdateStorageSecretsParams struct {
 	SecretsEncrypted []byte
 }
 
-func (q *Queries) UpdateStorageSecrets(ctx context.Context, arg UpdateStorageSecretsParams) error {
-	_, err := q.db.Exec(ctx, updateStorageSecrets, arg.ID, arg.SecretsEncrypted)
-	return err
+func (q *Queries) UpdateStorageSecrets(ctx context.Context, arg UpdateStorageSecretsParams) (int64, error) {
+	result, err := q.db.Exec(ctx, updateStorageSecrets, arg.ID, arg.SecretsEncrypted)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }

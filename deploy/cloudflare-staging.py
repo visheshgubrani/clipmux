@@ -15,7 +15,7 @@ import urllib.error
 ROOT = Path(__file__).resolve().parent.parent
 STATE = ROOT / 'data/cloudflare-staging'
 BIN = STATE / 'bin/clipmux'
-ENV = dict(os.environ, DATABASE_URL='postgres://clipmux:clipmux@127.0.0.1:5444/clipmux?sslmode=disable',
+ENV = dict(os.environ, DATABASE_URL='postgres://clipmux:clipmux@127.0.0.1:5445/clipmux?sslmode=disable',
            CLIPMUX_DATA_DIR=str(STATE / 'app'), CLIPMUX_LISTEN='127.0.0.1:8086',
            CLIPMUX_PUBLIC_URL='https://app-test.clipmux.com', CLIPMUX_MEDIA_URL='https://media-test.clipmux.com',
            CLIPMUX_PACKAGER=str(STATE / 'bin/packager'), CLIPMUX_SPEECH='off', CLIPMUX_LOG_FORMAT='json')
@@ -177,6 +177,35 @@ def prepare():
     print('Baseline filesystem asset ready; private live config retained')
 
 
+DB_CONTAINER = 'clipmux-staging-postgres'
+DB_VOLUME = 'clipmux-staging_pgdata'
+
+
+def db_start():
+    """Staging's own Postgres on loopback port 5445, beside dev's on 5444,
+    with a named volume that db-stop never removes."""
+    found = subprocess.run(['docker', 'ps', '-a', '--filter', 'name=^'+DB_CONTAINER+'$', '--format', '{{.Status}}'],
+                           capture_output=True, text=True, check=True).stdout.strip()
+    if not found:
+        subprocess.run(['docker', 'run', '-d', '--name', DB_CONTAINER, '-p', '127.0.0.1:5445:5432',
+            '-e', 'POSTGRES_USER=clipmux', '-e', 'POSTGRES_PASSWORD=clipmux', '-e', 'POSTGRES_DB=clipmux',
+            '-v', DB_VOLUME+':/var/lib/postgresql', 'postgres:18-alpine'], check=True, capture_output=True)
+    elif not found.startswith('Up'):
+        subprocess.run(['docker', 'start', DB_CONTAINER], check=True, capture_output=True)
+    for _ in range(60):
+        if subprocess.run(['docker', 'exec', DB_CONTAINER, 'pg_isready', '-U', 'clipmux', '-d', 'clipmux'],
+                          capture_output=True).returncode == 0:
+            print('Staging Postgres ready on loopback port 5445')
+            return
+        time.sleep(1)
+    raise SystemExit('Staging Postgres readiness timed out')
+
+
+def db_stop():
+    subprocess.run(['docker', 'stop', DB_CONTAINER], check=True, capture_output=True)
+    print('Staging Postgres stopped; volume '+DB_VOLUME+' retained')
+
+
 def tunnel_running():
     file=STATE/'tunnel.pid'
     if not file.exists():return None
@@ -234,7 +263,7 @@ def stop():
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=['preflight', 'start', 'bootstrap', 'source', 'prepare', 'stop', 'tunnel-start', 'tunnel-stop'])
+    parser.add_argument('action', choices=['preflight', 'db-start', 'db-stop', 'start', 'bootstrap', 'source', 'prepare', 'stop', 'tunnel-start', 'tunnel-stop'])
     args = parser.parse_args()
     os.umask(0o077)
     STATE.mkdir(parents=True, exist_ok=True, mode=0o700)

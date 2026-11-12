@@ -187,3 +187,17 @@ func TestSetupTestPassesOnAFreshInstall(t *testing.T) {
 		}
 	}
 }
+
+// The shipped default data directory is relative (./data). The built-in
+// worker's scratch directory sits inside it, and each tool runs from its
+// attempt's directory, so a relative path there would name a file that
+// isn't there.
+func TestSetupTestPassesWithTheDefaultRelativeDataDir(t *testing.T) {
+	in := start(t, "CLIPMUX_DATA_DIR=./data")
+	out := in.admin("setup-test", "--wait", "--timeout", "5m")
+	for _, check := range []string{"upload", "encode", "play_segment_decrypts", "stored_segment_encrypted"} {
+		if !strings.Contains(out, "ok   "+check) {
+			t.Fatalf("setup test output lacks a passing %s:\n%s", check, out)
+		}
+	}
+}

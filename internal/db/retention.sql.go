@@ -333,6 +333,82 @@ func (q *Queries) PruneOwnerSessions(ctx context.Context, arg PruneOwnerSessions
 	return result.RowsAffected(), nil
 }
 
+const prunePlaybackDaily = `-- name: PrunePlaybackDaily :execrows
+DELETE FROM playback_daily WHERE (project_id, source, day, asset_id, playback_id) IN (
+    SELECT d.project_id, d.source, d.day, d.asset_id, d.playback_id FROM playback_daily d
+    WHERE d.day < $1::date LIMIT $2)
+`
+
+type PrunePlaybackDailyParams struct {
+	Before  pgtype.Date
+	MaxRows int32
+}
+
+func (q *Queries) PrunePlaybackDaily(ctx context.Context, arg PrunePlaybackDailyParams) (int64, error) {
+	result, err := q.db.Exec(ctx, prunePlaybackDaily, arg.Before, arg.MaxRows)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const prunePlaybackHourly = `-- name: PrunePlaybackHourly :execrows
+DELETE FROM playback_hourly WHERE (project_id, source, hour, asset_id, playback_id) IN (
+    SELECT h.project_id, h.source, h.hour, h.asset_id, h.playback_id FROM playback_hourly h
+    WHERE h.hour < $1 LIMIT $2)
+`
+
+type PrunePlaybackHourlyParams struct {
+	Before  pgtype.Timestamptz
+	MaxRows int32
+}
+
+func (q *Queries) PrunePlaybackHourly(ctx context.Context, arg PrunePlaybackHourlyParams) (int64, error) {
+	result, err := q.db.Exec(ctx, prunePlaybackHourly, arg.Before, arg.MaxRows)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const prunePlaybackViewerDays = `-- name: PrunePlaybackViewerDays :execrows
+DELETE FROM playback_viewer_days WHERE (project_id, day, app_id, viewer) IN (
+    SELECT v.project_id, v.day, v.app_id, v.viewer FROM playback_viewer_days v
+    WHERE v.day < $1::date LIMIT $2)
+`
+
+type PrunePlaybackViewerDaysParams struct {
+	Before  pgtype.Date
+	MaxRows int32
+}
+
+func (q *Queries) PrunePlaybackViewerDays(ctx context.Context, arg PrunePlaybackViewerDaysParams) (int64, error) {
+	result, err := q.db.Exec(ctx, prunePlaybackViewerDays, arg.Before, arg.MaxRows)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const prunePlaybackViewers = `-- name: PrunePlaybackViewers :execrows
+DELETE FROM playback_viewers WHERE (project_id, day, asset_id, viewer) IN (
+    SELECT v.project_id, v.day, v.asset_id, v.viewer FROM playback_viewers v
+    WHERE v.day < $1::date LIMIT $2)
+`
+
+type PrunePlaybackViewersParams struct {
+	Before  pgtype.Date
+	MaxRows int32
+}
+
+func (q *Queries) PrunePlaybackViewers(ctx context.Context, arg PrunePlaybackViewersParams) (int64, error) {
+	result, err := q.db.Exec(ctx, prunePlaybackViewers, arg.Before, arg.MaxRows)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const pruneSetupTests = `-- name: PruneSetupTests :execrows
 DELETE FROM setup_tests WHERE id IN (
     SELECT t.id FROM setup_tests t WHERE t.status IN ('passed', 'failed')

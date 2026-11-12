@@ -30,6 +30,38 @@ echo "v1:$(openssl rand -hex 32)"
 
 Store it outside the host as well as in `deploy/.env` (see Backups).
 
+### Behind your own proxy
+
+On a host where another proxy already owns ports 80 and 443 (a host Caddy
+serving other sites, say), add `deploy/compose.proxy.yml`. It leaves Caddy
+out and has the setup test dial the public URLs through your proxy:
+
+```bash
+docker compose -f deploy/compose.yml -f deploy/compose.proxy.yml up -d --build --wait
+```
+
+- **Port.** The app listens on `127.0.0.1:${CLIPMUX_ADMIN_PORT}` (8080 by
+  default; set another in `.env` if it's taken). Point your proxy at it:
+
+  ```caddyfile
+  video.example.com {
+      reverse_proxy 127.0.0.1:8108
+  }
+  ```
+
+- **Client addresses.** `CLIPMUX_TRUSTED_PROXIES` already trusts Docker's
+  ranges, which is where a proxy on the host connects from. Your proxy must
+  set `X-Forwarded-For` and `X-Forwarded-Proto`; Caddy, nginx's usual
+  config and Traefik do.
+- **No CDN proxy on the public hostname.** Point its DNS straight at the
+  host (DNS only on Cloudflare). A proxy that challenges API clients
+  (Cloudflare's Browser Integrity Check) refuses `@clipmux/node`, the CLI
+  and workers, and it hides the client's address. Playback goes through the
+  media hostname, which can be the Cloudflare Worker.
+- **Small or shared hosts.** Set `CLIPMUX_BUILTIN_WORKER=false` in `.env`,
+  and connect Modal, RunPod or a PC agent, so encoding doesn't compete with
+  the host's other services. The setup test then runs on that executor.
+
 ## Upgrade
 
 ```bash
@@ -73,6 +105,13 @@ docker compose -f deploy/compose.yml up -d --wait     # with the same CLIPMUX_SE
 serve checks at boot that its key opens what the database holds, and that
 every output's content key version exists, and refuses to start otherwise.
 
+Analytics are in Postgres too, so the dump carries them, and viewer keys
+stay comparable because the analytics key is sealed with the secrets key.
+Edge counts live in Cloudflare for about three months, but a restored
+install pulls only the last 13 days of them again (docs/cloudflare.md).
+Share links are rows like any other: a restore brings them back, along with
+their playback IDs and expiries.
+
 ## Monitoring
 
 - **Metrics.** Compose serves `/metrics` on `app:9090`, inside its network
@@ -88,6 +127,25 @@ every output's content key version exists, and refuses to start otherwise.
   URL signatures are redacted wherever they appear (D064).
 - **Health.** `/healthz` answers while the process is up; `/readyz` only
   while Postgres answers and serve isn't draining.
+
+## Analytics
+
+serve counts the playback it delivers (D103; docs/api.md, "Analytics"): a
+view per generated master playlist, 6 seconds of watch time per audio
+segment, and the bytes of every counted response. Dashboard previews,
+posters and the setup test don't count; share links do. Unique viewers need
+the app to sign a `vid` into its tokens, and ClipMux keeps only a keyed hash
+of it, per day. No IP address, User-Agent, referrer or token is stored.
+
+- **Built in.** Each replica keeps counts in memory and flushes them every
+  15 seconds, and once more on SIGTERM; a replica killed outright loses at
+  most its last 15 seconds. `clipmux_analytics_flush_rows_total` counts what
+  flushes wrote, and `clipmux_analytics_dropped_total` counts keys dropped
+  because more than 100,000 piled up between flushes.
+- **With Cloudflare delivery** the Worker counts at the edge, and Analytics
+  shows those counts only once edge analytics is connected with a read-only
+  token (Delivery → Edge analytics; docs/cloudflare.md). serve pulls every
+  5 minutes as the `analytics_edge` loop.
 
 ## Retention
 
@@ -106,6 +164,9 @@ serve deletes what nothing can use any more, every hour (D069, D070).
 | Webhook deliveries and events (`/v1/events`, `clipmux listen --since`) | 30 days after they finish |
 | Other outbox rows | 7 days after they're done |
 | Setup tests | the newest 20 |
+| Analytics, hourly (the 24-hour range) | 14 days |
+| Analytics, daily, and viewer keys | 180 days (D105): there are no lifetime totals |
+| Share links | kept, with their state; an expired link's playback ID is revoked within a minute |
 | Jobs, attempts, dispatches | kept: history and spend |
 
 Route publications, key publications and machine stops are never given up
@@ -140,6 +201,8 @@ secret: rotate it and re-encode the affected outputs.
 - PC agents run sandboxed (the Workers page shows it); an unsandboxed agent
   only takes its own and the owner's uploads.
 - Rate limits are per process (D067): run one serve, behind Caddy.
+- Share links go one per person or group, so one can be revoked without the
+  others. Anyone holding a link can watch until it expires or is revoked.
 
 ## Troubleshooting
 
@@ -149,4 +212,7 @@ secret: rotate it and re-encode the affected outputs.
 | Uploads stay `processing` | the Jobs page (where each job is routed and why), `clipmux_workers_online`, the built-in worker's lines in the log |
 | A webhook stopped arriving | the endpoint's deliveries (`GET /v1/webhook-endpoints/{id}/deliveries`): after 5 failures in a row it is skipped for up to an hour; failed deliveries can be redelivered |
 | Playback 404s at the edge after a change | `clipmux admin outbox`: a route publication that keeps failing |
+| Analytics misses Cloudflare playback | Analytics' notice and Delivery → Edge analytics: the last pull and its error; `collecting.edge` in `GET /v1/analytics` |
+| Analytics shows no unique viewers | the app's tokens carry no `vid`; previews and posters never count |
+| A share link says it doesn't work | the link was revoked, its video deleted, or its app disabled; the video's Sharing tab shows each link's state |
 | serve won't start | the last log line: `schema_newer`, a secrets key that opens nothing, a missing content key version, or a variable that doesn't parse |

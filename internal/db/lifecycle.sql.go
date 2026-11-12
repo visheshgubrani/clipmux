@@ -13,7 +13,7 @@ import (
 
 const bumpAssetVersion = `-- name: BumpAssetVersion :one
 UPDATE assets SET version = version + 1, updated_at = now() WHERE id = $1
-RETURNING id, project_id, app_id, status, error_code, version, storage_id, source_uri, agent_source_id, source_kept, current_output_id, passthrough, duration_seconds, created_at, updated_at, deleted_at
+RETURNING id, project_id, app_id, status, error_code, version, storage_id, source_uri, agent_source_id, source_kept, current_output_id, passthrough, duration_seconds, created_at, updated_at, deleted_at, title
 `
 
 func (q *Queries) BumpAssetVersion(ctx context.Context, id string) (Asset, error) {
@@ -36,6 +36,7 @@ func (q *Queries) BumpAssetVersion(ctx context.Context, id string) (Asset, error
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.DeletedAt,
+		&i.Title,
 	)
 	return i, err
 }
@@ -374,7 +375,7 @@ func (q *Queries) LockActiveUploadForAsset(ctx context.Context, assetID string) 
 const markAssetDeleted = `-- name: MarkAssetDeleted :one
 UPDATE assets SET status = 'deleted', error_code = NULL, version = version + 1, updated_at = now()
 WHERE id = $1
-RETURNING id, project_id, app_id, status, error_code, version, storage_id, source_uri, agent_source_id, source_kept, current_output_id, passthrough, duration_seconds, created_at, updated_at, deleted_at
+RETURNING id, project_id, app_id, status, error_code, version, storage_id, source_uri, agent_source_id, source_kept, current_output_id, passthrough, duration_seconds, created_at, updated_at, deleted_at, title
 `
 
 func (q *Queries) MarkAssetDeleted(ctx context.Context, id string) (Asset, error) {
@@ -397,6 +398,7 @@ func (q *Queries) MarkAssetDeleted(ctx context.Context, id string) (Asset, error
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.DeletedAt,
+		&i.Title,
 	)
 	return i, err
 }
@@ -416,7 +418,7 @@ func (q *Queries) MarkAssetFilesDeleted(ctx context.Context, id string) (int64, 
 const markAssetReprocessing = `-- name: MarkAssetReprocessing :one
 UPDATE assets SET status = 'processing', error_code = NULL, version = version + 1, updated_at = now()
 WHERE id = $1
-RETURNING id, project_id, app_id, status, error_code, version, storage_id, source_uri, agent_source_id, source_kept, current_output_id, passthrough, duration_seconds, created_at, updated_at, deleted_at
+RETURNING id, project_id, app_id, status, error_code, version, storage_id, source_uri, agent_source_id, source_kept, current_output_id, passthrough, duration_seconds, created_at, updated_at, deleted_at, title
 `
 
 // A re-encode of an errored asset whose source was kept.
@@ -440,6 +442,7 @@ func (q *Queries) MarkAssetReprocessing(ctx context.Context, id string) (Asset, 
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.DeletedAt,
+		&i.Title,
 	)
 	return i, err
 }

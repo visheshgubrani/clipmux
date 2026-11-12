@@ -11,6 +11,8 @@ export default defineConfig({
         player: resolve(import.meta.dirname, 'player.html'),
         uploader: resolve(import.meta.dirname, 'uploader.html'),
         native: resolve(import.meta.dirname, 'native.html'),
+        session: resolve(import.meta.dirname, 'session.html'),
+        uploaderElement: resolve(import.meta.dirname, 'uploader-element.html'),
       },
     },
   },

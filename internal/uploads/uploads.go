@@ -107,6 +107,8 @@ type CreateRequest struct {
 	Size           int64  `json:"size"`
 	PlaybackPolicy string `json:"playback_policy"`
 	Passthrough    string `json:"passthrough"`
+	// Title is an optional name for people (D099), up to 200 characters.
+	Title string `json:"title,omitempty"`
 	// Generate asks for subtitles and chapters (P5-T16); chapters imply
 	// subtitles. They are made after the video is ready.
 	Generate tracks.Generate `json:"generate,omitzero"`
@@ -140,13 +142,17 @@ func (s *Service) Create(ctx context.Context, key apikeys.Key, req CreateRequest
 	case len(req.Passthrough) > maxPassthrough:
 		return Created{}, fail(http.StatusBadRequest, "invalid_request", "passthrough is limited to 255 bytes")
 	}
+	title, err := assets.Title(req.Title)
+	if err != nil {
+		return Created{}, err
+	}
 	canonical, _ := json.Marshal(req)
 
 	var out Created
 	var started *storage.Multipart
 	var startedKey string
 	var startedStore storage.Storage
-	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+	err = pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 		q := db.New(tx)
 		claim, err := idempotency.Begin(ctx, q, key.ProjectID, key.AppID, idemKey, "POST /v1/uploads", canonical)
 		if err != nil {
@@ -161,7 +167,7 @@ func (s *Service) Create(ctx context.Context, key apikeys.Key, req CreateRequest
 		}
 		asset, err := q.CreateAsset(ctx, db.CreateAssetParams{
 			ID: ids.New(ids.Asset), ProjectID: key.ProjectID, AppID: key.AppID, StorageID: st.ID,
-			Passthrough: pgtype.Text{String: req.Passthrough, Valid: req.Passthrough != ""},
+			Passthrough: pgtype.Text{String: req.Passthrough, Valid: req.Passthrough != ""}, Title: title,
 		})
 		if err != nil {
 			return err

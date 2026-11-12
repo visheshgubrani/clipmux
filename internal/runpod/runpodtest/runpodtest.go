@@ -21,6 +21,17 @@ import (
 // Key is the API key the fake accepts.
 const Key = "rpa_TESTKEY0000000000000000000000000000"
 
+// Catalogue is what the fake's GPU catalog lists, in RunPod's shape: two
+// NVENC types on Secure Cloud, one without NVENC, one RunPod's NVENC
+// refuses, and one only on Community Cloud.
+var Catalogue = []map[string]any{
+	{"id": "NVIDIA RTX A4000", "name": "RTX A4000", "memory": 16, "secure": true, "price": map[string]float64{"secure": 0.25, "community": 0.17}},
+	{"id": "NVIDIA A100 80GB PCIe", "name": "A100 PCIe", "memory": 80, "secure": true, "price": map[string]float64{"secure": 1.64}},
+	{"id": "NVIDIA L4", "name": "L4", "memory": 24, "secure": true, "price": map[string]float64{"secure": 0.43}},
+	{"id": "NVIDIA GeForce RTX 4090", "name": "RTX 4090", "memory": 24, "secure": true, "price": map[string]float64{"secure": 0.69}},
+	{"id": "NVIDIA RTX A5000", "name": "RTX A5000", "memory": 24, "secure": false, "price": map[string]float64{"community": 0.16}},
+}
+
 // Pod is a pod as the fake holds it: what was asked for, and its state.
 type Pod struct {
 	runpod.PodInput
@@ -43,18 +54,74 @@ type Fake struct {
 	// FailCreates makes the next n pod creations answer 500.
 	FailCreates int
 
-	mu     sync.Mutex
-	pods   map[string]*Pod
-	stops  map[string]func()
-	auths  map[string]string // id → name
-	calls  []Call
-	nextID int
+	// GraphQL is where the browser approval runs (D109): unauthenticated,
+	// like RunPod's. Approve or Deny settles a request.
+	GraphQL string
+	// Catalog is the v2 API base whose /catalog/gpus lists Catalogue.
+	Catalog string
+
+	mu        sync.Mutex
+	pods      map[string]*Pod
+	stops     map[string]func()
+	auths     map[string]string // id → name
+	approvals map[string]string // request id → PENDING, APPROVED, CONSUMED or DENIED
+	calls     []Call
+	nextID    int
+}
+
+// Approve has the owner approve request id on RunPod's page.
+func (f *Fake) Approve(id string) { f.settle(id, "APPROVED") }
+
+// Show has RunPod's page show request id's key to the owner instead of
+// handing it to the poller, as the real console did.
+func (f *Fake) Show(id string) { f.settle(id, "CONSUMED") }
+
+// Deny has the owner refuse request id.
+func (f *Fake) Deny(id string) { f.settle(id, "DENIED") }
+
+func (f *Fake) settle(id, status string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.approvals[id] = status
+}
+
+// graphQL answers the two approval operations Flash's login uses.
+func (f *Fake) graphQL(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Query     string         `json:"query"`
+		Variables map[string]any `json:"variables"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	switch {
+	case strings.Contains(body.Query, "createFlashAuthRequest"):
+		f.nextID++
+		id := "req" + strconv.Itoa(f.nextID)
+		f.approvals[id] = "PENDING"
+		writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{"createFlashAuthRequest": map[string]any{"id": id, "status": "PENDING", "expiresAt": "2099-01-01T00:00:00Z"}}})
+	case strings.Contains(body.Query, "flashAuthRequestStatus"):
+		id, _ := body.Variables["flashAuthRequestId"].(string)
+		status, ok := f.approvals[id]
+		if !ok {
+			writeJSON(w, http.StatusOK, map[string]any{"errors": []map[string]string{{"message": "not found"}}})
+			return
+		}
+		var key any
+		if status == "APPROVED" {
+			key = Key
+			f.approvals[id] = "CONSUMED"
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{"flashAuthRequestStatus": map[string]any{"id": id, "status": status, "apiKey": key}}})
+	default:
+		w.WriteHeader(http.StatusBadRequest)
+	}
 }
 
 // New starts a fake API for the test.
 func New(t *testing.T) *Fake {
 	t.Helper()
-	f := &Fake{pods: map[string]*Pod{}, stops: map[string]func(){}, auths: map[string]string{}}
+	f := &Fake{pods: map[string]*Pod{}, stops: map[string]func(){}, auths: map[string]string{}, approvals: map[string]string{}}
 	srv := httptest.NewServer(http.HandlerFunc(f.serve))
 	t.Cleanup(func() {
 		srv.Close()
@@ -65,10 +132,16 @@ func New(t *testing.T) *Fake {
 		}
 	})
 	f.URL = srv.URL + "/v1"
+	f.GraphQL = srv.URL + "/graphql"
+	f.Catalog = srv.URL + "/v2"
 	return f
 }
 
 func (f *Fake) serve(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/graphql" && r.Method == http.MethodPost {
+		f.graphQL(w, r)
+		return
+	}
 	if r.Header.Get("Authorization") != "Bearer "+Key {
 		w.WriteHeader(http.StatusUnauthorized)
 		return
@@ -80,6 +153,10 @@ func (f *Fake) serve(w http.ResponseWriter, r *http.Request) {
 	f.calls = append(f.calls, Call{Method: r.Method, Path: r.URL.Path, Body: body})
 	f.mu.Unlock()
 
+	if r.URL.Path == "/v2/catalog/gpus" {
+		writeJSON(w, http.StatusOK, map[string]any{"gpus": Catalogue})
+		return
+	}
 	path := strings.TrimPrefix(r.URL.Path, "/v1")
 	switch {
 	case r.Method == http.MethodPost && path == "/pods":

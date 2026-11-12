@@ -283,11 +283,71 @@ func (s *Set) UpdateS3Secret(ctx context.Context, id string, cfg S3Config, sec S
 		return fmt.Errorf("apply CORS: %w", err)
 	}
 	plain, _ := json.Marshal(sec)
-	if err := db.New(s.pool).UpdateStorageSecrets(ctx, db.UpdateStorageSecretsParams{ID: id, SecretsEncrypted: s.box.Seal("storage_configs", id, plain)}); err != nil {
+	n, err := db.New(s.pool).UpdateStorageSecrets(ctx, db.UpdateStorageSecretsParams{ID: id, SecretsEncrypted: s.box.Seal("storage_configs", id, plain)})
+	if err != nil {
 		return fmt.Errorf("update storage credentials: %w", err)
+	}
+	if n == 0 {
+		return fmt.Errorf("update storage credentials: %w: %s", ErrUnknown, id)
 	}
 	s.mu.Lock()
 	s.open[id] = st
+	s.mu.Unlock()
+	return nil
+}
+
+// Errors Remove answers with.
+var (
+	// ErrDefault: new uploads go to it; make another the default first.
+	ErrDefault = errors.New("stores: the default storage can't be removed")
+	// ErrBuiltin: the filesystem store is this install's own.
+	ErrBuiltin = errors.New("stores: the filesystem storage can't be removed")
+)
+
+// InUseError says what still needs a store.
+type InUseError struct {
+	// Assets may still have files there (deleted ones until their files go);
+	// Jobs are moves to or from it; Delivery is Cloudflare's Worker reading it.
+	Assets, Jobs int64
+	Delivery     bool
+}
+
+func (e *InUseError) Error() string {
+	return fmt.Sprintf("stores: storage in use by %d assets and %d move jobs (delivery %v)", e.Assets, e.Jobs, e.Delivery)
+}
+
+// Remove retires an r2 or s3 config that nothing needs any more (D099): no
+// asset's files, no move, not Cloudflare delivery's bucket and not the
+// default. The row stays for the history that names it, without its
+// credentials, and is never listed or chosen again.
+func (s *Set) Remove(ctx context.Context, projectID, id string) error {
+	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		q := db.New(tx)
+		row, err := q.LockStorageConfig(ctx, db.LockStorageConfigParams{ProjectID: projectID, ID: id})
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+			return fmt.Errorf("%w: %s", ErrUnknown, id)
+		case err != nil:
+			return err
+		case row.Kind == KindFilesystem:
+			return ErrBuiltin
+		case row.IsDefault:
+			return ErrDefault
+		}
+		use, err := q.StorageUsage(ctx, id)
+		if err != nil {
+			return err
+		}
+		if use.Assets > 0 || use.Jobs > 0 || use.Delivery {
+			return &InUseError{Assets: use.Assets, Jobs: use.Jobs, Delivery: use.Delivery}
+		}
+		return q.RemoveStorageConfig(ctx, id)
+	})
+	if err != nil {
+		return fmt.Errorf("remove storage %s: %w", id, err)
+	}
+	s.mu.Lock()
+	delete(s.open, id)
 	s.mu.Unlock()
 	return nil
 }

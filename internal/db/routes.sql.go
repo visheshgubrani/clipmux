@@ -114,7 +114,7 @@ func (q *Queries) ListPublishedKeys(ctx context.Context, projectID string) ([]Li
 }
 
 const listServableOutputs = `-- name: ListServableOutputs :many
-SELECT id, key_version FROM outputs
+SELECT id, key_version, coalesce(manifest->'audio' = 'false'::jsonb, NOT manifest ? 'audio')::boolean AS no_audio FROM outputs
 WHERE asset_id = $1 AND status IN ('committed', 'retired') AND purged_at IS NULL
 ORDER BY id
 `
@@ -122,9 +122,11 @@ ORDER BY id
 type ListServableOutputsRow struct {
 	ID         string
 	KeyVersion int32
+	NoAudio    bool
 }
 
-// Pinned paths and keys may name only these outputs.
+// Pinned paths and keys may name only these outputs. no_audio follows
+// delivery's hasAudio: a manifest whose audio is false or missing.
 func (q *Queries) ListServableOutputs(ctx context.Context, assetID string) ([]ListServableOutputsRow, error) {
 	rows, err := q.db.Query(ctx, listServableOutputs, assetID)
 	if err != nil {
@@ -134,7 +136,7 @@ func (q *Queries) ListServableOutputs(ctx context.Context, assetID string) ([]Li
 	items := []ListServableOutputsRow{}
 	for rows.Next() {
 		var i ListServableOutputsRow
-		if err := rows.Scan(&i.ID, &i.KeyVersion); err != nil {
+		if err := rows.Scan(&i.ID, &i.KeyVersion, &i.NoAudio); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -146,7 +148,8 @@ func (q *Queries) ListServableOutputs(ctx context.Context, assetID string) ([]Li
 }
 
 const listServableOutputsForProject = `-- name: ListServableOutputsForProject :many
-SELECT o.asset_id, o.id, o.key_version FROM outputs o
+SELECT o.asset_id, o.id, o.key_version,
+    coalesce(o.manifest->'audio' = 'false'::jsonb, NOT o.manifest ? 'audio')::boolean AS no_audio FROM outputs o
 JOIN assets a ON a.id = o.asset_id
 WHERE a.project_id = $1 AND o.status IN ('committed', 'retired') AND o.purged_at IS NULL
 ORDER BY o.asset_id, o.id
@@ -156,6 +159,7 @@ type ListServableOutputsForProjectRow struct {
 	AssetID    string
 	ID         string
 	KeyVersion int32
+	NoAudio    bool
 }
 
 func (q *Queries) ListServableOutputsForProject(ctx context.Context, projectID string) ([]ListServableOutputsForProjectRow, error) {
@@ -167,7 +171,12 @@ func (q *Queries) ListServableOutputsForProject(ctx context.Context, projectID s
 	items := []ListServableOutputsForProjectRow{}
 	for rows.Next() {
 		var i ListServableOutputsForProjectRow
-		if err := rows.Scan(&i.AssetID, &i.ID, &i.KeyVersion); err != nil {
+		if err := rows.Scan(
+			&i.AssetID,
+			&i.ID,
+			&i.KeyVersion,
+			&i.NoAudio,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -180,7 +189,8 @@ func (q *Queries) ListServableOutputsForProject(ctx context.Context, projectID s
 
 const listServableRoutes = `-- name: ListServableRoutes :many
 SELECT p.id AS playback_id, p.policy, a.id AS asset_id, a.app_id, a.current_output_id, a.storage_id,
-       (ap.disabled_at IS NOT NULL)::boolean AS app_disabled
+       (ap.disabled_at IS NOT NULL)::boolean AS app_disabled,
+       EXISTS (SELECT 1 FROM share_links s WHERE s.playback_id = p.id)::boolean AS share
 FROM playback_ids p
 JOIN assets a ON a.id = p.asset_id
 JOIN apps ap ON ap.id = a.app_id
@@ -197,6 +207,7 @@ type ListServableRoutesRow struct {
 	CurrentOutputID pgtype.Text
 	StorageID       string
 	AppDisabled     bool
+	Share           bool
 }
 
 // Every playback ID the built-in handler would serve, for the reconciler.
@@ -217,6 +228,7 @@ func (q *Queries) ListServableRoutes(ctx context.Context, projectID string) ([]L
 			&i.CurrentOutputID,
 			&i.StorageID,
 			&i.AppDisabled,
+			&i.Share,
 		); err != nil {
 			return nil, err
 		}

@@ -35,7 +35,7 @@ func TestCloudflareLiveAcceptance(t *testing.T) {
 	}
 	state := filepath.Dir(path)
 	database := os.Getenv("CLIPMUX_E2E_LIVE_DATABASE_URL")
-	if database != "postgres://clipmux:clipmux@127.0.0.1:5444/clipmux?sslmode=disable" {
+	if database != "postgres://clipmux:clipmux@127.0.0.1:5445/clipmux?sslmode=disable" {
 		t.Fatal("dedicated staging database required")
 	}
 	pool, err := pgxpool.New(t.Context(), database)

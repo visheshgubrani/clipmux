@@ -4,6 +4,24 @@
 import { readFileSync } from 'node:fs'
 import type { Env } from './delivery.ts'
 
+// DataPoint is what Analytics Engine's writeDataPoint takes.
+export interface DataPoint {
+  blobs?: string[]
+  doubles?: number[]
+  indexes?: string[]
+}
+
+// memoryDataset is the Analytics Engine binding, keeping what was written.
+export function memoryDataset() {
+  const points: DataPoint[] = []
+  return {
+    points,
+    writeDataPoint(p: DataPoint) {
+      points.push(structuredClone(p))
+    },
+  }
+}
+
 const testdata = new URL('../../internal/delivery/testdata/', import.meta.url)
 export const vectors = JSON.parse(readFileSync(new URL('vectors.json', testdata), 'utf8'))
 const bucket = JSON.parse(readFileSync(new URL('worker-bucket.json', testdata), 'utf8'))
@@ -39,7 +57,11 @@ export function memoryBucket(objects: Map<string, Uint8Array>) {
   }
 }
 
-export function vectorEnv(): { env: Env; objects: Map<string, Uint8Array> } {
+export function vectorEnv(): {
+  env: Env
+  objects: Map<string, Uint8Array>
+  points: DataPoint[]
+} {
   const enc = new TextEncoder()
   const objects = new Map<string, Uint8Array>()
   for (const [pid, r] of Object.entries(bucket.routes))
@@ -55,9 +77,13 @@ export function vectorEnv(): { env: Env; objects: Map<string, Uint8Array> } {
   for (const t of vectors.tracks ?? []) {
     if (t.sealed_hex) objects.set(`media/${t.asset_id}/tracks/${t.id}.vtt`, Buffer.from(t.sealed_hex, 'hex'))
   }
+  const dataset = memoryDataset()
   const env = {
     MEDIA: memoryBucket(objects) as unknown as R2Bucket,
     CONTENT_KEYS: JSON.stringify({ [vectors.content_key_version]: vectors.content_key_secret_hex }),
+    PROJECT_ID: 'prj_default',
+    ANALYTICS_KEY: vectors.analytics_key_hex,
+    ANALYTICS: dataset as unknown as AnalyticsEngineDataset,
   }
-  return { env, objects }
+  return { env, objects, points: dataset.points }
 }

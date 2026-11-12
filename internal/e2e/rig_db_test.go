@@ -141,6 +141,8 @@ func (in *instance) launch() {
 	t.Helper()
 	in.cmd = exec.Command(bin, "serve")
 	in.cmd.Env = in.env
+	// A relative CLIPMUX_DATA_DIR resolves here, as it would from make run.
+	in.cmd.Dir = in.dataDir
 	// Its own process group, so a crash takes the built-in worker with it,
 	// as it would in a container.
 	in.cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -206,6 +208,7 @@ func (in *instance) admin(args ...string) string {
 	in.t.Helper()
 	cmd := exec.Command(bin, append([]string{"admin"}, args...)...)
 	cmd.Env = in.env
+	cmd.Dir = in.dataDir
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		in.t.Fatalf("clipmux admin %v: %v\n%s", args, err, out)

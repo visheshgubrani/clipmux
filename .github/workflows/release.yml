@@ -52,15 +52,28 @@ jobs:
           DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && '1' || '' }}
         run: |
           set -euo pipefail
-          for dir in packages/player packages/uploader; do
+          # The uploader goes before the SDK, which depends on it (D112).
+          for dir in packages/player packages/uploader packages/node; do
             name=$(node -p "require('./$dir/package.json').name")
             version=$(node -p "require('./$dir/package.json').version")
+            # npm publish ships workspace: ranges as they are; pin them to
+            # the version this tag publishes.
+            for dep in $(node -p "Object.entries(require('./$dir/package.json').dependencies ?? {}).filter(([,v])=>v.startsWith('workspace:')).map(([k])=>k).join(' ')"); do
+              depdir=packages/${dep#@clipmux/}
+              (cd "$dir" && npm pkg set "dependencies.$dep=^$(node -p "require('../../$depdir/package.json').version")")
+            done
             # Licence and README ship in every tarball (D086).
             files=$(cd "$dir" && npm pack --dry-run --json | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s)[0].files.map(f=>f.path).join("\n")))')
             for f in LICENSE README.md package.json dist/index.js; do
               grep -qx "$f" <<<"$files" || { echo "::error::$name's tarball lacks $f"; exit 1; }
             done
             if grep -q '\.test\.' <<<"$files"; then echo "::error::$name's tarball ships tests"; exit 1; fi
+            if [ "$name" = "@clipmux/node" ]; then
+              # The SDK ships its usage guide for agents, and its CLI.
+              for f in AGENTS.md dist/bin.js dist/handlers.js dist/express.js; do
+                grep -qx "$f" <<<"$files" || { echo "::error::$name's tarball lacks $f"; exit 1; }
+              done
+            fi
             if npm view "$name@$version" version >/dev/null 2>&1; then
               echo "$name@$version is already on npm; skipped"
               continue

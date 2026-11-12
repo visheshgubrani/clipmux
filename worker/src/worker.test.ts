@@ -123,3 +123,99 @@ test('the origin backend proxies only requests that passed every check', async (
   assert.equal(key.status, 200, 'keys are derived at the edge, never fetched')
   assert.deepEqual(seen, [`/v/${vectors.tokens.v}/pid_signed/out_v/360p/seg_00001.m4s`])
 })
+
+// Counting (D103) beyond the vectors: what the edge sends origin, share
+// links under the internal key, and a body without a length.
+
+test('an origin fetch carries the edge header and is counted once, at the edge', async () => {
+  const { env, objects, points } = vectorEnv()
+  const route = JSON.parse(new TextDecoder().decode(objects.get('_routes/pid_signed.json')))
+  objects.set(
+    '_routes/pid_signed.json',
+    new TextEncoder().encode(JSON.stringify({ ...route, backend: 'origin' })),
+  )
+  const sent: Request[] = []
+  const w = createWorker({
+    now,
+    cache: null,
+    fetchOrigin: async (req) => {
+      sent.push(req)
+      return new Response('audio-one', { headers: { 'Content-Length': '9' } })
+    },
+  })
+  const res = await w.fetch(new Request(signed('out_v/audio/seg_00001.m4s')), {
+    ...env,
+    ORIGIN_URL: 'https://app.example',
+  })
+  assert.equal(await res.text(), 'audio-one')
+  assert.equal(sent[0]?.headers.get('X-ClipMux-Edge'), '1')
+  assert.deepEqual(points, [
+    {
+      blobs: ['prj_default', 'app_a', 'ast_v', 'pid_signed', 'segment', '4687a687f4ac9c03299afb2103b29a7c'],
+      doubles: [0, 6, 9],
+      indexes: ['ast_v'],
+    },
+  ])
+})
+
+test("a share link's ID counts under the internal key; other IDs don't", async () => {
+  const { env, objects, points } = vectorEnv()
+  const w = createWorker({ now, cache: null })
+  const internal = `https://media.example/v/${vectors.tokens.internal}/pid_signed/master.m3u8`
+  await (await w.fetch(new Request(internal), env)).arrayBuffer()
+  assert.deepEqual(points, [], 'a preview under the internal key')
+  const route = JSON.parse(new TextDecoder().decode(objects.get('_routes/pid_signed.json')))
+  objects.set('_routes/pid_signed.json', new TextEncoder().encode(JSON.stringify({ ...route, share: true })))
+  const shared = createWorker({ now, cache: null })
+  await (await shared.fetch(new Request(internal), env)).arrayBuffer()
+  assert.deepEqual(points, [
+    {
+      blobs: ['prj_default', 'app_a', 'ast_v', 'pid_signed', 'master', ''],
+      doubles: [1, 0, 150],
+      indexes: ['ast_v'],
+    },
+  ])
+})
+
+test('a body without a Content-Length is counted as it streams', async () => {
+  const { env, objects, points } = vectorEnv()
+  const route = JSON.parse(new TextDecoder().decode(objects.get('_routes/pid_public.json')))
+  objects.set(
+    '_routes/pid_public.json',
+    new TextEncoder().encode(JSON.stringify({ ...route, backend: 'origin' })),
+  )
+  const w = createWorker({
+    now,
+    cache: null,
+    fetchOrigin: async () =>
+      new Response(
+        new ReadableStream({
+          start(c) {
+            c.enqueue(new TextEncoder().encode('seg'))
+            c.enqueue(new TextEncoder().encode('ment'))
+            c.close()
+          },
+        }),
+      ),
+  })
+  const res = await w.fetch(new Request('https://media.example/p/pid_public/out_p/360p/seg_00001.m4s'), {
+    ...env,
+    ORIGIN_URL: 'https://app.example',
+  })
+  assert.deepEqual(points, [], 'nothing until the body is read')
+  assert.equal(await res.text(), 'segment')
+  assert.deepEqual(points, [
+    {
+      blobs: ['prj_default', 'app_a', 'ast_p', 'pid_public', 'segment', ''],
+      doubles: [0, 6, 7],
+      indexes: ['ast_p'],
+    },
+  ])
+})
+
+test('without the Analytics Engine binding nothing is counted and delivery is unchanged', async () => {
+  const { env } = vectorEnv()
+  const { ANALYTICS: _, ...bare } = env
+  const res = await createWorker({ now, cache: null }).fetch(new Request(signed('master.m3u8')), bare)
+  assert.equal(res.status, 200)
+})

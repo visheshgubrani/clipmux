@@ -1,5 +1,5 @@
 import { expect, type Page, test } from '@playwright/test'
-import { watchCSP } from './csp.ts'
+import { expectSignedIn, go, noHorizontalScroll, watchCSP } from './csp.ts'
 
 // Subtitles and chapters (P5-T18, exit checks 14 and 15) on the real serve
 // the fixture boots, whose video was transcribed by a fake speech API and
@@ -151,9 +151,9 @@ test('a token refreshed mid-play still loads a track VTT', async ({ page }) => {
 async function signIn(page: Page, cfg: Config) {
   await page.goto(`${cfg.ops}/login`)
   await page.getByLabel('Email').fill(cfg.ops_email)
-  await page.getByLabel('Password').fill(cfg.ops_password)
+  await page.getByLabel('Password', { exact: true }).fill(cfg.ops_password)
   await page.getByRole('button', { name: 'Sign in' }).click()
-  await expect(page.getByRole('navigation')).toBeVisible()
+  await expectSignedIn(page)
 }
 
 test('the dashboard shows tracks, their transcript and chapters, and makes and deletes them', async ({
@@ -162,11 +162,14 @@ test('the dashboard shows tracks, their transcript and chapters, and makes and d
   const noViolations = await watchCSP(page)
   const cfg = await config(page)
   await signIn(page, cfg)
+  // The old asset address lands on the video's page.
   await page.goto(`${cfg.ops}/assets/${cfg.asset_id}?app=${cfg.app_id}`)
+  await page.getByRole('tab', { name: 'Captions & chapters' }).click()
+  await noHorizontalScroll(page)
   const tracks = page.getByLabel('Tracks')
   const subs = tracks.locator('[data-track="subtitles"]')
   await expect(subs).toContainText('English')
-  await expect(subs).toContainText('ready')
+  await expect(subs).toContainText('Ready')
   await subs.getByRole('button', { name: 'Transcript' }).click()
   await expect(page.getByLabel('Transcript')).toContainText(cfg.cue_text)
   const chapters = tracks.locator('[data-track="chapters"]')
@@ -176,13 +179,13 @@ test('the dashboard shows tracks, their transcript and chapters, and makes and d
 
   // Regenerating keeps one chapters track listed: the old one until the new is ready.
   await tracks.getByRole('button', { name: 'Regenerate chapters' }).click()
-  await expect(chapters.filter({ hasNotText: cfg.chapters_track })).toContainText('ready', {
+  await expect(chapters.filter({ hasNotText: cfg.chapters_track })).toContainText('Ready', {
     timeout: 60_000,
   })
   await expect(chapters).toHaveCount(1)
   await expect(chapters).not.toContainText(cfg.chapters_track)
-  page.once('dialog', (d) => void d.accept())
   await chapters.getByRole('button', { name: 'Delete' }).click()
+  await page.getByRole('alertdialog').getByRole('button', { name: 'Delete chapters' }).click()
   await expect(chapters).toHaveCount(0)
   await noViolations()
 })
@@ -200,6 +203,8 @@ test('the preview plays with sound and offers new subtitles without interrupting
       ),
     )
     .toBe(false)
+  // The player stays mounted, and playing, on the other tabs.
+  await page.getByRole('tab', { name: 'Captions & chapters' }).click()
   const tracks = page.getByLabel('Tracks')
   await tracks.getByRole('button', { name: 'Regenerate subtitles' }).click()
   // The open player keeps playing; once the new subtitles are ready the
@@ -214,7 +219,7 @@ test('the owner connects an LLM and sees which PCs can transcribe', async ({ pag
   const noViolations = await watchCSP(page)
   const cfg = await config(page)
   await signIn(page, cfg)
-  await page.getByRole('navigation').getByRole('link', { name: 'Captions' }).click()
+  await go(page, 'Captions & AI')
   await expect(page.getByLabel('Transcribe')).toHaveValue('api')
   await expect(page.locator('[data-connected="chapters"]')).toContainText('gpt-test')
   await page.getByText('Connect an LLM', { exact: true }).click()
@@ -229,11 +234,13 @@ test('the owner connects an LLM and sees which PCs can transcribe', async ({ pag
   }
   await expect(page.locator('body')).not.toContainText(cfg.llm_key)
 
-  await page.getByRole('navigation').getByRole('link', { name: 'Upload' }).click()
-  await page.getByLabel(/Generate chapters/).check()
-  await expect(page.getByLabel('Generate subtitles')).toBeChecked()
+  await page.getByRole('button', { name: 'Upload', exact: true }).first().click()
+  const upload = page.getByRole('dialog', { name: 'Upload videos' })
+  await upload.getByRole('switch', { name: 'Generate chapters' }).click()
+  await expect(upload.getByRole('switch', { name: 'Generate subtitles' })).toBeChecked()
+  await page.keyboard.press('Escape')
 
-  await page.getByRole('navigation').getByRole('link', { name: 'Workers' }).click()
-  await expect(page.getByRole('row', { name: /studio-pc/ })).toContainText('vulkan, cpu')
+  await go(page, 'Encoding')
+  await expect(page.getByRole('listitem', { name: 'studio-pc' })).toContainText('vulkan, cpu')
   await noViolations()
 })

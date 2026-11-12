@@ -56,7 +56,7 @@ func newRig(t *testing.T) *rig {
 	r.exec(`UPDATE projects SET delivery = 'worker', delivery_storage_id = $1`, row.ID)
 	for _, a := range []struct{ id, storage string }{{"ast_r2", row.ID}, {"ast_fs", "sto_default"}} {
 		r.exec(`INSERT INTO assets (id, project_id, app_id, status, storage_id) VALUES ($1, 'prj_default', 'app_dashboard', 'processing', $2)`, a.id, a.storage)
-		r.exec(`INSERT INTO outputs (id, project_id, asset_id, key_version, status, manifest) VALUES ($1, 'prj_default', $2, 1, 'committed', '{}')`, "out_"+a.id, a.id)
+		r.exec(`INSERT INTO outputs (id, project_id, asset_id, key_version, status, manifest) VALUES ($1, 'prj_default', $2, 1, 'committed', '{"audio": true}')`, "out_"+a.id, a.id)
 		r.exec(`UPDATE assets SET current_output_id = $1, status = 'ready' WHERE id = $2`, "out_"+a.id, a.id)
 		r.exec(`INSERT INTO playback_ids (id, project_id, asset_id, policy) VALUES ($1, 'prj_default', $2, 'signed')`, "pid_"+a.id, a.id)
 	}
@@ -144,6 +144,58 @@ func TestRoutesAreWrittenForTheWorkerWithTheirBackend(t *testing.T) {
 	_ = json.Unmarshal([]byte(got), &rec)
 	if len(rec.Outputs) != 2 || rec.Outputs["out_old"] != 1 || rec.Outputs["out_ast_r2"] != 1 {
 		t.Fatalf("outputs = %v, want the committed and the retired output only", rec.Outputs)
+	}
+}
+
+// An output without audio is named in no_audio, so the Worker counts its
+// video segments' watch time as the built-in handler does (D103). Single
+// records and the reconciler write the same bytes.
+func TestOutputsWithoutAudioAreListed(t *testing.T) {
+	r := newRig(t)
+	r.exec(`INSERT INTO outputs (id, project_id, asset_id, key_version, status, manifest, retired_at) VALUES ('out_mute', 'prj_default', 'ast_r2', 1, 'retired', '{"audio": false}', now())`)
+	r.queueRoute("ast_r2")
+	r.sync()
+	got, _ := r.object("_routes/pid_ast_r2.json")
+	want := `{"v":1,"app_id":"app_dashboard","asset_id":"ast_r2","output_id":"out_ast_r2","policy":"signed","backend":"r2","outputs":{"out_ast_r2":1,"out_mute":1},"no_audio":["out_mute"]}`
+	if got != want {
+		t.Fatalf("route = %s, want %s", got, want)
+	}
+	d, bucketID, err := routes.ForProject(context.Background(), db.New(r.pool), r.set, db.DefaultProjectID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := routes.Reconcile(context.Background(), db.New(r.pool), d, bucketID, db.DefaultProjectID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Written != 1 { // pid_ast_fs, never queued; pid_ast_r2 already matches
+		t.Fatalf("reconcile wrote %d records, want 1: %+v", res.Written, res)
+	}
+}
+
+// A share link's ID is marked, so the Worker counts its plays under the
+// internal key (D104); the reconciler builds the same record.
+func TestShareLinksAreMarked(t *testing.T) {
+	r := newRig(t)
+	r.exec(`INSERT INTO share_links (id, project_id, app_id, asset_id, playback_id, secret_hash, secret_sealed)
+	        VALUES ('shr_1', 'prj_default', 'app_dashboard', 'ast_r2', 'pid_ast_r2', sha256('s'), '\x00')`)
+	r.queueRoute("ast_r2")
+	r.sync()
+	got, _ := r.object("_routes/pid_ast_r2.json")
+	want := `{"v":1,"app_id":"app_dashboard","asset_id":"ast_r2","output_id":"out_ast_r2","policy":"signed","backend":"r2","outputs":{"out_ast_r2":1},"share":true}`
+	if got != want {
+		t.Fatalf("route = %s, want %s", got, want)
+	}
+	d, bucketID, err := routes.ForProject(context.Background(), db.New(r.pool), r.set, db.DefaultProjectID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := routes.Reconcile(context.Background(), db.New(r.pool), d, bucketID, db.DefaultProjectID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Written != 1 { // pid_ast_fs, never queued; pid_ast_r2 already matches
+		t.Fatalf("reconcile wrote %d records, want 1: %+v", res.Written, res)
 	}
 }
 

@@ -323,3 +323,57 @@ func TestASetupTokenWorksForADay(t *testing.T) {
 		t.Fatalf("the new token: %d", res.StatusCode)
 	}
 }
+
+// D099: the owner changes the password from a session, giving the current
+// one again; every other session ends and this one stays.
+func TestChangingThePasswordEndsOtherSessions(t *testing.T) {
+	r := newRig(t, "http://localhost:8080")
+	here := r.register()
+	res := r.do("POST", "/v1/session", map[string]string{"email": "owner@example.com", "password": goodPassword}, nil, nil)
+	other := sessionCookie(res)
+	const next = "a brand new long password"
+	if res := r.do("PUT", "/v1/session/password", map[string]string{"current_password": goodPassword, "new_password": "short"}, here, nil); res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("a short new password = %d, want 400", res.StatusCode)
+	}
+	if res := r.do("PUT", "/v1/session/password", map[string]string{"current_password": "not the password", "new_password": next}, here, nil); res.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("a wrong current password = %d, want 401", res.StatusCode)
+	}
+	if res := r.do("PUT", "/v1/session/password", map[string]string{"current_password": goodPassword, "new_password": next}, nil, nil); res.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("no session = %d, want 401", res.StatusCode)
+	}
+	if res := r.do("PUT", "/v1/session/password", map[string]string{"current_password": goodPassword, "new_password": next}, here, map[string]string{"Sec-Fetch-Site": "cross-site"}); res.StatusCode != http.StatusForbidden {
+		t.Fatalf("a cross-site change = %d, want 403", res.StatusCode)
+	}
+	if res := r.do("PUT", "/v1/session/password", map[string]string{"current_password": goodPassword, "new_password": next}, here, nil); res.StatusCode != http.StatusNoContent {
+		t.Fatalf("change = %d, want 204", res.StatusCode)
+	}
+	if res := r.do("GET", "/v1/session", nil, here, nil); res.StatusCode != http.StatusOK {
+		t.Fatalf("this session after the change = %d, want it kept", res.StatusCode)
+	}
+	if res := r.do("GET", "/v1/session", nil, other, nil); res.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("another session after the change = %d, want it ended", res.StatusCode)
+	}
+	if res := r.do("POST", "/v1/session", map[string]string{"email": "owner@example.com", "password": goodPassword}, nil, nil); res.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("the old password = %d, want 401", res.StatusCode)
+	}
+	if res := r.do("POST", "/v1/session", map[string]string{"email": "owner@example.com", "password": next}, nil, nil); res.StatusCode != http.StatusOK {
+		t.Fatalf("the new password = %d", res.StatusCode)
+	}
+}
+
+// Wrong current passwords count as failed sign-ins: the sixth is refused
+// before any hashing.
+func TestWrongCurrentPasswordsAreThrottled(t *testing.T) {
+	r := newRig(t, "http://localhost:8080")
+	here := r.register()
+	for i := range 5 {
+		if res := r.do("PUT", "/v1/session/password", map[string]string{"current_password": "not the password", "new_password": "a brand new long password"}, here, nil); res.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("wrong current password %d = %d, want 401", i+1, res.StatusCode)
+		}
+	}
+	before := r.hashes.Load()
+	res := r.do("PUT", "/v1/session/password", map[string]string{"current_password": goodPassword, "new_password": "a brand new long password"}, here, nil)
+	if res.StatusCode != http.StatusTooManyRequests || res.Header.Get("Retry-After") == "" || r.hashes.Load() != before {
+		t.Fatalf("sixth try = %d (Retry-After %q, hashed %d more), want 429 before hashing", res.StatusCode, res.Header.Get("Retry-After"), r.hashes.Load()-before)
+	}
+}

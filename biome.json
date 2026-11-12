@@ -7,10 +7,12 @@
       "dashboard/**",
       "worker/**",
       "!**/dist",
+      "!**/*.gen.ts",
       "!**/node_modules",
       "!**/test-results",
       "!**/playwright-report",
-      "!!**/.claude"
+      "!!**/.claude",
+      "!!**/.agents"
     ]
   },
   "formatter": {
@@ -24,9 +26,39 @@
       "semicolons": "asNeeded"
     }
   },
+  "css": {
+    "parser": {
+      "tailwindDirectives": true
+    }
+  },
   "linter": {
     "rules": {
       "preset": "recommended"
     }
-  }
+  },
+  "overrides": [
+    {
+      "includes": ["dashboard/src/components/ui/**"],
+      "linter": {
+        "rules": {
+          "a11y": {
+            "useSemanticElements": "off",
+            "useFocusableInteractive": "off",
+            "useKeyWithClickEvents": "off",
+            "noLabelWithoutControl": "off"
+          },
+          "suspicious": {
+            "noArrayIndexKey": "off",
+            "noDocumentCookie": "off"
+          },
+          "security": {
+            "noDangerouslySetInnerHtml": "off"
+          },
+          "correctness": {
+            "useExhaustiveDependencies": "off"
+          }
+        }
+      }
+    }
+  ]
 }

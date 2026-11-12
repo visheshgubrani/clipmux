@@ -42,7 +42,7 @@ func (s *Service) Reencode(ctx context.Context, key apikeys.Key, assetID string,
 	q := db.New(s.pool)
 	asset, err := q.GetAsset(ctx, db.GetAssetParams{ID: assetID, AppID: key.AppID})
 	if errors.Is(err, pgx.ErrNoRows) {
-		return JobView{}, errNotFound
+		return JobView{}, ErrNotFound
 	}
 	if err != nil {
 		return JobView{}, err
@@ -137,7 +137,7 @@ func (s *Service) respond(w http.ResponseWriter, op string, status int, v any, e
 	switch {
 	case err == nil:
 		httpjson.Write(w, status, v)
-	case errors.Is(err, errNotFound):
+	case errors.Is(err, ErrNotFound):
 		httpjson.Error(w, http.StatusNotFound, "not_found", "not found")
 	case httpjson.WriteProblem(w, err):
 	default:

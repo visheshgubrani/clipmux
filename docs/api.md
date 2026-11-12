@@ -37,6 +37,8 @@ are per serve process.
 | `POST /worker/v1/pair` | address, and overall | 10 wrong codes per address and 100 overall in 15 minutes |
 | `POST /worker/v1/pairings` | address | 20 an hour (and at most 10 waiting at once, `too_many_pairings`) |
 | `POST /worker/v1/pairings/poll` | address | 2 a second, bursts of 4 |
+| `POST /v1/app-pairings` | address | 20 an hour (and at most 10 waiting at once, `too_many_pairings`) |
+| `POST /v1/app-pairings/poll` | address | 2 a second, bursts of 4 |
 | Playback (`/v/`, `/p/`) | address | only refusals count: after 300 answers of 401, 403 or 404 in 5 minutes, every playback request from that address gets 429 until they age out; successful requests are never limited |
 
 An address is the client's as `CLIPMUX_TRUSTED_PROXIES` (Caddy) reports it;
@@ -44,15 +46,23 @@ IPv6 addresses are grouped by their /64.
 
 ## Integration API
 
+The routes below, the delivery URLs and the webhooks are also described as
+OpenAPI 3.1 at `GET /openapi.json` (no credential; `internal/openapi`,
+D112). `TestOpenAPICoversTheDocumentedIntegrationRoutes` keeps this section,
+App pairing, Analytics and Share links in step with it, and
+`TestOpenAPIOperationsAreRouted` proves every operation reaches a handler.
+
 | Route | Scope | Notes |
 | --- | --- | --- |
-| `POST /v1/uploads` | `uploads:write` | `{size, playback_policy: "signed"\|"public", passthrough, generate?: {subtitles?, chapters?}}` → `201 {upload_id, asset_id, part_size, part_count, upload_token, playback_ids}` |
+| `POST /v1/uploads` | `uploads:write` | `{size, playback_policy: "signed"\|"public", passthrough, title?, generate?: {subtitles?, chapters?}}` → `201 {upload_id, asset_id, part_size, part_count, upload_token, playback_ids}` |
 | `POST /v1/uploads/{id}/parts` | upload token | `{part_numbers: [1…]}` (≤ 100) → `{parts: [{part_number, url}], expires_at}`; PUT each part to its URL and keep its `ETag` |
 | `GET /v1/uploads/{id}/parts` | upload token | `{parts: [{part_number, etag, size}]}` — what storage holds, for resuming |
 | `POST /v1/uploads/{id}/complete` | upload token | `{parts: [{part_number, etag}]}` → the asset, `processing` |
 | `POST /v1/uploads/{id}/cancel` | upload token or `uploads:write` | the asset becomes `errored` / `upload_cancelled` |
-| `POST /v1/assets` | `assets:write` | `{agent_source_id, playback_policy?, passthrough?, generate?}` → `201` the asset, `processing`, on a file a PC agent registered for `clipmux push --local`; its jobs run only on that agent. `404 agent_source_not_found` once attached; `409 source_unavailable` if the agent was revoked. Or `{url, playback_policy?, passthrough?}` → `201` the asset, `processing`; serve fetches the public http(s) URL and transcodes it. `400 import_url_refused` for a non-public or credentialed URL; a fetch that fails ends `errored` with `import_url_refused`, `import_failed` or `import_too_large` |
+| `POST /v1/assets` | `assets:write` | `{agent_source_id, playback_policy?, passthrough?, title?, generate?}` → `201` the asset, `processing`, on a file a PC agent registered for `clipmux push --local`; its jobs run only on that agent. `404 agent_source_not_found` once attached; `409 source_unavailable` if the agent was revoked. Or `{url, playback_policy?, passthrough?, title?}` → `201` the asset, `processing`; serve fetches the public http(s) URL and transcodes it. `400 import_url_refused` for a non-public or credentialed URL; a fetch that fails ends `errored` with `import_url_refused`, `import_failed` or `import_too_large` |
+| `GET /v1/app` | any scope | the key's own app: `{id, name, scopes, public_url, base_url, max_token_lifetime_seconds, signing_keys: [{kid, public_key_pem, created_at, retired_at?}]}`. `signing_keys` are the app's keys that still verify tokens (not revoked, not past `retired_at`), newest first; `base_url` is the media origin playback URLs start with, and a token's `exp − iat` may not exceed `max_token_lifetime_seconds`. For the SDK's `doctor` |
 | `GET /v1/assets/{id}` | `assets:read` | the asset (below) |
+| `PATCH /v1/assets/{id}` | `assets:write` | `{title}` → the asset; `""` or `null` clears it. A change bumps `version` and sends `video.asset.updated`; the same title changes nothing. `409 asset_deleted` |
 | `GET /v1/events?since=&after=&wait=` | `assets:read` | the app's webhook events created at or after `since` (default now), oldest first, ≤ 100: `{data: [{id, created_at, body}]}`, `body` being exactly what an endpoint receives. Long-polls up to `wait` seconds (≤ 25) until one is newer than `after`. For `clipmux listen` |
 | `GET /v1/assets?passthrough=` | `assets:read` | the app's assets with that reference, newest first |
 | `GET /v1/assets?updated_since=&cursor=&limit=` | `assets:read` | every change since an RFC 3339 time, oldest first, deleted included, ≤ 100 per page, `next_cursor` |
@@ -68,7 +78,7 @@ IPv6 addresses are grouped by their /64.
 An asset:
 
 ```json
-{"id": "ast_…", "app_id": "app_…", "status": "ready", "version": 4, "passthrough": "lesson-42",
+{"id": "ast_…", "app_id": "app_…", "status": "ready", "version": 4, "passthrough": "lesson-42", "title": "Lesson 42",
  "error_code": "…", "base_url": "https://media.example.net",
  "playback_ids": [{"id": "pid_…", "policy": "signed", "playable": true, "status": "active"}],
  "duration_seconds": 1830.4,
@@ -90,8 +100,43 @@ VTT is at `{base_url}/v/{token}/{playback_id}/tracks/{track_id}.vtt` (or
 `/p/…`), the sidecar URL; a chapters track's VTT is at the same path.
 `duration_seconds` is null until the first output.
 
-`status` is `waiting_upload`, `processing`, `ready`, `errored` or `deleted`.
+`title` (optional, trimmed, one line, ≤ 200 characters) is for people: not
+unique and never part of a URL; `passthrough` and `title` are left out when
+unset. `status` is `waiting_upload`, `processing`, `ready`, `errored` or `deleted`.
 `version` rises on every change; keep the highest you have seen.
+
+## App pairing
+
+`npx @clipmux/node init --server URL` gets an app's credentials without
+anyone copying a secret (P6-T23, D113). It mirrors agent pairing: the CLI
+starts a pairing, shows the code and opens `verify_url`, and polls; the owner
+checks the code matches on `/connect`, picks or creates the app and approves.
+None of these routes needs a key.
+
+| Route | Request → response |
+| --- | --- |
+| `POST /v1/app-pairings` | `{name?, hostname?, client?}` (≤ 100, 253 and 100 characters; `name` defaults to `hostname`) → `201 {code, poll_token, verify_url, expires_at, interval_seconds}`. The code (`KXFT-9M2Q`, any case, the dash optional) works for 10 minutes; `verify_url` is `{public_url}/connect?code=…`. `429 too_many_pairings` while 10 wait for the owner |
+| `POST /v1/app-pairings/poll` | `{poll_token}` → `{status: pending \| approved \| denied \| expired, credentials?}`. Poll every `interval_seconds`. The first poll after approval carries `credentials` (below) and is the only one that ever does: they are sealed with the secrets key until then and deleted as they are returned, so a later poll is `404 pairing_not_found`. A pairing approved but not collected before it expires (approval leaves it at least a minute) drops its credentials and reads `expired` |
+
+`credentials` here and from `POST /v1/apps/{id}/credentials` are
+`{url, app_id, app_name, api_key_id, api_key, signing_kid, signing_key, webhook_endpoint_id?, webhook_secret?, env}`:
+a new API key with the default scopes (named after the pairing's `name`, or
+`integration`), a new signing key (`signing_key` is its PKCS #8 PEM, kept by
+nobody but you), and with a webhook URL a new endpoint and its secret. `env`
+is the same as a `.env` block:
+
+```bash
+# ClipMux credentials for Course site (app_…)
+CLIPMUX_URL=https://video.example.com
+CLIPMUX_API_KEY=cmx_…
+CLIPMUX_SIGNING_KID=kid_…
+CLIPMUX_SIGNING_KEY="-----BEGIN PRIVATE KEY-----\nMIG…\n-----END PRIVATE KEY-----"
+CLIPMUX_WEBHOOK_SECRET=whsec_…
+```
+
+`CLIPMUX_WEBHOOK_SECRET` is there only with a webhook URL. `clipmux admin
+create-integration --app NAME [--webhook-url URL] [--allow-loopback]` prints
+the same block from the host.
 
 ## Webhooks
 
@@ -117,7 +162,9 @@ X-Webhook-Signature: sha256=<hex HMAC-SHA256(secret, "1700000000." + raw body)>
 
 Verify the signature over the raw body with the endpoint's `whsec_…` secret and
 reject a timestamp more than 5 minutes off. Any 2xx is success; redirects are
-not followed.
+not followed. A receiver in any language can check itself against
+`internal/webhooks/testdata/vectors.json` (D112): the same secret, clock,
+body and headers must give each case's `valid` and `reason`.
 
 ## Delivery
 
@@ -140,6 +187,7 @@ means stop; `404` means the ID is unknown or revoked.
 | `GET /v1/setup` | no session needed: `{owner_exists, urls: {public_url, media_url, confirmed, pinned}, keys_allowed}` |
 | `POST /v1/setup/owner` | `{setup_token, email, password}` → `201`, signed in; `409 registration_closed` once an owner exists |
 | `POST /v1/session` · `GET /v1/session` · `DELETE /v1/session` | sign in (`429` with `Retry-After` after repeated failures), who am I (`{email, totp_enabled}`), sign out. With two-factor sign-in on, signing in also takes `code` (from the authenticator) or `recovery_code`; without one it is `401 totp_required`, and a wrong or reused one `401 invalid_code`, counted as a failed sign-in (D071) |
+| `PUT /v1/session/password` | `{current_password, new_password}` → `204`; the new one is 12 to 1024 characters (`400 weak_password`), a wrong current one is `401 invalid_credentials` and counts as a failed sign-in (`429` after five). Every other session ends; this one stays signed in |
 | `POST /v1/session/totp` | `{password}` → `201 {secret, otpauth_url}`: a new authenticator secret, waiting for a code |
 | `POST /v1/session/totp/enable` | `{code}` → `{enabled: true, recovery_codes: [10]}`, shown once; ends every other session |
 | `POST /v1/session/totp/disable` | `{password}` → `{enabled: false}`. A locked-out owner runs `clipmux admin reset-totp` on the host |
@@ -155,22 +203,42 @@ means stop; `404` means the ID is unknown or revoked.
 | `POST /v1/settings/chapters/connect` | `{provider: "openai_compatible" \| "anthropic", base_url?, model?, api_key?}` → `{connected, steps}`. `openai_compatible` is any `/chat/completions` API (OpenAI, Ollama, vLLM, Groq, OpenRouter) and needs `base_url` and `model`; its key may be empty for a server that needs none. `anthropic` is Claude through Anthropic's SDK and needs `api_key`; `model` defaults to `claude-opus-5-5`. Steps: `credentials` (`GET {base_url}/models`, or reading the Claude model), `structured_output` (chapters of a fixed three-segment transcript; an OpenAI-compatible server without strict JSON schemas falls back to JSON mode), `saved`. **Transcript text leaves your infrastructure** for this provider whenever chapters are made |
 | `DELETE /v1/settings/chapters/connect` | Forgets the connection; chapters already queued end `llm_not_connected`, ready ones keep playing. `404` when none is connected |
 | `GET /v1/executors` | `{data: [{kind, connected, verified, verified_at, config, max_concurrent, monthly_limit_cents, rate_cents_per_hour, disk_bytes, month_cents, machines, backoff_until}]}`: every provider ever connected, with this month's estimated spend (D055, D056) |
-| `POST /v1/executors/runpod/connect` | `{api_key, image?, registry_username?, registry_password?, gpu_type_ids?, disk_gb?, max_concurrent?, monthly_limit_cents, rate_cents_per_hour}` → `{connected, steps: [{name, ok, detail}]}`; steps `credentials`, `public_url`, `image` (resolved to its digest with the registry credentials), `registry`, `saved`, `setup_test`, stopping at the first failure; connecting again rotates the key (docs/executors.md) |
-| `POST /v1/executors/modal/connect` | `{token_id, token_secret, environment?, image?, registry_username?, registry_password?, gpu?, cpu?, memory_mib?, disk_gb?, max_concurrent?, monthly_limit_cents, rate_cents_per_hour}` → `{connected, steps}`; steps `credentials`, `public_url`, `image`, `saved`, `setup_test` (D057) |
+| `POST /v1/executors/runpod/connect` | `{api_key, image?, registry_username?, registry_password?, gpu_type_ids?, disk_gb?, max_concurrent?, monthly_limit_cents?, rate_cents_per_hour?}` (a limit left out is $50; a rate left out is the dearest chosen GPU's catalog price, D111) → `{connected, steps: [{name, ok, detail}]}`; steps `credentials`, `public_url`, `image` (resolved to its digest with the registry credentials), `registry`, `saved`, `setup_test`, stopping at the first failure; connecting again rotates the key (docs/executors.md) |
+| `POST /v1/executors/modal/connect` | `{token_id, token_secret, environment?, image?, registry_username?, registry_password?, gpu?, cpu?, memory_mib?, disk_gb?, max_concurrent?, monthly_limit_cents?, rate_cents_per_hour?}` (`gpu` is a list such as `L4,T4`; defaults as for RunPod, with Modal's prices) → `{connected, steps}`; steps `credentials`, `public_url`, `image`, `saved`, `setup_test` (D057) |
+| `POST /v1/executors/{kind}/authorize` | browser approval instead of a pasted key (D109): the `connect` body without `api_key` or `token_*` → `201 {id, url, code?, expires_at, status: "pending"}`. The settings are checked first (`400 invalid_request`). Open `url`, the provider's own page (Modal shows `code`). At most three wait per project, each for 10 minutes: `429 too_many_approvals`; `502 approval_unavailable` when the provider won't start one (paste a key instead) |
+| `GET /v1/executors/{kind}/authorize/{id}` | polls the approval once (Modal's poll waits up to 10 s) → `{id, expires_at, status: pending \| approved \| denied \| expired \| shown, result?}`. `shown` means the provider put the key on its own page for you to paste instead (RunPod has done this). Once approved it runs that provider's `connect` with the credentials it issued, which never come back, and `result` is its `{connected, steps}`. One poll runs at a time, and a settled approval answers the same to every poll; `404` once expired |
+| `POST /v1/executors/runpod/gpus` | `{api_key}` → `{data: [{id, name, memory_gb, cents_per_hour, recommended?}]}`: RunPod's Secure Cloud GPUs whose NVENC the worker can use, from RunPod's catalog, recommended first, then by price. The key isn't kept; `400 key_rejected` (D111) |
+| `GET /v1/executors/modal/gpus` | the same shape for Modal: its NVENC GPUs at Modal's published prices, including a default sandbox's CPU and memory (D111) |
 | `DELETE /v1/executors/{kind}` | `204`; `409 executor_in_use` while routing names it, `409 machines_running` while one of its machines may run |
 | `GET /v1/apps` · `POST /v1/apps` | `{name}` |
 | `POST /v1/apps/{id}/disable` · `…/enable` | a disabled app's keys, upload tokens and playback stop; the Dashboard app can't be disabled |
-| `GET`/`POST /v1/apps/{id}/api-keys` · `DELETE /v1/api-keys/{id}` | the secret (`key`) is in the create response only; `409 public_url_required` while the public URL is loopback |
+| `GET`/`POST /v1/apps/{id}/api-keys` · `DELETE /v1/api-keys/{id}` | create `{name?, scopes?, local?}` → `201 {id, name, scopes, created_at, key}`; `name` ≤ 100 characters, `default` when blank; `scopes` default to `uploads:write`, `assets:read`, `assets:write`; `analytics:read` is only given when asked for. List `{data: [{id, name, scopes, created_at, last_used_at?, revoked_at?}]}`. The secret (`key`) is in the create response only; `409 public_url_required` while the public URL is loopback, unless `local: true` confirms the key is for apps on this machine (D108) |
+| `POST /v1/apps/{id}/credentials` | `{webhook_url?, local?}` → `201` the app's credentials (see App pairing), made in one transaction and shown once: an API key, a signing key, and with `webhook_url` an endpoint. `409 public_url_required` on a loopback public URL unless `local: true` (D108); `400 invalid_request` for a refused webhook URL, which creates nothing |
+| `GET /v1/app-pairings/{code}` | an app pairing as `/connect` shows it: `{status: pending \| approved \| denied \| consumed \| expired, name, hostname, client, ip?, app_id?, expires_at}`; `404 pairing_not_found` |
+| `POST /v1/app-pairings/{code}/approve` | `{app_id \| new_app_name, webhook_url?, local?}` → the pairing, `approved`, with its credentials sealed for the CLI's next poll. Exactly one of `app_id` and `new_app_name` (`400 invalid_request`); `404 not_found` for an unknown app, `409 name_taken`, `409 public_url_required` as above. A pairing already decided or expired is returned as it is |
+| `POST /v1/app-pairings/{code}/deny` | → the pairing, `denied`; its CLI stops |
 | `GET`/`POST /v1/apps/{id}/signing-keys` · `DELETE /v1/signing-keys/{kid}` | `private_key_pem` in the create response only |
 | `GET`/`POST /v1/apps/{id}/webhook-endpoints` · `DELETE /v1/webhook-endpoints/{id}` | `secret` in the create response only |
 | `POST /v1/webhook-endpoints/{id}/secret` | `201 {secret, active: false}`: a new secret, shown once; deliveries stay signed with the old one until it is activated (D069) |
 | `POST /v1/webhook-endpoints/{id}/secret/activate` | `{active: true}`: deliveries are signed with the new secret from the next try; `409 no_pending_secret` |
 | `GET /v1/webhook-endpoints/{id}/deliveries` | the latest 100: `{data: [{id, event_id, event_type, status, attempts, last_status, last_error, created_at, finished_at, next_attempt_at}]}`. Endpoints list `consecutive_failures` and `skipped_until`: after 5 failed tries in a row an endpoint is skipped for a minute, doubling to an hour, without spending its deliveries' tries |
 | `POST /v1/webhook-deliveries/{id}/redeliver` | `202`: a delivery that gave up (`failed`) is retried for a fresh 24 hours; `409 not_redeliverable` otherwise |
-| `GET /v1/library?app_id=&status=&cursor=&limit=` | every app's assets, newest first |
+| `GET /v1/library?app_id=&status=&q=&include_deleted=&cursor=&limit=` | every app's assets, newest first: `{data: [asset + poster_url], next_cursor?}`. Deleted assets only with `include_deleted=true` or `status=deleted`. `q` (≤ 255 bytes) is an exact asset ID, or text a title or passthrough contains, case-insensitive (`%` and `_` match themselves). `poster_url` is `{base_url}/p/{pid}/poster.jpg` for a public playback ID, else `{base_url}/v/{t_token}/{pid}/poster.jpg` with a one-hour `t` token signed by the internal key; `null` until a playback ID is playable |
+| `GET /v1/library/counts?app_id=` | `{ready, processing, errored, waiting_upload}` |
 | `POST /v1/assets/{id}/preview-token` | a one-hour `v` token signed with the server's internal key: `{playback_id, token, url, expires_at}` |
-| `GET /v1/cloudflare` | `{connected, hostname, bucket, account_id, worker_version, current_version, needs_redeploy, storage_ok}` |
-| `POST /v1/cloudflare/connect` | `{token, hostname, bucket?, account_id?}` → `{connected, steps: [{name, ok, detail}]}`; runs Connect Cloudflare, stopping at the first failed step (each is safe to repeat). The token is used for this request only |
+| `GET /v1/cloudflare` | `{connected, hostname, bucket, account_id, worker_version, current_version, needs_redeploy, storage_ok, token_url, r2_token_url, analytics_token_url}`; the `*_url`s open Cloudflare's create-token form with the permissions Connect, R2 storage and edge analytics need already chosen (D109) |
+| `POST /v1/cloudflare/inspect` | `{token, account_id?}` → `{accounts: [{id, name}], account_id?, zones?, buckets?, workers_paid, unreadable?}`: what the token reaches, so nothing is typed by hand. With several accounts and none named, only `accounts` is filled. `unreadable` names what it can't list (`zones`, `buckets`, `billing`). Changes nothing; `400 token_rejected` |
+| `POST /v1/cloudflare/connect` | `{token, hostname, bucket?, account_id?, default_storage?}` → `{connected, steps: [{name, ok, detail}]}`; runs Connect Cloudflare, stopping at the first failed step (each is safe to repeat). The bucket is created if missing. `default_storage` says whether new uploads go to it; left out, a first connect makes it the default and a reconnect leaves the choice alone (D110). The token is used for this request only |
+| `DELETE /v1/cloudflare` | back to built-in delivery → `{disconnected, steps: [{name, ok, detail}]}`, steps `media_url` (back to the public URL), `delivery`, `routes` (the Worker's records and keys leave the bucket, so it refuses every ID), `forgotten`, `setup_test`, stopping at the first failure (each is safe to repeat). The R2 store stays a storage config, and the default if it was; the Worker and its domain stay in your Cloudflare account. `404 not_connected`; `409 pinned` while `CLIPMUX_MEDIA_URL` names the Worker (D099) |
+| `GET /v1/cloudflare/analytics` | `{connected, account_id?, pulled_through?, last_pull_at?, last_error?}`: edge analytics (D103). `pulled_through` is how far serve has pulled the Worker's counts; a first connect starts 13 days back and catches up a day per pull |
+| `POST /v1/cloudflare/analytics` | `{token}` → the status above. A second Cloudflare token with only **Account Analytics: Read**, checked with one query and kept sealed; a new token keeps `pulled_through`. `409 not_connected` without Cloudflare delivery, `400 token_rejected` |
+| `DELETE /v1/cloudflare/analytics` | `204`; the token is forgotten and pulled counts stay. `404 not_connected` |
+| `GET /v1/storage` | `{data: [{id, kind: fs \| r2 \| s3, bucket?, endpoint?, public_endpoint?, region?, default, asset_count, cloudflare_delivery, created_at}]}`; `asset_count` leaves deleted assets out. Credentials are never returned |
+| `POST /v1/storage` | `{endpoint, bucket, access_key_id, secret_access_key, region?, public_endpoint?}` → `201` the config, `kind: "s3"`, not the default. Saved only after a test write, read, list and delete pass and CORS is set: `400 storage_check_failed` with the store's reason otherwise. `public_endpoint` is where browsers PUT upload parts, when it differs |
+| `POST /v1/storage/r2` | `{token, bucket?, account_id?, default?}` → `{connected, steps}`, steps `token`, `account`, `bucket` (created if missing; `clipmux-media` by default), `storage` (keys derived from the token, checked like `POST /v1/storage`), and `default` when asked. Delivery doesn't change; adding the same bucket again renews its keys, and Connect Cloudflare reuses it. The token needs only Workers R2 Storage: Edit (D110) |
+| `PUT /v1/storage/{id}/credentials` | `{access_key_id, secret_access_key}` → `204` once the new keys pass the same checks; the old ones stay until then (`400 storage_check_failed`). `409 builtin_storage` for the filesystem |
+| `POST /v1/storage/{id}/default` | new uploads go there, this server's disk included → the `GET /v1/storage` list; existing assets stay until moved |
+| `DELETE /v1/storage/{id}` | `204`; the config is no longer listed and its credentials are dropped. `409 builtin_storage` (the filesystem), `storage_default`, `cloudflare_delivery` (disconnect first), `storage_in_use` with `asset_count` and `active_moves` (an asset counts until its files are gone; move the library first) |
 | `GET /v1/storage/moves` | `{default_storage_id, default_kind, not_on_default, active, moved, failed}`: assets not on the default store still play through this server |
 | `POST /v1/storage/moves` | queues a `move` job to the default store for every live asset elsewhere with no active job → `202 {queued, target_storage_id}` |
 | `GET /v1/jobs?status=&asset_id=&agent_id=&cursor=&limit=` | jobs across the library, newest first: `{data: [{id, asset_id, app_id, kind, status, phase, progress, pinned_agent_id, lost_count, failed_count, error_code, routed_to, route_reason, attempts: [{number, executor, route_reason, agent_id, agent_name, status, error_code, phase, progress, encoder: {stage, fallbacks}}]}], next_cursor}`. `routed_to` is where a media job is routed (`workers`, `agents`, `builtin`, `modal`, `runpod`) and `route_reason` why: `pinned`, `primary`, `primary_offline`, `queue_age`, `no_fallback`, `fallback_refused` or `fallback_offline` (D053); each attempt keeps the reason it ran where it did, which is `primary` when the primary claims a job that was waiting for it (D062) |
@@ -214,3 +282,80 @@ A claim for a job on a local source carries `source: {agent_source_id, size}`
 instead of a URL. A job pinned to an agent waits for it, spending no retry
 budget, and ends with `agent_unavailable` once the agent is revoked or unseen
 for 7 days.
+
+## Analytics (D100, D103)
+
+The owner's session sees every app, or the one `app_id` names. An API key
+reaches these routes only with the `analytics:read` scope, which a key has
+only when asked for at creation, and then sees its own app.
+
+| Route | Notes |
+| --- | --- |
+| `GET /v1/analytics?range=24h\|7d\|30d\|90d&app_id=` | → `{totals, previous, series, top_assets, collecting}` below. `app_id` is ignored for an API key. `400 invalid_request` for any other `range` |
+| `GET /v1/analytics/assets/{id}?range=` | the same for one asset, without `top_assets`; a deleted asset keeps its history. `404 not_found` for an asset outside the project, or outside the key's app |
+
+```json
+{"totals":   {"views": 1840, "watch_seconds": 302400, "unique_viewers": 412, "bytes_delivered": 98123456789},
+ "previous": {"views": 1502, "watch_seconds": 251000, "unique_viewers": null, "bytes_delivered": 80211000000},
+ "series": [{"t": "2026-11-03T00:00:00Z", "views": 260, "watch_seconds": 43100, "bytes_delivered": 14000000000}],
+ "top_assets": [{"asset_id": "ast_…", "title": "Lesson 42", "views": 310, "watch_seconds": 61000, "bytes_delivered": 17000000000}],
+ "collecting": {"builtin": true, "edge": "not_used"}}
+```
+
+`series` buckets are an hour for `24h` and a UTC day otherwise, oldest
+first, zero-filled, with `t` the bucket's start. The last bucket is the one
+now falls in, so it is partial. `previous` is the same number of whole
+buckets just before, for the change against it. Unique viewers are kept per
+UTC day, so they count the days a range touches: for `24h`, yesterday and
+today. `top_assets` lists at most 10 live assets, by views; a `title` may
+be absent. Totals include deleted assets' history.
+
+What counts (D103): a `GET` answered 200 or 206; a range not from byte 0
+adds bytes only. A view is one
+generated `master.m3u8`. Watch time is 6 seconds per audio segment served,
+which overcounts by the player's buffer-ahead. Bytes are every counted body.
+`unique_viewers` counts distinct `vid` claims and is `null` when no view in
+the range carried one; sign `vid` (any stable ID for the viewer, which
+ClipMux keeps only as a keyed hash) to count viewers. Tokens signed by the
+server's internal key don't count, so previews and setup tests don't; share
+links (below) are the exception.
+
+`collecting.edge` is `not_used` without Cloudflare delivery, and
+`not_connected` with it until edge analytics are connected (below): the
+Worker counts, but nothing pulls its counts in. Once `connected`, serve
+pulls every 5 minutes, so the edge's last few minutes show up on the next
+pull, and each pull recomputes the hour before it.
+
+## Share links (D104)
+
+A share link plays one asset for anyone holding its URL, with no session or
+app token. Each link owns one signed playback ID, created with it; that ID
+shows in the asset's `playback_ids` with `share: {id, name}`. Revoking the
+link revokes the ID, and the link's views are the ID's views. Dashboard
+previews and library posters never use a link's ID, so revoking a link
+leaves them alone. The owner's session reaches these routes as the asset's
+app, as it does playback IDs.
+
+| Route | Scope | Notes |
+| --- | --- | --- |
+| `POST /v1/assets/{id}/shares` | `assets:write` | `{name?, expires_at?}` → `201 {id, asset_id, name, url, playback_id, status, expires_at, created_at}`. `url` is `{public_url}/s/{secret}`. `name` is one line of up to 100 characters; `expires_at` must be in the future and can't be changed later. Takes `Idempotency-Key`. Allowed while the asset is processing; `409 asset_deleted`, `409 too_many_playback_ids` |
+| `GET /v1/assets/{id}/shares` | `assets:read` | `{data: [...]}`, newest first: each link as above with `views_30d`, its views (built-in and edge) over the last 30 UTC days |
+| `DELETE /v1/shares/{id}` | `assets:write` | revokes the link's playback ID: `200` once unpublished, `202` while revoking. Revoking again changes nothing |
+| `POST /v1/shares/{id}/stream-url` | `assets:write` | `{url, expires_at}`: a signed `master.m3u8` URL for players that can't open the page. It can't refresh; it lasts until the link's expiry or the project's longest token lifetime, whichever is first, and stops when the link is revoked. `409 share_expired`, `409 share_revoked`, `409 asset_not_ready` |
+
+`status` is `active`, `revoked` or `expired`. Once its expiry passes a link
+reads `expired`, whatever stopped it; before that, a link whose playback ID
+was revoked (or whose asset was deleted) reads `revoked`. A loop revokes
+expired links' playback IDs within a minute, so their routes also leave the
+Worker; the tokens already stop at the expiry.
+
+The page and its token endpoint need no session or key:
+
+| Route | Notes |
+| --- | --- |
+| `GET /s/{secret}` | the share page: a player for the link's video, static HTML whose script asks the endpoint below for tokens. Its own CSP (itself and the media URL only), `frame-ancestors 'none'`, `noindex`, no referrer, `no-store`. It keeps a random viewer ID in the browser's storage, so unique viewers count; a private window sends none |
+| `POST /s/{secret}/playback` | `{viewer_id?}` → `{title?, duration_seconds, base_url, playback_id, token, expires_at, poster_url, tracks}`, where `tracks` are the ready ones. `token` is a `v` token for the link's playback ID, signed with the internal key, valid until the earliest of the link's expiry, max(2 × duration, 4 h) and the project's longest token lifetime. A `viewer_id` of 16–64 `[A-Za-z0-9_-]` becomes the token's `vid`; anything else is dropped. `404 share_not_found` (unknown, revoked, the asset deleted or its app disabled), `410 share_expired`, `409 asset_not_ready`. Successes are limited to 2 a second per address, bursts of 20 (`429 rate_limited`); refusals count toward the playback refusal limit. `no-store`, `noindex`, no referrer |
+
+Plays through a share link count in analytics though the internal key signs
+them (D103).
+

@@ -30,14 +30,19 @@ uploads it through the worker API, and holds no storage credentials.
 - **A concurrency limit.** At most this many machines run at once.
 
 A provider takes no work until a setup test through it passes: after Connect,
-a sample must encode on one of its machines and play. Routing (**Workers →
+a sample must encode on one of its machines and play. Routing (**Encoding →
 Routing**, or `PUT /v1/settings/routing`) can name it only after that.
 
 ## RunPod
 
-Create an API key in RunPod (**Settings → API Keys**) with read and write
-access to pods and container registry auths. Then **Workers → Connect
-RunPod**, or:
+**Encoding → Cloud GPUs → Connect RunPod**: **Get a key from RunPod** opens
+RunPod's console, which creates a key for ClipMux and shows it (the page
+names RunPod's Flash CLI, D109); paste it into the field. A key you create
+yourself under **Settings → API Keys**, with read and write access to pods
+and container registry auths, works too. The dialog then lists RunPod's
+NVENC GPUs with their Secure Cloud price per hour, the L4 recommended, and
+ticks the first three. Limits default to one machine and $50 a month
+(Change), and the rate is the dearest chosen GPU's price (D111). Or call:
 
 ```bash
 curl -X POST https://video.example.com/v1/executors/runpod/connect \
@@ -72,8 +77,13 @@ rotate the key or change settings; the provider then needs a new setup test.
 
 ## Modal
 
-Create a token in Modal (**Settings → API Tokens**). Then **Workers → Connect
-Modal**, or `POST /v1/executors/modal/connect` with:
+**Encoding → Cloud GPUs → Connect Modal**: pick GPUs (Modal's NVENC ones,
+priced with each sandbox's CPU and memory; limits default as for RunPod,
+D111), then **Connect with Modal** opens the page Modal's CLI uses to issue a token (D109); approve
+it there and the token goes straight to this server. To paste one instead,
+create a token in Modal (**Settings → API Tokens**); pasting the
+`modal token set …` command it shows fills both fields. Or call
+`POST /v1/executors/modal/connect` with:
 
 ```json
 {"token_id": "ak-...", "token_secret": "as-...", "registry_username": "you", "registry_password": "ghp_...",

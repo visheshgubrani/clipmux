@@ -21,7 +21,7 @@ const enc = new TextEncoder()
 const b64url = (b: Uint8Array) => Buffer.from(b).toString('base64url')
 
 // sign makes a token valid now, with the vectors' test key for app_a.
-async function sign(sub: string, aud = 'v'): Promise<string> {
+async function sign(sub: string, aud = 'v', vid?: string): Promise<string> {
   const pem: string = vectors.signing_keys.find((k: { kid: string }) => k.kid === 'kid_app_a').private_key_pem
   const der = Buffer.from(pem.replace(/-----[^-]+-----|\s/g, ''), 'base64')
   const key = await crypto.subtle.importKey('pkcs8', der, { name: 'ECDSA', namedCurve: 'P-256' }, false, [
@@ -29,7 +29,7 @@ async function sign(sub: string, aud = 'v'): Promise<string> {
   ])
   const now = Math.floor(Date.now() / 1000)
   const input = `${b64url(enc.encode(JSON.stringify({ alg: 'ES256', kid: 'kid_app_a', typ: 'JWT' })))}.${b64url(
-    enc.encode(JSON.stringify({ sub, aud, iat: now, exp: now + 3600 })),
+    enc.encode(JSON.stringify({ sub, aud, iat: now, exp: now + 3600, ...(vid ? { vid } : {}) })),
   )}`
   const sig = await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, key, enc.encode(input))
   return `${input}.${b64url(new Uint8Array(sig))}`
@@ -42,7 +42,12 @@ before(async () => {
     scriptPath: bundle.pathname,
     compatibilityDate: '2026-07-01',
     r2Buckets: ['MEDIA'],
-    bindings: { CONTENT_KEYS: JSON.stringify({ 1: vectors.content_key_secret_hex }) },
+    bindings: {
+      CONTENT_KEYS: JSON.stringify({ 1: vectors.content_key_secret_hex }),
+      PROJECT_ID: 'prj_default',
+      ANALYTICS_KEY: vectors.analytics_key_hex,
+    },
+    analyticsEngineDatasets: { ANALYTICS: { dataset: 'clipmux_delivery' } },
   })
   const r2 = await mf.getR2Bucket('MEDIA')
   for (const [pid, r] of Object.entries(keys.routes)) await r2.put(`_routes/${pid}.json`, JSON.stringify(r))
@@ -115,4 +120,19 @@ test('a pinned segment is served from the edge cache once fetched', async () => 
   assert.equal(again.status, 200)
   assert.equal(await again.text(), 'segment-one')
   assert.equal(again.headers.get('Cache-Control'), 'private, max-age=31536000, immutable')
+})
+
+// workerd has no Buffer and a real Analytics Engine binding: counting a
+// viewer's master and a ranged audio segment must not cost the response.
+// (Miniflare can't read data points back; the Node vectors check them.)
+test('counting runs in workerd without touching the response', async () => {
+  const tok = await sign('pid_signed', 'v', 'stu_8f3a2c')
+  const master = await mf.dispatchFetch(`https://media.example/v/${tok}/pid_signed/master.m3u8`)
+  assert.equal(master.status, 200)
+  assert.match(await master.text(), /out_v\/360p\/index\.m3u8/)
+  const seg = await mf.dispatchFetch(`https://media.example/v/${tok}/pid_signed/out_v/audio/seg_00001.m4s`, {
+    headers: { Range: 'bytes=0-4' },
+  })
+  assert.equal(seg.status, 206)
+  assert.equal(await seg.text(), 'audio')
 })

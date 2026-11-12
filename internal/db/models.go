@@ -87,6 +87,22 @@ type App struct {
 	CreatedAt  pgtype.Timestamptz
 }
 
+type AppPairing struct {
+	ID                string
+	ProjectID         string
+	CodeHash          []byte
+	PollTokenHash     []byte
+	Status            string
+	Name              string
+	Hostname          string
+	Client            string
+	Ip                *netip.Addr
+	AppID             pgtype.Text
+	CredentialsSealed []byte
+	CreatedAt         pgtype.Timestamptz
+	ExpiresAt         pgtype.Timestamptz
+}
+
 type Asset struct {
 	ID              string
 	ProjectID       string
@@ -104,6 +120,7 @@ type Asset struct {
 	CreatedAt       pgtype.Timestamptz
 	UpdatedAt       pgtype.Timestamptz
 	DeletedAt       pgtype.Timestamptz
+	Title           pgtype.Text
 }
 
 type Attempt struct {
@@ -176,6 +193,16 @@ type Dispatch struct {
 	EndedAt          pgtype.Timestamptz
 	StoppedAt        pgtype.Timestamptz
 	ReservedSeconds  float64
+}
+
+type EdgeAnalytic struct {
+	ProjectID     string
+	AccountID     string
+	TokenSealed   []byte
+	PulledThrough pgtype.Timestamptz
+	LastPullAt    pgtype.Timestamptz
+	LastError     pgtype.Text
+	ConnectedAt   pgtype.Timestamptz
 }
 
 type ExecutorConfig struct {
@@ -290,6 +317,30 @@ type OwnerSession struct {
 	ExpiresAt  pgtype.Timestamptz
 }
 
+type PlaybackDaily struct {
+	ProjectID    string
+	Source       string
+	Day          pgtype.Date
+	AppID        string
+	AssetID      string
+	PlaybackID   string
+	Views        int64
+	WatchSeconds int64
+	Bytes        int64
+}
+
+type PlaybackHourly struct {
+	ProjectID    string
+	Source       string
+	Hour         pgtype.Timestamptz
+	AppID        string
+	AssetID      string
+	PlaybackID   string
+	Views        int64
+	WatchSeconds int64
+	Bytes        int64
+}
+
 type PlaybackID struct {
 	ID        string
 	ProjectID string
@@ -298,6 +349,21 @@ type PlaybackID struct {
 	Status    string
 	CreatedAt pgtype.Timestamptz
 	RevokedAt pgtype.Timestamptz
+}
+
+type PlaybackViewer struct {
+	ProjectID string
+	Day       pgtype.Date
+	AssetID   string
+	Viewer    []byte
+	AppID     string
+}
+
+type PlaybackViewerDay struct {
+	ProjectID string
+	Day       pgtype.Date
+	AppID     string
+	Viewer    []byte
 }
 
 type Project struct {
@@ -318,6 +384,7 @@ type Project struct {
 	BuiltinFreeDiskBytes    pgtype.Int8
 	BuiltinSpeech           bool
 	SpeechMode              string
+	AnalyticsKeySealed      []byte
 }
 
 type RetentionCursor struct {
@@ -340,6 +407,19 @@ type SetupTest struct {
 	Executor   pgtype.Text
 }
 
+type ShareLink struct {
+	ID           string
+	ProjectID    string
+	AppID        string
+	AssetID      string
+	PlaybackID   string
+	Name         string
+	ExpiresAt    pgtype.Timestamptz
+	SecretHash   []byte
+	SecretSealed []byte
+	CreatedAt    pgtype.Timestamptz
+}
+
 type SigningKey struct {
 	ID                  string
 	ProjectID           string
@@ -360,6 +440,7 @@ type StorageConfig struct {
 	SecretsEncrypted []byte
 	IsDefault        bool
 	CreatedAt        pgtype.Timestamptz
+	RemovedAt        pgtype.Timestamptz
 }
 
 type Track struct {

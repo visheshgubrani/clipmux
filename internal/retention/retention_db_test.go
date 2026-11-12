@@ -61,6 +61,22 @@ func TestEachRuleDeletesExactlyWhatIsPastItsWindow(t *testing.T) {
 	}
 	exec(`INSERT INTO setup_tests (id, project_id, status, trigger, created_at) VALUES ('stt_running', 'prj_default', 'running', 'manual', now() - interval '1 day')`)
 
+	// Analytics (D105): hourly rows 15 days old go and 13 stay; daily rows
+	// and viewers 181 days old go and 179 stay.
+	exec(`INSERT INTO playback_hourly (project_id, source, hour, app_id, asset_id, playback_id, views) VALUES
+	      ('prj_default', 'origin', date_trunc('hour', now() - interval '15 days', 'UTC'), 'app_a', 'ast_1', 'pid_1', 1),
+	      ('prj_default', 'edge', date_trunc('hour', now() - interval '15 days', 'UTC'), 'app_a', 'ast_1', 'pid_1', 1),
+	      ('prj_default', 'origin', date_trunc('hour', now() - interval '13 days', 'UTC'), 'app_a', 'ast_1', 'pid_1', 1)`)
+	exec(`INSERT INTO playback_daily (project_id, source, day, app_id, asset_id, playback_id, views) VALUES
+	      ('prj_default', 'origin', (now() - interval '181 days')::date, 'app_a', 'ast_1', 'pid_1', 1),
+	      ('prj_default', 'origin', (now() - interval '179 days')::date, 'app_a', 'ast_1', 'pid_1', 1)`)
+	exec(`INSERT INTO playback_viewer_days (project_id, day, app_id, viewer) VALUES
+	      ('prj_default', (now() - interval '181 days')::date, 'app_a', '\x000102030405060708090a0b0c0d0e0f'),
+	      ('prj_default', (now() - interval '179 days')::date, 'app_a', '\x000102030405060708090a0b0c0d0e0f')`)
+	exec(`INSERT INTO playback_viewers (project_id, day, asset_id, viewer, app_id) VALUES
+	      ('prj_default', (now() - interval '181 days')::date, 'ast_1', '\x000102030405060708090a0b0c0d0e0f', 'app_a'),
+	      ('prj_default', (now() - interval '179 days')::date, 'ast_1', '\x000102030405060708090a0b0c0d0e0f', 'app_a')`)
+
 	r := retention.New(pool)
 	dry, err := r.Prune(ctx, true)
 	if err != nil {
@@ -74,8 +90,9 @@ func TestEachRuleDeletesExactlyWhatIsPastItsWindow(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := map[string]int64{
-		"idempotency_keys": 1, "owner_sessions": 2, "agent_pairings": 1, "webhook_deliveries": 1,
+		"idempotency_keys": 1, "owner_sessions": 2, "agent_pairings": 1, "app_pairings": 0, "webhook_deliveries": 1,
 		"webhook_events": 1, "outbox": 1, "setup_tests": 2, "dispatch_keys": 0,
+		"playback_hourly": 2, "playback_daily": 1, "playback_viewers": 1, "playback_viewer_days": 1,
 	}
 	for i, rule := range rules {
 		if rule.Deleted != want[rule.Name] {
@@ -94,6 +111,11 @@ func TestEachRuleDeletesExactlyWhatIsPastItsWindow(t *testing.T) {
 		`SELECT count(*) FROM setup_tests WHERE status = 'passed'`:                                   20,
 		`SELECT count(*) FROM setup_tests WHERE id IN ('stt_a', 'stt_b')`:                            0,
 		`SELECT count(*) FROM setup_tests WHERE id = 'stt_running'`:                                  1,
+		`SELECT count(*) FROM playback_hourly WHERE hour > now() - interval '14 days'`:               1,
+		`SELECT count(*) FROM playback_hourly`:                                                       1,
+		`SELECT count(*) FROM playback_daily`:                                                        1,
+		`SELECT count(*) FROM playback_viewers`:                                                      1,
+		`SELECT count(*) FROM playback_viewer_days`:                                                  1,
 	} {
 		if got := count(sql); got != n {
 			t.Errorf("%s = %d, want %d", sql, got, n)

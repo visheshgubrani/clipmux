@@ -9,15 +9,17 @@ UPDATE projects SET delivery = sqlc.arg(delivery), delivery_storage_id = sqlc.na
 WHERE id = sqlc.arg(id);
 
 -- name: ListServableOutputs :many
--- Pinned paths and keys may name only these outputs.
-SELECT id, key_version FROM outputs
+-- Pinned paths and keys may name only these outputs. no_audio follows
+-- delivery's hasAudio: a manifest whose audio is false or missing.
+SELECT id, key_version, coalesce(manifest->'audio' = 'false'::jsonb, NOT manifest ? 'audio')::boolean AS no_audio FROM outputs
 WHERE asset_id = $1 AND status IN ('committed', 'retired') AND purged_at IS NULL
 ORDER BY id;
 
 -- name: ListServableRoutes :many
 -- Every playback ID the built-in handler would serve, for the reconciler.
 SELECT p.id AS playback_id, p.policy, a.id AS asset_id, a.app_id, a.current_output_id, a.storage_id,
-       (ap.disabled_at IS NOT NULL)::boolean AS app_disabled
+       (ap.disabled_at IS NOT NULL)::boolean AS app_disabled,
+       EXISTS (SELECT 1 FROM share_links s WHERE s.playback_id = p.id)::boolean AS share
 FROM playback_ids p
 JOIN assets a ON a.id = p.asset_id
 JOIN apps ap ON ap.id = a.app_id
@@ -26,7 +28,8 @@ WHERE p.project_id = $1 AND p.status = 'active' AND a.status <> 'deleted'
 ORDER BY p.id;
 
 -- name: ListServableOutputsForProject :many
-SELECT o.asset_id, o.id, o.key_version FROM outputs o
+SELECT o.asset_id, o.id, o.key_version,
+    coalesce(o.manifest->'audio' = 'false'::jsonb, NOT o.manifest ? 'audio')::boolean AS no_audio FROM outputs o
 JOIN assets a ON a.id = o.asset_id
 WHERE a.project_id = $1 AND o.status IN ('committed', 'retired') AND o.purged_at IS NULL
 ORDER BY o.asset_id, o.id;

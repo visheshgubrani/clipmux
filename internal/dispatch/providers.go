@@ -25,6 +25,10 @@ import (
 // Provider settings shared by every Connect (D056). The provider-specific
 // steps (checking credentials, registry access) live in its own package.
 
+// DefaultMonthlyLimitCents is the spend limit Connect sets when the owner
+// leaves it alone (D111): a provider is never connected without one.
+const DefaultMonthlyLimitCents = 5000
+
 // Settings are a provider's limits and machine size, as Connect saves them.
 type Settings struct {
 	MaxConcurrent     int32

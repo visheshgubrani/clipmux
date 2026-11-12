@@ -72,6 +72,9 @@ type Config struct {
 	// RunPodAPI is RunPod's REST API base (CLIPMUX_RUNPOD_API; default the
 	// public v1 API), for a test double.
 	RunPodAPI string
+	// RunPodCatalog is RunPod's v2 API, where GPU prices come from
+	// (CLIPMUX_RUNPOD_CATALOG; default the real one), for a test double.
+	RunPodCatalog string
 	// WorkerImage is the image provider machines run
 	// (CLIPMUX_WORKER_IMAGE), until builds carry their own (P4-T06).
 	WorkerImage string
@@ -113,6 +116,7 @@ func FromEnv(getenv func(string) string) (Config, error) {
 		CloudflareAPI:      getenv("CLIPMUX_CLOUDFLARE_API"),
 		R2Endpoint:         getenv("CLIPMUX_R2_ENDPOINT"),
 		RunPodAPI:          getenv("CLIPMUX_RUNPOD_API"),
+		RunPodCatalog:      getenv("CLIPMUX_RUNPOD_CATALOG"),
 		WorkerImage:        getenv("CLIPMUX_WORKER_IMAGE"),
 		MetricsAddr:        getenv("CLIPMUX_METRICS_ADDR"),
 	}

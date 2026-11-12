@@ -67,7 +67,13 @@ function parse(token) {
   if (sig?.length !== 64) return null;
   return {
     kid: str(hdr.obj, "kid"),
-    claims: { sub: str(payload.obj, "sub"), aud: str(payload.obj, "aud"), iat, exp },
+    claims: {
+      sub: str(payload.obj, "sub"),
+      aud: str(payload.obj, "aud"),
+      iat,
+      exp,
+      vid: str(payload.obj, "vid")
+    },
     input: `${h}.${p}`,
     sig
   };
@@ -93,6 +99,8 @@ async function verify(t, jwk) {
 }
 
 // src/delivery.ts
+var EDGE_HEADER = "X-ClipMux-Edge";
+var SEGMENT_SECONDS = 6;
 var CONTENT_TYPES = {
   ".m3u8": "application/vnd.apple.mpegurl",
   ".mp4": "video/mp4",
@@ -172,7 +180,7 @@ function createWorker(opts = {}) {
       return denied();
     }
     if (c.exp <= t) return expired();
-    return c.aud;
+    return { aud: c.aud, vid: c.vid, internal: key.app_id === null };
   }
   async function contentKey(env, r, outputID, version) {
     const v = Number(version);
@@ -186,6 +194,7 @@ ${r.asset_id}
 ${outputID}`)
     );
     const h = common(new Headers({ "Content-Type": "application/octet-stream", "Cache-Control": "no-store" }));
+    h.set("Content-Length", "16");
     return new Response(new Uint8Array(mac).slice(0, 16), { headers: h });
   }
   async function master(env, r, req) {
@@ -199,12 +208,7 @@ ${outputID}`)
       new Headers({ "Content-Type": CONTENT_TYPES[".m3u8"] ?? "", "Cache-Control": "no-store" })
     );
     const subs = Object.entries(r.tracks ?? {}).filter(([, t]) => t.listed).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([id, t]) => ({ id, name: t.name, language: t.language }));
-    return new Response(
-      req.method === "HEAD" ? null : masterWithSubtitles(rewriteMaster(text, r.output_id), subs),
-      {
-        headers: h
-      }
-    );
+    return text_(req, masterWithSubtitles(rewriteMaster(text, r.output_id), subs), h);
   }
   async function track(env, req, r, rel) {
     const m = TRACK_PATH.exec(rel);
@@ -216,7 +220,7 @@ ${outputID}`)
       const h2 = common(
         new Headers({ "Content-Type": CONTENT_TYPES[".m3u8"] ?? "", "Cache-Control": "no-store" })
       );
-      return new Response(req.method === "HEAD" ? null : subtitlePlaylist(id, t.duration_ms), { headers: h2 });
+      return text_(req, subtitlePlaylist(id, t.duration_ms), h2);
     }
     const scope = r.policy === "signed" ? "private" : "public";
     if (r.backend === "origin") {
@@ -278,7 +282,7 @@ ${trackID}`)
     const u = new URL(req.url);
     const upstream = new Request(env.ORIGIN_URL.replace(/\/$/, "") + u.pathname, {
       method: req.method,
-      headers: req.headers.has("Range") ? { Range: req.headers.get("Range") ?? "" } : {}
+      headers: { ...rangeOnly(req), [EDGE_HEADER]: "1" }
     });
     const res = await (opts.fetchOrigin ?? fetch)(upstream);
     const h = common(new Headers(res.headers));
@@ -343,7 +347,68 @@ ${trackID}`)
     h.set("Content-Length", String(r.end - r.start + 1));
     return new Response(req.method === "HEAD" ? null : obj.body, { status: 206, headers: h });
   }
-  async function serve(req, env) {
+  let viewerKeyring;
+  async function viewerKey(env, appID, vid) {
+    const raw = env.ANALYTICS_KEY ?? "";
+    if (vid === "" || !/^[0-9a-f]{64}$/.test(raw)) return "";
+    if (viewerKeyring?.raw !== raw) {
+      const bytes = new Uint8Array((raw.match(/../g) ?? []).map((b) => Number.parseInt(b, 16)));
+      viewerKeyring = {
+        raw,
+        key: crypto.subtle.importKey("raw", bytes, { name: "HMAC", hash: "SHA-256" }, false, ["sign"])
+      };
+    }
+    const enc = new TextEncoder();
+    const a = enc.encode(appID);
+    const v = enc.encode(vid);
+    const msg = new Uint8Array(a.length + 1 + v.length);
+    msg.set(a);
+    msg.set(v, a.length + 1);
+    const mac = new Uint8Array(await crypto.subtle.sign("HMAC", await viewerKeyring.key, msg));
+    return [...mac.slice(0, 16)].map((b) => b.toString(16).padStart(2, "0")).join("");
+  }
+  async function count(env, req, res, seen) {
+    const r = seen.route;
+    const dataset = env.ANALYTICS;
+    if (!dataset || !r || req.method !== "GET" || res.status !== 200 && res.status !== 206) return res;
+    if (seen.internal && !r.share) return res;
+    const k = kindOf(seen.path ?? "");
+    if (!k) return res;
+    let views = 0;
+    let watch = 0;
+    if (res.status === 200 || (res.headers.get("Content-Range") ?? "").startsWith("bytes 0-")) {
+      if (k.kind === "master") views = 1;
+      else if (k.kind === "segment" && (k.rendition === "audio" || r.no_audio?.includes(k.outputID)))
+        watch = SEGMENT_SECONDS;
+    }
+    const viewer = await viewerKey(env, r.app_id, seen.vid ?? "");
+    const write = (bytes) => dataset.writeDataPoint({
+      blobs: [env.PROJECT_ID ?? "", r.app_id, r.asset_id, seen.pid ?? "", k.kind, viewer],
+      doubles: [views, watch, bytes],
+      indexes: [r.asset_id]
+    });
+    const length = res.headers.get("Content-Length");
+    if (length !== null && /^[0-9]+$/.test(length)) {
+      write(Number(length));
+      return res;
+    }
+    if (!res.body) {
+      write(0);
+      return res;
+    }
+    let n = 0;
+    const counter = new TransformStream({
+      transform(chunk, c) {
+        n += chunk.byteLength;
+        c.enqueue(chunk);
+      },
+      flush() {
+        write(n);
+      }
+    });
+    return new Response(res.body.pipeThrough(counter), { status: res.status, headers: res.headers });
+  }
+  async function serve(req, env, seen) {
     const url = new URL(req.url);
     if (req.method === "OPTIONS" && /^\/[vp]\//.test(url.pathname)) {
       const h = common(new Headers());
@@ -364,8 +429,11 @@ ${trackID}`)
       if (token === void 0) return denied();
       const a = await authorize(env, r, pid, token);
       if (a instanceof Response) return a;
-      audience = a;
+      audience = a.aud;
+      seen.internal = a.internal;
+      seen.vid = a.vid;
     }
+    Object.assign(seen, { route: r, pid, path });
     if (path === "master.m3u8" && audience === "v") return master(env, r, req);
     if (path === "poster.jpg") return object2(env, req, r, r.output_id, "poster.jpg", "max-age=300");
     if (path.startsWith("tracks/")) return audience === "v" ? track(env, req, r, path.slice(7)) : denied();
@@ -382,7 +450,8 @@ ${trackID}`)
   return {
     async fetch(req, env) {
       try {
-        return await serve(req, env);
+        const seen = {};
+        return await count(env, req, await serve(req, env, seen), seen);
       } catch (err) {
         console.error("delivery", err instanceof Error ? err.message : String(err));
         return error(500, "internal", "internal error");
@@ -436,6 +505,25 @@ function subtitlePlaylist(trackID, durationMS) {
 ${trackID}.vtt
 #EXT-X-ENDLIST
 `;
+}
+function text_(req, body, h) {
+  const bytes = new TextEncoder().encode(body);
+  h.set("Content-Length", String(bytes.length));
+  return new Response(req.method === "HEAD" ? null : bytes, { headers: h });
+}
+function kindOf(p) {
+  if (p === "master.m3u8") return { kind: "master", rendition: "", outputID: "" };
+  if (p === "poster.jpg" || p.endsWith("/poster.jpg")) return { kind: "poster", rendition: "", outputID: "" };
+  if (p.startsWith("tracks/"))
+    return { kind: p.endsWith(".m3u8") ? "track_playlist" : "track", rendition: "", outputID: "" };
+  const parts = p.split("/");
+  if (parts.length !== 3) return null;
+  const [outputID = "", rendition = "", file = ""] = parts;
+  let kind = "segment";
+  if (rendition === "key") kind = "key";
+  else if (file === "index.m3u8") kind = "playlist";
+  else if (file === "init.mp4") kind = "init";
+  return { kind, rendition, outputID };
 }
 function rangeOnly(req) {
   const r = req.headers.get("Range");

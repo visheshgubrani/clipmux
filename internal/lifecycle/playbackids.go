@@ -47,29 +47,8 @@ func (s *Service) AddPlaybackID(ctx context.Context, key apikeys.Key, assetID st
 		if claim != nil && claim.Replay != nil {
 			return json.Unmarshal(claim.Replay, &out)
 		}
-		asset, err := s.lockOwnAsset(ctx, q, key, assetID)
+		asset, pid, err := s.AddPlaybackIDIn(ctx, q, key, assetID, req.Policy)
 		if err != nil {
-			return err
-		}
-		if asset.Status == "deleted" {
-			return errAssetDeleted()
-		}
-		if n, err := q.CountLivePlaybackIDs(ctx, assetID); err != nil {
-			return err
-		} else if n >= maxPlaybackIDs {
-			return httpjson.Fail(http.StatusConflict, "too_many_playback_ids", "an asset has at most 1000 playback IDs; revoke some first")
-		}
-		pid, err := q.CreatePlaybackID(ctx, db.CreatePlaybackIDParams{ID: ids.New(ids.PlaybackID), ProjectID: asset.ProjectID, AssetID: asset.ID, Policy: req.Policy})
-		if err != nil {
-			return err
-		}
-		// With no output yet, the commit publishes it with the others.
-		if asset.CurrentOutputID.Valid {
-			if err := outputs.QueueRoute(ctx, q, asset, pid, asset.CurrentOutputID.String); err != nil {
-				return err
-			}
-		}
-		if _, err := q.BumpAssetVersion(ctx, assetID); err != nil {
 			return err
 		}
 		out = assets.PlaybackID{ID: pid.ID, Policy: pid.Policy, Playable: asset.CurrentOutputID.Valid, Status: pid.Status}
@@ -79,8 +58,41 @@ func (s *Service) AddPlaybackID(ctx context.Context, key apikeys.Key, assetID st
 	if err != nil {
 		return assets.PlaybackID{}, err
 	}
-	s.publish(ctx, assetID)
+	s.Publish(ctx, assetID)
 	return out, nil
+}
+
+// AddPlaybackIDIn adds a playback ID to one of the key's app's assets in
+// the caller's transaction, under AddPlaybackID's checks: the asset is
+// locked, not deleted, and under the 1000-ID cap. Share links (D104) create
+// theirs this way. The caller calls Publish once the transaction commits.
+func (s *Service) AddPlaybackIDIn(ctx context.Context, q *db.Queries, key apikeys.Key, assetID, policy string) (db.Asset, db.PlaybackID, error) {
+	asset, err := s.lockOwnAsset(ctx, q, key, assetID)
+	if err != nil {
+		return db.Asset{}, db.PlaybackID{}, err
+	}
+	if asset.Status == "deleted" {
+		return db.Asset{}, db.PlaybackID{}, errAssetDeleted()
+	}
+	if n, err := q.CountLivePlaybackIDs(ctx, assetID); err != nil {
+		return db.Asset{}, db.PlaybackID{}, err
+	} else if n >= maxPlaybackIDs {
+		return db.Asset{}, db.PlaybackID{}, httpjson.Fail(http.StatusConflict, "too_many_playback_ids", "an asset has at most 1000 playback IDs; revoke some first")
+	}
+	pid, err := q.CreatePlaybackID(ctx, db.CreatePlaybackIDParams{ID: ids.New(ids.PlaybackID), ProjectID: asset.ProjectID, AssetID: asset.ID, Policy: policy})
+	if err != nil {
+		return db.Asset{}, db.PlaybackID{}, err
+	}
+	// With no output yet, the commit publishes it with the others.
+	if asset.CurrentOutputID.Valid {
+		if err := outputs.QueueRoute(ctx, q, asset, pid, asset.CurrentOutputID.String); err != nil {
+			return db.Asset{}, db.PlaybackID{}, err
+		}
+	}
+	if _, err := q.BumpAssetVersion(ctx, assetID); err != nil {
+		return db.Asset{}, db.PlaybackID{}, err
+	}
+	return asset, pid, nil
 }
 
 // RevokePlaybackID stops one of an asset's playback IDs. It reports whether
@@ -94,7 +106,7 @@ func (s *Service) RevokePlaybackID(ctx context.Context, key apikeys.Key, assetID
 			return err
 		}
 		if _, err := q.GetPlaybackIDOfAsset(ctx, db.GetPlaybackIDOfAssetParams{ID: playbackID, AssetID: assetID}); errors.Is(err, pgx.ErrNoRows) {
-			return errNotFound
+			return ErrNotFound
 		} else if err != nil {
 			return err
 		}
@@ -111,7 +123,7 @@ func (s *Service) RevokePlaybackID(ctx context.Context, key apikeys.Key, assetID
 	if err != nil {
 		return assets.PlaybackID{}, false, err
 	}
-	s.publish(ctx, assetID)
+	s.Publish(ctx, assetID)
 	p, err := db.New(s.pool).GetPlaybackIDOfAsset(ctx, db.GetPlaybackIDOfAssetParams{ID: playbackID, AssetID: assetID})
 	if err != nil {
 		return assets.PlaybackID{}, false, err
@@ -122,16 +134,16 @@ func (s *Service) RevokePlaybackID(ctx context.Context, key apikeys.Key, assetID
 // lockOwnAsset locks one of the key's app's assets.
 func (s *Service) lockOwnAsset(ctx context.Context, q *db.Queries, key apikeys.Key, assetID string) (db.Asset, error) {
 	if _, err := q.GetAsset(ctx, db.GetAssetParams{ID: assetID, AppID: key.AppID}); errors.Is(err, pgx.ErrNoRows) {
-		return db.Asset{}, errNotFound
+		return db.Asset{}, ErrNotFound
 	} else if err != nil {
 		return db.Asset{}, err
 	}
 	return q.LockAsset(ctx, assetID)
 }
 
-// publish confirms pending routes right away when Inline allows; otherwise
+// Publish confirms pending routes right away when Inline allows; otherwise
 // (or on failure) the route sweeper does.
-func (s *Service) publish(ctx context.Context, assetID string) {
+func (s *Service) Publish(ctx context.Context, assetID string) {
 	if s.Inline <= 0 {
 		return
 	}

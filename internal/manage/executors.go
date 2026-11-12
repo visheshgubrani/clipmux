@@ -83,3 +83,40 @@ func (m *API) disconnectExecutor(w http.ResponseWriter, r *http.Request, _ accou
 	w.WriteHeader(http.StatusNoContent)
 	return nil
 }
+
+// modalGPUs lists the GPUs a Modal sandbox can encode on, with Modal's
+// published price per hour for a default sandbox (D111).
+func (m *API) modalGPUs(w http.ResponseWriter, _ *http.Request, _ accounts.Owner) error {
+	if m.Modal == nil {
+		return errNotFound
+	}
+	httpjson.Write(w, http.StatusOK, map[string]any{"data": modal.GPUs(4, 16384)})
+	return nil
+}
+
+// runPodGPUs lists the NVENC GPUs RunPod rents on Secure Cloud, priced from
+// its catalog with the key the owner pasted (D111). The key isn't kept.
+func (m *API) runPodGPUs(w http.ResponseWriter, r *http.Request, _ accounts.Owner) error {
+	if m.RunPod == nil {
+		return errNotFound
+	}
+	var req struct {
+		APIKey string `json:"api_key"`
+	}
+	if err := decode(w, r, &req); err != nil {
+		return err
+	}
+	if strings.TrimSpace(req.APIKey) == "" {
+		return httpjson.Fail(http.StatusBadRequest, "invalid_request", "api_key is required")
+	}
+	gpus, err := m.RunPod.GPUs(r.Context(), strings.TrimSpace(req.APIKey))
+	var api *runpod.APIError
+	if errors.As(err, &api) && (api.Status == http.StatusUnauthorized || api.Status == http.StatusForbidden) {
+		return httpjson.Fail(http.StatusBadRequest, "key_rejected", "RunPod refused the API key")
+	}
+	if err != nil {
+		return err
+	}
+	httpjson.Write(w, http.StatusOK, map[string]any{"data": gpus})
+	return nil
+}

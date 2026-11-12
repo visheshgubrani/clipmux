@@ -109,8 +109,7 @@ func (s *Service) handleStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ip := s.accounts.ClientIP(r)
-	if ok, wait := s.starts.Take(ratelimit.AddrKey(ip)); !ok {
-		ratelimit.Refuse(w, wait)
+	if !s.limits.Start(w, ip) {
 		return
 	}
 	req, err := s.Start(r.Context(), d, ip)
@@ -129,8 +128,7 @@ func (s *Service) handlePoll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ip := s.accounts.ClientIP(r)
-	if ok, wait := s.polls.Take(ratelimit.AddrKey(ip)); !ok {
-		ratelimit.Refuse(w, wait)
+	if !s.limits.Poll(w, ip) {
 		return
 	}
 	res, err := s.Poll(r.Context(), req.PollToken, ip)

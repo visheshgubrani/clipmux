@@ -109,3 +109,46 @@ func TestPlaybackIsLimitedByRefusalsOnly(t *testing.T) {
 		t.Fatalf("only playback paths are limited by refusals: %d", code)
 	}
 }
+
+// Guessing share secrets (D104) spends the same budget: unknown links
+// answer 404 and expired ones 410, and either way the address is limited.
+func TestShareSecretsAreLimitedByRefusals(t *testing.T) {
+	f := newRefusals(func(*http.Request) netip.Addr { return netip.MustParseAddr("203.0.113.66") })
+	h := f.wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/s/EXPIRED/playback":
+			w.WriteHeader(http.StatusGone)
+		case "/s/GOOD/playback":
+			w.WriteHeader(http.StatusOK)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	do := func(path string) int {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest("POST", path, nil))
+		return rec.Code
+	}
+	for i := 1; i <= RefusalsPerWindow; i++ {
+		path := "/s/GUESS/playback"
+		if i%2 == 0 {
+			path = "/s/EXPIRED/playback"
+		}
+		if code := do(path); code == http.StatusTooManyRequests {
+			t.Fatalf("refusal %d was limited before the budget was spent", i)
+		}
+	}
+	if code := do("/s/GOOD/playback"); code != http.StatusTooManyRequests {
+		t.Fatalf("after %d refusals: %d, want 429", RefusalsPerWindow, code)
+	}
+}
+
+func TestTheSharePageReachesOnlyItselfAndTheMediaURL(t *testing.T) {
+	want := "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; " +
+		"img-src 'self' data: blob: https://media.example.net; media-src 'self' blob: https://media.example.net; " +
+		"connect-src 'self' https://media.example.net; worker-src 'self' blob:; font-src 'self' data:; " +
+		"object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
+	if got := shareCSP("https://media.example.net/"); got != want {
+		t.Fatalf("share CSP\n got %s\nwant %s", got, want)
+	}
+}

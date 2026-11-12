@@ -7,13 +7,6 @@ on:
   workflow_dispatch:
   push:
     tags: ["v*"]
-  pull_request:
-    paths:
-      - "Dockerfile"
-      - "toolchain/**"
-      # CI-only setup, not part of the image.
-      - "!toolchain/ci_media_tools.sh"
-      - ".github/workflows/agent.yml"
 permissions:
   contents: read
 concurrency:

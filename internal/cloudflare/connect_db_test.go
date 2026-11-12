@@ -4,12 +4,15 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"mime"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -43,6 +46,7 @@ type fakeCloudflare struct {
 	buckets  map[string]bool
 	records  []DNSRecord
 	script   []byte
+	scripts  []string // names of every Worker uploaded, in order
 	metadata map[string]any
 	domain   map[string]string
 }
@@ -65,6 +69,18 @@ func (f *fakeCloudflare) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		ok(map[string]string{"id": testTokenID, "status": "active"})
 	case p == "/accounts":
 		ok([]Account{{ID: "acct1", Name: "Lessons Ltd"}})
+	case p == "/zones" && r.URL.Query().Get("name") == "":
+		if r.URL.Query().Get("account.id") == "acct1" && r.URL.Query().Get("status") == "active" {
+			ok([]map[string]any{{"id": "zone1", "name": "example.com", "status": "active"}})
+		} else {
+			ok([]any{})
+		}
+	case p == "/accounts/acct1/r2/buckets" && r.Method == http.MethodGet:
+		var list []map[string]string
+		for name := range f.buckets {
+			list = append(list, map[string]string{"name": name})
+		}
+		ok(map[string]any{"buckets": list})
 	case p == "/zones":
 		if r.URL.Query().Get("name") == "example.com" && r.URL.Query().Get("account.id") == "acct1" {
 			ok([]map[string]any{{"id": "zone1", "name": "example.com", "status": "active"}})
@@ -95,7 +111,8 @@ func (f *fakeCloudflare) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewDecoder(r.Body).Decode(&b)
 		f.buckets[b["name"]] = true
 		ok(map[string]any{})
-	case p == "/accounts/acct1/workers/scripts/clipmux-media" && r.Method == http.MethodPut:
+	case strings.HasPrefix(p, "/accounts/acct1/workers/scripts/") && r.Method == http.MethodPut:
+		f.scripts = append(f.scripts, strings.TrimPrefix(p, "/accounts/acct1/workers/scripts/"))
 		_, params, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
 		mr := multipart.NewReader(r.Body, params["boundary"])
 		for {
@@ -170,6 +187,7 @@ func newRig(t *testing.T) *rig {
 	conn := &Connector{
 		Pool: pool, Stores: set, Keys: contentkey.NewRing(ring), URLs: urls, ProjectID: db.DefaultProjectID,
 		API: api.URL, R2Endpoint: func(string) string { return b.Endpoint },
+		AnalyticsKey: bytes.Repeat([]byte{0xab}, 32),
 	}
 	return &rig{conn: conn, fake: fake, urls: urls, pool: db.New(pool), raw: pool, stash: set, bucket: b.Name}
 }
@@ -203,6 +221,10 @@ func TestConnectMovesDeliveryToTheWorker(t *testing.T) {
 		`{"bucket_name":"` + r.bucket + `","name":"MEDIA","type":"r2_bucket"}`,
 		`{"name":"ORIGIN_URL","text":"https://video.example.org","type":"plain_text"}`,
 		`{"name":"CONTENT_KEYS","text":"{\"1\":\"000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f\"}","type":"secret_text"}`,
+		// Counting at the edge (D103): one dataset, every point naming its project.
+		`{"dataset":"clipmux_delivery","name":"ANALYTICS","type":"analytics_engine"}`,
+		`{"name":"PROJECT_ID","text":"prj_default","type":"plain_text"}`,
+		`{"name":"ANALYTICS_KEY","text":"abababababababababababababababababababababababababababababababab","type":"secret_text"}`,
 	} {
 		if !strings.Contains(string(bindings), want) {
 			t.Fatalf("bindings %s lack %s", bindings, want)
@@ -212,7 +234,7 @@ func TestConnectMovesDeliveryToTheWorker(t *testing.T) {
 	if len(r.fake.records) != 1 || r.fake.records[0].Name != "www.example.com" {
 		t.Fatalf("dns records left = %+v", r.fake.records)
 	}
-	if r.fake.domain["hostname"] != "media.example.com" || r.fake.domain["service"] != "clipmux-media" || r.fake.domain["zone_id"] != "zone1" {
+	if r.fake.domain["hostname"] != "media.example.com" || r.fake.domain["service"] != "clipmux-media-example-com" || r.fake.domain["zone_id"] != "zone1" {
 		t.Fatalf("domain = %v", r.fake.domain)
 	}
 	// Delivery, default storage and the media URL all moved.
@@ -254,6 +276,170 @@ func TestConnectMovesDeliveryToTheWorker(t *testing.T) {
 	if len(configs) != 2 {
 		t.Fatalf("storage configs = %d, want fs and one r2", len(configs))
 	}
+}
+
+// The owner chooses where uploads go (D110): the first connect makes R2 the
+// default unless told not to, and a reconnect leaves the choice alone.
+func TestConnectLeavesTheUploadStoreToTheOwner(t *testing.T) {
+	ctx := context.Background()
+	r := newRig(t)
+	res, err := r.conn.Connect(ctx, Request{Token: testToken, Hostname: "media.example.com", Bucket: r.bucket})
+	if err != nil || !res.Connected {
+		t.Fatalf("connect: %+v, %v", res.Steps, err)
+	}
+	if def, _ := r.pool.GetDefaultStorage(ctx, db.DefaultProjectID); def.Kind != "r2" {
+		t.Fatalf("after the first connect new uploads go to %s, want r2", def.Kind)
+	}
+	if err := r.stash.SetDefault(ctx, db.DefaultProjectID, "sto_default"); err != nil {
+		t.Fatal(err)
+	}
+	res, err = r.conn.Connect(ctx, Request{Token: testToken, Hostname: "media.example.com", Bucket: r.bucket})
+	if err != nil || !res.Connected {
+		t.Fatalf("reconnect: %+v, %v", res.Steps, err)
+	}
+	if def, _ := r.pool.GetDefaultStorage(ctx, db.DefaultProjectID); def.Kind != "fs" {
+		t.Fatalf("a reconnect moved new uploads to %s; the owner chose fs", def.Kind)
+	}
+	if d := stepDetail(res, "routes"); !strings.Contains(d, "new uploads stay on this server") {
+		t.Fatalf("routes step says %q, want it to say uploads stay on this server", d)
+	}
+
+	keep := false
+	fresh := newRig(t)
+	res, err = fresh.conn.Connect(ctx, Request{Token: testToken, Hostname: "media.example.com", Bucket: fresh.bucket, DefaultStorage: &keep})
+	if err != nil || !res.Connected {
+		t.Fatalf("connect keeping uploads on disk: %+v, %v", res.Steps, err)
+	}
+	if def, _ := fresh.pool.GetDefaultStorage(ctx, db.DefaultProjectID); def.Kind != "fs" {
+		t.Fatalf("default_storage false still moved new uploads to %s", def.Kind)
+	}
+}
+
+// Workers are named after their hostname (D114), so two installs in one
+// account don't overwrite each other's; a reconnect keeps the name the
+// connection was saved with, including the fixed name installs used before.
+func TestConnectNamesTheWorkerAfterItsHostname(t *testing.T) {
+	ctx := context.Background()
+	r := newRig(t)
+	if res, err := r.conn.Connect(ctx, Request{Token: testToken, Hostname: "media.example.com", Bucket: r.bucket}); err != nil || !res.Connected {
+		t.Fatalf("connect: %+v, %v", res.Steps, err)
+	}
+	if _, err := r.raw.Exec(ctx, `UPDATE cloudflare_connections SET script_name = 'clipmux-media'`); err != nil {
+		t.Fatal(err)
+	}
+	if res, err := r.conn.Connect(ctx, Request{Token: testToken, Hostname: "media.example.com", Bucket: r.bucket}); err != nil || !res.Connected {
+		t.Fatalf("reconnect: %+v, %v", res.Steps, err)
+	}
+	if res, err := r.conn.Connect(ctx, Request{Token: testToken, Hostname: "edge.example.com", Bucket: r.bucket}); err != nil || !res.Connected {
+		t.Fatalf("connect elsewhere: %+v, %v", res.Steps, err)
+	}
+	if got := strings.Join(r.fake.scripts, ","); got != "clipmux-media-example-com,clipmux-media,clipmux-edge-example-com" {
+		t.Fatalf("Workers uploaded = %s", got)
+	}
+	row, err := r.pool.GetCloudflareConnection(ctx, db.DefaultProjectID)
+	if err != nil || row.ScriptName != "clipmux-edge-example-com" || r.fake.domain["service"] != "clipmux-edge-example-com" {
+		t.Fatalf("saved script = %q, %v; domain = %v", row.ScriptName, err, r.fake.domain)
+	}
+}
+
+// R2 storage without Cloudflare delivery (D110): the bucket is created if
+// missing, saved as r2 with keys derived from the token, and Connect later
+// reuses that same config.
+func TestAddR2SavesTheBucketAsStorage(t *testing.T) {
+	ctx := context.Background()
+	r := newRig(t)
+	res, storageID, err := r.conn.AddR2(ctx, R2Request{Token: testToken, Bucket: r.bucket})
+	if err != nil || !res.Connected || storageID == "" {
+		t.Fatalf("add R2: %+v, %q, %v", res.Steps, storageID, err)
+	}
+	var names []string
+	for _, s := range res.Steps {
+		names = append(names, s.Name)
+	}
+	if got := strings.Join(names, ","); got != "token,account,bucket,storage" {
+		t.Fatalf("steps = %s", got)
+	}
+	if !r.fake.buckets[r.bucket] {
+		t.Fatal("the bucket wasn't created through the API")
+	}
+	row, err := r.pool.GetStorageConfig(ctx, storageID)
+	if err != nil || row.Kind != "r2" || row.IsDefault {
+		t.Fatalf("storage = %+v, %v; want r2 and not the default", row, err)
+	}
+
+	res, again, err := r.conn.AddR2(ctx, R2Request{Token: testToken, Bucket: r.bucket, Default: true})
+	if err != nil || !res.Connected || again != storageID {
+		t.Fatalf("adding the same bucket again = %q (%+v, %v), want %q renewed", again, res.Steps, err, storageID)
+	}
+	if def, _ := r.pool.GetDefaultStorage(ctx, db.DefaultProjectID); def.ID != storageID {
+		t.Fatalf("default = %s, want %s", def.ID, storageID)
+	}
+	if res, err := r.conn.Connect(ctx, Request{Token: testToken, Hostname: "media.example.com", Bucket: r.bucket}); err != nil || !res.Connected {
+		t.Fatalf("connect: %+v, %v", res.Steps, err)
+	}
+	if configs, _ := r.pool.ListStorageConfigs(ctx, db.DefaultProjectID); len(configs) != 2 {
+		t.Fatalf("storage configs = %d, want fs and the one r2 Connect reused", len(configs))
+	}
+	if _, _, err := r.conn.AddR2(ctx, R2Request{Token: testToken, Bucket: "No_Such"}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("a malformed bucket = %v, want ErrInvalid", err)
+	}
+}
+
+// Inspect (D109) shows what a pasted token reaches, so the dashboard offers
+// choices instead of typed IDs, and changes nothing.
+func TestInspectShowsWhatTheTokenReaches(t *testing.T) {
+	ctx := context.Background()
+	r := newRig(t)
+	r.fake.buckets["clipmux-media"] = true
+	got, err := r.conn.Inspect(ctx, testToken, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := Inspection{
+		Accounts: []Account{{ID: "acct1", Name: "Lessons Ltd"}}, AccountID: "acct1",
+		Zones: []string{"example.com"}, Buckets: []string{"clipmux-media"}, WorkersPaid: true,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("inspect = %+v, want %+v", got, want)
+	}
+	for _, c := range r.fake.calls {
+		if !strings.HasPrefix(c, "GET ") {
+			t.Fatalf("inspect changed Cloudflare: %s", c)
+		}
+	}
+	if _, err := r.conn.Inspect(ctx, "wrong", ""); !errors.Is(err, ErrTokenRejected) || strings.Contains(err.Error(), "wrong") {
+		t.Fatalf("a bad token = %v, want ErrTokenRejected without echoing the token", err)
+	}
+}
+
+// The create-token links pre-fill Cloudflare's form with exactly the
+// permissions each flow uses (account-owned token template URLs).
+func TestTokenLinksAskForWhatEachFlowUses(t *testing.T) {
+	for _, c := range []struct {
+		url, name, perms string
+	}{
+		{ConnectTokenURL(), "ClipMux", `[{"key":"workers_scripts","type":"edit"},{"key":"workers_routes","type":"edit"},{"key":"workers_r2","type":"edit"},{"key":"billing","type":"read"},{"key":"zone","type":"read"},{"key":"dns","type":"edit"}]`},
+		{R2TokenURL(), "ClipMux storage", `[{"key":"workers_r2","type":"edit"}]`},
+		{AnalyticsTokenURL(), "ClipMux analytics", `[{"key":"account_analytics","type":"read"}]`},
+	} {
+		u, err := url.Parse(c.url)
+		if err != nil {
+			t.Fatal(err)
+		}
+		q := u.Query()
+		if u.Scheme+"://"+u.Host+u.Path != "https://dash.cloudflare.com/" || q.Get("to") != "/:account/api-tokens" || q.Get("name") != c.name || q.Get("permissionGroupKeys") != c.perms {
+			t.Errorf("%s = %s (name %q, permissions %s), want an account token template named %q with %s", c.name, c.url, q.Get("name"), q.Get("permissionGroupKeys"), c.name, c.perms)
+		}
+	}
+}
+
+func stepDetail(res Result, name string) string {
+	for _, s := range res.Steps {
+		if s.Name == name {
+			return s.Detail
+		}
+	}
+	return ""
 }
 
 func TestConnectStopsWithoutWorkersPaid(t *testing.T) {

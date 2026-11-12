@@ -14,9 +14,30 @@ when you introduce or discover it; remove it when it is closed.
 
 - Phase 1 has exited (D040): the Go, Chromium, Safari and ExoPlayer exit
   suites and the image job pass in CI. iPhone and AirPlay are checked by hand
-  only; Firefox isn't in CI. The dashboard is minimal: no
-  share links, no playback-ID management in the UI, and a sample preview
-  that waits for Play rather than autoplaying.
+  only; Firefox isn't in CI.
+- Phase 7 closed with open items (D107), to settle before P6-T19 as the
+  owner chooses:
+  - A share link's HLS URL is checked as a signed playlist that loads, not
+    played in hls.js and ExoPlayer.
+  - Edge counts match Analytics Engine exactly but not the traffic, because
+    it samples even one viewer (D106); a per-request data point index is
+    untried.
+  - On the real zone the Worker answered an origin-backed video without
+    reaching serve (D106), unexplained, so "a forwarded fetch counts once"
+    is shown by the vectors and the Worker's tests only.
+  - No end-to-end log scan has run with share links; their redaction is
+    unit-tested.
+- Share links (D104) are made on a video's Sharing tab or over the API. The
+  dashboard offers fixed expiries (a day to 90 days, or none) where the API
+  takes any time. A link's expiry can't be changed: revoke it and make another.
+  Built-in delivery refuses a revoked link's ID at once; the Worker within
+  its 60 s route cache, so a token already issued plays at the edge until
+  then. The share page needs the dashboard build: a binary built without it
+  answers 404 there, though the link's playback endpoint still works. The sample preview waits for Play rather than autoplaying.
+  There is no audit log of owner actions, and no per-attempt GPU or cost
+  on Jobs.
+- The dashboard's main bundle is about 230 KB gzipped; the player and the
+  chart load on their own pages, but the other pages aren't split by route.
 - Built-in delivery caches routes, signing keys and outputs for 30 s
   (D072). On one node every published change is seen at the next request;
   a change that publishes nothing (the project's maximum token lifetime)
@@ -57,10 +78,12 @@ when you introduce or discover it; remove it when it is closed.
   not reserved up front; a full disk fails the part write. Abandoned
   multipart uploads are cleaned up by the upload sweeper (T05), and `tmp/`
   leftovers after 24 hours (D070).
-- Storage configs other than the filesystem can be added only from code
-  (`stores.AddS3`) until Connect Cloudflare (P2-T04); there is no API or
-  dashboard form for a generic S3 bucket, and no way to remove a config or
-  rotate its credentials.
+- A removed storage config stays as a row without its credentials, since assets,
+  move jobs and the delivery history still name it. Rotated credentials
+  reach this serve's open stores at once; a second replica keeps the old
+  ones until it restarts.
+- The library's `q` is an ILIKE scan of titles and passthroughs, with no
+  trigram index: fine for tens of thousands of assets, not millions.
 - Phase 5 exited in CI (D085); its drills now run on the real binary (D094)
   and `exit-llm.yml` passed on real accounts (D095). Still to run: the
   providers' speech on real RunPod and Modal, and Safari and ExoPlayer
@@ -114,9 +137,10 @@ when you introduce or discover it; remove it when it is closed.
   local registry, but has no public release to install until P6-T07, and
   the setup URL it prints is the host's first local address, which behind
   NAT isn't the one to open.
-- The manual wrangler path has no CLI for adding R2 storage, switching
-  delivery or printing `CONTENT_KEYS`; the dashboard Connect flow is the
-  supported path, now verified on a real account (D090).
+- The manual wrangler path has no CLI or dashboard action for switching
+  delivery or printing `CONTENT_KEYS` (R2 storage is Storage → Add R2
+  bucket, D110); the dashboard Connect flow is the supported path, now
+  verified on a real account (D090).
 - An asset pushed with `--local` alone re-encodes only on its PC, and only
   while the file is unchanged; `--upload-source` lifts that (D059). Each
   upload_source attempt leaves an empty `writing` output row, because every
@@ -133,11 +157,52 @@ when you introduce or discover it; remove it when it is closed.
   AMD cards encode fine but print a warning about their name.
 - Phase 3's exit passed on the real binary (D050), and NVIDIA on Modal
   (D051); still by hand: a real suspend of the M4 Mac's Docker agent, and
-  registering the self-hosted GPU runner. The pairing page
-  (`/workers/connect`) has no Playwright suite yet; the Workers and Jobs
-  pages do (D060). The Jobs page shows which provider ran an attempt, but not
-  its GPU or its estimated cost.
-- Disconnecting Cloudflare (back to built-in delivery) has no endpoint yet.
+  registering the self-hosted GPU runner. The Jobs page shows which
+  provider ran an attempt, but not its GPU or its estimated cost.
+- Disconnecting Cloudflare (D099) leaves the Worker, its custom domain and
+  the token in the Cloudflare account, since no token is kept to remove
+  them; the bucket loses the Worker's route records and keys, so the Worker
+  refuses what it is asked. A route sync already in flight as delivery
+  switches may write one record back; it names an ID that was live then.
+- Connecting Cloudflare to a new media hostname deploys a new Worker named
+  after it (D114). The previous hostname's Worker and custom domain stay in
+  the account, serving from route records the bucket no longer updates,
+  until the owner removes them in Cloudflare.
+- Analytics (D100, D103): edge counts reach `/v1/analytics` only once the
+  owner connects edge analytics with a second, read-only Cloudflare token
+  (P7-T05); until then `collecting.edge` says `not_connected`. Installs
+  connected before P7-T04 count at the edge only once Connect is run again
+  (`needs_redeploy`).
+  - A first connect pulls 13 days back, inside the hourly retention, not
+    Analytics Engine's three months. A pull stalled longer than that resumes
+    13 days back, and the gap is lost.
+  - Each pass asks for a whole day of hourly rows per playback ID in one
+    query. A project busy enough to hit the SQL API's result limits would
+    need smaller passes; none is known to.
+  - Analytics Engine samples, even one viewer's burst (D106), so edge counts
+    are estimates: on staging, bytes came out 0.012% over the truth. Sums
+    are weighted by `_sample_interval`, but sampled-out points take their
+    viewer keys with them, so edge unique viewers can undercount.
+  - Edge analytics is connected from Delivery's card (P7-T08), and that card
+    and the Analytics notice are tested only against the API's answers
+    until the real zone run (P7-T10). There is no player beacon, so watch
+    time is segments served, not seconds watched.
+  - Unique viewers are kept per UTC day, so a range counts the days it
+    touches: `24h` counts yesterday's and today's viewers.
+  - The dashboard can't create an `analytics:read` key yet; ask for it in
+    `POST /v1/apps/{id}/api-keys`.
+  - A replica killed without SIGTERM loses the counts since its last flush,
+    at most 15 seconds. A full recorder (100,000 keys between flushes)
+    drops new keys and counts them in `clipmux_analytics_dropped_total`.
+  - Daily rows go after 180 days and hourly ones after 14 (D105), so there
+    are no lifetime totals.
+  - The Worker counts a response's bytes from its Content-Length, so a
+    viewer who aborts a segment counts it whole at the edge; built-in
+    delivery counts the bytes it wrote. Only a body without a length is
+    counted as it streams, and then only if it is read to the end.
+  - The dashboard previews a public playback ID through its plain public
+    URL, with no token, so those previews count as views. Signed IDs are
+    previewed under the internal key and don't count.
 - Provider spend (D055) is an estimate from the hourly rate set in Connect,
   not the provider's bill, and a machine that runs past its reservation
   isn't stopped at the limit, so a month can overshoot by that much.
@@ -199,10 +264,53 @@ when you introduce or discover it; remove it when it is closed.
 
 - Native sandbox for Windows/macOS agents (v1 requires Docker, WSL2 or a VM).
 - Serving segments from an R2 custom domain with only playlists/keys through the Worker.
-- Token-signing SDK languages (P6 open question 2).
-- When captions, storyboards and viewer analytics enter the roadmap.
+- When storyboards enter the roadmap (viewer analytics did, D100, built in Phase 7; captions in Phase 5).
 - Confirm defaults: 7-day max token lifetime, retry budgets 5/3, 15-minute
   reconciler, per-output keys derived from one secret (P6 open question 7).
-- Audit leftovers: where the `vid` claim is logged. (The shared Go/Worker
-  vectors are D015/D036, pinned-job timeouts D045, the route cache D072 and
-  the backup docs docs/operations.md.)
+- Audit leftovers: none open. (`vid` is kept as a keyed hash in analytics,
+  D103; the shared Go/Worker vectors are D015/D036, pinned-job timeouts
+  D045, the route cache D072 and the backup docs docs/operations.md.)
+
+## Onboarding (2026-11-12)
+
+- Connect Cloudflare is a pre-filled token link and one paste, not OAuth
+  (D109). Cloudflare's third-party OAuth needs exact redirect URIs, so a
+  self-hosted install needs a ClipMux-owned public client on a verified
+  domain and a hosted callback relay. Neither exists yet, and a check that
+  an OAuth token can mint the long-lived R2 credentials hasn't been done.
+- The Connect token template still asks for Workers Routes: Edit, though no
+  call uses a routes endpoint; attaching the custom domain may not need it.
+  Drop it once a real-zone run without it passes.
+- Browser approval for Modal and RunPod drives their own CLIs' flows
+  (`TokenFlowCreate`/`TokenFlowWait`, `createFlashAuthRequest`), which
+  neither provider documents for integrations (D109). A change there turns
+  `authorize` into `502 approval_unavailable` and the dialog offers paste.
+  RunPod's page names its Flash CLI, and the key it issues isn't restricted
+  to pods and registry auths; Modal's token is a full workspace token, as a
+  pasted one is. On a real run (2026-11-12) Modal's approval returned a
+  token to the server (`TestLiveModalApproval`), but RunPod's console showed
+  the key on its own page for the owner to paste and marked the request
+  consumed without giving the key to the poller, so for RunPod the flow
+  ends in `shown` and the dialog asks for the paste. An approval through to
+  a full Connect has run only against fakes.
+- Pending approvals live in serve's memory: a restart, or a second
+  replica, drops them, and the owner starts again.
+- Registry credentials for the private worker image are still pasted; they
+  go away when the image is public (P6-T07).
+- Modal's GPU prices are a table in `internal/modal/gpus.go` (D111), copied
+  from modal.com/pricing on 2026-11-12, since Modal has no price API; the
+  spend estimate drifts when Modal changes its prices until the table is
+  refreshed. The NVENC lists for both providers are hand-kept too.
+
+## SDK and agents (D112)
+
+- No MCP server yet: `clipmux mcp` (stdio, an API key, tools from the
+  OpenAPI operations) comes after launch.
+- The only server SDK is TypeScript (`@clipmux/node`); Python, Go and PHP
+  have tested snippets for tokens and webhooks, not clients.
+- The OpenAPI spec covers the integration API, not the management API.
+- An app pairing approved but never collected (the CLI was closed) leaves
+  the API key and signing key it issued, live and unknown to anyone; the
+  sealed copy is dropped, so they can't be recovered. The owner revokes
+  them on the app's page (the API key is named after the pairing). Revoking
+  them automatically at expiry needs a sweep that doesn't exist yet (D113).

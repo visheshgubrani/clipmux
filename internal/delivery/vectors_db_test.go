@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"flag"
+	"fmt"
 	"io"
 	"math/big"
 	"net/http"
@@ -17,11 +18,13 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/visheshgubrani/clipmux/internal/analytics"
 	"github.com/visheshgubrani/clipmux/internal/contentkey"
 	"github.com/visheshgubrani/clipmux/internal/db"
 	"github.com/visheshgubrani/clipmux/internal/db/dbtest"
@@ -56,6 +59,15 @@ type vectors struct {
 	TokenClaims             map[string]vClaims `json:"token_claims"`
 	Tokens                  map[string]string  `json:"tokens,omitempty"`
 	Cases                   []vCase            `json:"cases"`
+	// AnalyticsKeyHex and ViewerKeys pin analytics.ViewerKey (D103).
+	AnalyticsKeyHex string       `json:"analytics_key_hex"`
+	ViewerKeys      []vViewerKey `json:"viewer_keys"`
+}
+
+type vViewerKey struct {
+	AppID  string `json:"app_id"`
+	Vid    string `json:"vid"`
+	KeyHex string `json:"key_hex"`
 }
 
 type vKey struct {
@@ -92,6 +104,9 @@ type vOutput struct {
 	AssetID    string `json:"asset_id"`
 	Status     string `json:"status"`
 	KeyVersion int32  `json:"key_version"`
+	// NoAudio marks an output whose manifest says it has no audio, so its
+	// video segments carry the watch time.
+	NoAudio bool `json:"no_audio,omitempty"`
 }
 
 type vPlaybackID struct {
@@ -99,6 +114,8 @@ type vPlaybackID struct {
 	AssetID string `json:"asset_id"`
 	Policy  string `json:"policy"`
 	Status  string `json:"status"`
+	// Share makes it a share link's own ID (D104).
+	Share bool `json:"share,omitempty"`
 }
 
 // vTrack is a track row and its file: VTT is the plaintext delivery must
@@ -123,6 +140,7 @@ type vClaims struct {
 	Aud string `json:"aud"`
 	Iat int64  `json:"iat"`
 	Exp int64  `json:"exp"`
+	Vid string `json:"vid,omitempty"`
 	// Raw, when set, is signed as the payload verbatim (for claim-parsing cases).
 	Raw string `json:"raw,omitempty"`
 }
@@ -130,13 +148,30 @@ type vClaims struct {
 type vCase struct {
 	Name string `json:"name"`
 	// Method is GET unless set (HEAD).
-	Method       string `json:"method,omitempty"`
+	Method string `json:"method,omitempty"`
+	// Range, when set, is sent as the Range header.
+	Range        string `json:"range,omitempty"`
 	Path         string `json:"path"`
 	Status       int    `json:"status"`
 	ContentType  string `json:"content_type,omitempty"`
 	CacheControl string `json:"cache_control,omitempty"`
 	Body         string `json:"body,omitempty"`
 	BodyHex      string `json:"body_hex,omitempty"`
+	// Analytics is the event delivery records for the response; nil means
+	// it records none.
+	Analytics *vEvent `json:"analytics,omitempty"`
+}
+
+// vEvent is analytics.Event as the vectors spell it.
+type vEvent struct {
+	AppID        string `json:"app_id"`
+	AssetID      string `json:"asset_id"`
+	PlaybackID   string `json:"playback_id"`
+	Kind         string `json:"kind"`
+	Bytes        int64  `json:"bytes"`
+	Views        int64  `json:"views"`
+	WatchSeconds int64  `json:"watch_seconds"`
+	Vid          string `json:"vid,omitempty"`
 }
 
 func loadVectors(t *testing.T) vectors {
@@ -178,7 +213,7 @@ func regenerate(t *testing.T, v *vectors) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		tok, err := tokens.Sign(priv, c.Kid, tokens.Claims{Sub: c.Sub, Aud: c.Aud, Iat: c.Iat, Exp: c.Exp})
+		tok, err := tokens.Sign(priv, c.Kid, tokens.Claims{Sub: c.Sub, Aud: c.Aud, Iat: c.Iat, Exp: c.Exp, Vid: c.Vid})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -274,7 +309,7 @@ func TestVectors(t *testing.T) {
 	for _, o := range v.Outputs {
 		manifest := any(nil)
 		if o.Status != "writing" {
-			manifest = "{}"
+			manifest = fmt.Sprintf(`{"audio": %t}`, !o.NoAudio)
 		}
 		exec(`INSERT INTO outputs (id, project_id, asset_id, key_version, status, manifest) VALUES ($1, 'prj_default', $2, $3, $4, $5)`, o.ID, o.AssetID, o.KeyVersion, o.Status, manifest)
 		for name, body := range v.Files {
@@ -292,6 +327,10 @@ func TestVectors(t *testing.T) {
 		exec(`INSERT INTO playback_ids (id, project_id, asset_id, policy) VALUES ($1, 'prj_default', $2, $3)`, p.ID, p.AssetID, p.Policy)
 		if p.Status == "revoked" {
 			exec(`UPDATE playback_ids SET status = 'revoked', revoked_at = now() WHERE id = $1`, p.ID)
+		}
+		if p.Share {
+			exec(`INSERT INTO share_links (id, project_id, app_id, asset_id, playback_id, secret_hash, secret_sealed)
+				SELECT 'shr_' || $1, 'prj_default', a.app_id, a.id, $1, sha256($1::bytea), '\x00' FROM assets a WHERE a.id = $2`, p.ID, p.AssetID)
 		}
 	}
 	for _, tr := range v.Tracks {
@@ -321,10 +360,44 @@ func TestVectors(t *testing.T) {
 	}
 	h := New(pool, stores.Fixed(store), contentkey.NewRing(secret))
 	h.Now = func() time.Time { return time.Unix(v.Now, 0) }
+	var (
+		eventsMu sync.Mutex
+		events   []analytics.Event
+	)
+	h.Record = func(e analytics.Event) {
+		eventsMu.Lock()
+		defer eventsMu.Unlock()
+		events = append(events, e)
+	}
+	takeEvents := func() []analytics.Event {
+		eventsMu.Lock()
+		defer eventsMu.Unlock()
+		got := events
+		events = nil
+		return got
+	}
 	mux := http.NewServeMux()
 	h.Register(mux)
-	srv := httptest.NewServer(mux)
+	// served is told when each request's handler has returned, after which
+	// its event, if any, has been recorded.
+	served := make(chan struct{}, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mux.ServeHTTP(w, r)
+		served <- struct{}{}
+	}))
 	defer srv.Close()
+	do := func(t *testing.T, req *http.Request) (*http.Response, []byte, []analytics.Event) {
+		t.Helper()
+		takeEvents()
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer res.Body.Close()
+		body, _ := io.ReadAll(res.Body)
+		<-served
+		return res, body, takeEvents()
+	}
 
 	// Twice: the second pass is answered from the route cache (D072), and
 	// must answer the same.
@@ -343,12 +416,10 @@ func TestVectors(t *testing.T) {
 				method = http.MethodGet
 			}
 			req, _ := http.NewRequest(method, srv.URL+p, nil)
-			res, err := http.DefaultClient.Do(req)
-			if err != nil {
-				t.Fatal(err)
+			if c.Range != "" {
+				req.Header.Set("Range", c.Range)
 			}
-			defer res.Body.Close()
-			body, _ := io.ReadAll(res.Body)
+			res, body, got := do(t, req)
 			if res.StatusCode != c.Status {
 				t.Fatalf("status = %d, want %d (%s)", res.StatusCode, c.Status, body)
 			}
@@ -367,7 +438,43 @@ func TestVectors(t *testing.T) {
 			if c.BodyHex != "" && hex.EncodeToString(body) != c.BodyHex {
 				t.Errorf("body = %x, want %s", body, c.BodyHex)
 			}
+			var want []analytics.Event
+			if a := c.Analytics; a != nil {
+				want = []analytics.Event{{ProjectID: db.DefaultProjectID, AppID: a.AppID, AssetID: a.AssetID, PlaybackID: a.PlaybackID,
+					Kind: a.Kind, Bytes: a.Bytes, Views: a.Views, WatchSeconds: a.WatchSeconds, Vid: a.Vid}}
+			}
+			if !slices.Equal(got, want) {
+				t.Errorf("analytics = %+v, want %+v", got, want)
+			}
 		})
+	}
+
+	// A fetch the Worker forwards to origin is counted at the edge, not here.
+	t.Run("a fetch forwarded by the Worker is not counted again", func(t *testing.T) {
+		req, _ := http.NewRequest(http.MethodGet, srv.URL+"/p/pid_public/master.m3u8", nil)
+		req.Header.Set("X-ClipMux-Edge", "1")
+		res, _, got := do(t, req)
+		if res.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d", res.StatusCode)
+		}
+		if len(got) != 0 {
+			t.Errorf("analytics = %+v, want none", got)
+		}
+	})
+}
+
+// TestViewerKeys checks analytics.ViewerKey against the vectors, which the
+// Worker checks too.
+func TestViewerKeys(t *testing.T) {
+	v := loadVectors(t)
+	key, err := hex.DecodeString(v.AnalyticsKeyHex)
+	if err != nil || len(v.ViewerKeys) == 0 {
+		t.Fatalf("analytics_key_hex %q / %d viewer_keys", v.AnalyticsKeyHex, len(v.ViewerKeys))
+	}
+	for _, vk := range v.ViewerKeys {
+		if got := hex.EncodeToString(analytics.ViewerKey(key, vk.AppID, vk.Vid)); got != vk.KeyHex {
+			t.Errorf("ViewerKey(%s, %q) = %s, want %s", vk.AppID, vk.Vid, got, vk.KeyHex)
+		}
 	}
 }
 

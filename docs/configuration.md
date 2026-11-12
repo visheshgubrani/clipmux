@@ -32,6 +32,7 @@ A value that doesn't parse stops the command at start, naming the variable.
 | `CLIPMUX_CLOUDFLARE_API` | Cloudflare's v4 API | Cloudflare's API base, for a proxy or a test double. |
 | `CLIPMUX_R2_ENDPOINT` | `https://{account_id}.r2.cloudflarestorage.com` | R2's S3 endpoint, e.g. the EU jurisdiction's. |
 | `CLIPMUX_RUNPOD_API` | RunPod's v1 REST API | RunPod's API base, for a test double. |
+| `CLIPMUX_RUNPOD_CATALOG` | RunPod's v2 API | Where RunPod's GPU prices come from (D111), for a test double. |
 | `CLIPMUX_WORKER_IMAGE` | the image this build names | The image RunPod and Modal machines run (D058). |
 | `CLIPMUX_EXECUTORS_ALLOW_PRIVATE_URL` | `false` | Connect RunPod or Modal while the public URL is private: development only. |
 
@@ -65,6 +66,21 @@ needs none of these; the built-in worker gets its own from serve.
 `CLIPMUX_DATA_DIR`, `CLIPMUX_SECRETS_KEY` and `CLIPMUX_SECRETS_KEY_PREVIOUS`,
 the same as serve. `clipmux admin` with no arguments lists its commands.
 
+## Your app's backend
+
+These are not read by ClipMux: they are what an app's backend reads, as
+`npx @clipmux/node init`, `clipmux admin create-integration` and the
+dashboard's "Create credentials" write them (P6-T23). Keep them on the
+server; none belongs in a browser bundle.
+
+| Variable | What it holds |
+| --- | --- |
+| `CLIPMUX_URL` | The server's public URL, which the backend calls. |
+| `CLIPMUX_API_KEY` | The app's `cmx_` API key, with `uploads:write`, `assets:read` and `assets:write`. |
+| `CLIPMUX_SIGNING_KID` | The kid of the app's signing key, the `kid` header of every playback token. |
+| `CLIPMUX_SIGNING_KEY` | The ES256 private key (PKCS #8 PEM) as one double-quoted line with `\n` escapes, which dotenv, Next.js and `node --env-file` expand. |
+| `CLIPMUX_WEBHOOK_SECRET` | The `whsec_` secret webhook deliveries are signed with; only when a webhook URL was given. |
+
 ## Tests and development
 
 | Variable | What it does |
@@ -72,6 +88,8 @@ the same as serve. `clipmux admin` with no arguments lists its commands.
 | `TEST_DATABASE_URL` | Real-Postgres tests run against it; skipped when unset. |
 | `CLIPMUX_TEST_S3_ENDPOINT`, `CLIPMUX_TEST_S3_ACCESS_KEY`, `CLIPMUX_TEST_S3_SECRET_KEY` | The S3 store the storage contract tests use (the dev SeaweedFS). |
 | `CLIPMUX_REQUIRE_S3`, `CLIPMUX_REQUIRE_MEDIA_TOOLS` | In CI: a missing S3 store or media tool fails instead of skipping. |
-| `CLIPMUX_SKIP_SPEECH` | `1` skips the tests that run real whisper.cpp, even under `CLIPMUX_REQUIRE_MEDIA_TOOLS`. Hosted CI sets it; the self-hosted GPU runner runs them (`gpu.yml`). |
+| `CLIPMUX_SKIP_SPEECH` | `1` skips the tests that run real whisper.cpp, even under `CLIPMUX_REQUIRE_MEDIA_TOOLS`. CI sets it; run them locally. |
+| `CLIPMUX_LIVE_APPROVAL`, `CLIPMUX_LIVE_APPROVAL_WAIT` | `1` starts a real Modal token flow (D109) and prints the page to open; with `_WAIT` it also waits for you to approve it, which creates a real token in your workspace. |
+| `CLIPMUX_ANALYTICS_SCALE` | `1` runs the analytics scale test: it seeds 180 days of history and fails if a 90-day read takes over 500 ms (P7-T03). About two minutes. |
 | `CLIPMUX_TEST_MODELS_DIR` | Where the speech tests find the pinned whisper and VAD models, by their upstream file names (`toolchain/fetch_speech_models.sh DIR` fetches them). Without it they skip, or fail under `CLIPMUX_REQUIRE_MEDIA_TOOLS`. |
 | `CLIPMUX_E2E` and `CLIPMUX_E2E_*`, `CLIPMUX_FIXTURE_PORT`, `CLIPMUX_GPU_TEST` | The real-binary exit tests and the browser fixture (D033). |

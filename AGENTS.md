@@ -16,22 +16,27 @@ anything decided since, and wins over the architecture doc where they differ.
   `workerapi`, `worker`, `outputs`, `delivery`, `tokens`, `media`, `contentkey`,
   `storage` (filesystem and S3 adapters, `s3test`), `stores`, `routes`, `outbox`, `push`, `listen`,
   `dispatch` (serverless dispatches, keys, reaper), `runpod` (`runpodtest`), `modal`, `registry` (`registrytest`),
-  `httpjson`, `server`, `sweeper`, `web` (embedded dashboard build).
+  `httpjson`, `server`, `sweeper`, `web` (embedded dashboard build), `openapi`
+  (the integration API spec, D112).
 - Media tests need ffmpeg, ffprobe and Shaka Packager ≥ 3.9.1
-  (`toolchain/install_packager.sh`); they skip without them, except in CI
-  where `CLIPMUX_REQUIRE_MEDIA_TOOLS=1` makes a missing tool a failure.
-  Hosted CI sets `CLIPMUX_SKIP_SPEECH=1`; the real whisper.cpp tests run on the
-  self-hosted GPU runner (`gpu.yml`). What runs where is in `.github/README.md`.
+  (`toolchain/install_packager.sh`); they skip without them, and the lean PR
+  CI doesn't install them, so run media and whisper.cpp tests locally (or set
+  `CLIPMUX_REQUIRE_MEDIA_TOOLS=1` to make a missing tool a failure). What runs
+  where is in `.github/README.md`.
 - Adapter boundaries (storage, executor, delivery) keep core logic from
   branching on a vendor; if it needs to, the interface is leaking.
 - The dashboard and CLI are API clients with no private path into the server.
 - `internal/delivery/testdata/vectors.json` is the delivery contract shared with
   the Phase 2 Cloudflare Worker. Change behaviour there first; regenerate test
   tokens with `go test ./internal/delivery -run TestVectors -update`.
+- `internal/webhooks/testdata/vectors.json` is the webhook-signature contract
+  for the SDK and the language snippets; regenerate with
+  `go test ./internal/webhooks -run TestVectors -update` (D112).
 - `toolchain/versions.env` is the only place a media tool version, URL or digest
   is written. Shaka Packager must be >= 3.9.1.
-- TypeScript lives only in the dashboard, the player/uploader packages and the
-  Cloudflare Worker (`worker/`). The Worker and the Go delivery handler share JSON
+- TypeScript lives only in the dashboard, the packages (`packages/player`,
+  `packages/uploader`, `packages/node`, the server SDK), the Cloudflare Worker
+  (`worker/`) and the example apps (`examples/`). The Worker and the Go delivery handler share JSON
   test vectors; change both together.
 
 ## Commands

@@ -27,9 +27,12 @@ const (
 	AssetsRead   = "assets:read"
 	AssetsWrite  = "assets:write"
 	UploadsWrite = "uploads:write"
+	// AnalyticsRead reads the key's own app's analytics (P7-T03). It is
+	// opt-in: not among the scopes a new key gets by default.
+	AnalyticsRead = "analytics:read"
 )
 
-var allScopes = []string{AssetsRead, AssetsWrite, UploadsWrite}
+var allScopes = []string{AssetsRead, AssetsWrite, UploadsWrite, AnalyticsRead}
 
 // ErrInvalid means the presented secret is not a usable key.
 var ErrInvalid = errors.New("apikeys: invalid key")
@@ -49,6 +52,10 @@ type Key struct {
 
 // AllScopes are every scope an integration key can carry.
 func AllScopes() []string { return slices.Clone(allScopes) }
+
+// DefaultScopes are what a new key gets unless it asks: everything an app
+// needs to upload and play, not analytics.
+func DefaultScopes() []string { return []string{UploadsWrite, AssetsRead, AssetsWrite} }
 
 // Can reports whether the key carries scope.
 func (k Key) Can(scope string) bool { return slices.Contains(k.Scopes, scope) }
@@ -184,6 +191,10 @@ func (a *Authenticator) Authenticate(r *http.Request) (Key, error) {
 	return a.Session(r)
 }
 
+// AnyScope makes Require accept any valid key whatever its scopes: for
+// GET /v1/app, which a key reads about itself.
+const AnyScope = ""
+
 // Require authenticates r and checks that its key carries scope. Otherwise
 // it writes 401 unauthorized (or the session's own refusal) or 403
 // insufficient_scope and returns false.
@@ -195,7 +206,7 @@ func (a *Authenticator) Require(w http.ResponseWriter, r *http.Request, scope st
 		}
 		return Key{}, false
 	}
-	if !key.Can(scope) {
+	if scope != AnyScope && !key.Can(scope) {
 		httpjson.Error(w, http.StatusForbidden, "insufficient_scope", "this key lacks "+scope)
 		return Key{}, false
 	}

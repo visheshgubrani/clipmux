@@ -2,18 +2,12 @@
 # check 9): Connect RunPod and Connect Modal each run the setup test
 # through their provider, against serve behind a Cloudflare quick tunnel,
 # encode on NVENC, and leave no machine running (TestExitRealProviders).
-# It pays for a few GPU-minutes, so it runs after the Image workflow pushed
-# main's image, weekly and by hand, once REAL_PROVIDERS is set, with the
+# It pays for a few GPU-minutes, so it runs by hand against an image
+# already pushed by image.yml, once REAL_PROVIDERS is set, with the
 # secrets RUNPOD_API_KEY, MODAL_TOKEN_ID, MODAL_TOKEN_SECRET, GHCR_PULL_TOKEN.
 name: Exit test (providers)
 on:
-  workflow_run:
-    workflows: [Image]
-    types: [completed]
-    branches: [main]
   workflow_dispatch:
-  schedule:
-    - cron: "41 5 * * 1"
 permissions:
   contents: read
 concurrency:

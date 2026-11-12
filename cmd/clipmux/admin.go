@@ -20,6 +20,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/accounts"
 	"github.com/visheshgubrani/clipmux/internal/agents"
 	"github.com/visheshgubrani/clipmux/internal/apikeys"
+	"github.com/visheshgubrani/clipmux/internal/apppairings"
 	"github.com/visheshgubrani/clipmux/internal/config"
 	"github.com/visheshgubrani/clipmux/internal/db"
 	"github.com/visheshgubrani/clipmux/internal/ids"
@@ -38,6 +39,7 @@ const adminUsage = `Usage:
   clipmux admin create-key --app NAME [--name KEY_NAME] [--scopes uploads:write,assets:read] [--allow-loopback]
   clipmux admin create-signing-key --app NAME
   clipmux admin create-webhook --app NAME --url URL
+  clipmux admin create-integration --app NAME [--webhook-url URL] [--allow-loopback] >> .env
   clipmux admin create-pairing [--app PC-NAME]
   clipmux admin reset-password < new-password.txt
   clipmux admin setup-test [--wait] [--timeout 20m]
@@ -50,14 +52,19 @@ const adminUsage = `Usage:
   clipmux admin reset-totp
   clipmux admin outbox [--retry ID]
 
-Host-side administration until the dashboard exists. Reads DATABASE_URL, and
+Host-side administration, alongside the dashboard. Reads DATABASE_URL, and
 for create-webhook CLIPMUX_DATA_DIR or CLIPMUX_SECRETS_KEY (the same key serve
 uses). Each command creates the app if it does not exist and prints a secret
 once: create-key an API key, create-signing-key the private key your backend
 signs playback tokens with (only the public key is stored), create-webhook
 the secret that signs the endpoint's deliveries.
 
-create-key refuses while the public URL is loopback (localhost), because
+create-integration does all three at once for an app's backend and prints
+them as a .env block (CLIPMUX_URL, CLIPMUX_API_KEY, CLIPMUX_SIGNING_KID,
+CLIPMUX_SIGNING_KEY and, with --webhook-url, CLIPMUX_WEBHOOK_SECRET); append
+it to the backend's env file rather than pasting it anywhere else.
+
+create-key and create-integration refuse while the public URL is loopback (localhost), because
 signed upload URLs and base_url would point at this machine; set the public
 URL at first boot or with CLIPMUX_PUBLIC_URL, or pass --allow-loopback for
 local development.
@@ -109,7 +116,7 @@ func admin(args []string, getenv func(string) string, stdin io.Reader, stdout, s
 	if len(args) > 0 && slices.Contains([]string{"reseal-secrets", "rotate-signing-key", "list-keys", "revoke-key", "reset-totp"}, args[0]) {
 		return keysCmd(args[0], args[1:], getenv, stdout, stderr)
 	}
-	if len(args) == 0 || !slices.Contains([]string{"create-key", "create-signing-key", "create-webhook", "create-pairing", "reset-password", "setup-test"}, args[0]) {
+	if len(args) == 0 || !slices.Contains([]string{"create-key", "create-signing-key", "create-webhook", "create-integration", "create-pairing", "reset-password", "setup-test"}, args[0]) {
 		fmt.Fprint(stderr, adminUsage)
 		return 2
 	}
@@ -120,7 +127,8 @@ func admin(args []string, getenv func(string) string, stdin io.Reader, stdout, s
 	name := fs.String("name", "default", "key name (create-key)")
 	scopes := fs.String("scopes", apikeys.UploadsWrite+","+apikeys.AssetsRead, "comma-separated scopes (create-key)")
 	endpoint := fs.String("url", "", "endpoint URL (create-webhook)")
-	allowLoopback := fs.Bool("allow-loopback", false, "issue a key while the public URL is loopback (create-key, development only)")
+	webhookURL := fs.String("webhook-url", "", "also register a webhook endpoint (create-integration)")
+	allowLoopback := fs.Bool("allow-loopback", false, "issue a key while the public URL is loopback (create-key, create-integration; development only)")
 	wait := fs.Bool("wait", false, "wait for the result (setup-test)")
 	timeout := fs.Duration("timeout", 20*time.Minute, "how long to wait (setup-test)")
 	if err := fs.Parse(args[1:]); err != nil {
@@ -149,6 +157,14 @@ func admin(args []string, getenv func(string) string, stdin io.Reader, stdout, s
 		}
 	case "create-signing-key":
 		err = createSigningKey(ctx, pool, *app, stdout)
+	case "create-integration":
+		var box *secrets.Box
+		if *webhookURL != "" {
+			box, err = loadBox(getenv)
+		}
+		if err == nil {
+			err = createIntegration(ctx, pool, box, getenv, *app, *webhookURL, *allowLoopback, stdout)
+		}
 	case "reset-password":
 		err = resetPassword(ctx, pool, stdin, stdout)
 	case "create-pairing":
@@ -168,24 +184,69 @@ func admin(args []string, getenv func(string) string, stdin io.Reader, stdout, s
 	return 0
 }
 
-// keysAllowed applies the first-boot rule: no API key while the public URL
-// (pinned by CLIPMUX_PUBLIC_URL, or saved at first boot) is loopback.
-func keysAllowed(ctx context.Context, pool *pgxpool.Pool, getenv func(string) string, allowLoopback bool) error {
+// publicURL is the server's public URL: pinned by CLIPMUX_PUBLIC_URL, or
+// saved at first boot, or the default.
+func publicURL(ctx context.Context, pool *pgxpool.Pool, getenv func(string) string) (string, error) {
 	public := getenv("CLIPMUX_PUBLIC_URL")
 	if public == "" {
 		urls, err := db.New(pool).GetProjectURLs(ctx, project)
 		if err != nil {
-			return err
+			return "", err
 		}
 		public = urls.PublicUrl.String
+	}
+	return orDefault(public, config.DefaultPublicURL), nil
+}
+
+// keysAllowed applies the first-boot rule: no API key while the public URL
+// is loopback.
+func keysAllowed(ctx context.Context, pool *pgxpool.Pool, getenv func(string) string, allowLoopback bool) error {
+	public, err := publicURL(ctx, pool, getenv)
+	if err != nil {
+		return err
 	}
 	if allowLoopback || settings.KeysAllowed(public) {
 		return nil
 	}
-	if public == "" {
-		public = config.DefaultPublicURL
-	}
+	return loopbackRefusal(public)
+}
+
+func loopbackRefusal(public string) error {
 	return fmt.Errorf("the public URL is %s; API keys need one reachable from outside this machine. Set it at first boot or with CLIPMUX_PUBLIC_URL, or pass --allow-loopback for local development", public)
+}
+
+// createIntegration finds or creates the app and issues its credentials
+// bundle (an API key, a signing key and optionally a webhook endpoint) in
+// one transaction, printing them once as a .env block.
+func createIntegration(ctx context.Context, pool *pgxpool.Pool, box *secrets.Box, getenv func(string) string, appName, webhookURL string, allowLoopback bool, out io.Writer) error {
+	public, err := publicURL(ctx, pool, getenv)
+	if err != nil {
+		return err
+	}
+	var c apppairings.Credentials
+	err = pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		q := db.New(tx)
+		id, err := appID(ctx, q, appName)
+		if err != nil {
+			return err
+		}
+		app, err := q.GetApp(ctx, db.GetAppParams{ProjectID: project, ID: id})
+		if err != nil {
+			return err
+		}
+		c, err = apppairings.Issue(ctx, tx, box, app, apppairings.Options{
+			PublicURL: public, Local: allowLoopback, WebhookURL: webhookURL, KeyName: "integration",
+		})
+		return err
+	})
+	if errors.Is(err, apppairings.ErrPublicURLRequired) {
+		return loopbackRefusal(public)
+	}
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "# Shown once. Keep it in your backend's env file, nowhere else.\n%s", c.Env)
+	return nil
 }
 
 // appID finds an app by name, creating it if needed.

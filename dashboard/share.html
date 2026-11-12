@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="robots" content="noindex" />
+    <meta name="referrer" content="no-referrer" />
+    <title>Shared video</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  </head>
+  <body>
+    <main class="share">
+      <h1 id="title" hidden>Shared video</h1>
+      <div id="stage" class="stage" aria-busy="true"></div>
+      <section id="notice" class="notice" role="status" hidden>
+        <h1 id="notice-title">Loading</h1>
+        <p id="notice-text"></p>
+        <button id="retry" type="button" hidden>Try again</button>
+      </section>
+      <p class="credit">Shared with ClipMux</p>
+    </main>
+    <script type="module" src="/src/share/main.ts"></script>
+  </body>
+</html>

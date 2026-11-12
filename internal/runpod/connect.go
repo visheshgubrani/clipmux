@@ -50,6 +50,9 @@ type Connector struct {
 	ProjectID string
 	// API is RunPod's REST API base (DefaultAPI, or a fake).
 	API string
+	// GraphQL and Console are where browser approval runs (D109), and
+	// Catalog where GPU prices come from (D111); empty means the defaults.
+	GraphQL, Console, Catalog string
 	// PublicURL is the URL pods reach the worker API on.
 	PublicURL func() string
 	// AllowPrivateURL skips the public-URL check, for development and the
@@ -67,11 +70,15 @@ type Connector struct {
 
 var imageRef = regexp.MustCompile(`^[a-z0-9]+([._/:@-][a-zA-Z0-9_.-]+)+$`)
 
-// Connect runs the steps in order and stops at the first that fails. Each
-// step is safe to repeat, so connecting again rotates the key or changes
-// the settings.
-func (c *Connector) Connect(ctx context.Context, req Request) (dispatch.Result, error) {
-	req.APIKey = strings.TrimSpace(req.APIKey)
+// CheckSettings refuses a request whose settings Connect would refuse,
+// before a browser approval issues a key for it (D109).
+func (c *Connector) CheckSettings(req Request) error {
+	_, _, err := c.settings(req)
+	return err
+}
+
+// settings fills req's defaults and checks everything but the key.
+func (c *Connector) settings(req Request) (Request, dispatch.Settings, error) {
 	if req.Image == "" {
 		req.Image = c.DefaultImage
 	}
@@ -84,22 +91,40 @@ func (c *Connector) Connect(ctx context.Context, req Request) (dispatch.Result, 
 	if req.MaxConcurrent == 0 {
 		req.MaxConcurrent = 1
 	}
+	if req.MonthlyLimitCents == 0 {
+		req.MonthlyLimitCents = dispatch.DefaultMonthlyLimitCents
+	}
 	settings := dispatch.Settings{
 		MaxConcurrent: req.MaxConcurrent, MonthlyLimitCents: req.MonthlyLimitCents,
 		RateCentsPerHour: req.RateCentsPerHour, DiskBytes: int64(req.DiskGB) << 30,
 	}
 	switch {
-	case req.APIKey == "":
-		return dispatch.Result{}, fmt.Errorf("%w: api_key is required", ErrInvalid)
-	case req.Image == "" || !imageRef.MatchString(req.Image):
-		return dispatch.Result{}, fmt.Errorf("%w: image must be an image reference such as ghcr.io/owner/clipmux:tag", ErrInvalid)
+	case req.Image == "":
+		return req, settings, fmt.Errorf("%w: this server has no default worker image (it was not built by CI); set CLIPMUX_WORKER_IMAGE or enter an image under Advanced", ErrInvalid)
+	case !imageRef.MatchString(req.Image):
+		return req, settings, fmt.Errorf("%w: image must be an image reference such as ghcr.io/owner/clipmux:tag", ErrInvalid)
 	case (req.RegistryUsername == "") != (req.RegistryPassword == ""):
-		return dispatch.Result{}, fmt.Errorf("%w: registry_username and registry_password go together", ErrInvalid)
+		return req, settings, fmt.Errorf("%w: registry_username and registry_password go together", ErrInvalid)
 	case req.DiskGB > 2000:
-		return dispatch.Result{}, fmt.Errorf("%w: disk_gb must be at most 2000", ErrInvalid)
+		return req, settings, fmt.Errorf("%w: disk_gb must be at most 2000", ErrInvalid)
 	}
 	if err := settings.Valid(); err != nil {
-		return dispatch.Result{}, fmt.Errorf("%w: %v", ErrInvalid, err)
+		return req, settings, fmt.Errorf("%w: %v", ErrInvalid, err)
+	}
+	return req, settings, nil
+}
+
+// Connect runs the steps in order and stops at the first that fails. Each
+// step is safe to repeat, so connecting again rotates the key or changes
+// the settings.
+func (c *Connector) Connect(ctx context.Context, req Request) (dispatch.Result, error) {
+	req.APIKey = strings.TrimSpace(req.APIKey)
+	if req.APIKey == "" {
+		return dispatch.Result{}, fmt.Errorf("%w: api_key is required", ErrInvalid)
+	}
+	req, settings, err := c.settings(req)
+	if err != nil {
+		return dispatch.Result{}, err
 	}
 
 	steps := &dispatch.Steps{Provider: "runpod", Logger: c.Logger}
@@ -126,7 +151,18 @@ func (c *Connector) Connect(ctx context.Context, req Request) (dispatch.Result, 
 			}
 			return "", err
 		}
-		return "the API key works", nil
+		if settings.RateCentsPerHour > 0 {
+			return "the API key works", nil
+		}
+		// No rate given: the dearest chosen GPU's price, from RunPod.
+		gpus, err := c.GPUs(ctx, req.APIKey)
+		if err != nil {
+			return "", fmt.Errorf("the API key works, but RunPod's GPU prices couldn't be read: %w", err)
+		}
+		if settings.RateCentsPerHour = rateFor(gpus, req.GPUTypeIDs); settings.RateCentsPerHour == 0 {
+			return "", errors.New("none of the chosen GPUs is for rent on Secure Cloud now; choose another")
+		}
+		return fmt.Sprintf("the API key works; up to $%d.%02d per machine-hour", settings.RateCentsPerHour/100, settings.RateCentsPerHour%100), nil
 	})
 	step("public_url", func() (string, error) {
 		if c.AllowPrivateURL {

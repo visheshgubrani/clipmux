@@ -101,8 +101,8 @@ func (h contextHandler) WithGroup(name string) slog.Handler {
 
 // --- redaction ---
 
-// RedactURL drops a URL's query, which may carry a signature, and the token
-// of a /v/{token}/ playback path. A value that doesn't parse is replaced.
+// RedactURL drops a URL's query, which may carry a signature, the token
+// of a /v/{token}/ playback path and the secret of a /s/{secret} share link. A value that doesn't parse is replaced.
 func RedactURL(raw string) string {
 	u, err := neturl.Parse(raw)
 	if err != nil {
@@ -118,13 +118,16 @@ func RedactURL(raw string) string {
 	return u.String()
 }
 
-// RedactPath hides the playback token of a /v/{token}/ path.
+// RedactPath hides the playback token of a /v/{token}/ path and the
+// secret of a share link's /s/{secret} path (D104).
 func RedactPath(p string) string {
-	if rest, ok := strings.CutPrefix(p, "/v/"); ok {
-		if _, after, ok := strings.Cut(rest, "/"); ok {
-			return "/v/REDACTED/" + after
+	for _, prefix := range []string{"/v/", "/s/"} {
+		if rest, ok := strings.CutPrefix(p, prefix); ok {
+			if _, after, ok := strings.Cut(rest, "/"); ok {
+				return prefix + "REDACTED/" + after
+			}
+			return prefix + "REDACTED"
 		}
-		return "/v/REDACTED"
 	}
 	return p
 }
@@ -172,6 +175,8 @@ var scrubbers = []struct {
 	{regexp.MustCompile(`eyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+`), "REDACTED"},
 	// A playback token in a /v/{token}/ path.
 	{regexp.MustCompile(`/v/[^/\s"?{][^/\s"?]*/`), "/v/REDACTED/"},
+	// A share link's secret in a /s/{secret} path, with or without more after it.
+	{regexp.MustCompile(`/s/[^/\s"?{][^/\s"?#]*`), "/s/REDACTED"},
 	// URL query strings: presigned signatures (X-Amz-Signature, sig=).
 	{regexp.MustCompile(`(https?://[^\s?"#]+)\?[^\s"#]*`), "${1}?REDACTED"},
 	{regexp.MustCompile(`([?&](?:X-Amz-[A-Za-z-]+|sig|exp|token|code)=)[^&\s"#]*`), "${1}REDACTED"},

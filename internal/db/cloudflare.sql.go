@@ -9,9 +9,21 @@ import (
 	"context"
 )
 
+const deleteCloudflareConnection = `-- name: DeleteCloudflareConnection :execrows
+DELETE FROM cloudflare_connections WHERE project_id = $1
+`
+
+func (q *Queries) DeleteCloudflareConnection(ctx context.Context, projectID string) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteCloudflareConnection, projectID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const findStorageConfigByBucket = `-- name: FindStorageConfigByBucket :one
-SELECT id, project_id, kind, config, secrets_encrypted, is_default, created_at FROM storage_configs
-WHERE project_id = $1 AND kind = 'r2' AND config->>'bucket' = $2::text AND config->>'account_id' = $3::text
+SELECT id, project_id, kind, config, secrets_encrypted, is_default, created_at, removed_at FROM storage_configs
+WHERE project_id = $1 AND kind = 'r2' AND removed_at IS NULL AND config->>'bucket' = $2::text AND config->>'account_id' = $3::text
 ORDER BY created_at DESC
 LIMIT 1
 `
@@ -33,6 +45,7 @@ func (q *Queries) FindStorageConfigByBucket(ctx context.Context, arg FindStorage
 		&i.SecretsEncrypted,
 		&i.IsDefault,
 		&i.CreatedAt,
+		&i.RemovedAt,
 	)
 	return i, err
 }

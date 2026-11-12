@@ -1,6 +1,6 @@
 {
   "name": "@clipmux/player",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "A Video.js player for ClipMux that refreshes expired playback tokens without losing its place.",
   "license": "MIT",
   "keywords": [
@@ -29,6 +29,10 @@
     "./element": {
       "types": "./dist/element.d.ts",
       "default": "./dist/element.js"
+    },
+    "./react": {
+      "types": "./dist/react.d.ts",
+      "default": "./dist/react.js"
     }
   },
   "files": [
@@ -45,6 +49,17 @@
     "@videojs/html": "10.2.0",
     "@videojs/hlsjs-video": "10.2.0",
     "hls.js": "1.6.19"
+  },
+  "peerDependencies": {
+    "@types/react": ">=19"
+  },
+  "peerDependenciesMeta": {
+    "@types/react": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/react": "19.3.0"
   },
   "publishConfig": {
     "access": "public",

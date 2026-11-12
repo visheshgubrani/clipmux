@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -31,6 +33,15 @@ type PlaybackID struct {
 	Playable bool `json:"playable"`
 	// Status is active, revoking (unpublish not yet confirmed) or revoked.
 	Status string `json:"status"`
+	// Share names the share link this ID belongs to (D104); absent for
+	// the asset's other IDs.
+	Share *ShareRef `json:"share,omitempty"`
+}
+
+// ShareRef is the share link a playback ID was created for.
+type ShareRef struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
 }
 
 // View is an asset as the API returns it.
@@ -40,7 +51,9 @@ type View struct {
 	Status      string `json:"status"`
 	Version     int64  `json:"version"`
 	Passthrough string `json:"passthrough,omitempty"`
-	ErrorCode   string `json:"error_code,omitempty"`
+	// Title is a name for people (D099), absent until one is given.
+	Title     string `json:"title,omitempty"`
+	ErrorCode string `json:"error_code,omitempty"`
 	// BaseURL is the media origin; playback URLs are
 	// {base_url}/v/{token}/{playback_id}/master.m3u8 (signed) and
 	// {base_url}/p/{playback_id}/master.m3u8 (public).
@@ -80,6 +93,22 @@ func TrackView(t db.Track) Track {
 	return Track{ID: t.ID, Kind: t.Kind, Source: t.Source, Status: status, Language: t.Language.String, Name: t.Name.String, ErrorCode: t.ErrorCode.String}
 }
 
+// MaxTitle is the longest asset title, in characters.
+const MaxTitle = 200
+
+// Title checks an asset title as an upload, an import or a rename gives it:
+// trimmed, at most MaxTitle characters, one line. Empty means none.
+func Title(raw string) (pgtype.Text, error) {
+	t := strings.TrimSpace(raw)
+	if utf8.RuneCountInString(t) > MaxTitle {
+		return pgtype.Text{}, httpjson.Fail(http.StatusBadRequest, "invalid_request", "title is limited to 200 characters")
+	}
+	if strings.ContainsFunc(t, unicode.IsControl) {
+		return pgtype.Text{}, httpjson.Fail(http.StatusBadRequest, "invalid_request", "title must be one line of text")
+	}
+	return pgtype.Text{String: t, Valid: t != ""}, nil
+}
+
 // Load builds the view of an asset. base_url is the project's media URL,
 // read in the same transaction as the asset.
 func Load(ctx context.Context, q *db.Queries, a db.Asset) (View, error) {
@@ -102,7 +131,7 @@ func LoadMany(ctx context.Context, q *db.Queries, rows []db.Asset) ([]View, erro
 	if err != nil {
 		return nil, err
 	}
-	byAsset := map[string][]db.PlaybackID{}
+	byAsset := map[string][]db.ListPlaybackIDsForAssetsRow{}
 	for _, p := range pids {
 		byAsset[p.AssetID] = append(byAsset[p.AssetID], p)
 	}
@@ -129,16 +158,20 @@ func LoadMany(ctx context.Context, q *db.Queries, rows []db.Asset) ([]View, erro
 	return out, nil
 }
 
-func view(a db.Asset, baseURL string, pids []db.PlaybackID, trks []db.Track) View {
+func view(a db.Asset, baseURL string, pids []db.ListPlaybackIDsForAssetsRow, trks []db.Track) View {
 	playable := a.CurrentOutputID.Valid && a.Status != "deleted"
 	v := View{
 		ID: a.ID, AppID: a.AppID, Status: a.Status, Version: a.Version, BaseURL: baseURL,
-		Passthrough: a.Passthrough.String, ErrorCode: a.ErrorCode.String,
+		Passthrough: a.Passthrough.String, Title: a.Title.String, ErrorCode: a.ErrorCode.String,
 		PlaybackIDs: make([]PlaybackID, 0, len(pids)),
 		CreatedAt:   a.CreatedAt.Time.UTC(), UpdatedAt: a.UpdatedAt.Time.UTC(),
 	}
 	for _, p := range pids {
-		v.PlaybackIDs = append(v.PlaybackIDs, PlaybackID{ID: p.ID, Policy: p.Policy, Playable: playable && p.Status == "active", Status: p.Status})
+		pv := PlaybackID{ID: p.ID, Policy: p.Policy, Playable: playable && p.Status == "active", Status: p.Status}
+		if p.ShareID.Valid {
+			pv.Share = &ShareRef{ID: p.ShareID.String, Name: p.ShareName.String}
+		}
+		v.PlaybackIDs = append(v.PlaybackIDs, pv)
 	}
 	if a.DurationSeconds.Valid {
 		d := a.DurationSeconds.Float64
@@ -171,6 +204,7 @@ func (a *API) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/assets/{id}/tracks/{track}/transcript", a.getTranscript)
 	mux.HandleFunc("GET /v1/assets", a.list)
 	mux.HandleFunc("GET /v1/events", a.events)
+	mux.HandleFunc("GET /v1/app", a.getApp)
 }
 
 func (a *API) authorize(w http.ResponseWriter, r *http.Request) (apikeys.Key, bool) {

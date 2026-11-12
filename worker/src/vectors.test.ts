@@ -9,15 +9,46 @@ import { createWorker, rewriteMaster } from './delivery.ts'
 import { vectorEnv, vectors } from './fixture.test.ts'
 
 const worker = createWorker({ now: () => vectors.now, cache: null })
-const { env } = vectorEnv()
+const { env, points } = vectorEnv()
+
+interface Expected {
+  app_id: string
+  asset_id: string
+  playback_id: string
+  kind: string
+  bytes: number
+  views: number
+  watch_seconds: number
+  vid?: string
+}
+
+// The data point a counted case writes (D103): the viewer key from the
+// viewer_keys vectors, never the raw vid.
+function want(a: Expected) {
+  const viewer = a.vid
+    ? vectors.viewer_keys.find(
+        (k: { app_id: string; vid: string }) => k.app_id === a.app_id && k.vid === a.vid,
+      )?.key_hex
+    : ''
+  assert.notEqual(viewer, undefined, `no viewer_keys vector for ${a.app_id}/${a.vid}`)
+  return {
+    blobs: ['prj_default', a.app_id, a.asset_id, a.playback_id, a.kind, viewer],
+    doubles: [a.views, a.watch_seconds, a.bytes],
+    indexes: [a.asset_id],
+  }
+}
 
 for (const c of vectors.cases) {
   test(c.name, async () => {
     let path: string = c.path
     for (const [name, tok] of Object.entries(vectors.tokens))
       path = path.replaceAll(`{${name}}`, tok as string)
+    points.length = 0
     const res = await worker.fetch(
-      new Request(`https://media.example${path}`, { method: c.method ?? 'GET' }),
+      new Request(`https://media.example${path}`, {
+        method: c.method ?? 'GET',
+        headers: c.range ? { Range: c.range } : {},
+      }),
       env,
     )
     const body = new Uint8Array(await res.arrayBuffer())
@@ -28,6 +59,7 @@ for (const c of vectors.cases) {
     if (c.cache_control) assert.equal(res.headers.get('Cache-Control'), c.cache_control)
     if (c.body) assert.equal(new TextDecoder().decode(body), c.body)
     if (c.body_hex) assert.equal(Buffer.from(body).toString('hex'), c.body_hex)
+    assert.deepEqual(points, c.analytics ? [want(c.analytics)] : [], 'analytics data points')
   })
 }
 

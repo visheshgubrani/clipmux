@@ -1,1 +1,229 @@
 @import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+@import "@fontsource-variable/archivo/wdth.css";
+
+/* ClipMux design v2 (docs/design.md): the editing room. Canvas and screen
+   neutrals, one tally violet, status colours only with a word, posters on
+   black. Hex values as specified; contrast pairs are listed in the spec. */
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --font-sans: "Archivo Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-heading: var(--font-sans);
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+
+  /* Named v2 roles without a shadcn slot. */
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-tally: var(--tally);
+  --color-link: var(--link);
+  --color-poster: var(--poster);
+
+  /* The radius ladder: 4 chips and lamps, 6 posters and menu items,
+     8 buttons and inputs, 12 dialogs, sheets and toasts. */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
+  --radius-2xl: 12px;
+  --radius-3xl: 12px;
+  --radius-4xl: 12px;
+}
+
+/* Hairlines only: inputs and outline buttons carry no shadow. */
+@theme {
+  --shadow-xs: 0 0 #0000;
+}
+
+:root {
+  --radius: 8px;
+  --background: #f5f5f7; /* Canvas */
+  --foreground: #18171e; /* Ink */
+  --card: #ffffff; /* Screen */
+  --card-foreground: #18171e;
+  --popover: #ffffff;
+  --popover-foreground: #18171e;
+  --primary: #6d28d9; /* Tally violet */
+  --primary-foreground: #ffffff;
+  --secondary: #ebebef;
+  --secondary-foreground: #18171e;
+  --muted: #ebebef;
+  --muted-foreground: #6b6a75; /* Graphite */
+  --accent: #ebebef;
+  --accent-foreground: #18171e;
+  --destructive: #c81e1e;
+  --border: #e2e1e6;
+  --input: #d6d5dc;
+  --ring: #6d28d9;
+  --success: #16803c;
+  --warning: #b45309;
+  --tally: #6d28d9;
+  --link: #6d28d9;
+  --poster: #000000;
+  --chart-1: #7c3aed;
+  --chart-2: #8b8a96;
+  --chart-3: #0d9488;
+  --chart-4: #d97706;
+  --chart-5: #0284c7;
+  --sidebar: #fbfbfc;
+  --sidebar-foreground: #18171e;
+  --sidebar-primary: #6d28d9;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #ebebef;
+  --sidebar-accent-foreground: #18171e;
+  --sidebar-border: #e2e1e6;
+  --sidebar-ring: #6d28d9;
+}
+
+.dark {
+  --background: #121118;
+  --foreground: #edecf3;
+  --card: #1a1922;
+  --card-foreground: #edecf3;
+  --popover: #1a1922;
+  --popover-foreground: #edecf3;
+  --primary: #7c3aed;
+  --primary-foreground: #ffffff;
+  --secondary: #25242e;
+  --secondary-foreground: #edecf3;
+  --muted: #25242e;
+  --muted-foreground: #a3a2ae;
+  --accent: #25242e;
+  --accent-foreground: #edecf3;
+  --destructive: #f87171;
+  --border: #2b2a35;
+  --input: #383744;
+  --ring: #a78bfa;
+  --success: #4ade80;
+  --warning: #fbbf24;
+  --tally: #a78bfa;
+  --link: #a78bfa;
+  --poster: #000000;
+  --chart-1: #a78bfa;
+  --chart-2: #8b8a96;
+  --chart-3: #2dd4bf;
+  --chart-4: #fbbf24;
+  --chart-5: #38bdf8;
+  --sidebar: #16151c;
+  --sidebar-foreground: #edecf3;
+  --sidebar-primary: #7c3aed;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #25242e;
+  --sidebar-accent-foreground: #edecf3;
+  --sidebar-border: #2b2a35;
+  --sidebar-ring: #a78bfa;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  html {
+    @apply font-sans;
+    font-optical-sizing: auto;
+  }
+  body {
+    @apply bg-background text-foreground antialiased;
+  }
+  button:not(:disabled),
+  [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
+  code,
+  kbd,
+  samp {
+    @apply font-mono;
+  }
+}
+
+/* Type scale (docs/design.md). The page title is the one wide move. */
+@utility type-page-title {
+  font-size: 28px;
+  font-weight: 600;
+  font-stretch: 118%;
+  line-height: 1.15;
+  letter-spacing: -0.005em;
+}
+
+@utility type-section {
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+@utility type-timecode {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
+  letter-spacing: 0.01em;
+}
+
+/* Actions get a solid violet outline; fields keep their ring. */
+:is(
+  button,
+  a[href],
+  [role="button"],
+  [role="tab"],
+  [role="checkbox"],
+  [role="radio"],
+  [role="switch"],
+  [role="menuitem"]
+):focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+  --tw-ring-shadow: 0 0 #0000;
+}
+
+/* The poster's playhead while a video encodes: the only ambient motion. */
+@keyframes playhead {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(400%);
+  }
+}
+
+@utility animate-playhead {
+  animation: playhead 1.8s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-playhead {
+    animation: none;
+    transform: none;
+  }
+}

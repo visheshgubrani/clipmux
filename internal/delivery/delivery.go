@@ -15,6 +15,7 @@ package delivery
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -30,6 +31,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/visheshgubrani/clipmux/internal/analytics"
 	"github.com/visheshgubrani/clipmux/internal/contentkey"
 	"github.com/visheshgubrani/clipmux/internal/db"
 	"github.com/visheshgubrani/clipmux/internal/httpjson"
@@ -60,7 +62,14 @@ type Handler struct {
 	cache  *cache
 	Now    func() time.Time
 	Logger *slog.Logger
+	// Record, when set, is given each counted response (D103) after it is
+	// sent, on the request's goroutine. It must not block.
+	Record func(analytics.Event)
 }
+
+// EdgeHeader marks a fetch the Worker forwards to origin; the Worker has
+// counted it already. Spoofing it only hides the spoofer's own requests.
+const EdgeHeader = "X-ClipMux-Edge"
 
 // New returns the built-in delivery handler.
 func New(pool *pgxpool.Pool, set *stores.Set, keys contentkey.Ring) *Handler {
@@ -106,7 +115,27 @@ func notFound(w http.ResponseWriter) {
 	httpjson.Error(w, http.StatusNotFound, "not_found", "not found")
 }
 
+// serve answers one playback request and, when recording, counts it.
 func (h *Handler) serve(w http.ResponseWriter, r *http.Request, token string, signedURL bool) {
+	if h.Record == nil || r.Method != http.MethodGet || r.Header.Get(EdgeHeader) == "1" {
+		h.respond(w, r, token, signedURL, &counted{})
+		return
+	}
+	cw := &countingWriter{ResponseWriter: w}
+	var c counted
+	h.respond(cw, r, token, signedURL, &c)
+	h.count(r.Context(), cw, &c, r.PathValue("path"))
+}
+
+// counted is what respond learns that counting needs: the route, once it
+// is servable, and the token's viewer.
+type counted struct {
+	route    *db.GetRouteRow
+	vid      string
+	internal bool // signed by the server's internal key: previews, posters, the setup test
+}
+
+func (h *Handler) respond(w http.ResponseWriter, r *http.Request, token string, signedURL bool, c *counted) {
 	common(w)
 	ctx := r.Context()
 	q := db.New(h.pool)
@@ -127,6 +156,7 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, token string, si
 		denied(w) // disabling an app cuts off everything it owns
 		return
 	}
+	c.route = &route
 
 	audience := tokens.AudiencePlayback
 	if route.Policy == "signed" {
@@ -134,7 +164,7 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, token string, si
 			denied(w) // a signed ID never plays without its token
 			return
 		}
-		aud, status := h.authorize(ctx, q, route, token)
+		g, status := h.authorize(ctx, q, route, token)
 		if status != 0 {
 			if status == http.StatusUnauthorized {
 				expired(w)
@@ -143,7 +173,7 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, token string, si
 			}
 			return
 		}
-		audience = aud
+		audience, c.vid, c.internal = g.aud, g.vid, g.internal
 	}
 
 	p := r.PathValue("path")
@@ -201,25 +231,32 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, token string, si
 	}
 }
 
-// authorize verifies a token for route. It returns the token's audience, or
-// a status: 401 for an expired token, 403 for anything else wrong.
-func (h *Handler) authorize(ctx context.Context, q *db.Queries, route db.GetRouteRow, token string) (string, int) {
+// grant is what a verified token allows and says.
+type grant struct {
+	aud      string
+	vid      string
+	internal bool
+}
+
+// authorize verifies a token for route. It returns what the token grants,
+// or a status: 401 for an expired token, 403 for anything else wrong.
+func (h *Handler) authorize(ctx context.Context, q *db.Queries, route db.GetRouteRow, token string) (grant, int) {
 	tok, err := tokens.Parse(token)
 	if err != nil {
-		return "", http.StatusForbidden
+		return grant{}, http.StatusForbidden
 	}
 	key, err := h.cache.signingKey(ctx, q, tok.Kid)
 	if err != nil || key.RevokedAt.Valid || (key.RetiredAt.Valid && !key.RetiredAt.Time.After(h.Now())) {
-		return "", http.StatusForbidden
+		return grant{}, http.StatusForbidden
 	}
 	// An app's key signs only its own playback IDs; the server's internal
 	// key (no app) signs for any app of its own project.
 	if key.ProjectID != route.ProjectID || (key.AppID.Valid && key.AppID.String != route.AppID) {
-		return "", http.StatusForbidden
+		return grant{}, http.StatusForbidden
 	}
 	pub, err := tokens.ParsePublicKey(key.PublicKeyPem)
 	if err != nil || tok.Verify(pub) != nil {
-		return "", http.StatusForbidden
+		return grant{}, http.StatusForbidden
 	}
 	c, now := tok.Claims, h.Now()
 	switch {
@@ -227,12 +264,122 @@ func (h *Handler) authorize(ctx context.Context, q *db.Queries, route db.GetRout
 		c.Aud != tokens.AudiencePlayback && c.Aud != tokens.AudienceThumbnail,
 		c.Iat <= 0 || time.Unix(c.Iat, 0).After(now.Add(clockSkew)),
 		c.Exp-c.Iat > int64(route.MaxTokenLifetimeSeconds):
-		return "", http.StatusForbidden
+		return grant{}, http.StatusForbidden
 	case !time.Unix(c.Exp, 0).After(now):
-		return "", http.StatusUnauthorized
+		return grant{}, http.StatusUnauthorized
 	}
-	return c.Aud, 0
+	// A share link's ID is signed by the internal key too, but its plays
+	// are real viewers (D104), so they count.
+	return grant{aud: c.Aud, vid: c.Vid, internal: !key.AppID.Valid && !route.Share}, 0
 }
+
+// count records a response under D103's rules: a GET (serve checked) on a
+// servable route, answered 200 or 206, not under the internal key unless
+// the route is a share link's. Views and watch time count only from the
+// first byte, so a player's later ranges add bytes alone.
+func (h *Handler) count(ctx context.Context, w *countingWriter, c *counted, p string) {
+	if c.route == nil || c.internal || (w.status != http.StatusOK && w.status != http.StatusPartialContent) {
+		return
+	}
+	kind, rendition, outputID := kindOf(p)
+	if kind == "" {
+		return
+	}
+	route := c.route
+	e := analytics.Event{
+		ProjectID: route.ProjectID, AppID: route.AppID, AssetID: route.AssetID, PlaybackID: route.PlaybackID,
+		Kind: kind, Bytes: w.n, Vid: c.vid,
+	}
+	if w.status == http.StatusOK || strings.HasPrefix(w.Header().Get("Content-Range"), "bytes 0-") {
+		switch {
+		case kind == analytics.KindMaster:
+			e.Views = 1
+		case kind == analytics.KindSegment && (rendition == "audio" || !h.hasAudio(ctx, outputID)):
+			e.WatchSeconds = media.SegmentSeconds
+		}
+	}
+	h.Record(e)
+}
+
+// kindOf names what a served path is. Only paths delivery answered 2xx
+// reach it, so they already passed the grammar.
+func kindOf(p string) (kind, rendition, outputID string) {
+	switch {
+	case p == "master.m3u8":
+		return analytics.KindMaster, "", ""
+	case p == "poster.jpg" || strings.HasSuffix(p, "/poster.jpg"):
+		return analytics.KindPoster, "", ""
+	case strings.HasPrefix(p, "tracks/"):
+		if strings.HasSuffix(p, ".m3u8") {
+			return analytics.KindTrackPlaylist, "", ""
+		}
+		return analytics.KindTrack, "", ""
+	}
+	parts := strings.Split(p, "/")
+	if len(parts) != 3 {
+		return "", "", ""
+	}
+	switch {
+	case parts[1] == "key":
+		kind = analytics.KindKey
+	case parts[2] == "index.m3u8":
+		kind = analytics.KindPlaylist
+	case parts[2] == "init.mp4":
+		kind = analytics.KindInit
+	default:
+		kind = analytics.KindSegment
+	}
+	return kind, parts[1], parts[0]
+}
+
+// hasAudio reports whether an output has an audio rendition, which then
+// carries the watch time. An output that can't be read counts as having
+// one, so its video segments add no watch time.
+func (h *Handler) hasAudio(ctx context.Context, outputID string) bool {
+	out, err := h.cache.output(ctx, db.New(h.pool), outputID)
+	if err != nil {
+		return true
+	}
+	var m struct {
+		Audio bool `json:"audio"`
+	}
+	return json.Unmarshal(out.Manifest, &m) != nil || m.Audio
+}
+
+// countingWriter counts the body bytes sent and keeps the status.
+type countingWriter struct {
+	http.ResponseWriter
+	status int
+	n      int64
+}
+
+func (w *countingWriter) WriteHeader(status int) {
+	if w.status == 0 {
+		w.status = status
+	}
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *countingWriter) Write(b []byte) (int, error) {
+	if w.status == 0 {
+		w.status = http.StatusOK
+	}
+	n, err := w.ResponseWriter.Write(b)
+	w.n += int64(n)
+	return n, err
+}
+
+// ReadFrom keeps the underlying writer's sendfile path for stored files.
+func (w *countingWriter) ReadFrom(r io.Reader) (int64, error) {
+	if w.status == 0 {
+		w.status = http.StatusOK
+	}
+	n, err := io.Copy(w.ResponseWriter, r)
+	w.n += n
+	return n, err
+}
+
+func (w *countingWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
 // master serves the current output's master with {output_id}/ in front of
 // every URI, so relative URLs resolve to .../{playback_id}/{output_id}/...
