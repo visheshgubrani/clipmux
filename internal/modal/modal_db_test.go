@@ -339,3 +339,48 @@ func TestDisconnectModalClosesItsClients(t *testing.T) {
 		t.Fatalf("after disconnect: %+v", sts)
 	}
 }
+
+// fakeFlows is Modal's token flow: pending until approved.
+type fakeFlows struct{ approved bool }
+
+func (f *fakeFlows) create(context.Context) (dispatch.Approval, error) {
+	return dispatch.Approval{URL: "https://modal.com/token-flow/tf-1", Code: "AB12", Expires: time.Now().Add(time.Minute), Flow: "tf-1", Secret: "ws-1"}, nil
+}
+
+func (f *fakeFlows) wait(_ context.Context, a dispatch.Approval, _ time.Duration) (string, string, bool, error) {
+	if a.Flow != "tf-1" || a.Secret != "ws-1" {
+		return "", "", false, errors.New("unknown flow")
+	}
+	if !f.approved {
+		return "", "", false, nil
+	}
+	return tokenID, tokenSecret, true, nil
+}
+
+// Browser approval (D109): the token Modal issues connects with the
+// settings asked for, never passing through the browser.
+func TestConnectModalByBrowserApproval(t *testing.T) {
+	f := newFake()
+	c, queued := connector(t, f)
+	flows := &fakeFlows{}
+	c.flows = flows
+	ctx := context.Background()
+	a, err := c.BeginApproval(ctx)
+	if err != nil || a.URL != "https://modal.com/token-flow/tf-1" || a.Code != "AB12" {
+		t.Fatalf("approval = %+v, %v", a, err)
+	}
+	settings := request
+	settings.TokenID, settings.TokenSecret = "", ""
+	if st, _, err := c.FinishApproval(ctx, a, settings); err != nil || st != dispatch.ApprovalPending {
+		t.Fatalf("before approving = %s, %v; want pending", st, err)
+	}
+	flows.approved = true
+	st, res, err := c.FinishApproval(ctx, a, settings)
+	if err != nil || st != dispatch.ApprovalApproved || !res.Connected || *queued != 1 || f.tokenSec != tokenSecret {
+		t.Fatalf("after approving = %s, %s, %v (queued %d); want connected with Modal's token", st, stepNames(res), err, *queued)
+	}
+	a.Expires = time.Now().Add(-time.Second)
+	if st, _, _ := c.FinishApproval(ctx, a, settings); st != dispatch.ApprovalExpired {
+		t.Fatalf("an expired approval = %s, want expired", st)
+	}
+}

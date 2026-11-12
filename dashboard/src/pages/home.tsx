@@ -148,6 +148,7 @@ function Checklist({ setup }: { setup: Setup }) {
     }
   })
   const cloudflare = useQuery(q.cloudflare())
+  const storage = useQuery(q.storage())
   const agents = useQuery(q.agents())
   const executors = useQuery(q.executors())
   const chapters = useQuery(q.chapters())
@@ -161,9 +162,15 @@ function Checklist({ setup }: { setup: Setup }) {
       to: '/settings',
     },
     {
+      done: (storage.data?.data ?? []).some((s) => s.default && s.kind !== 'fs'),
+      title: 'Store uploads in a bucket',
+      detail: "Keep videos on Cloudflare R2 or S3 instead of this server's disk.",
+      to: '/storage',
+    },
+    {
       done: !!cloudflare.data?.connected,
       title: 'Connect Cloudflare',
-      detail: 'Serve videos from the edge and store them on R2.',
+      detail: 'Serve videos from the edge with a Worker.',
       to: '/delivery',
     },
     {
@@ -249,9 +256,11 @@ function StatusLine() {
   const agents = useQuery(q.agents())
   const routing = useQuery(q.routing())
   const cloudflare = useQuery(q.cloudflare())
+  const storage = useQuery(q.storage())
   const speech = useQuery(q.speech())
   const chapters = useQuery(q.chapters())
   const online = (agents.data?.data ?? []).filter((a) => a.online).length
+  const store = storage.data?.data.find((s) => s.default)
   const server = routing.data?.builtin_worker.online
   const items = [
     {
@@ -266,9 +275,13 @@ function StatusLine() {
     },
     { to: '/delivery', label: 'Delivery', value: cloudflare.data?.connected ? 'Cloudflare' : 'built in' },
     {
-      to: '/delivery',
+      to: '/storage',
       label: 'Storage',
-      value: cloudflare.data?.connected ? `R2, ${cloudflare.data.bucket ?? ''}` : "this server's disk",
+      value: !store
+        ? '…'
+        : store.kind === 'fs'
+          ? "this server's disk"
+          : `${store.kind === 'r2' ? 'R2' : 'S3'}, ${store.bucket ?? ''}`,
     },
     {
       to: '/captions',

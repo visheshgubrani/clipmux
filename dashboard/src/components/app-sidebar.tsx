@@ -6,6 +6,7 @@ import {
   ClapperboardIcon,
   CodeXmlIcon,
   CpuIcon,
+  DatabaseIcon,
   GlobeIcon,
   HouseIcon,
   LogOutIcon,
@@ -58,6 +59,7 @@ const main = [
 
 const connections = [
   { to: '/encoding', label: 'Encoding', icon: CpuIcon },
+  { to: '/storage', label: 'Storage', icon: DatabaseIcon },
   { to: '/delivery', label: 'Delivery', icon: GlobeIcon },
   { to: '/captions', label: 'Captions & AI', icon: SubtitlesIcon },
   { to: '/apps', label: 'Apps & API', icon: CodeXmlIcon },

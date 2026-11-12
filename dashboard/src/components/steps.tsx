@@ -16,6 +16,7 @@ const stepNames: Record<string, string> = {
   workers_paid: 'Workers Paid',
   bucket: 'R2 bucket',
   storage: 'Storage credentials',
+  default: 'Use for new uploads',
   worker: 'Deploy the Worker',
   routes: 'Publish routes',
   dns: 'Clear the hostname',

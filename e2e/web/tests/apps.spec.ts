@@ -19,9 +19,18 @@ test('the owner creates an app, its keys and a webhook, and disables it', async 
   await expect(page.getByRole('heading', { name, level: 1 })).toBeVisible()
   await noHorizontalScroll(page)
 
-  // The fixture's public URL is loopback: keys say why they're off.
-  await expect(page.getByRole('button', { name: 'Create API key' })).toBeDisabled()
-  await expect(page.getByText(/Keys need a public URL/)).toBeVisible()
+  // The fixture's public URL is loopback: a key needs the owner to confirm
+  // it's for apps on this computer, and its secret is shown once (D108).
+  await page.getByRole('button', { name: 'Create API key' }).click()
+  const naming = page.getByRole('dialog', { name: 'Create API key' })
+  await naming.getByLabel('Name').fill('Laptop')
+  await expect(naming.getByRole('button', { name: 'Create key' })).toBeDisabled()
+  await naming.getByRole('checkbox', { name: 'This key is for apps on this computer' }).check()
+  await naming.getByRole('button', { name: 'Create key' }).click()
+  const apiSecret = page.getByRole('dialog', { name: 'API key "Laptop"' })
+  await expect(apiSecret.getByRole('textbox', { name: 'API key' })).toHaveValue(/^cmx_/)
+  await apiSecret.getByRole('button', { name: "I've saved it" }).click()
+  await expect(page.getByRole('row', { name: /Laptop/ })).toBeVisible()
 
   // A signing key's private half is shown once.
   await page.getByRole('tab', { name: 'Signing keys' }).click()
@@ -53,7 +62,10 @@ test('the owner creates an app, its keys and a webhook, and disables it', async 
   await page.keyboard.press('Escape')
   await hook.getByRole('button', { name: 'Rotate secret' }).click()
   await page.getByRole('alertdialog').getByRole('button', { name: 'Create secret' }).click()
-  await page.getByRole('dialog', { name: 'New webhook secret' }).getByRole('button', { name: "I've saved it" }).click()
+  await page
+    .getByRole('dialog', { name: 'New webhook secret' })
+    .getByRole('button', { name: "I've saved it" })
+    .click()
   await expect(hook).toContainText('A new secret is waiting')
   await hook.getByRole('button', { name: 'Activate new secret' }).click()
   await expect(hook.getByRole('button', { name: 'Rotate secret' })).toBeVisible()

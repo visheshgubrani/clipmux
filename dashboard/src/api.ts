@@ -91,6 +91,20 @@ export interface PlaybackID {
   policy: 'signed' | 'public'
   playable: boolean
   status: string
+  /** The share link this ID was made for (D104); absent for the asset's own IDs. */
+  share?: { id: string; name: string }
+}
+/** A share link (docs/api.md, "Share links"): a page that plays one video without a token. */
+export interface ShareLink {
+  id: string
+  asset_id: string
+  name: string
+  url: string
+  playback_id: string
+  status: 'active' | 'expired' | 'revoked'
+  expires_at: string | null
+  created_at: string
+  views_30d?: number
 }
 export interface Track {
   id: string
@@ -284,6 +298,42 @@ export interface Cloudflare {
   current_version: string
   needs_redeploy: boolean
   storage_ok: boolean
+  /** Create-token links that pre-fill Cloudflare's form (D109). */
+  token_url: string
+  r2_token_url: string
+  analytics_token_url: string
+}
+/** What a pasted Cloudflare token reaches (POST /v1/cloudflare/inspect, D109). */
+export interface CloudflareInspection {
+  accounts: { id: string; name: string }[]
+  account_id?: string
+  zones?: string[]
+  buckets?: string[]
+  workers_paid: boolean
+  unreadable?: string[]
+}
+/** A step-by-step result: Connect Cloudflare, Add R2 storage, connect a provider. */
+export interface StepResult {
+  connected: boolean
+  steps: Step[]
+}
+/** A provider's browser approval (POST /v1/executors/{kind}/authorize, D109). */
+export interface Approval {
+  id: string
+  url?: string
+  code?: string
+  expires_at: string
+  /** `shown`: the provider showed the key on its own page; paste it (RunPod does). */
+  status: 'pending' | 'approved' | 'denied' | 'expired' | 'shown'
+  result?: StepResult
+}
+/** Edge analytics (P7-T05): the read-only token serve pulls the Worker's counts with. */
+export interface EdgeAnalytics {
+  connected: boolean
+  account_id?: string
+  pulled_through?: string
+  last_pull_at?: string
+  last_error?: string
 }
 export interface Moves {
   default_kind: string
@@ -320,7 +370,7 @@ export interface TrackDetail extends Track {
   chapters?: Chapter[]
 }
 
-/** The planned analytics contract (docs/api.md, "Planned"; D100). */
+/** The analytics contract (docs/api.md, "Analytics"; D100, D103). */
 export type Range = '24h' | '7d' | '30d' | '90d'
 export interface AnalyticsTotals {
   views: number
@@ -329,6 +379,8 @@ export interface AnalyticsTotals {
   bytes_delivered: number
 }
 export interface Analytics {
+  /** What is being counted: this server always; the edge once its counts are pulled in. */
+  collecting?: { builtin: boolean; edge: 'connected' | 'not_connected' | 'not_used' }
   totals: AnalyticsTotals
   previous: AnalyticsTotals
   series: { t: string; views: number; watch_seconds: number; bytes_delivered: number }[]

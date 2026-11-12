@@ -39,6 +39,7 @@ type rig struct {
 	url    string
 	cookie *http.Cookie
 	box    *secrets.Box
+	m      *manage.API
 }
 
 func newRig(t *testing.T, cfg config.Config) *rig {
@@ -93,7 +94,7 @@ func newRig(t *testing.T, cfg config.Config) *rig {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &rig{t: t, pool: pool, url: srv.URL, box: box, cookie: &http.Cookie{Name: "clipmux_session", Value: session}}
+	return &rig{t: t, pool: pool, url: srv.URL, box: box, m: m, cookie: &http.Cookie{Name: "clipmux_session", Value: session}}
 }
 
 type res struct {
@@ -205,6 +206,11 @@ func TestAPIKeysWaitForAPublicURLAndAreShownOnce(t *testing.T) {
 	if got := r.call("POST", "/v1/apps/"+appID+"/api-keys", map[string]any{"name": "backend"}, ""); got.status != http.StatusConflict || code(got) != "public_url_required" {
 		t.Fatalf("key while the public URL is localhost = %d %v, want 409 public_url_required", got.status, got.body)
 	}
+	local := r.call("POST", "/v1/apps/"+appID+"/api-keys", map[string]any{"name": "laptop", "local": true}, "")
+	if key, _ := local.body["key"].(string); local.status != http.StatusCreated || !strings.HasPrefix(key, "cmx_") {
+		t.Fatalf("a key confirmed for this machine while the public URL is localhost = %d %v, want 201", local.status, local.body)
+	}
+	r.exec(`DELETE FROM api_keys WHERE name = 'laptop'`)
 	r.setPublicURL()
 	created := r.call("POST", "/v1/apps/"+appID+"/api-keys", map[string]any{"name": "backend", "scopes": []string{"assets:read"}}, "")
 	secret, _ := created.body["key"].(string)

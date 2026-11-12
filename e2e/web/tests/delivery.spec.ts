@@ -1,52 +1,85 @@
 import { expect, test } from '@playwright/test'
-import { dismissToast, go, noHorizontalScroll, type OpsConfig, signIn, watchCSP } from './csp.ts'
+import { go, noHorizontalScroll, type OpsConfig, signIn, watchCSP } from './csp.ts'
 
-// Delivery & storage (P6-T12, T13): built-in delivery, and a generic S3
-// bucket added (checked before it's saved), its keys rotated, and removed.
-interface Config extends OpsConfig {
-  s3: { endpoint: string; bucket: string; access_key_id: string; secret_access_key: string } | null
-}
-
-test('the owner adds S3 storage, rotates its keys and removes it', async ({ page, request }) => {
+// Delivery (P6-T12, D109): built in until Cloudflare is connected. Connect
+// starts from a pre-filled create-token link; the pasted token is inspected
+// and the owner picks the account, the hostname under one of its zones and
+// the bucket, instead of typing IDs.
+test('connecting Cloudflare picks the hostname and bucket from the token', async ({ page, request }) => {
   const noViolations = await watchCSP(page)
-  const cfg = (await (await request.get('/config')).json()) as Config
+  const cfg = (await (await request.get('/config')).json()) as OpsConfig
   await signIn(page, cfg)
+  // The fixture has no Cloudflare: inspect and connect answer as Cloudflare
+  // would, and the test reads what the dashboard sent.
+  const inspected: Record<string, unknown>[] = []
+  const sent: Record<string, unknown>[] = []
+  await page.route('**/v1/cloudflare/inspect', (route) => {
+    const body = route.request().postDataJSON()
+    inspected.push(body)
+    return route.fulfill({
+      json: body.account_id
+        ? {
+            accounts: [
+              { id: 'acct1', name: 'Lessons Ltd' },
+              { id: 'acct2', name: 'Personal' },
+            ],
+            account_id: body.account_id,
+            zones: ['example.com', 'lessons.dev'],
+            buckets: ['clipmux-media', 'old-videos'],
+            workers_paid: true,
+          }
+        : {
+            accounts: [
+              { id: 'acct1', name: 'Lessons Ltd' },
+              { id: 'acct2', name: 'Personal' },
+            ],
+            workers_paid: false,
+          },
+    })
+  })
+  await page.route('**/v1/cloudflare/connect', (route) => {
+    sent.push(route.request().postDataJSON())
+    return route.fulfill({
+      json: {
+        connected: false,
+        steps: [
+          { name: 'token', ok: true, detail: 'active' },
+          { name: 'zone', ok: false, detail: 'stop here' },
+        ],
+      },
+    })
+  })
   await go(page, 'Delivery')
   await expect(page.getByText('In use').first()).toBeVisible()
-  const storage = page.getByRole('list', { name: 'Storage' })
-  await expect(storage.locator('[data-storage="fs"]')).toContainText('Default')
-  test.skip(!cfg.s3, 'no S3 test store (CLIPMUX_TEST_S3_ENDPOINT)')
-  const s3 = cfg.s3 as NonNullable<Config['s3']>
+  await page.getByRole('button', { name: 'Connect Cloudflare' }).click()
+  const dialog = page.getByRole('dialog', { name: 'Connect Cloudflare' })
+  const link = dialog.getByRole('link', { name: 'Create token on Cloudflare' })
+  await expect(link).toHaveAttribute('href', /^https:\/\/dash\.cloudflare\.com\/\?.*workers_scripts/)
+  await expect(dialog.getByRole('button', { name: 'Connect Cloudflare' })).toBeDisabled()
 
-  // Wrong keys fail the check and nothing is saved.
-  await page.getByRole('button', { name: 'Add S3 storage' }).click()
-  const form = page.getByRole('form', { name: 'Add S3 storage' })
-  await form.getByLabel('Endpoint', { exact: true }).fill(s3.endpoint)
-  await form.getByLabel('Bucket').fill(s3.bucket)
-  await form.getByLabel('Access key ID').fill(s3.access_key_id)
-  await form.getByLabel('Secret access key').fill('wrong-secret')
-  await form.getByRole('button', { name: 'Check and add' }).click()
-  await expect(form.getByRole('alert')).toBeVisible({ timeout: 30_000 })
-  await form.getByLabel('Secret access key').fill(s3.secret_access_key)
-  await form.getByRole('button', { name: 'Check and add' }).click()
-  const added = storage.locator('[data-storage="s3"]').filter({ hasText: s3.bucket })
-  await expect(added).toContainText('0 videos', { timeout: 30_000 })
-  // On a phone the toast sits over the list; it closes like any other.
-  await dismissToast(page, 'Storage added')
+  await dialog.getByLabel('API token').fill('cf-connect-token')
+  await dialog.getByLabel('Account').selectOption('acct1')
+  await expect(dialog.getByLabel('Zone')).toHaveValue('example.com')
+  await expect(dialog.getByLabel('Subdomain')).toHaveValue('media')
+  await dialog.getByLabel('Zone').selectOption('lessons.dev')
+  await dialog.getByLabel('Subdomain').fill('video')
+  await expect(dialog).toContainText('https://video.lessons.dev')
+  await expect(dialog.getByLabel('R2 bucket')).toHaveValue('clipmux-media')
+  await expect(dialog.getByRole('checkbox', { name: 'Store new uploads in R2' })).toBeChecked()
+  await dialog.getByRole('checkbox', { name: 'Store new uploads in R2' }).uncheck()
+  await dialog.getByRole('button', { name: 'Connect Cloudflare' }).click()
+  await expect(dialog.getByText('stop here')).toBeVisible()
+
+  expect(inspected.at(-1)).toEqual({ token: 'cf-connect-token', account_id: 'acct1' })
+  expect(sent).toEqual([
+    {
+      token: 'cf-connect-token',
+      hostname: 'video.lessons.dev',
+      bucket: 'clipmux-media',
+      account_id: 'acct1',
+      default_storage: false,
+    },
+  ])
   await noHorizontalScroll(page)
-
-  // Rotating checks the new keys before swapping them in.
-  await added.getByRole('button', { name: 'Rotate keys' }).click()
-  await page.getByLabel('New access key ID').fill(s3.access_key_id)
-  await page.getByLabel('New secret access key').fill(s3.secret_access_key)
-  await page.getByRole('button', { name: 'Check and rotate' }).click()
-  await expect(page.getByText('Keys rotated')).toBeVisible({ timeout: 30_000 })
-  await dismissToast(page, 'Keys rotated')
-
-  // Removing asks first.
-  await added.getByRole('button', { name: 'Remove' }).click()
-  await expect(page.getByRole('alertdialog')).toContainText(`Remove ${s3.bucket}?`)
-  await page.getByRole('alertdialog').getByRole('button', { name: 'Remove storage' }).click()
-  await expect(added).toHaveCount(0)
   await noViolations()
 })

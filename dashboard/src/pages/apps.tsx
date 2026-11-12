@@ -18,6 +18,7 @@ import {
   BreadcrumbSeparator,
 } from '@/components/ui/breadcrumb'
 import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
 import {
   Dialog,
   DialogContent,
@@ -253,9 +254,13 @@ function ApiKeys({
   const confirm = useConfirm()
   const keys = useQuery(q.apiKeys(app.id))
   const [naming, setNaming] = React.useState(false)
+  const [local, setLocal] = React.useState(false)
   const create = useMutation({
     mutationFn: (name: string) =>
-      post<{ key: string; name: string }>(`/v1/apps/${app.id}/api-keys`, { name }),
+      post<{ key: string; name: string }>(
+        `/v1/apps/${app.id}/api-keys`,
+        keysAllowed ? { name } : { name, local: true },
+      ),
     onSuccess: (k) => {
       void qc.invalidateQueries({ queryKey: ['apps', app.id, 'keys'] })
       setNaming(false)
@@ -275,23 +280,18 @@ function ApiKeys({
       title="API keys"
       description="A key can upload, read and change this app's videos, never settings."
       actions={
-        <Button size="sm" onClick={() => setNaming(true)} disabled={!keysAllowed}>
+        <Button
+          size="sm"
+          onClick={() => {
+            setLocal(false)
+            create.reset()
+            setNaming(true)
+          }}
+        >
           Create API key
         </Button>
       }
     >
-      {!keysAllowed && (
-        <Alert>
-          <AlertDescription>
-            Keys need a public URL that isn't localhost:{' '}
-            <Link to="/settings" className="text-link underline-offset-4 hover:underline">
-              set it in Settings
-            </Link>
-            . For local development, create one on the host with{' '}
-            <code>clipmux admin create-key --app NAME --allow-loopback</code>.
-          </AlertDescription>
-        </Alert>
-      )}
       <QueryState query={keys} what="the API keys" skeleton={<Skeleton className="h-20 w-full" />}>
         {(data) =>
           data.data.length === 0 ? (
@@ -367,8 +367,32 @@ function ApiKeys({
                 <Input id="key-name" name="name" maxLength={100} placeholder="Production backend" autoFocus />
                 {create.isError && <FieldError>{describe(create.error)}</FieldError>}
               </Field>
+              {!keysAllowed && (
+                <Alert>
+                  <AlertDescription className="flex flex-col gap-3">
+                    <span>
+                      The public URL is localhost, so upload links this key gets point at this computer. Apps
+                      elsewhere can't use them until you{' '}
+                      <Link to="/settings" className="text-link underline-offset-4 hover:underline">
+                        set a public URL in Settings
+                      </Link>
+                      ; the key keeps working after that.
+                    </span>
+                    <Field orientation="horizontal">
+                      <Checkbox
+                        id="key-local"
+                        checked={local}
+                        onCheckedChange={(v) => setLocal(v === true)}
+                      />
+                      <FieldLabel htmlFor="key-local" className="font-normal">
+                        This key is for apps on this computer
+                      </FieldLabel>
+                    </Field>
+                  </AlertDescription>
+                </Alert>
+              )}
               <DialogFooter>
-                <Button type="submit" disabled={create.isPending}>
+                <Button type="submit" disabled={create.isPending || (!keysAllowed && !local)}>
                   {create.isPending && <Spinner data-icon="inline-start" />}
                   Create key
                 </Button>

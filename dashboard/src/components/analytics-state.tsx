@@ -1,8 +1,11 @@
 import { useQuery } from '@tanstack/react-query'
 import { ChartLineIcon } from 'lucide-react'
 import * as React from 'react'
+import { Link } from 'react-router'
 import type { Analytics, Range } from '@/api'
 import { QueryState } from '@/components/query-state'
+import { Alert, AlertAction, AlertDescription, AlertTitle } from '@/components/ui/alert'
+import { Button } from '@/components/ui/button'
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/components/ui/empty'
 import { Skeleton } from '@/components/ui/skeleton'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
@@ -35,7 +38,7 @@ export function RangePicker({ value, onChange }: { value: Range; onChange: (r: R
   )
 }
 
-/** Until the analytics API lands (D100) this is what Analytics says: never sample data. */
+/** A server older than the analytics API (D100) says this: never sample data. */
 export function NotCollecting() {
   return (
     <Empty className="border border-dashed bg-card">
@@ -50,6 +53,28 @@ export function NotCollecting() {
         </EmptyDescription>
       </EmptyHeader>
     </Empty>
+  )
+}
+
+/**
+ * With Cloudflare delivery the Worker counts playback, but nothing pulls its
+ * counts in until edge analytics is connected: say so instead of showing
+ * quiet zeros.
+ */
+export function EdgeNotCounted() {
+  return (
+    <Alert>
+      <AlertTitle>Playback through Cloudflare isn’t counted yet</AlertTitle>
+      <AlertDescription>
+        Your videos stream from Cloudflare’s edge, so these numbers miss most views. Connect edge analytics
+        with a read-only token to bring them in.
+      </AlertDescription>
+      <AlertAction>
+        <Button size="sm" variant="outline" render={<Link to="/delivery#edge-analytics" />}>
+          Connect edge analytics
+        </Button>
+      </AlertAction>
+    </Alert>
   )
 }
 
@@ -75,6 +100,7 @@ export function AnalyticsPanel({
           <NotCollecting />
         ) : (
           <div className="flex flex-col gap-8">
+            {data.collecting?.edge === 'not_connected' && <EdgeNotCounted />}
             <React.Suspense fallback={chartSkeleton}>
               <AnalyticsView data={data} range={range} />
             </React.Suspense>

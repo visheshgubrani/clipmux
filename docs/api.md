@@ -161,10 +161,12 @@ means stop; `404` means the ID is unknown or revoked.
 | `GET /v1/executors` | `{data: [{kind, connected, verified, verified_at, config, max_concurrent, monthly_limit_cents, rate_cents_per_hour, disk_bytes, month_cents, machines, backoff_until}]}`: every provider ever connected, with this month's estimated spend (D055, D056) |
 | `POST /v1/executors/runpod/connect` | `{api_key, image?, registry_username?, registry_password?, gpu_type_ids?, disk_gb?, max_concurrent?, monthly_limit_cents, rate_cents_per_hour}` → `{connected, steps: [{name, ok, detail}]}`; steps `credentials`, `public_url`, `image` (resolved to its digest with the registry credentials), `registry`, `saved`, `setup_test`, stopping at the first failure; connecting again rotates the key (docs/executors.md) |
 | `POST /v1/executors/modal/connect` | `{token_id, token_secret, environment?, image?, registry_username?, registry_password?, gpu?, cpu?, memory_mib?, disk_gb?, max_concurrent?, monthly_limit_cents, rate_cents_per_hour}` → `{connected, steps}`; steps `credentials`, `public_url`, `image`, `saved`, `setup_test` (D057) |
+| `POST /v1/executors/{kind}/authorize` | browser approval instead of a pasted key (D109): the `connect` body without `api_key` or `token_*` → `201 {id, url, code?, expires_at, status: "pending"}`. The settings are checked first (`400 invalid_request`). Open `url`, the provider's own page (Modal shows `code`). At most three wait per project, each for 10 minutes: `429 too_many_approvals`; `502 approval_unavailable` when the provider won't start one (paste a key instead) |
+| `GET /v1/executors/{kind}/authorize/{id}` | polls the approval once (Modal's poll waits up to 10 s) → `{id, expires_at, status: pending \| approved \| denied \| expired \| shown, result?}`. `shown` means the provider put the key on its own page for you to paste instead (RunPod has done this). Once approved it runs that provider's `connect` with the credentials it issued, which never come back, and `result` is its `{connected, steps}`. One poll runs at a time, and a settled approval answers the same to every poll; `404` once expired |
 | `DELETE /v1/executors/{kind}` | `204`; `409 executor_in_use` while routing names it, `409 machines_running` while one of its machines may run |
 | `GET /v1/apps` · `POST /v1/apps` | `{name}` |
 | `POST /v1/apps/{id}/disable` · `…/enable` | a disabled app's keys, upload tokens and playback stop; the Dashboard app can't be disabled |
-| `GET`/`POST /v1/apps/{id}/api-keys` · `DELETE /v1/api-keys/{id}` | create `{name?, scopes?}` → `201 {id, name, scopes, created_at, key}`; `name` ≤ 100 characters, `default` when blank; `scopes` default to `uploads:write`, `assets:read`, `assets:write`; `analytics:read` is only given when asked for. List `{data: [{id, name, scopes, created_at, last_used_at?, revoked_at?}]}`. The secret (`key`) is in the create response only; `409 public_url_required` while the public URL is loopback |
+| `GET`/`POST /v1/apps/{id}/api-keys` · `DELETE /v1/api-keys/{id}` | create `{name?, scopes?, local?}` → `201 {id, name, scopes, created_at, key}`; `name` ≤ 100 characters, `default` when blank; `scopes` default to `uploads:write`, `assets:read`, `assets:write`; `analytics:read` is only given when asked for. List `{data: [{id, name, scopes, created_at, last_used_at?, revoked_at?}]}`. The secret (`key`) is in the create response only; `409 public_url_required` while the public URL is loopback, unless `local: true` confirms the key is for apps on this machine (D108) |
 | `GET`/`POST /v1/apps/{id}/signing-keys` · `DELETE /v1/signing-keys/{kid}` | `private_key_pem` in the create response only |
 | `GET`/`POST /v1/apps/{id}/webhook-endpoints` · `DELETE /v1/webhook-endpoints/{id}` | `secret` in the create response only |
 | `POST /v1/webhook-endpoints/{id}/secret` | `201 {secret, active: false}`: a new secret, shown once; deliveries stay signed with the old one until it is activated (D069) |
@@ -174,16 +176,18 @@ means stop; `404` means the ID is unknown or revoked.
 | `GET /v1/library?app_id=&status=&q=&include_deleted=&cursor=&limit=` | every app's assets, newest first: `{data: [asset + poster_url], next_cursor?}`. Deleted assets only with `include_deleted=true` or `status=deleted`. `q` (≤ 255 bytes) is an exact asset ID, or text a title or passthrough contains, case-insensitive (`%` and `_` match themselves). `poster_url` is `{base_url}/p/{pid}/poster.jpg` for a public playback ID, else `{base_url}/v/{t_token}/{pid}/poster.jpg` with a one-hour `t` token signed by the internal key; `null` until a playback ID is playable |
 | `GET /v1/library/counts?app_id=` | `{ready, processing, errored, waiting_upload}` |
 | `POST /v1/assets/{id}/preview-token` | a one-hour `v` token signed with the server's internal key: `{playback_id, token, url, expires_at}` |
-| `GET /v1/cloudflare` | `{connected, hostname, bucket, account_id, worker_version, current_version, needs_redeploy, storage_ok}` |
-| `POST /v1/cloudflare/connect` | `{token, hostname, bucket?, account_id?}` → `{connected, steps: [{name, ok, detail}]}`; runs Connect Cloudflare, stopping at the first failed step (each is safe to repeat). The token is used for this request only |
+| `GET /v1/cloudflare` | `{connected, hostname, bucket, account_id, worker_version, current_version, needs_redeploy, storage_ok, token_url, r2_token_url, analytics_token_url}`; the `*_url`s open Cloudflare's create-token form with the permissions Connect, R2 storage and edge analytics need already chosen (D109) |
+| `POST /v1/cloudflare/inspect` | `{token, account_id?}` → `{accounts: [{id, name}], account_id?, zones?, buckets?, workers_paid, unreadable?}`: what the token reaches, so nothing is typed by hand. With several accounts and none named, only `accounts` is filled. `unreadable` names what it can't list (`zones`, `buckets`, `billing`). Changes nothing; `400 token_rejected` |
+| `POST /v1/cloudflare/connect` | `{token, hostname, bucket?, account_id?, default_storage?}` → `{connected, steps: [{name, ok, detail}]}`; runs Connect Cloudflare, stopping at the first failed step (each is safe to repeat). The bucket is created if missing. `default_storage` says whether new uploads go to it; left out, a first connect makes it the default and a reconnect leaves the choice alone (D110). The token is used for this request only |
 | `DELETE /v1/cloudflare` | back to built-in delivery → `{disconnected, steps: [{name, ok, detail}]}`, steps `media_url` (back to the public URL), `delivery`, `routes` (the Worker's records and keys leave the bucket, so it refuses every ID), `forgotten`, `setup_test`, stopping at the first failure (each is safe to repeat). The R2 store stays a storage config, and the default if it was; the Worker and its domain stay in your Cloudflare account. `404 not_connected`; `409 pinned` while `CLIPMUX_MEDIA_URL` names the Worker (D099) |
 | `GET /v1/cloudflare/analytics` | `{connected, account_id?, pulled_through?, last_pull_at?, last_error?}`: edge analytics (D103). `pulled_through` is how far serve has pulled the Worker's counts; a first connect starts 13 days back and catches up a day per pull |
 | `POST /v1/cloudflare/analytics` | `{token}` → the status above. A second Cloudflare token with only **Account Analytics: Read**, checked with one query and kept sealed; a new token keeps `pulled_through`. `409 not_connected` without Cloudflare delivery, `400 token_rejected` |
 | `DELETE /v1/cloudflare/analytics` | `204`; the token is forgotten and pulled counts stay. `404 not_connected` |
 | `GET /v1/storage` | `{data: [{id, kind: fs \| r2 \| s3, bucket?, endpoint?, public_endpoint?, region?, default, asset_count, cloudflare_delivery, created_at}]}`; `asset_count` leaves deleted assets out. Credentials are never returned |
 | `POST /v1/storage` | `{endpoint, bucket, access_key_id, secret_access_key, region?, public_endpoint?}` → `201` the config, `kind: "s3"`, not the default. Saved only after a test write, read, list and delete pass and CORS is set: `400 storage_check_failed` with the store's reason otherwise. `public_endpoint` is where browsers PUT upload parts, when it differs |
+| `POST /v1/storage/r2` | `{token, bucket?, account_id?, default?}` → `{connected, steps}`, steps `token`, `account`, `bucket` (created if missing; `clipmux-media` by default), `storage` (keys derived from the token, checked like `POST /v1/storage`), and `default` when asked. Delivery doesn't change; adding the same bucket again renews its keys, and Connect Cloudflare reuses it. The token needs only Workers R2 Storage: Edit (D110) |
 | `PUT /v1/storage/{id}/credentials` | `{access_key_id, secret_access_key}` → `204` once the new keys pass the same checks; the old ones stay until then (`400 storage_check_failed`). `409 builtin_storage` for the filesystem |
-| `POST /v1/storage/{id}/default` | new uploads go there → the `GET /v1/storage` list; existing assets stay until moved |
+| `POST /v1/storage/{id}/default` | new uploads go there, this server's disk included → the `GET /v1/storage` list; existing assets stay until moved |
 | `DELETE /v1/storage/{id}` | `204`; the config is no longer listed and its credentials are dropped. `409 builtin_storage` (the filesystem), `storage_default`, `cloudflare_delivery` (disconnect first), `storage_in_use` with `asset_count` and `active_moves` (an asset counts until its files are gone; move the library first) |
 | `GET /v1/storage/moves` | `{default_storage_id, default_kind, not_on_default, active, moved, failed}`: assets not on the default store still play through this server |
 | `POST /v1/storage/moves` | queues a `move` job to the default store for every live asset elsewhere with no active job → `202 {queued, target_storage_id}` |
@@ -264,7 +268,7 @@ which overcounts by the player's buffer-ahead. Bytes are every counted body.
 the range carried one; sign `vid` (any stable ID for the viewer, which
 ClipMux keeps only as a keyed hash) to count viewers. Tokens signed by the
 server's internal key don't count, so previews and setup tests don't; share
-links (Phase 7, below) will be the exception.
+links (below) are the exception.
 
 `collecting.edge` is `not_used` without Cloudflare delivery, and
 `not_connected` with it until edge analytics are connected (below): the
@@ -295,19 +299,13 @@ was revoked (or whose asset was deleted) reads `revoked`. A loop revokes
 expired links' playback IDs within a minute, so their routes also leave the
 Worker; the tokens already stop at the expiry.
 
-The token endpoint needs no session or key:
+The page and its token endpoint need no session or key:
 
 | Route | Notes |
 | --- | --- |
+| `GET /s/{secret}` | the share page: a player for the link's video, static HTML whose script asks the endpoint below for tokens. Its own CSP (itself and the media URL only), `frame-ancestors 'none'`, `noindex`, no referrer, `no-store`. It keeps a random viewer ID in the browser's storage, so unique viewers count; a private window sends none |
 | `POST /s/{secret}/playback` | `{viewer_id?}` → `{title?, duration_seconds, base_url, playback_id, token, expires_at, poster_url, tracks}`, where `tracks` are the ready ones. `token` is a `v` token for the link's playback ID, signed with the internal key, valid until the earliest of the link's expiry, max(2 × duration, 4 h) and the project's longest token lifetime. A `viewer_id` of 16–64 `[A-Za-z0-9_-]` becomes the token's `vid`; anything else is dropped. `404 share_not_found` (unknown, revoked, the asset deleted or its app disabled), `410 share_expired`, `409 asset_not_ready`. Successes are limited to 2 a second per address, bursts of 20 (`429 rate_limited`); refusals count toward the playback refusal limit. `no-store`, `noindex`, no referrer |
 
 Plays through a share link count in analytics though the internal key signs
 them (D103).
 
-## Planned (Phase 7)
-
-Not built yet ([P7-sharing-analytics.md](plans/P7-sharing-analytics.md)).
-
-| Route | Notes |
-| --- | --- |
-| `GET /s/{secret}` | the share page, a player for the link's video; `noindex`, not embeddable (P7-T07) |

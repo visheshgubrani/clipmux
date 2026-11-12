@@ -142,3 +142,13 @@ func TestShareSecretsAreLimitedByRefusals(t *testing.T) {
 		t.Fatalf("after %d refusals: %d, want 429", RefusalsPerWindow, code)
 	}
 }
+
+func TestTheSharePageReachesOnlyItselfAndTheMediaURL(t *testing.T) {
+	want := "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; " +
+		"img-src 'self' data: blob: https://media.example.net; media-src 'self' blob: https://media.example.net; " +
+		"connect-src 'self' https://media.example.net; worker-src 'self' blob:; font-src 'self' data:; " +
+		"object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
+	if got := shareCSP("https://media.example.net/"); got != want {
+		t.Fatalf("share CSP\n got %s\nwant %s", got, want)
+	}
+}

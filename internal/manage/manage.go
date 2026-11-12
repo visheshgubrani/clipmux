@@ -83,6 +83,9 @@ type API struct {
 	Keys   *ContentKeys
 	Now    func() time.Time
 	Logger *slog.Logger
+
+	// approvals are the browser approvals waiting on the owner (D109).
+	approvals approvals
 }
 
 // New returns the management API.
@@ -123,6 +126,9 @@ func (m *API) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/executors", m.owned(m.listExecutors))
 	mux.HandleFunc("POST /v1/executors/runpod/connect", m.owned(m.connectRunPod))
 	mux.HandleFunc("POST /v1/executors/modal/connect", m.owned(m.connectModal))
+	mux.HandleFunc("POST /v1/executors/runpod/authorize", m.owned(m.startRunPodApproval))
+	mux.HandleFunc("POST /v1/executors/modal/authorize", m.owned(m.startModalApproval))
+	mux.HandleFunc("GET /v1/executors/{kind}/authorize/{id}", m.owned(m.pollApproval))
 	mux.HandleFunc("DELETE /v1/executors/{kind}", m.owned(m.disconnectExecutor))
 	mux.HandleFunc("GET /v1/settings/speech", m.owned(m.getSpeech))
 	mux.HandleFunc("PUT /v1/settings/speech", m.owned(m.setSpeechMode))
@@ -155,6 +161,7 @@ func (m *API) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/setup-test/latest", m.owned(m.latestSetupTest))
 	mux.HandleFunc("GET /v1/cloudflare", m.owned(m.cloudflareStatus))
 	mux.HandleFunc("POST /v1/cloudflare/connect", m.owned(m.connectCloudflare))
+	mux.HandleFunc("POST /v1/cloudflare/inspect", m.owned(m.inspectCloudflare))
 	mux.HandleFunc("DELETE /v1/cloudflare", m.owned(m.disconnectCloudflare))
 	mux.HandleFunc("GET /v1/cloudflare/analytics", m.owned(m.edgeAnalytics))
 	mux.HandleFunc("POST /v1/cloudflare/analytics", m.owned(m.connectEdgeAnalytics))
@@ -165,6 +172,7 @@ func (m *API) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/agents/{id}/reencode", m.owned(m.reencodeAgentOutputs))
 	mux.HandleFunc("GET /v1/storage", m.owned(m.listStorage))
 	mux.HandleFunc("POST /v1/storage", m.owned(m.addStorage))
+	mux.HandleFunc("POST /v1/storage/r2", m.owned(m.addR2Storage))
 	mux.HandleFunc("PUT /v1/storage/{id}/credentials", m.owned(m.rotateStorageCredentials))
 	mux.HandleFunc("POST /v1/storage/{id}/default", m.owned(m.setDefaultStorage))
 	mux.HandleFunc("DELETE /v1/storage/{id}", m.owned(m.removeStorage))
@@ -248,6 +256,33 @@ func (m *API) connectCloudflare(w http.ResponseWriter, r *http.Request, _ accoun
 		return err
 	}
 	httpjson.Write(w, http.StatusOK, res)
+	return nil
+}
+
+// inspectCloudflare shows what a pasted token reaches (accounts, active
+// zones, R2 buckets, Workers Paid) so the dashboard offers choices instead
+// of typed IDs (D109). It changes nothing, and the token isn't kept.
+func (m *API) inspectCloudflare(w http.ResponseWriter, r *http.Request, _ accounts.Owner) error {
+	if m.Cloudflare == nil {
+		return errNotFound
+	}
+	var req struct {
+		Token     string `json:"token"`
+		AccountID string `json:"account_id"`
+	}
+	if err := decode(w, r, &req); err != nil {
+		return err
+	}
+	in, err := m.Cloudflare.Inspect(r.Context(), req.Token, req.AccountID)
+	switch {
+	case errors.Is(err, cloudflare.ErrInvalid):
+		return httpjson.Fail(http.StatusBadRequest, "invalid_request", strings.TrimPrefix(err.Error(), cloudflare.ErrInvalid.Error()+": "))
+	case errors.Is(err, cloudflare.ErrTokenRejected):
+		return httpjson.Fail(http.StatusBadRequest, "token_rejected", strings.TrimPrefix(err.Error(), cloudflare.ErrTokenRejected.Error()+": "))
+	case err != nil:
+		return err
+	}
+	httpjson.Write(w, http.StatusOK, in)
 	return nil
 }
 
@@ -554,8 +589,10 @@ func (m *API) listAPIKeys(w http.ResponseWriter, r *http.Request, o accounts.Own
 	return nil
 }
 
-// createAPIKey issues a key, refused while the public URL is loopback:
-// presigned upload URLs and base_url would point at the owner's machine.
+// createAPIKey issues a key. While the public URL is loopback, presigned
+// upload URLs and base_url point at the owner's machine, so the owner must
+// confirm the key is for apps on this machine (local) (D108). Keys are not
+// bound to the URL: the same key works once a public URL is set.
 func (m *API) createAPIKey(w http.ResponseWriter, r *http.Request, o accounts.Owner) error {
 	app, err := m.app(r, o)
 	if err != nil {
@@ -564,12 +601,13 @@ func (m *API) createAPIKey(w http.ResponseWriter, r *http.Request, o accounts.Ow
 	var body struct {
 		Name   string   `json:"name"`
 		Scopes []string `json:"scopes"`
+		Local  bool     `json:"local"`
 	}
 	if err := decode(w, r, &body); err != nil {
 		return err
 	}
-	if !m.urls.KeysAllowed() {
-		return httpjson.Fail(http.StatusConflict, "public_url_required", "set a public URL reachable from outside this machine before creating API keys")
+	if !body.Local && !m.urls.KeysAllowed() {
+		return httpjson.Fail(http.StatusConflict, "public_url_required", "set a public URL reachable from outside this machine, or confirm the key is for apps on this machine (local)")
 	}
 	body.Name = strings.TrimSpace(body.Name)
 	if body.Name == "" {

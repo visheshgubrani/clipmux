@@ -57,6 +57,20 @@ type Request struct {
 	Hostname  string `json:"hostname"`
 	Bucket    string `json:"bucket,omitempty"`
 	AccountID string `json:"account_id,omitempty"`
+	// DefaultStorage says whether new uploads go to the bucket (D110). Left
+	// out, the first connect makes it the default and a reconnect leaves the
+	// owner's choice alone.
+	DefaultStorage *bool `json:"default_storage,omitempty"`
+}
+
+// R2Request adds an R2 bucket as storage without moving delivery (D110): a
+// token that can edit R2, the bucket (created if missing), the account when
+// the token reaches several, and whether new uploads go there.
+type R2Request struct {
+	Token     string `json:"token"`
+	Bucket    string `json:"bucket,omitempty"`
+	AccountID string `json:"account_id,omitempty"`
+	Default   bool   `json:"default,omitempty"`
 }
 
 // Step is one stage of connecting, reported to the dashboard.
@@ -130,58 +144,22 @@ func (c *Connector) Connect(ctx context.Context, req Request) (Result, error) {
 		return Result{}, fmt.Errorf("%w: the media hostname must differ from the public URL's", ErrInvalid)
 	}
 
-	cf := &Client{Base: c.API, Token: req.Token, HTTP: c.HTTP}
-	var res Result
-	step := func(name string, fn func() (string, error)) bool {
-		detail, err := fn()
-		s := Step{Name: name, OK: err == nil, Detail: detail}
-		if err != nil {
-			s.Detail = err.Error()
+	q := db.New(c.Pool)
+	makeDefault := req.DefaultStorage != nil && *req.DefaultStorage
+	if req.DefaultStorage == nil {
+		_, err := q.GetCloudflareConnection(ctx, c.ProjectID)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return Result{}, fmt.Errorf("cloudflare connection: %w", err)
 		}
-		res.Steps = append(res.Steps, s)
-		return err == nil
+		makeDefault = errors.Is(err, pgx.ErrNoRows)
 	}
 
-	var tokenID, accountID, zoneID, storageID string
-	q := db.New(c.Pool)
-	ok := step("token", func() (string, error) {
-		var err error
-		tokenID, err = cf.VerifyToken(ctx)
-		var apiErr *APIError
-		if errors.As(err, &apiErr) && (apiErr.Status == http.StatusUnauthorized || apiErr.Status == http.StatusForbidden) {
-			// Cloudflare rejects account-owned tokens at the user endpoint.
-			// Discover the account with the same credential, then verify there.
-			account := req.AccountID
-			if account == "" {
-				accounts, listErr := cf.Accounts(ctx)
-				if listErr != nil {
-					return "", listErr
-				}
-				if len(accounts) != 1 {
-					return "", fmt.Errorf("account-owned tokens require account_id when several accounts are accessible")
-				}
-				account = accounts[0].ID
-			}
-			tokenID, err = cf.VerifyAccountToken(ctx, account)
-		}
-		return "active", err
-	}) && step("account", func() (string, error) {
-		accts, err := cf.Accounts(ctx)
-		if err != nil {
-			return "", err
-		}
-		for _, a := range accts {
-			if a.ID == req.AccountID || (req.AccountID == "" && len(accts) == 1) {
-				accountID = a.ID
-				return a.Name, nil
-			}
-		}
-		names := make([]string, len(accts))
-		for i, a := range accts {
-			names[i] = a.Name + " (" + a.ID + ")"
-		}
-		return "", fmt.Errorf("choose the account: %s", strings.Join(names, ", "))
-	}) && step("zone", func() (string, error) {
+	cf := c.client(req.Token)
+	var res Result
+	step := stepper(&res.Steps)
+	tokenID, accountID, ok := credential(ctx, cf, req.AccountID, step)
+	var zoneID, storageID string
+	ok = ok && step("zone", func() (string, error) {
 		z, err := cf.ZoneFor(ctx, accountID, req.Hostname)
 		if err != nil {
 			return "", err
@@ -197,30 +175,7 @@ func (c *Connector) Connect(ctx context.Context, req Request) (Result, error) {
 			err = errors.New("the account needs Workers Paid: video delivery exceeds the free plan's limits and terms")
 		}
 		return "subscribed", err
-	}) && step("bucket", func() (string, error) {
-		created, err := cf.EnsureBucket(ctx, accountID, req.Bucket)
-		if created {
-			return req.Bucket + " created; unless the token is scoped to one bucket, it reaches every bucket in the account", err
-		}
-		return req.Bucket + " exists", err
-	}) && step("storage", func() (string, error) {
-		// R2's S3 credentials derive from the token: its ID and the
-		// SHA-256 of its value. They stop working if the token is revoked.
-		sum := sha256.Sum256([]byte(req.Token))
-		cfg := stores.S3Config{Endpoint: c.endpoint(accountID), Region: "auto", Bucket: req.Bucket, AccountID: accountID}
-		sec := stores.S3Secret{AccessKeyID: tokenID, SecretAccessKey: hex.EncodeToString(sum[:])}
-		existing, err := q.FindStorageConfigByBucket(ctx, db.FindStorageConfigByBucketParams{ProjectID: c.ProjectID, Bucket: req.Bucket, AccountID: accountID})
-		switch {
-		case err == nil:
-			storageID = existing.ID
-			return "credentials renewed", c.Stores.UpdateS3Secret(ctx, existing.ID, cfg, sec)
-		case !errors.Is(err, pgx.ErrNoRows):
-			return "", err
-		}
-		row, err := c.Stores.AddS3(ctx, c.ProjectID, stores.KindR2, cfg, sec)
-		storageID = row.ID
-		return "R2 bucket checked: list, write, read, delete and CORS", err
-	}) && step("worker", func() (string, error) {
+	}) && c.r2Store(ctx, cf, req.Token, tokenID, accountID, req.Bucket, step, &storageID) && step("worker", func() (string, error) {
 		return "version " + WorkerVersion(), cf.UploadWorker(ctx, accountID, DefaultScript, workerJS, CompatibilityDate, []Binding{
 			{Type: "r2_bucket", Name: "MEDIA", BucketName: req.Bucket},
 			{Type: "plain_text", Name: "ORIGIN_URL", Text: c.URLs.PublicURL()},
@@ -231,12 +186,18 @@ func (c *Connector) Connect(ctx context.Context, req Request) (Result, error) {
 		})
 	}) && step("routes", func() (string, error) {
 		// The bucket gets every route before the hostname moves, so the
-		// Worker serves from its first request. New uploads go to R2;
-		// existing assets play through origin until they move.
+		// Worker serves from its first request. Assets on other stores play
+		// through origin until they move.
 		if err := q.SetProjectDelivery(ctx, db.SetProjectDeliveryParams{ID: c.ProjectID, Delivery: "worker", DeliveryStorageID: pgtype.Text{String: storageID, Valid: true}}); err != nil {
 			return "", err
 		}
-		if err := c.Stores.SetDefault(ctx, c.ProjectID, storageID); err != nil {
+		if makeDefault {
+			if err := c.Stores.SetDefault(ctx, c.ProjectID, storageID); err != nil {
+				return "", err
+			}
+		}
+		where, err := c.uploadsGo(ctx, storageID)
+		if err != nil {
 			return "", err
 		}
 		d, bucketID, err := routes.ForProject(ctx, q, c.Stores, c.ProjectID)
@@ -244,7 +205,7 @@ func (c *Connector) Connect(ctx context.Context, req Request) (Result, error) {
 			return "", err
 		}
 		r, err := routes.Reconcile(ctx, q, d, bucketID, c.ProjectID)
-		return fmt.Sprintf("%d routes written; new uploads go to R2", r.Written), err
+		return fmt.Sprintf("%d routes written; %s", r.Written, where), err
 	}) && step("dns", func() (string, error) {
 		attached, err := cf.DomainMatches(ctx, accountID, zoneID, req.Hostname, DefaultScript)
 		if err != nil {
@@ -280,6 +241,143 @@ func (c *Connector) Connect(ctx context.Context, req Request) (Result, error) {
 	}
 	res.Connected = ok
 	return res, nil
+}
+
+// AddR2 saves an R2 bucket as storage, creating it if missing, without
+// touching delivery (D110). It returns the storage config's ID; adding the
+// same bucket again renews its credentials, and Connect reuses it.
+func (c *Connector) AddR2(ctx context.Context, req R2Request) (Result, string, error) {
+	if req.Bucket == "" {
+		req.Bucket = DefaultBucket
+	}
+	switch {
+	case req.Token == "":
+		return Result{}, "", fmt.Errorf("%w: a token is required", ErrInvalid)
+	case !bucketRE.MatchString(req.Bucket):
+		return Result{}, "", fmt.Errorf("%w: %q is not an R2 bucket name", ErrInvalid, req.Bucket)
+	}
+	cf := c.client(req.Token)
+	var res Result
+	step := stepper(&res.Steps)
+	var storageID string
+	tokenID, accountID, ok := credential(ctx, cf, req.AccountID, step)
+	ok = ok && c.r2Store(ctx, cf, req.Token, tokenID, accountID, req.Bucket, step, &storageID)
+	if ok && req.Default {
+		ok = step("default", func() (string, error) {
+			return "new uploads go to " + req.Bucket, c.Stores.SetDefault(ctx, c.ProjectID, storageID)
+		})
+	}
+	res.Connected = ok
+	return res, storageID, nil
+}
+
+// stepFunc runs one named step and records its result.
+type stepFunc func(name string, fn func() (string, error)) bool
+
+// stepper appends each step's result to dst and reports whether it passed.
+// A failed step's error is its detail.
+func stepper(dst *[]Step) stepFunc {
+	return func(name string, fn func() (string, error)) bool {
+		detail, err := fn()
+		s := Step{Name: name, OK: err == nil, Detail: detail}
+		if err != nil {
+			s.Detail = err.Error()
+		}
+		*dst = append(*dst, s)
+		return err == nil
+	}
+}
+
+func (c *Connector) client(token string) *Client {
+	return &Client{Base: c.API, Token: token, HTTP: c.HTTP}
+}
+
+// credential is the token and account steps every flow starts with: the
+// token is active, and it names one account (or the one asked for).
+func credential(ctx context.Context, cf *Client, wantAccount string, step stepFunc) (tokenID, accountID string, ok bool) {
+	ok = step("token", func() (string, error) {
+		var err error
+		tokenID, err = cf.VerifyToken(ctx)
+		var apiErr *APIError
+		if errors.As(err, &apiErr) && (apiErr.Status == http.StatusUnauthorized || apiErr.Status == http.StatusForbidden) {
+			// Cloudflare rejects account-owned tokens at the user endpoint.
+			// Discover the account with the same credential, then verify there.
+			account := wantAccount
+			if account == "" {
+				accounts, listErr := cf.Accounts(ctx)
+				if listErr != nil {
+					return "", listErr
+				}
+				if len(accounts) != 1 {
+					return "", fmt.Errorf("account-owned tokens require account_id when several accounts are accessible")
+				}
+				account = accounts[0].ID
+			}
+			tokenID, err = cf.VerifyAccountToken(ctx, account)
+		}
+		return "active", err
+	}) && step("account", func() (string, error) {
+		accts, err := cf.Accounts(ctx)
+		if err != nil {
+			return "", err
+		}
+		for _, a := range accts {
+			if a.ID == wantAccount || (wantAccount == "" && len(accts) == 1) {
+				accountID = a.ID
+				return a.Name, nil
+			}
+		}
+		names := make([]string, len(accts))
+		for i, a := range accts {
+			names[i] = a.Name + " (" + a.ID + ")"
+		}
+		return "", fmt.Errorf("choose the account: %s", strings.Join(names, ", "))
+	})
+	return tokenID, accountID, ok
+}
+
+// r2Store is the bucket and storage steps: the bucket exists, and a storage
+// config reaches it with keys derived from the token. It sets *storageID.
+func (c *Connector) r2Store(ctx context.Context, cf *Client, token, tokenID, accountID, bucket string, step stepFunc, storageID *string) bool {
+	q := db.New(c.Pool)
+	return step("bucket", func() (string, error) {
+		created, err := cf.EnsureBucket(ctx, accountID, bucket)
+		if created {
+			return bucket + " created; unless the token is scoped to one bucket, it reaches every bucket in the account", err
+		}
+		return bucket + " exists", err
+	}) && step("storage", func() (string, error) {
+		// R2's S3 credentials derive from the token: its ID and the
+		// SHA-256 of its value. They stop working if the token is revoked.
+		sum := sha256.Sum256([]byte(token))
+		cfg := stores.S3Config{Endpoint: c.endpoint(accountID), Region: "auto", Bucket: bucket, AccountID: accountID}
+		sec := stores.S3Secret{AccessKeyID: tokenID, SecretAccessKey: hex.EncodeToString(sum[:])}
+		existing, err := q.FindStorageConfigByBucket(ctx, db.FindStorageConfigByBucketParams{ProjectID: c.ProjectID, Bucket: bucket, AccountID: accountID})
+		switch {
+		case err == nil:
+			*storageID = existing.ID
+			return "credentials renewed", c.Stores.UpdateS3Secret(ctx, existing.ID, cfg, sec)
+		case !errors.Is(err, pgx.ErrNoRows):
+			return "", err
+		}
+		row, err := c.Stores.AddS3(ctx, c.ProjectID, stores.KindR2, cfg, sec)
+		*storageID = row.ID
+		return "R2 bucket checked: list, write, read, delete and CORS", err
+	})
+}
+
+// uploadsGo says where new uploads go, for a step's detail.
+func (c *Connector) uploadsGo(ctx context.Context, r2ID string) (string, error) {
+	def, err := db.New(c.Pool).GetDefaultStorage(ctx, c.ProjectID)
+	switch {
+	case err != nil:
+		return "", fmt.Errorf("default storage: %w", err)
+	case def.ID == r2ID:
+		return "new uploads go to R2", nil
+	case def.Kind == stores.KindFilesystem:
+		return "new uploads stay on this server; choose R2 under Storage to move them", nil
+	}
+	return "new uploads stay on storage " + def.ID + "; choose R2 under Storage to move them", nil
 }
 
 // ErrNotConnected means there is no Cloudflare connection to undo.
@@ -323,15 +421,7 @@ func (c *Connector) Disconnect(ctx context.Context) (Disconnected, error) {
 		return Disconnected{}, ErrMediaURLPinned
 	}
 	var res Disconnected
-	step := func(name string, fn func() (string, error)) bool {
-		detail, err := fn()
-		s := Step{Name: name, OK: err == nil, Detail: detail}
-		if err != nil {
-			s.Detail = err.Error()
-		}
-		res.Steps = append(res.Steps, s)
-		return err == nil
-	}
+	step := stepper(&res.Steps)
 	ok := step("media_url", func() (string, error) {
 		if c.URLs.MediaURL() != worker {
 			return c.URLs.MediaURL() + " (unchanged)", nil
@@ -384,11 +474,15 @@ type Status struct {
 	// StorageOK is false when R2 refuses the stored credentials (the token
 	// was revoked or rolled): the dashboard offers Reconnect Cloudflare.
 	StorageOK bool `json:"storage_ok"`
+	// Create-token links for Connect, R2 storage and edge analytics (D109).
+	TokenURL          string `json:"token_url"`
+	R2TokenURL        string `json:"r2_token_url"`
+	AnalyticsTokenURL string `json:"analytics_token_url"`
 }
 
 // Status reads the connection and checks that R2 still accepts it.
 func (c *Connector) Status(ctx context.Context) (Status, error) {
-	st := Status{CurrentVersion: WorkerVersion()}
+	st := Status{CurrentVersion: WorkerVersion(), TokenURL: ConnectTokenURL(), R2TokenURL: R2TokenURL(), AnalyticsTokenURL: AnalyticsTokenURL()}
 	row, err := db.New(c.Pool).GetCloudflareConnection(ctx, c.ProjectID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return st, nil

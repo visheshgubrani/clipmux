@@ -182,6 +182,38 @@ func (c *Client) ZoneFor(ctx context.Context, accountID, hostname string) (Zone,
 	return Zone{}, fmt.Errorf("no zone for %s in this account; add the domain to Cloudflare first", hostname)
 }
 
+// ActiveZones lists the names of the account's active zones, the ones a
+// media hostname can live under.
+func (c *Client) ActiveZones(ctx context.Context, accountID string) ([]string, error) {
+	var zs []Zone
+	q := url.Values{"account.id": {accountID}, "status": {"active"}, "per_page": {"50"}}
+	if err := c.json(ctx, "list zones", http.MethodGet, "/zones?"+q.Encode(), nil, &zs); err != nil {
+		return nil, err
+	}
+	names := make([]string, len(zs))
+	for i, z := range zs {
+		names[i] = z.Name
+	}
+	return names, nil
+}
+
+// Buckets lists the account's R2 bucket names.
+func (c *Client) Buckets(ctx context.Context, accountID string) ([]string, error) {
+	var r struct {
+		Buckets []struct {
+			Name string `json:"name"`
+		} `json:"buckets"`
+	}
+	if err := c.json(ctx, "list buckets", http.MethodGet, "/accounts/"+url.PathEscape(accountID)+"/r2/buckets", nil, &r); err != nil {
+		return nil, err
+	}
+	names := make([]string, len(r.Buckets))
+	for i, b := range r.Buckets {
+		names[i] = b.Name
+	}
+	return names, nil
+}
+
 // WorkersPaid reports whether the account has a Workers Paid subscription.
 func (c *Client) WorkersPaid(ctx context.Context, accountID string) (bool, error) {
 	var subs []struct {

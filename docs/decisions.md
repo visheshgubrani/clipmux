@@ -69,7 +69,7 @@ Decision:
 - The sweeper (every 5 min) completes uploads whose parts all landed, records newly stored parts as activity, and expires an upload only after 24 h without activity (a signed part or a new part). It never touches cancelled uploads.
 - Part URLs last 1 hour so a batch can be used sequentially on a slow link; signing is limited to 100 parts per call and to parts within the declared size.
 - The upload endpoints answer CORS for any origin: the browser carries an upload token, never a cookie. Cancel accepts the upload token or the owning app's API key.
-- `clipmux admin create-key --app NAME` issues keys until the dashboard exists (T10). Keys are `cmx_`-prefixed and stored as SHA-256.
+- `clipmux admin create-key --app NAME` issues keys from the host; the dashboard issues them too (T10, D108). Keys are `cmx_`-prefixed and stored as SHA-256.
 
 ## D012 Worker pipeline and content keys — accepted (2026-11-05)
 Decisions within the architecture's rules, made in P1-T06:
@@ -168,7 +168,7 @@ Decisions within the architecture's rules, made in P1-T10:
 Decisions within the architecture's rules, made in P1-T10:
 - `projects.public_url` and `projects.media_url` (an origin, renamed from `media_hostname` so dev keeps scheme and port) are the source of truth. `base_url` in asset views and webhook events is read from the project in the same transaction, so no component keeps a copy. Only filesystem storage signs with the public URL in memory; `internal/settings` updates it the moment the owner saves new URLs.
 - `CLIPMUX_PUBLIC_URL` (and optionally `CLIPMUX_MEDIA_URL`) pins both URLs: they are written to the project at boot and the first-boot URL step is read-only. Unset, a fresh install stores `http://localhost:8080` unconfirmed and the owner chooses real URLs at first boot. `CLIPMUX_MEDIA_URL` alone is refused.
-- No API key while the public URL is loopback (localhost, `*.localhost`, 127.0.0.0/8, ::1, 0.0.0.0): signed upload URLs and `base_url` would point at the owner's machine. LAN addresses count as reachable. `clipmux admin create-key --allow-loopback` is the development escape hatch.
+- No API key while the public URL is loopback (localhost, `*.localhost`, 127.0.0.0/8, ::1, 0.0.0.0): signed upload URLs and `base_url` would point at the owner's machine. LAN addresses count as reachable. `clipmux admin create-key --allow-loopback` is the development escape hatch, and the dashboard asks the owner to confirm a key is for this machine (amended in D108).
 - Caddy obtains certificates on demand and asks `GET /_tls/ask?domain=` first; it answers 200 only for the public and media hostnames, never for IPs or loopback names, so the Caddyfile names no hosts.
 - The built-in worker runs with `--storage-via-server`: signed `/_storage/` URLs go to serve over loopback rather than back through the public hostname, which may not route from inside the host (the signature covers method, path and expiry, not the host).
 
@@ -184,7 +184,7 @@ Decisions within the architecture's rules, made in P1-T10:
 Decisions within the architecture's rules, made in P1-T10:
 - The dashboard's routes (`internal/manage`, listed in docs/api.md) are public `/v1` routes that need the owner's session; an API key gets 401 on every one. They cover the URL step, apps (create, disable, enable; the Dashboard app can't be disabled), API keys, signing keys and webhook endpoints (each secret only in its create response), the library across apps, and preview tokens.
 - The integration routes take an `apikeys.Authenticator`: a bearer API key, or, without one, the owner's session acting as the app named by `ClipMux-App` (the Dashboard app by default) with every scope. So a dashboard upload is an ordinary `POST /v1/uploads`, with no private path.
-- API keys are refused with 409 `public_url_required` while the public URL is loopback (D023). A key created in the dashboard defaults to `uploads:write`, `assets:read` and `assets:write`.
+- API keys are refused with 409 `public_url_required` while the public URL is loopback (D023), unless the request says `local: true` (amended in D108). A key created in the dashboard defaults to `uploads:write`, `assets:read` and `assets:write`.
 - Preview tokens are signed with the internal key, last one hour, and pick the asset's first active signed playback ID (a public one otherwise).
 - Asset views gain `app_id`, so the library can say which app owns each asset.
 
@@ -271,7 +271,7 @@ Decisions within the architecture's rules and the P2 open questions, made in P2-
 - Workers Paid is required. Connect reads the account's subscriptions and refuses before changing anything in Cloudflare unless one is a Workers Paid plan (open question 2). The plan is matched by name, `workers` and `paid`, which isn't confirmed against a real account yet (known gap).
 - Rotating the content key secret will need a pasted token. That is the same Connect call: it redeploys the Worker with the whole ring, and the new version may be used only after that deploy (open question 3). The rotation command itself is still a known gap.
 - Questions 4 to 6: segments are not served straight from an R2 custom domain in Phase 2. The built-in handler's route cache stays a known gap. One advisory-lock leader is D035.
-- `POST /v1/cloudflare/connect` (owner session) takes `{token, hostname, bucket?, account_id?}` and runs, in order: verify the token; pick the account (the only one, or the one named); find the active zone holding the hostname; Workers Paid; ensure the bucket (the default is `clipmux-media`, and a created bucket carries the warning that an unscoped token reaches every bucket); derive R2 credentials (token ID, and hex SHA-256 of the value), check them against the bucket and apply CORS, then store or renew them sealed; upload the embedded Worker as `clipmux-media` with `MEDIA`, `ORIGIN_URL` (the public URL) and the `CONTENT_KEYS` secret; set Worker delivery on that bucket, make it the default store and reconcile every route into it; delete the DNS records at the hostname; attach the Worker as its custom domain; save `https://{hostname}` as the media URL; record the connection (token ID only); queue the setup test. It stops at the first failure, and every step is idempotent, so the same call reconnects with a new token and redeploys an upgraded Worker.
+- `POST /v1/cloudflare/connect` (owner session) takes `{token, hostname, bucket?, account_id?}` and runs, in order: verify the token; pick the account (the only one, or the one named); find the active zone holding the hostname; Workers Paid; ensure the bucket (the default is `clipmux-media`, and a created bucket carries the warning that an unscoped token reaches every bucket); derive R2 credentials (token ID, and hex SHA-256 of the value), check them against the bucket and apply CORS, then store or renew them sealed; upload the embedded Worker as `clipmux-media` with `MEDIA`, `ORIGIN_URL` (the public URL) and the `CONTENT_KEYS` secret; set Worker delivery on that bucket, make it the default store (on a first connect, or as `default_storage` says; amended in D110) and reconcile every route into it; delete the DNS records at the hostname; attach the Worker as its custom domain; save `https://{hostname}` as the media URL; record the connection (token ID only); queue the setup test. It stops at the first failure, and every step is idempotent, so the same call reconnects with a new token and redeploys an upgraded Worker.
 - Routes are written before the hostname moves, so the Worker serves from its first request. Existing filesystem assets play through `origin` until a move job (T05).
 - The Worker bundle is committed at `internal/cloudflare/worker.js` and embedded. `make worker` rebuilds it, and CI fails when it differs from `worker/`. Its version is the first 6 bytes of its SHA-256; the dashboard asks for a token when the deployed version differs.
 - `GET /v1/cloudflare` reports the connection, `needs_redeploy`, and `storage_ok` (a listing of `_routes/` with the stored credentials), which drives "Reconnect Cloudflare". `docs/cloudflare.md` documents the token permissions and the manual wrangler path.
@@ -1166,7 +1166,7 @@ P6-T12. The owner chose to build the small owner routes the new pages need now, 
   The R2 store stays a storage config, and stays the default if it was: its assets play through this server. The Worker and its domain stay in the Cloudflare account, because no token is kept to remove them. It is `409 pinned` while `CLIPMUX_MEDIA_URL` names the Worker.
 - **Storage configs.**
   - `GET /v1/storage` lists the configs with their asset counts.
-  - `POST /v1/storage` adds a generic S3 bucket only after `stores.AddS3`'s test write, read, list and delete and CORS pass (`400 storage_check_failed` otherwise). R2 still comes from Connect Cloudflare.
+  - `POST /v1/storage` adds a generic S3 bucket only after `stores.AddS3`'s test write, read, list and delete and CORS pass (`400 storage_check_failed` otherwise). R2 comes from Connect Cloudflare or `POST /v1/storage/r2` (amended in D110).
   - `PUT /v1/storage/{id}/credentials` checks new keys the same way before sealing them, and the open store is replaced at once.
   - `POST /v1/storage/{id}/default` picks where new uploads go.
   - `DELETE /v1/storage/{id}` retires a config that nothing needs. It is refused (409) for the filesystem store, for the default, while any asset may have files there (a deleted asset counts until its files are gone), during a move to or from it, and while Cloudflare delivery reads it.
@@ -1273,6 +1273,7 @@ Built in P7-T06 (package `internal/shares`, migration 00030):
 - **Tokens** are also capped by the project's longest token lifetime, which delivery enforces.
 - **A disabled app's links** answer `404 share_not_found`, as its playback IDs answer 403.
 - **The per-address limit** spends a request only on a link that would play; refusals (404, 410) go to delivery's refusal limiter, which now covers `/s/`.
+Built in P7-T07: the page is plain TypeScript and CSS, not React, so it loads its own 2.6 KB script and the player chunk alone. Its CSP is the dashboard's without the storage buckets. A failed refresh or a refused segment makes it ask `/playback` again and show why (revoked, expired, still processing), rather than leaving a stalled player.
 
 ## D105 Analytics are kept 180 days, fixed — accepted (2026-11-10)
 Context: P7 open question 2. The API's longest range is 90 days, compared with the 90 days before it. T03 added daily rollups, so hourly rows serve only the 24-hour range.
@@ -1280,3 +1281,72 @@ Decision: the retention loop (D069) deletes analytics older than its window. The
 - `playback_daily`, `playback_viewers` and `playback_viewer_days`: 180 days (`retention.AnalyticsWindow`).
 - `playback_hourly`: 14 days (`retention.HourlyAnalyticsWindow`). The 24-hour range and the 24 hours before it need two days; the rest is room for an edge pull to recompute recent hours.
 Consequence: no lifetime totals (known gaps). A backup holds at most 180 days of analytics.
+
+## D106 Phase 7 real-zone run: the pull is exact, the edge samples — recorded (2026-11-11)
+Context: P7-T10 on the D090 staging zone. The staging install's Postgres volume no longer existed, so the owner chose to re-provision it: staging now has its own Postgres on loopback port 5445 (`deploy/cloudflare-staging.py db-start`, named volume `clipmux-staging_pgdata`), a new owner and integration credentials (the dead ones moved to `data/cloudflare-staging/retired-2026-11-11/`), a new 70 MiB baseline on filesystem storage, and Connect Cloudflare run again on the same `clipmux-staging` bucket and `media-test.clipmux.com`. The test is `TestP7LiveEdge` (`CLIPMUX_E2E_LIVE_P7=1`).
+Results:
+- **Connect binds the analytics dataset** with the existing Connect token: all 13 steps passed, including the setup test through the Worker, and Worker `911308c9e39d` writes to `clipmux_delivery`. No extra permission is needed to write.
+- **The read-only token works.** A token with only Account Analytics: Read connected and pulled every 5 minutes without an error. To skip an hour of empty catch-up passes, the test moves the watermark to the last hour; the 13-day catch-up stays covered by the fake SQL API.
+- **The pull is exact.** In each of three runs the pulled views, watch seconds, bytes and viewers equalled Analytics Engine's own `_sample_interval`-weighted sums for the asset.
+- **Analytics Engine samples even one viewer.** About ten points in a second on one index (the asset) came back at a sample interval of 2, with the rest dropped. One run kept the masters and segments and came out 292 bytes over the script's 2,354,553 (0.012%), with views, watch time and viewers exact; another dropped the master and every segment, losing the view and its watch time. So exit check 4 can't hold against the script, even within 1%, at this volume.
+- **A revoked share link stopped at the edge** on the first poll after revoking, inside 65 seconds. The video was on filesystem storage, so the Worker forwarded the master to serve, which refused the revoked ID at once; the Worker's own 60-second route cache wasn't what was measured.
+- **Not explained:** the scripted viewer's requests for the main playback ID never reached serve, though its route's backend is `origin`; the Worker still answered with this install's output. Only the share links' masters were seen at origin.
+Consequence: exit check 4 is open (D107). The data point index, now the asset, is the lever to try: a per-request index may keep small bursts from being sampled, but Analytics Engine doesn't promise it. The origin bypass needs its own look before the "a forwarded fetch counts once" claim holds on the real zone. Docs say edge counts are estimates (cloudflare.md, known-gaps). The read-only token was pasted into a session transcript and should be rolled.
+
+## D107 Phase 7 closes with open items — recorded (2026-11-11)
+Context: the owner wrapped Phase 7 up at T11 rather than chase the edge items further. D102 made P6-T19, the LMS cutover, wait for P7's exit.
+Exit test, item by item:
+1. **A share link plays — passed, one part open.** It plays with subtitles in a fresh browser with no session, in desktop Chromium and at 375 px (`share.spec.ts`). Revoked, built-in delivery refuses it at once (Go tests and Playwright); at the edge it stopped inside 65 seconds (D106). Expired, the page says so and `/playback` answers 410. Open: its HLS URL is checked as a signed playlist that loads (`sharing.spec.ts`), not played in hls.js and ExoPlayer.
+2. **Both adapters count alike — passed.** The Go handler and the Worker agree with every counting vector, including the share link's.
+3. **Built-in counts are exact — passed.** Literal totals, series, previous and top assets on real Postgres; previews, posters and the setup test add nothing; a request carrying `X-ClipMux-Edge` counts nothing at origin. Open on the real zone: D106's origin bypass.
+4. **Edge counts — partly passed.** The pull equals Analytics Engine's weighted sums exactly; against the script it doesn't, because of sampling (D106).
+5. **Counts survive a stop — passed for SIGTERM** (serve's final flush is tested); `kill -9` losing at most one 15-second flush is by design, not measured.
+6. **Nothing leaks — partly passed.** The access line and `logging.Scrub` redact `/s/{secret}` and tokens, unit-tested; no end-to-end log scan has yet run with share links in it.
+7. **The dashboard passes — passed.** 52 browser tests in both projects with CSP enforced, one live-only skip.
+Decision: Phase 7's features ship as built. Items 1 (the HLS URL in real players), 4 and 6, and D106's origin bypass, are open and listed in known-gaps. Before P6-T19 starts, the owner decides which of them it needs; the LMS's own playback uses signed tokens with `vid`, which items 2, 3 and 7 cover.
+Consequence: the P7 plan is marked closed with these items. P6 resumes at the owner's call.
+
+## D108 A dashboard API key on a loopback URL needs the owner's confirmation — accepted (2026-11-12)
+Context: trying ClipMux on localhost, the owner could create apps but not their keys: D023 refused every key while the public URL is loopback, and only the CLI had an escape hatch (`create-key --allow-loopback`). The refusal's reason still holds: on loopback, signed upload URLs and `base_url` point at the owner's machine.
+Decision:
+- `POST /v1/apps/{id}/api-keys` takes `local: true`. On a loopback public URL a request without it is still `409 public_url_required`; with it, the key is created.
+- The dashboard keeps "Create API key" enabled. While `keys_allowed` is false, the create dialog says why and asks the owner to tick "This key is for apps on this computer" before Create works.
+- Keys are not bound to the URL: `base_url` and signed URLs come from the public URL when they're issued, so the same key works for apps elsewhere once a public URL is set.
+- The CLI flag stays.
+Consequence: D023's loopback rule and D025's 409 now apply only to requests without `local`. The dashboard needs no CLI step on a local install.
+
+## D109 Getting provider credentials without hunting for them — accepted (2026-11-12)
+Context: every connection asked the owner to find and copy credentials on the provider's site by hand. Cloudflare has offered third-party OAuth since June 2026, but its redirect URIs must match exactly, so a self-hosted install, with an address of its own, needs a ClipMux-owned public OAuth client and a hosted callback relay. Modal and RunPod offer no OAuth to other apps, but each CLI gets its key through a browser approval (`modal token new`, `flash login`).
+Decision:
+- **Cloudflare: a pre-filled token link and one paste.**
+  - `GET /v1/cloudflare` returns `token_url`, `r2_token_url` and `analytics_token_url`. These are account-owned token template links (`dash.cloudflare.com/?to=/:account/api-tokens&permissionGroupKeys=…&name=…`) with the permissions each flow uses:
+    - Connect: Workers Scripts edit, Workers Routes edit, Workers R2 Storage edit, Billing read, Zone read and DNS edit.
+    - R2 storage: Workers R2 Storage edit.
+    - Edge analytics: Account Analytics read.
+  - Cloudflare names any key it can't apply on the form.
+  - `POST /v1/cloudflare/inspect {token, account_id?}` reads what a pasted token reaches (accounts, active zones, R2 buckets, Workers Paid) and changes nothing. The Connect dialog offers those as choices: the account, a subdomain under one of the zones, and an existing or new bucket. It warns about Workers Paid before Connect runs. The token is used for the call only.
+  - Real OAuth is deferred (known-gaps).
+- **Modal and RunPod: approve in the browser, or paste.**
+  - `POST /v1/executors/{kind}/authorize` takes the Connect request without credentials. It checks the settings first, so no key is issued for settings Connect would refuse, then starts the provider's approval:
+    - Modal: anonymous `TokenFlowCreate`, then `TokenFlowWait`. `expires_in_seconds` stays 0, since it would set the issued token's lifetime.
+    - RunPod: unauthenticated GraphQL `createFlashAuthRequest`, then `flashAuthRequestStatus`.
+  - It returns ClipMux's own approval ID, the provider's page and Modal's code.
+  - `GET /v1/executors/{kind}/authorize/{id}` polls the provider once; Modal's poll waits up to 10 seconds. Once approved, it runs the provider's Connect with the issued credentials and returns its steps. One poll runs at a time, so Connect runs once, and a settled approval answers the same to every poll.
+  - Credentials go from the provider to this server and are sealed as pasted ones are; they never reach the browser.
+  - Pending approvals live in memory, at most three per project, for 10 minutes (or RunPod's shorter expiry); a restart only means starting again.
+  - The dashboard opens the provider's page in a tab that can't reach back (`opener` cleared). Pasting stays one click away, with links to each provider's key page; for Modal, the pasted `modal token set …` command fills both fields.
+- **Real run (2026-11-12):** Modal returned a token to the poller. RunPod's console showed the key on its page with "paste it into the terminal" and reported the request `CONSUMED` with no key, so the poll answers `shown` and the dialog turns to pasting, with the key already on the owner's screen.
+- These approval flows are the providers' own CLI flows, not documented integration APIs. RunPod's page names Flash, and its key is the key Flash would get. If a provider changes them, `authorize` answers `502 approval_unavailable` and the dialog offers paste.
+Consequence: docs/api.md lists the new routes and docs/cloudflare.md the links; the risk is in known-gaps. `TestLiveModalApproval` (`CLIPMUX_LIVE_APPROVAL=1`) checks Modal's flow against the real API.
+
+## D110 The owner chooses where uploads go, and Connect stops choosing for them — accepted (2026-11-12)
+Context: the storage list sat under Delivery. This server's disk couldn't become the default again from the dashboard, an R2 bucket could only come from Connect Cloudflare, and every Connect, a reconnect included, made R2 the default (D037).
+Decision:
+- **A Storage page** (`/storage`, its own sidebar entry) leads with where new uploads go. Every store, this server's disk included, has "Use for new uploads", and the library move is offered there for whatever the default is.
+- **R2 without delivery:** `POST /v1/storage/r2 {token, bucket?, account_id?, default?}` runs Connect's token, account, bucket and storage steps: the bucket is created if missing, and keys are derived from the token as in D037. It doesn't touch delivery, and it reports steps like Connect. Adding the same bucket again renews its keys, and Connect later reuses that config. The token needs only Workers R2 Storage edit.
+- **Connect leaves the default alone unless asked:** `default_storage` on `POST /v1/cloudflare/connect`.
+  - Left out, the first connect makes the bucket the default and a reconnect leaves the choice unchanged.
+  - `true` or `false` is explicit; the dialog's "Store new uploads in R2" tick box sends it (checked on a first connect, and on a reconnect while R2 is the default).
+  - The routes step says where new uploads go.
+- Home's status line reads the default store. Its checklist gains "Store uploads in a bucket", done when the default isn't this server's disk.
+Consequence: D037's "make it the default store" and D099's "R2 still comes from Connect Cloudflare" are amended. Cloudflare delivery with uploads on disk works as before: assets on other stores play through origin.

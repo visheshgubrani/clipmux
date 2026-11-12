@@ -170,6 +170,9 @@ type Deps struct {
 	// CSP is the dashboard's Content-Security-Policy for a request; nil
 	// allows only the server's own origin.
 	CSP func(*http.Request) string
+	// ShareCSP is the share page's (D104); nil allows only the server's
+	// own origin.
+	ShareCSP func(*http.Request) string
 	// Drain is done once the server starts shutting down; /readyz then
 	// fails so a load balancer stops sending new work. nil never drains.
 	Drain context.Context
@@ -218,6 +221,9 @@ func Handler(d Deps) http.Handler {
 		}
 		text(w, http.StatusOK, "ok")
 	})
+	// The share page's wildcard is named token, so the access line redacts
+	// the link's secret (D064).
+	mux.Handle("GET /s/{token}", web.Share(web.Dist(), d.ShareCSP))
 	mux.Handle("GET /", web.Handler(web.Dist(), d.CSP))
 	return mux
 }
@@ -555,7 +561,8 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 	srv := &http.Server{
 		Handler: reqLog.wrap(secure.wrap(newRefusals(acct.ClientIP).wrap(defaultDeadlines.wrap(Handler(Deps{
 			DB: pool, Worker: worker.Handler(), Storage: store.Handler(), ServesHost: b.urls.ServesHost, Drain: drain, CSP: csp,
-			APIs: []Registrar{acct, mgmt, agentSvc, upl, assetsAPI, life, playback, analyticsAPI, shareSvc},
+			ShareCSP: func(*http.Request) string { return shareCSP(b.urls.MediaURL()) },
+			APIs:     []Registrar{acct, mgmt, agentSvc, upl, assetsAPI, life, playback, analyticsAPI, shareSvc},
 		}))))),
 		// The server's own errors (TLS, a panicking handler) go to the same log.
 		ErrorLog:          slog.NewLogLogger(logger.Handler(), slog.LevelWarn),

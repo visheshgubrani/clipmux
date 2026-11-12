@@ -206,3 +206,47 @@ func TestDisconnectRunPodWaitsForRoutingAndMachines(t *testing.T) {
 		t.Fatalf("disconnecting twice = %v", err)
 	}
 }
+
+// Browser approval (D109): the owner approves on RunPod's page, and the key
+// RunPod issues connects with the settings asked for, never passing through
+// the browser.
+func TestConnectRunPodByBrowserApproval(t *testing.T) {
+	r := newConnectRig(t)
+	r.c.GraphQL, r.c.Console = r.fake.GraphQL, "https://console.example.test"
+	ctx := context.Background()
+	a, err := r.c.BeginApproval(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.URL != "https://console.example.test/flash/login?request="+a.Flow || a.Flow == "" {
+		t.Fatalf("approval page = %q (request %q)", a.URL, a.Flow)
+	}
+	settings := request
+	settings.APIKey = ""
+	st, _, err := r.c.FinishApproval(ctx, a, settings)
+	if err != nil || st != dispatch.ApprovalPending {
+		t.Fatalf("before approving = %s, %v; want pending", st, err)
+	}
+	r.fake.Approve(a.Flow)
+	st, res, err := r.c.FinishApproval(ctx, a, settings)
+	if err != nil || st != dispatch.ApprovalApproved || !res.Connected {
+		t.Fatalf("after approving = %s, %s, %v; want approved and connected", st, steps(res), err)
+	}
+	row, ok, err := dispatch.Existing(ctx, r.pool, "prj_default", "runpod")
+	if err != nil || !ok || row.MaxConcurrent != 3 {
+		t.Fatalf("config = %+v, %v, %v; want the settings asked for", row, ok, err)
+	}
+	// RunPod's console may show the key on its page instead: the owner
+	// pastes it.
+	shown, _ := r.c.BeginApproval(ctx)
+	r.fake.Show(shown.Flow)
+	if st, _, err := r.c.FinishApproval(ctx, shown, settings); err != nil || st != dispatch.ApprovalShown {
+		t.Fatalf("a key shown on RunPod's page = %s, %v; want shown", st, err)
+	}
+
+	denied, _ := r.c.BeginApproval(ctx)
+	r.fake.Deny(denied.Flow)
+	if st, _, err := r.c.FinishApproval(ctx, denied, settings); err != nil || st != dispatch.ApprovalDenied {
+		t.Fatalf("a refused approval = %s, %v; want denied", st, err)
+	}
+}

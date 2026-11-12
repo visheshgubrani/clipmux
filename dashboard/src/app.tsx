@@ -22,6 +22,7 @@ import { Login } from '@/pages/login'
 import { NotFound } from '@/pages/not-found'
 import { Settings } from '@/pages/settings'
 import { SetupWizard } from '@/pages/setup'
+import { Storage } from '@/pages/storage'
 import { UploadPage } from '@/pages/upload'
 import { VideoPage } from '@/pages/video'
 import { Videos } from '@/pages/videos'
@@ -82,6 +83,7 @@ export function App() {
             <Route path="/encoding" element={<Encoding />} />
             <Route path="/workers/connect" element={<ConnectPC />} />
             <Route path="/delivery" element={<Delivery />} />
+            <Route path="/storage" element={<Storage />} />
             <Route path="/captions" element={<Captions />} />
             <Route path="/apps" element={<Apps />} />
             <Route path="/apps/:id" element={<AppDetail keysAllowed={s.keys_allowed} />} />

@@ -30,14 +30,18 @@ uploads it through the worker API, and holds no storage credentials.
 - **A concurrency limit.** At most this many machines run at once.
 
 A provider takes no work until a setup test through it passes: after Connect,
-a sample must encode on one of its machines and play. Routing (**Workers →
+a sample must encode on one of its machines and play. Routing (**Encoding →
 Routing**, or `PUT /v1/settings/routing`) can name it only after that.
 
 ## RunPod
 
-Create an API key in RunPod (**Settings → API Keys**) with read and write
-access to pods and container registry auths. Then **Workers → Connect
-RunPod**, or:
+**Encoding → Cloud GPUs → Connect RunPod**: set the limits, then **Connect
+with RunPod** opens RunPod's console, where you approve the request (D109).
+The page names RunPod's Flash CLI, whose login uses the same approval; the
+key it issues goes straight to this server, and you can restrict or delete
+it in RunPod's settings. To paste a key instead, create one in RunPod
+(**Settings → API Keys**) with read and write access to pods and container
+registry auths, or call:
 
 ```bash
 curl -X POST https://video.example.com/v1/executors/runpod/connect \
@@ -72,8 +76,12 @@ rotate the key or change settings; the provider then needs a new setup test.
 
 ## Modal
 
-Create a token in Modal (**Settings → API Tokens**). Then **Workers → Connect
-Modal**, or `POST /v1/executors/modal/connect` with:
+**Encoding → Cloud GPUs → Connect Modal**: set the limits, then **Connect
+with Modal** opens the page Modal's CLI uses to issue a token (D109); approve
+it there and the token goes straight to this server. To paste one instead,
+create a token in Modal (**Settings → API Tokens**); pasting the
+`modal token set …` command it shows fills both fields. Or call
+`POST /v1/executors/modal/connect` with:
 
 ```json
 {"token_id": "ak-...", "token_secret": "as-...", "registry_username": "you", "registry_password": "ghp_...",

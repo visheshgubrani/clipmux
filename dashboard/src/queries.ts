@@ -10,6 +10,7 @@ import {
   type ChaptersStatus,
   type Cloudflare,
   type Counts,
+  type EdgeAnalytics,
   type Job,
   type LibraryAsset,
   type Moves,
@@ -20,6 +21,7 @@ import {
   type Session,
   type Setup,
   type SetupTest,
+  type ShareLink,
   type SigningKey,
   type SpeechStatus,
   type StorageConfig,
@@ -187,8 +189,19 @@ export const q = {
   storage: () =>
     queryOptions({ queryKey: ['storage'], queryFn: () => api<Page<StorageConfig>>('/v1/storage') }),
 
-  // Not served yet (D100): a 404 means "not collecting", which pages show
-  // as an empty state rather than an error.
+  shares: (asset: string, app?: string) =>
+    queryOptions({
+      queryKey: ['shares', asset],
+      queryFn: () => api<Page<ShareLink>>(`/v1/assets/${asset}/shares`, app ? { app } : {}),
+    }),
+  edgeAnalytics: () =>
+    queryOptions({
+      queryKey: ['edge-analytics'],
+      queryFn: () => api<EdgeAnalytics>('/v1/cloudflare/analytics'),
+    }),
+
+  // A server older than the analytics API answers 404: "not collecting",
+  // which pages show as an empty state rather than an error.
   analytics: (range: Range, app_id?: string, asset?: string) =>
     queryOptions({
       queryKey: ['analytics', range, app_id ?? '', asset ?? ''],

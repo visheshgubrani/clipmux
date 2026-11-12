@@ -17,7 +17,7 @@ export function AnalyticsPage() {
     <PageBody>
       <PageHeader
         title="Analytics"
-        description="Counted by this server from the playback it delivers."
+        description="Counted from the playback ClipMux delivers: by this server, and at the edge when Cloudflare serves it."
         actions={
           <>
             {(apps.data?.data.length ?? 0) > 1 && (

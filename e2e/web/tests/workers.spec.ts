@@ -65,6 +65,7 @@ test('the owner routes jobs, connects RunPod and sees why each job went where it
   // waits for its setup test.
   await page.locator('[data-provider="runpod"]').getByRole('button', { name: 'Connect RunPod' }).click()
   const form = page.getByRole('form', { name: 'Connect RunPod' })
+  await form.getByRole('button', { name: 'Paste a key instead' }).click()
   await form.getByLabel('RunPod API key').fill(cfg.runpod_key)
   await form.getByPlaceholder('Registry username (private image)').fill(cfg.registry_username)
   await form.getByPlaceholder('Registry token with read:packages').fill(cfg.registry_password)

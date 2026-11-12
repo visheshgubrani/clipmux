@@ -50,3 +50,38 @@ func TestPlaceholderWithoutABuild(t *testing.T) {
 		t.Fatalf("no build: %d %q", rec.Code, rec.Body.String())
 	}
 }
+
+func TestTheSharePageIsStaticWithItsOwnHeaders(t *testing.T) {
+	fsys := fstest.MapFS{
+		"index.html": {Data: []byte("<!doctype html><div id=root></div>")},
+		"share.html": {Data: []byte("<!doctype html><main class=share></main>")},
+	}
+	mux := http.NewServeMux()
+	mux.Handle("GET /s/{token}", Share(fsys, func(*http.Request) string { return "default-src 'self'; frame-ancestors 'none'" }))
+	mux.Handle("GET /", Handler(fsys, nil))
+	rec := get(mux, "/s/K7QW2M4XRT5VZ3NB6YHC8DJF2A")
+	want := map[string]string{
+		"Content-Security-Policy": "default-src 'self'; frame-ancestors 'none'",
+		"Cache-Control":           "no-store",
+		"Referrer-Policy":         "no-referrer",
+		"X-Robots-Tag":            "noindex",
+		"X-Frame-Options":         "DENY",
+		"X-Content-Type-Options":  "nosniff",
+	}
+	if rec.Code != 200 || rec.Body.String() != "<!doctype html><main class=share></main>" {
+		t.Fatalf("share page = %d %q", rec.Code, rec.Body.String())
+	}
+	for k, v := range want {
+		if got := rec.Header().Get(k); got != v {
+			t.Errorf("%s = %q, want %q", k, got, v)
+		}
+	}
+	// Anything deeper under /s/ is the server's, never the dashboard.
+	if rec := get(mux, "/s/K7QW2M4XRT5VZ3NB6YHC8DJF2A/other"); rec.Code != 404 || !strings.Contains(rec.Body.String(), `"not_found"`) {
+		t.Errorf("GET /s/x/other = %d %q, want a JSON 404", rec.Code, rec.Body.String())
+	}
+	// A binary built without the dashboard has no share page.
+	if rec := get(Share(placeholder{}, nil), "/s/x"); rec.Code != 404 {
+		t.Errorf("share page without a build = %d, want 404", rec.Code)
+	}
+}

@@ -21,12 +21,15 @@ make lint         # gofmt, vet, staticcheck (all checks), govulncheck
 make run          # clipmux serve on :8080 (prints a setup token)
 ```
 
-Until the dashboard exists, create an app and API key on the host:
+Open the dashboard, create an app under **Apps & API**, and create its API
+key there. While the public URL is `localhost`, the dialog asks you to
+confirm the key is for apps on this computer (D108). The same can be done
+on the host:
 
 ```bash
 export DATABASE_URL=postgres://clipmux:clipmux@localhost:5444/clipmux?sslmode=disable
-go run ./cmd/clipmux admin create-key --app MyApp          # API key for uploads and reads
-go run ./cmd/clipmux admin create-signing-key --app MyApp  # ES256 key your backend signs playback tokens with
+go run ./cmd/clipmux admin create-key --app MyApp --allow-loopback  # API key for uploads and reads
+go run ./cmd/clipmux admin create-signing-key --app MyApp           # ES256 key your backend signs playback tokens with
 ```
 
 Playback URLs are `{base_url}/v/{token}/{playback_id}/master.m3u8` (signed) and

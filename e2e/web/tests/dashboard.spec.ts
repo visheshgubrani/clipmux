@@ -50,14 +50,18 @@ test('first visit creates the account, saves the URLs and plays the sample', asy
   await expect(page.getByRole('link', { name: /clipmux-setup-test/ }).first()).toBeVisible()
   await noHorizontalScroll(page)
 
-  // Videos lists the sample; apps can't get API keys on a loopback URL.
+  // Videos lists the sample; on a loopback URL a key is offered, for apps on this computer.
   await go(page, 'Videos')
   await expect(page.getByRole('link', { name: /clipmux-setup-test/ }).first()).toBeVisible()
   await page.getByRole('button', { name: 'List view' }).click()
   await expect(page.getByRole('row', { name: /clipmux-setup-test/ }).first()).toContainText('Setup test')
   await go(page, 'Apps & API')
   await page.getByRole('link', { name: /Dashboard/ }).click()
-  await expect(page.getByRole('button', { name: 'Create API key' })).toBeDisabled()
+  await page.getByRole('button', { name: 'Create API key' }).click()
+  await expect(page.getByRole('dialog', { name: 'Create API key' })).toContainText(
+    'This key is for apps on this computer',
+  )
+  await page.keyboard.press('Escape')
   await noHorizontalScroll(page)
   await noViolations()
 })

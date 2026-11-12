@@ -50,7 +50,7 @@ const adminUsage = `Usage:
   clipmux admin reset-totp
   clipmux admin outbox [--retry ID]
 
-Host-side administration until the dashboard exists. Reads DATABASE_URL, and
+Host-side administration, alongside the dashboard. Reads DATABASE_URL, and
 for create-webhook CLIPMUX_DATA_DIR or CLIPMUX_SECRETS_KEY (the same key serve
 uses). Each command creates the app if it does not exist and prints a secret
 once: create-key an API key, create-signing-key the private key your backend

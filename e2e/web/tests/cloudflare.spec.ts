@@ -25,11 +25,20 @@ test('connects Cloudflare twice and passes the setup test at the edge', async ({
   for (let pass = 0; pass < 2; pass++) {
     // The Delivery card opens Connect in a dialog.
     await page.getByRole('button', { name: /^(Connect Cloudflare|Connect again)$/ }).click()
+    // The pasted token is inspected (D109); the account, zone and bucket
+    // are picked from what it reaches.
     const dialog = page.getByRole('dialog')
-    await page.locator('input[name=token]').fill(readFileSync(tokenPath, 'utf8').trim())
-    await page.locator('input[name=hostname]').fill('media-test.clipmux.com')
-    await page.locator('input[name=bucket]').fill('clipmux-staging')
-    await page.locator('input[name=account_id]').fill('49b962322ece3363f6495da349dd9d9e')
+    await dialog.getByLabel('API token').fill(readFileSync(tokenPath, 'utf8').trim())
+    const account = dialog.getByLabel('Account')
+    const zone = dialog.getByLabel('Zone')
+    await expect(account.or(zone).first()).toBeVisible({ timeout: 30_000 })
+    if (await account.isVisible()) {
+      await account.selectOption('49b962322ece3363f6495da349dd9d9e')
+    }
+    await dialog.getByLabel('Zone').selectOption('clipmux.com', { timeout: 30_000 })
+    await dialog.getByLabel('Subdomain').fill('media-test')
+    await dialog.getByLabel('R2 bucket').selectOption('clipmux-staging')
+    await dialog.getByRole('checkbox', { name: 'Store new uploads in R2' }).check()
     const responsePromise = page.waitForResponse(
       (response) =>
         response.request().method() === 'POST' &&

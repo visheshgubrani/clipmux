@@ -38,11 +38,46 @@ func (placeholder) Open(name string) (fs.File, error) {
 
 // reserved are the server's own paths: a typo under them is a JSON 404,
 // never the dashboard.
-var reserved = []string{"/v1/", "/v/", "/p/", "/_storage/", "/worker/", "/_tls/", "/healthz", "/readyz", "/metrics", "/debug/"}
+var reserved = []string{"/v1/", "/v/", "/p/", "/s/", "/_storage/", "/worker/", "/_tls/", "/healthz", "/readyz", "/metrics", "/debug/"}
 
 // DefaultCSP is the dashboard's Content-Security-Policy when the server
 // gives none: everything from its own origin only.
 const DefaultCSP = "default-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
+
+// Share serves the share page (D104), share.html, for GET /s/{token}. The
+// page is static: its script reads the secret from the path and asks the
+// API for a token, so the HTML never holds one. csp gives its
+// Content-Security-Policy; nil uses DefaultCSP. Without a build there is no
+// page, and the answer is 404.
+func Share(fsys fs.FS, csp func(*http.Request) string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		page, err := fs.ReadFile(fsys, "share.html")
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		h := w.Header()
+		pageHeaders(h, r, csp)
+		h.Set("X-Robots-Tag", "noindex")
+		h.Set("Cache-Control", "no-store")
+		h.Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write(page)
+	})
+}
+
+// pageHeaders are every page's security headers.
+func pageHeaders(h http.Header, r *http.Request, csp func(*http.Request) string) {
+	h.Set("X-Content-Type-Options", "nosniff")
+	h.Set("X-Frame-Options", "DENY")
+	h.Set("Referrer-Policy", "no-referrer")
+	h.Set("Cross-Origin-Opener-Policy", "same-origin")
+	h.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=()")
+	policy := DefaultCSP
+	if csp != nil {
+		policy = csp(r)
+	}
+	h.Set("Content-Security-Policy", policy)
+}
 
 // Handler serves the SPA from fsys: a real file as itself (hashed assets
 // for a year), any other path as index.html, uncached, so a deep link
@@ -59,17 +94,7 @@ func Handler(fsys fs.FS, csp func(*http.Request) string) http.Handler {
 				return
 			}
 		}
-		h := w.Header()
-		h.Set("X-Content-Type-Options", "nosniff")
-		h.Set("X-Frame-Options", "DENY")
-		h.Set("Referrer-Policy", "no-referrer")
-		h.Set("Cross-Origin-Opener-Policy", "same-origin")
-		h.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=()")
-		policy := DefaultCSP
-		if csp != nil {
-			policy = csp(r)
-		}
-		h.Set("Content-Security-Policy", policy)
+		pageHeaders(w.Header(), r, csp)
 		name := strings.TrimPrefix(path.Clean(r.URL.Path), "/")
 		if info, err := fs.Stat(fsys, name); name != "" && err == nil && !info.IsDir() {
 			if strings.HasPrefix(name, "assets/") {

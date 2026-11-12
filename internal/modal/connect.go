@@ -70,6 +70,8 @@ type Connector struct {
 
 	// newAPI opens Modal with a token; tests replace it.
 	newAPI func(tokenID, tokenSecret, environment string) (checkedAPI, error)
+	// flows is Modal's browser approval; nil means Modal's API (D109).
+	flows flows
 
 	mu    sync.Mutex
 	cache map[string]cached
@@ -100,11 +102,15 @@ func (c *Connector) open(tokenID, tokenSecret, environment string) (checkedAPI, 
 
 var imageRef = regexp.MustCompile(`^[a-z0-9]+([._/:@-][a-zA-Z0-9_.-]+)+$`)
 
-// Connect runs the steps in order and stops at the first that fails. Each
-// step is safe to repeat, so connecting again rotates the token or changes
-// the settings.
-func (c *Connector) Connect(ctx context.Context, req Request) (dispatch.Result, error) {
-	req.TokenID, req.TokenSecret = strings.TrimSpace(req.TokenID), strings.TrimSpace(req.TokenSecret)
+// CheckSettings refuses a request whose settings Connect would refuse,
+// before a browser approval issues a token for it (D109).
+func (c *Connector) CheckSettings(req Request) error {
+	_, _, err := c.settings(req)
+	return err
+}
+
+// settings fills req's defaults and checks everything but the token.
+func (c *Connector) settings(req Request) (Request, dispatch.Settings, error) {
 	if req.Image == "" {
 		req.Image = c.DefaultImage
 	}
@@ -128,19 +134,32 @@ func (c *Connector) Connect(ctx context.Context, req Request) (dispatch.Result, 
 		RateCentsPerHour: req.RateCentsPerHour, DiskBytes: int64(req.DiskGB) << 30,
 	}
 	switch {
-	case req.TokenID == "" || req.TokenSecret == "":
-		return dispatch.Result{}, fmt.Errorf("%w: token_id and token_secret are required", ErrInvalid)
 	case req.Image == "" || !imageRef.MatchString(req.Image):
-		return dispatch.Result{}, fmt.Errorf("%w: image must be an image reference such as ghcr.io/owner/clipmux:tag", ErrInvalid)
+		return req, settings, fmt.Errorf("%w: image must be an image reference such as ghcr.io/owner/clipmux:tag", ErrInvalid)
 	case (req.RegistryUsername == "") != (req.RegistryPassword == ""):
-		return dispatch.Result{}, fmt.Errorf("%w: registry_username and registry_password go together", ErrInvalid)
+		return req, settings, fmt.Errorf("%w: registry_username and registry_password go together", ErrInvalid)
 	case req.CPU < 1 || req.CPU > 64 || req.MemoryMiB < 4096 || req.MemoryMiB > 262144:
-		return dispatch.Result{}, fmt.Errorf("%w: cpu must be 1 to 64 cores and memory_mib 4096 to 262144", ErrInvalid)
+		return req, settings, fmt.Errorf("%w: cpu must be 1 to 64 cores and memory_mib 4096 to 262144", ErrInvalid)
 	case req.DiskGB > 2000:
-		return dispatch.Result{}, fmt.Errorf("%w: disk_gb must be at most 2000", ErrInvalid)
+		return req, settings, fmt.Errorf("%w: disk_gb must be at most 2000", ErrInvalid)
 	}
 	if err := settings.Valid(); err != nil {
-		return dispatch.Result{}, fmt.Errorf("%w: %v", ErrInvalid, err)
+		return req, settings, fmt.Errorf("%w: %v", ErrInvalid, err)
+	}
+	return req, settings, nil
+}
+
+// Connect runs the steps in order and stops at the first that fails. Each
+// step is safe to repeat, so connecting again rotates the token or changes
+// the settings.
+func (c *Connector) Connect(ctx context.Context, req Request) (dispatch.Result, error) {
+	req.TokenID, req.TokenSecret = strings.TrimSpace(req.TokenID), strings.TrimSpace(req.TokenSecret)
+	if req.TokenID == "" || req.TokenSecret == "" {
+		return dispatch.Result{}, fmt.Errorf("%w: token_id and token_secret are required", ErrInvalid)
+	}
+	req, settings, err := c.settings(req)
+	if err != nil {
+		return dispatch.Result{}, err
 	}
 	existing, had, err := dispatch.Existing(ctx, c.Pool, c.ProjectID, "modal")
 	if err != nil {

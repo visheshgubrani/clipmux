@@ -42,6 +42,11 @@ func dashboardCSP(mediaURL string, storage []string) string {
 	}, "; ")
 }
 
+// shareCSP is the share page's Content-Security-Policy (D104): the
+// dashboard's, without the storage buckets, since the page uploads
+// nothing. It plays from the media URL and asks its own origin for tokens.
+func shareCSP(mediaURL string) string { return dashboardCSP(mediaURL, nil) }
+
 func originOf(raw string) string {
 	u, err := url.Parse(raw)
 	if err != nil || u.Scheme == "" || u.Host == "" {

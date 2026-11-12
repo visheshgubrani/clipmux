@@ -12,15 +12,17 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/visheshgubrani/clipmux/internal/accounts"
+	"github.com/visheshgubrani/clipmux/internal/cloudflare"
 	"github.com/visheshgubrani/clipmux/internal/db"
 	"github.com/visheshgubrani/clipmux/internal/httpjson"
 	"github.com/visheshgubrani/clipmux/internal/stores"
 )
 
-// Storage configs (D099): the owner lists them, adds a generic S3 bucket
-// (checked with a test write before it is saved), rotates a bucket's
-// credentials, picks the default for new uploads, and removes one nothing
-// needs any more. R2 configs come from Connect Cloudflare.
+// Storage configs (D099, D110): the owner lists them, adds a generic S3
+// bucket (checked with a test write before it is saved) or an R2 bucket
+// with a Cloudflare token, rotates a bucket's credentials, picks the
+// default for new uploads (this server's disk included), and removes one
+// nothing needs any more.
 
 type storageView struct {
 	ID             string `json:"id"`
@@ -121,6 +123,32 @@ func (m *API) addStorage(w http.ResponseWriter, r *http.Request, o accounts.Owne
 	}
 	m.Logger.InfoContext(r.Context(), "storage added", "storage", row.ID, "bucket", cfg.Bucket, "endpoint", cfg.Endpoint)
 	httpjson.Write(w, http.StatusCreated, viewStorage(row.ID, row.Kind, row.Config, row.IsDefault, 0, false, row.CreatedAt.Time))
+	return nil
+}
+
+// addR2Storage saves an R2 bucket with a token that can edit R2, creating
+// the bucket if it's missing, without moving delivery (D110). The token is
+// used for this request only; every step's result comes back, like Connect
+// Cloudflare's, and a failed step can be fixed and tried again.
+func (m *API) addR2Storage(w http.ResponseWriter, r *http.Request, _ accounts.Owner) error {
+	if m.Cloudflare == nil {
+		return errNotFound
+	}
+	var req cloudflare.R2Request
+	if err := decode(w, r, &req); err != nil {
+		return err
+	}
+	res, id, err := m.Cloudflare.AddR2(r.Context(), req)
+	if errors.Is(err, cloudflare.ErrInvalid) {
+		return httpjson.Fail(http.StatusBadRequest, "invalid_request", strings.TrimPrefix(err.Error(), cloudflare.ErrInvalid.Error()+": "))
+	}
+	if err != nil {
+		return err
+	}
+	if res.Connected {
+		m.Logger.InfoContext(r.Context(), "R2 storage added", "storage", id, "bucket", req.Bucket)
+	}
+	httpjson.Write(w, http.StatusOK, res)
 	return nil
 }
 

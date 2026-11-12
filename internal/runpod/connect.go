@@ -50,6 +50,9 @@ type Connector struct {
 	ProjectID string
 	// API is RunPod's REST API base (DefaultAPI, or a fake).
 	API string
+	// GraphQL and Console are where browser approval runs (D109); empty
+	// means DefaultGraphQL and DefaultConsole.
+	GraphQL, Console string
 	// PublicURL is the URL pods reach the worker API on.
 	PublicURL func() string
 	// AllowPrivateURL skips the public-URL check, for development and the
@@ -67,11 +70,15 @@ type Connector struct {
 
 var imageRef = regexp.MustCompile(`^[a-z0-9]+([._/:@-][a-zA-Z0-9_.-]+)+$`)
 
-// Connect runs the steps in order and stops at the first that fails. Each
-// step is safe to repeat, so connecting again rotates the key or changes
-// the settings.
-func (c *Connector) Connect(ctx context.Context, req Request) (dispatch.Result, error) {
-	req.APIKey = strings.TrimSpace(req.APIKey)
+// CheckSettings refuses a request whose settings Connect would refuse,
+// before a browser approval issues a key for it (D109).
+func (c *Connector) CheckSettings(req Request) error {
+	_, _, err := c.settings(req)
+	return err
+}
+
+// settings fills req's defaults and checks everything but the key.
+func (c *Connector) settings(req Request) (Request, dispatch.Settings, error) {
 	if req.Image == "" {
 		req.Image = c.DefaultImage
 	}
@@ -89,17 +96,30 @@ func (c *Connector) Connect(ctx context.Context, req Request) (dispatch.Result, 
 		RateCentsPerHour: req.RateCentsPerHour, DiskBytes: int64(req.DiskGB) << 30,
 	}
 	switch {
-	case req.APIKey == "":
-		return dispatch.Result{}, fmt.Errorf("%w: api_key is required", ErrInvalid)
 	case req.Image == "" || !imageRef.MatchString(req.Image):
-		return dispatch.Result{}, fmt.Errorf("%w: image must be an image reference such as ghcr.io/owner/clipmux:tag", ErrInvalid)
+		return req, settings, fmt.Errorf("%w: image must be an image reference such as ghcr.io/owner/clipmux:tag", ErrInvalid)
 	case (req.RegistryUsername == "") != (req.RegistryPassword == ""):
-		return dispatch.Result{}, fmt.Errorf("%w: registry_username and registry_password go together", ErrInvalid)
+		return req, settings, fmt.Errorf("%w: registry_username and registry_password go together", ErrInvalid)
 	case req.DiskGB > 2000:
-		return dispatch.Result{}, fmt.Errorf("%w: disk_gb must be at most 2000", ErrInvalid)
+		return req, settings, fmt.Errorf("%w: disk_gb must be at most 2000", ErrInvalid)
 	}
 	if err := settings.Valid(); err != nil {
-		return dispatch.Result{}, fmt.Errorf("%w: %v", ErrInvalid, err)
+		return req, settings, fmt.Errorf("%w: %v", ErrInvalid, err)
+	}
+	return req, settings, nil
+}
+
+// Connect runs the steps in order and stops at the first that fails. Each
+// step is safe to repeat, so connecting again rotates the key or changes
+// the settings.
+func (c *Connector) Connect(ctx context.Context, req Request) (dispatch.Result, error) {
+	req.APIKey = strings.TrimSpace(req.APIKey)
+	if req.APIKey == "" {
+		return dispatch.Result{}, fmt.Errorf("%w: api_key is required", ErrInvalid)
+	}
+	req, settings, err := c.settings(req)
+	if err != nil {
+		return dispatch.Result{}, err
 	}
 
 	steps := &dispatch.Steps{Provider: "runpod", Logger: c.Logger}

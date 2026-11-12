@@ -1,5 +1,7 @@
 # Phase 7 — Sharing and analytics
 
+**Status: closed with open items (D107, 2026-11-11).** The features ship; what the exit didn't prove is in [known-gaps.md](../known-gaps.md).
+
 Source: [architecture.md](../architecture.md), "Integration flow" (share
 links) and "Tokens" (the `vid` claim), with [decisions.md](../decisions.md)
 where they differ (D102–D104 set this phase's scope). Phase 7 adds the two
@@ -42,9 +44,11 @@ field, `share`.
    `top_assets`.
    - Dashboard previews, library posters and the setup test add nothing.
    - A fetch the Worker forwards to origin counts once.
-4. **Edge counts are exact.** On the real zone (D090), the scripted playback
-   through the Worker reaches `/v1/analytics` after a pull. Bytes, views and
-   watch seconds match the script exactly at that volume.
+4. **Edge counts are pulled exactly.** On the real zone (D090), the scripted
+   playback through the Worker reaches `/v1/analytics` after a pull. The
+   pulled views, watch seconds, bytes and viewers equal Analytics Engine's
+   own weighted sums exactly, and the script within 1% (at least one whole
+   unit), since Analytics Engine samples even one viewer's burst (D106).
 5. **Counts survive a stop.** SIGTERM loses no counts; `kill -9` loses at
    most one 15 s flush.
 6. **Nothing leaks.** The suites' log checks find no share secret, token or
@@ -297,11 +301,11 @@ Order:
 | T04 | **The Worker's counting** (done). The Worker parses `vid`, hashes it under `ANALYTICS_KEY`, and writes one data point per counted response (D103 has the layout), checked against every vector in Node and run in workerd. Origin fetches carry `X-ClipMux-Edge: 1`. Route records gain `no_audio` and `share` (the flag is set from T06). Connect binds the `clipmux_delivery` dataset, `PROJECT_ID` and `ANALYTICS_KEY`; the rebuilt bundle changes the Worker version, so connected installs see `needs_redeploy`. | `clipmux-lms` `delivery/wrangler.jsonc`, `delivery/src/index.ts` |
 | T05 | **Edge pull** (done). `POST`/`GET`/`DELETE /v1/cloudflare/analytics` keep a sealed read-only token (migration 00029, `edge_analytics`), checked with `SHOW TABLES`. The `analytics_edge` leader loop runs every 5 minutes: each pass recomputes from an hour before its watermark, at most a day at a time, replaces those hours' edge rows, rebuilds the edge daily rows of the days they touch, and adds the edge viewers. History starts 13 days back, inside the hourly retention. Tested against an `httptest` fake of the SQL API that weights by `_sample_interval`, including a repeated pull that changes nothing and a late point. Share links take migration 00030. | `clipmux-lms` `server/src/routes/usage.ts` |
 | T06 | **Share links** (done): migration 00030 and `internal/shares`, the routes, `/s/{secret}/playback`, the stream URL, the `shares` expiry loop, and previews and posters skipping share IDs. Route records and a new vector mark share IDs, so both adapters count them. Tests on real Postgres through built-in delivery. | architecture "Integration flow" |
-| T07 | **The share page:** the second Vite entry, its Go route and headers, the redaction of `/s/`. Playwright in both projects with `watchCSP` and `noHorizontalScroll`: plays, expires, is revoked. | `dashboard/src/player.tsx` |
-| T08 | **The dashboard:** share links on the video page's Sharing tab (create with a name and an expiry, copy link, copy HLS URL, revoke with `useConfirm`, views per link); Analytics live with the `collecting` notice; the edge analytics card on Delivery. Playwright in both projects. | `dashboard/src/pages/video.tsx`, `analytics.tsx`, `delivery.tsx` |
-| T09 | **Docs:** api.md, architecture (an analytics section, share links, the threat rows above), operations (what is counted, retention, backups), cloudflare.md (the dataset and the token's permission), known-gaps. | — |
-| T10 | **The real zone** (D090): scripted playback through the Worker reaches `/v1/analytics` after a pull; a revoked share link stops at the edge within 65 s. Recorded as a decision. | D090 |
-| T11 | **Exit:** the exit test above, recorded as a decision. Then P6-T19 may start. | — |
+| T07 | **The share page** (done): `dashboard/share.html`, a second Vite entry in plain TypeScript with `<clipmux-player>` and none of the dashboard's bundle; `GET /s/{token}` (`web.Share`) with the dashboard's CSP minus the storage buckets, `noindex` and `no-store`; `/s/` reserved from the dashboard's fallback. (The redaction of `/s/` landed in T06.) Playwright in both projects with `watchCSP` and `noHorizontalScroll`: plays with subtitles in a fresh context, revoked, expired, unknown. | `dashboard/src/player.tsx` |
+| T08 | **The dashboard** (done): share links on the video page's Sharing tab (create with a name and an expiry, copy link, the stream URL in a dialog, revoke with `useConfirm`, views per link), and the playback IDs table naming each link's ID; Analytics live, with the "isn't counted yet" notice when `collecting.edge` is `not_connected`; the edge analytics card on Delivery. Playwright in both projects: a link made, watched with no session, its view counted, its stream URL played and revoked; Analytics counting a real play; the edge states from the API's answers. | `dashboard/src/pages/video.tsx`, `analytics.tsx`, `delivery.tsx` |
+| T09 | **Docs** (done): architecture's Delivery gains an Analytics section and the route record's `no_audio` and `share`; Integration API gains the share and analytics routes and a Share links section; six threat rows. operations gains Analytics (what is counted, the flush, the metrics), its retention rows, what backups carry and three troubleshooting rows. cloudflare.md gains Edge analytics (the dataset, what a data point holds, the read-only token, the limits). api.md and known-gaps lose their stale pointers. | — |
+| T10 | **The real zone** (done, D106): staging re-provisioned on its own Postgres; Connect binds the dataset; the read-only token pulls; the pull equals Analytics Engine's weighted sums exactly; Analytics Engine samples even one viewer, so the script doesn't match; a revoked share link stopped at the edge inside 65 s. An origin bypass is unexplained. | D090 |
+| T11 | **Exit** (closed with open items, D107): items 2, 3, 5 (SIGTERM) and 7 passed; 1, 4 and 6 partly, with what's open in known-gaps. The owner decides which P6-T19 needs. | — |
 
 ## Open questions
 

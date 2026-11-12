@@ -23,6 +23,7 @@ import { PageBody, Section } from '@/components/page'
 import { isPublic } from '@/components/poster'
 import { Preview } from '@/components/preview'
 import { QueryState } from '@/components/query-state'
+import { ShareLinks } from '@/components/share-links'
 import { AssetStatusBadge, TrackStatusBadge } from '@/components/status'
 import { Alert, AlertAction, AlertDescription } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
@@ -646,7 +647,8 @@ function Sharing({ asset: a, app }: { asset: Asset; app?: string | undefined }) 
         action: 'Make private',
       })
       if (!ok) return
-      if (!active.some((p) => p.policy === 'signed')) await add.mutateAsync('signed')
+      // A share link's ID doesn't count: it stops with its link.
+      if (!active.some((p) => p.policy === 'signed' && !p.share)) await add.mutateAsync('signed')
       for (const p of pub) await revoke.mutateAsync(p.id)
       notify.done('Video is private')
     }
@@ -703,6 +705,7 @@ function Sharing({ asset: a, app }: { asset: Asset; app?: string | undefined }) 
           </p>
         )}
       </Section>
+      <ShareLinks asset={a} app={app} />
       <Section
         title="Playback IDs"
         description="Each ID plays the video under its own policy and can be revoked on its own."
@@ -742,14 +745,28 @@ function Sharing({ asset: a, app }: { asset: Asset; app?: string | undefined }) 
                       <CopyButton value={p.id} label="Copy playback ID" />
                     </span>
                   </TableCell>
-                  <TableCell>{p.policy === 'public' ? 'Public' : 'Signed'}</TableCell>
+                  <TableCell>
+                    {p.share ? (
+                      <span className="flex flex-col">
+                        Share link
+                        <span className="max-w-48 truncate text-muted-foreground">
+                          {p.share.name || 'Untitled link'}
+                        </span>
+                      </span>
+                    ) : p.policy === 'public' ? (
+                      'Public'
+                    ) : (
+                      'Signed'
+                    )}
+                  </TableCell>
                   <TableCell>
                     <Badge variant={p.status === 'active' ? 'success' : 'secondary'}>
                       {p.status === 'active' ? 'Active' : p.status === 'revoking' ? 'Revoking' : 'Revoked'}
                     </Badge>
                   </TableCell>
                   <TableCell className="text-right">
-                    {p.status === 'active' && (
+                    {/* A share link's ID is revoked with its link, above. */}
+                    {p.status === 'active' && !p.share && (
                       <Button
                         variant="ghost"
                         size="sm"

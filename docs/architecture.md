@@ -427,7 +427,7 @@ Delivery generates `master.m3u8` on each request. It reads the stored master of 
 { "v": 1, "app_id": "...", "asset_id": "...", "output_id": "...", "policy": "signed", "backend": "r2" }
 ```
 
-The route publisher writes this object to `_routes/{playback_id}.json` through the storage adapter, and the Worker reads it through its R2 binding. Deleting the object revokes the ID. The built-in handler reads the same data from Postgres. Storage keys use the route's asset ID, so a token for one video can't read another, and a token's `kid` must belong to the route's app.
+Records also carry `outputs` (the servable outputs and their key versions), `tracks`, and two fields delivery counts by (D103): `no_audio`, the outputs whose video segments carry the watch time, and `share`, set on a share link's playback ID. The route publisher writes this object to `_routes/{playback_id}.json` through the storage adapter, and the Worker reads it through its R2 binding. Deleting the object revokes the ID. The built-in handler reads the same data from Postgres. Storage keys use the route's asset ID, so a token for one video can't read another, and a token's `kid` must belong to the route's app.
 
 `backend` is `r2` for assets in the Worker's bucket, or `origin` for assets on other storage. The Worker fetches origin assets from the built-in handler at the app's public URL, until a `move` job brings them into R2.
 
@@ -494,7 +494,7 @@ Tokens are ES256 JWTs placed in the URL path, so relative playlist URLs inherit 
 
 - **Signing keys:** The dashboard generates a key pair for an app, shows the private key once and keeps only the public key. The app's backend signs and delivery verifies.
 - **Internal key:** The server also holds one key pair of its own, encrypted like adapter secrets, under its own `kid`. It signs only short-lived tokens, for dashboard preview, setup tests and share links.
-- **Claims:** `sub` holds the playback ID, `aud` is `v` for playback or `t` for thumbnails, `iat` the issue time, `exp` the expiry, and an optional `vid` a viewer ID for auditing.
+- **Claims:** `sub` holds the playback ID, `aud` is `v` for playback or `t` for thumbnails, `iat` the issue time, `exp` the expiry, and an optional `vid` a viewer ID, which analytics counts as a keyed hash (D103).
 - **Audiences:** A `t` token fetches only `poster.jpg`, so a catalogue can show posters for locked lessons without handing out a token that plays them. A `v` token fetches everything, including the content key.
 - **Lifetime:** `exp` is the current time plus the larger of 2 × duration or 4 hours. [Mux notes that an expired URL stops playing even mid-session](https://www.mux.com/docs/guides/secure-video-playback). Delivery rejects any token whose `exp − iat` exceeds the project maximum, which defaults to 7 days to match the retire window.
 - **Refresh:** The built-in player accepts a `getToken()` callback. On a `401`, it fetches a new token and resumes at the same position. Players it doesn't control, such as AirPlay and Chromecast receivers, can't refresh, so the lifetime rule is what keeps them playing.
@@ -515,6 +515,18 @@ Encryption buys two things. Stored outputs are ciphertext, so a leaked bucket, s
 It is still deterrence, not DRM. Anyone with a valid token can fetch the key, and common download tools do that automatically, so the docs should say so.
 
 Widevine and FairPlay can come later without re-encoding. Shaka Packager already writes CMAF with `cbcs` encryption for both, and because the server can derive every key, existing outputs can be decrypted and repackaged. DRM also needs a licence server, which v1 doesn't have.
+
+### Analytics
+
+Delivery counts what it serves, in whichever adapter answers the viewer (D103). There is no player beacon, so analytics needs nothing from the app but an optional `vid`.
+
+- **What counts:** a `GET` answered 200, or 206 from byte 0, on a servable route. A view is one generated `master.m3u8`. Watch time is 6 seconds per audio segment, or per video segment for an output with no audio, so ABR switches don't double it; it overcounts by the player's buffer-ahead. Bytes are every counted body, and a range not from byte 0 adds bytes only. Refusals never count.
+- **What doesn't:** tokens signed by the internal key (dashboard previews, posters, the setup test), except a share link's, whose route is marked `share`; and requests the Worker forwards to origin, which carry `X-ClipMux-Edge: 1` because the Worker counted them already.
+- **Viewers:** a viewer key is HMAC-SHA256 of `app_id ‖ 0 ‖ vid` under a per-project analytics key, cut to 16 bytes and kept per day per asset. Unique viewers count distinct keys across a range's days, or read `null` when no view carried a `vid`.
+- **Built in:** the handler records into an in-memory recorder that every replica flushes to Postgres every 15 seconds, adding to `playback_hourly` and `playback_daily` and inserting viewer keys. serve flushes once more at shutdown.
+- **At the edge:** the Worker writes one Analytics Engine data point per counted response. With a read-only token the owner connects, serve pulls them every 5 minutes, recomputing from an hour before its last pull and replacing those hours' edge rows, so a repeated pull never double counts. Origin and edge rows are kept apart by a `source` column.
+- **Kept:** hourly rows 14 days, for the 24-hour range; daily rows and viewer keys 180 days, two 90-day ranges (D105). Nothing stores an IP, User-Agent, referrer, token or raw `vid`.
+- **Read:** `GET /v1/analytics` and `/v1/analytics/assets/{id}` (D100) for the owner, and for an app's key with the opt-in `analytics:read` scope, its own assets only. `collecting` says whether the edge is counted.
 
 ## Adapters
 
@@ -608,6 +620,10 @@ An app needs one API key, one signing key and one webhook endpoint, all created 
 | `POST /v1/assets/{id}/reencode` | Backend | Create a new output |
 | `POST /v1/assets/{id}/playback-ids` | Backend | Add a public or signed ID |
 | `DELETE /v1/assets/{id}/playback-ids/{pid}` | Backend | Revoke an ID |
+| `POST /v1/assets/{id}/shares` | Backend or dashboard | Create a share link, with its own signed playback ID |
+| `GET /v1/assets/{id}/shares` | Backend or dashboard | List an asset's share links and their views |
+| `DELETE /v1/shares/{id}` | Backend or dashboard | Revoke a share link |
+| `GET /v1/analytics` | Backend (`analytics:read`) or dashboard | Views, watch time, viewers and bandwidth for a range |
 
 Every POST accepts an `Idempotency-Key`, so a retried request can't create a duplicate asset. Every call sees only the calling app's assets. Playback IDs on an asset that isn't ready yet carry `playable: false`.
 
@@ -621,7 +637,18 @@ Every POST accepts an `Idempotency-Key`, so a retried request can't create a dup
 
 For a course platform, `passthrough` is a lesson ID and the access rule is enrolment. A SaaS product might use a workspace ID and a seat check.
 
-Owners who don't write code can skip the API. They upload in the dashboard, then copy a share link or player embed for a public playback ID. For signed playback, the dashboard creates an expiring share link signed with the internal key. Each share link gets its own signed playback ID, so the owner can end one link without affecting the others. A link opens a page that fetches short-lived tokens, so it can expire or be revoked on its own (D104, Phase 7).
+Owners who don't write code can skip the API. They upload in the dashboard, then copy a player embed for a public playback ID, or a share link for a private video.
+
+### Share links
+
+A share link (D104) is `{public_url}/s/{secret}`: a page that plays one video for anyone holding it, with no session and no app token.
+
+- **Its own playback ID.** Each link owns one signed playback ID, created with it, so the owner can end one link without the others. Revoking the link revokes the ID through the usual unpublish; deleting the video revokes every link. Previews, posters and "Make private" never use or touch a link's ID.
+- **A page, not a token.** The page is static. Its script reads the secret from the path and asks `POST /s/{secret}/playback` for a `v` token signed with the internal key, again whenever the player needs a fresh one, so a link can outlive the longest token. Each token lasts until the earliest of the link's expiry, max(2 × duration, 4 h) and the project maximum.
+- **The secret** is about 130 random bits, looked up by its SHA-256 and sealed for the owner to copy again. It never appears in a log line.
+- **Expiry** is enforced twice: tokens never outlive the link, and a leader loop revokes expired links' IDs every minute, so their route records leave the Worker too.
+- **For other players**, a link can also hand out a plain signed HLS URL. It can't refresh, lasts at most the project maximum, and stops when the link is revoked.
+- **Counted.** A link's plays count in analytics, though the internal key signs them, and the page sends a random per-browser `vid`, so links count unique viewers.
 
 ### Webhooks
 
@@ -669,7 +696,12 @@ The built-in worker is a separate process that holds only an attempt token. It h
 | SSRF through import from URL | HTTP and HTTPS only, with private, loopback and link-local ranges blocked after DNS and on every redirect |
 | Server asks an agent for arbitrary files | Opaque source IDs, with real paths kept on the agent |
 | Token stripped from a signed URL | Route record policy, default deny |
-| Playback token shared | `vid` claim for auditing, and revocation by rotating the playback ID |
+| Playback token shared | `vid` claim, counted as a keyed hash per viewer (D103), and revocation by rotating the playback ID |
+| A share link is passed on | It plays until it expires or is revoked; one link per recipient, so one can end without the others. Built-in delivery refuses a revoked link's ID at once, the Worker within its 60-second route cache |
+| Share secrets guessed | About 130 bits, looked up by hash; failed lookups count toward the playback refusal limiter (D067), and plays are limited per address |
+| A share link's stream URL leaks | It lasts at most the project maximum (7 days) and stops when the link is revoked |
+| Analytics identify a viewer | Only keyed hashes of `vid` are kept, per day, for 180 days; no IP, User-Agent, referrer or token is stored, at the origin or in Analytics Engine |
+| The edge analytics token leaks | It has only Account Analytics: Read; it is sealed with the secrets key and never returned |
 | Long-lived playback token leaked | `iat` required, and a maximum lifetime enforced at delivery |
 | Signing key leaked | Asymmetric per-app keys, with immediate revocation by `kid` |
 | Bucket, R2 credentials or a storage disk leaked | Outputs are AES-128 encrypted and no content key is written to storage; sources stay readable unless the project deletes them after `ready` |
@@ -708,7 +740,7 @@ clipmux listen   # forwards webhooks to a local URL
 
 1. The server prints a one-time setup token to its logs.
 2. The first visitor enters it and creates the owner account. Registration then closes, and later visits see only the login page.
-3. The owner enters the public URL and the media hostname, and Caddy obtains certificates for both. The owner can keep `localhost` to try things out, but no API key can be created until the public URL changes, because presigned URLs and `base_url` are bound to it.
+3. The owner enters the public URL and the media hostname, and Caddy obtains certificates for both. The owner can keep `localhost` to try things out. Presigned URLs and `base_url` are bound to the public URL, so while it is loopback an API key needs the owner's confirmation that it is for apps on this machine (D108).
 4. Filesystem storage, the built-in worker and built-in delivery are already active, and the server has generated the content key secret.
 5. A sample clip runs through the full pipeline and plays in the built-in player.
 6. The dashboard shows the optional upgrades below.
@@ -717,9 +749,10 @@ clipmux listen   # forwards webhooks to a local URL
 
 | Upgrade | Asks for | What the app does |
 | --- | --- | --- |
-| Connect Cloudflare | API token and domain | Creates the bucket, applies CORS, derives S3 credentials, deploys the Worker with the content key secret, moves the media hostname to it, then offers to move the library to R2 |
+| Store uploads in a bucket | An R2 token (from a pre-filled link) or S3 keys | Creates the R2 bucket if needed, checks it, and sends new uploads there; this server's disk can be chosen again (D110) |
+| Connect Cloudflare | One API token, from a link that pre-fills its permissions; the zone, hostname and bucket are picked from what it reaches | Creates the bucket, applies CORS, derives S3 credentials, deploys the Worker with the content key secret, moves the media hostname to it, then offers to move the library to R2 (D109) |
 | Connect my PC | Nothing | Shows a one-line `clipmux worker` command with a new agent key; the agent waits as `pending` until approved |
-| Connect Modal or RunPod | Provider credentials, a concurrency limit and a monthly spend limit | Checks the public server URL and registers the worker image |
+| Connect Modal or RunPod | A concurrency limit and a monthly spend limit, then an approval on the provider's page (or a pasted key) | Checks the public server URL and registers the worker image |
 | Create an app | A name | Creates the app with an API key, a signing key and a webhook secret, and shows the secrets once |
 
 Connect Cloudflare is a single card because R2 and the Worker share a bucket and a token. Cloudflare can [derive S3 credentials from an API token](https://developers.cloudflare.com/r2/api/tokens/): the access key is the token ID, and the secret is the SHA-256 of its value.
