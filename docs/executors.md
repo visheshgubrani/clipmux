@@ -35,13 +35,14 @@ Routing**, or `PUT /v1/settings/routing`) can name it only after that.
 
 ## RunPod
 
-**Encoding → Cloud GPUs → Connect RunPod**: set the limits, then **Connect
-with RunPod** opens RunPod's console, where you approve the request (D109).
-The page names RunPod's Flash CLI, whose login uses the same approval; the
-key it issues goes straight to this server, and you can restrict or delete
-it in RunPod's settings. To paste a key instead, create one in RunPod
-(**Settings → API Keys**) with read and write access to pods and container
-registry auths, or call:
+**Encoding → Cloud GPUs → Connect RunPod**: **Get a key from RunPod** opens
+RunPod's console, which creates a key for ClipMux and shows it (the page
+names RunPod's Flash CLI, D109); paste it into the field. A key you create
+yourself under **Settings → API Keys**, with read and write access to pods
+and container registry auths, works too. The dialog then lists RunPod's
+NVENC GPUs with their Secure Cloud price per hour, the L4 recommended, and
+ticks the first three. Limits default to one machine and $50 a month
+(Change), and the rate is the dearest chosen GPU's price (D111). Or call:
 
 ```bash
 curl -X POST https://video.example.com/v1/executors/runpod/connect \
@@ -76,8 +77,9 @@ rotate the key or change settings; the provider then needs a new setup test.
 
 ## Modal
 
-**Encoding → Cloud GPUs → Connect Modal**: set the limits, then **Connect
-with Modal** opens the page Modal's CLI uses to issue a token (D109); approve
+**Encoding → Cloud GPUs → Connect Modal**: pick GPUs (Modal's NVENC ones,
+priced with each sandbox's CPU and memory; limits default as for RunPod,
+D111), then **Connect with Modal** opens the page Modal's CLI uses to issue a token (D109); approve
 it there and the token goes straight to this server. To paste one instead,
 create a token in Modal (**Settings → API Tokens**); pasting the
 `modal token set …` command it shows fills both fields. Or call

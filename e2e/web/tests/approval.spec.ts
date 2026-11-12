@@ -52,9 +52,15 @@ test('the owner connects Modal by approving it on Modal’s page', async ({ page
   await go(page, 'Encoding')
   await page.locator('[data-provider="modal"]').getByRole('button', { name: 'Connect Modal' }).click()
   const form = page.getByRole('form', { name: 'Connect Modal' })
-  await form.getByLabel('At most this many machines').fill('2')
+  // Modal's NVENC GPUs with its prices, the first three ticked (D111).
+  const gpus = form.getByRole('list', { name: 'GPUs' })
+  await expect(gpus.getByRole('listitem').first()).toContainText('L4')
+  await expect(gpus.getByRole('listitem').first()).toContainText('Recommended')
+  await expect(gpus.getByRole('listitem').first()).toContainText('$1.12/hr')
+  await gpus.getByRole('checkbox', { name: 'A10' }).uncheck()
+  await gpus.getByRole('checkbox', { name: 'L40S' }).check()
+  await form.getByRole('button', { name: 'Change' }).click()
   await form.getByLabel('Monthly limit ($)').fill('40')
-  await form.getByLabel('Rate ($ per machine-hour)').fill('0.90')
   const popup = page.waitForEvent('popup')
   await form.getByRole('button', { name: 'Connect with Modal' }).click()
   const tab = await popup
@@ -62,11 +68,11 @@ test('the owner connects Modal by approving it on Modal’s page', async ({ page
   expect(await tab.evaluate(() => window.opener)).toBeNull()
   await expect(form).toContainText('AB12')
   await expect(form.getByText('✓ Credentials')).toBeVisible({ timeout: 15_000 })
-  expect(started).toEqual([{ max_concurrent: 2, monthly_limit_cents: 4000, rate_cents_per_hour: 90 }])
+  expect(started).toEqual([{ max_concurrent: 1, monthly_limit_cents: 4000, gpu: 'L4,T4,L40S' }])
   await tab.close()
 
   // Pasting instead: the command Modal shows fills both fields.
-  await form.getByRole('button', { name: 'Paste a key instead' }).click()
+  await form.getByRole('button', { name: 'Paste a token instead' }).click()
   await form
     .getByLabel('Modal token ID')
     .fill('modal token set --token-id ak-abc123 --token-secret as-def456')
@@ -76,16 +82,17 @@ test('the owner connects Modal by approving it on Modal’s page', async ({ page
   await noViolations()
 })
 
-// RunPod's console showed the key on its own page on a real run, rather
-// than handing it to the server: the dialog turns to pasting it.
-test('a key RunPod shows on its page is pasted instead', async ({ page, request, baseURL }) => {
+// RunPod's console shows the key on its own page (D109), so its dialog is a
+// key field: "Get a key from RunPod" opens that page, and the pasted key
+// lists RunPod's GPUs from the fixture's fake catalog.
+test('a RunPod key from RunPod’s page lists its GPUs', async ({ page, request, baseURL }) => {
   const noViolations = await watchCSP(page)
-  const cfg = (await (await request.get('/config')).json()) as OpsConfig
+  const cfg = (await (await request.get('/config')).json()) as OpsConfig & { runpod_key: string }
   await signIn(page, cfg)
   await page
     .context()
     .route('**/approve-here**', (route) =>
-      route.fulfill({ contentType: 'text/html', body: '<title>RunPod</title><p>Paste this key</p>' }),
+      route.fulfill({ contentType: 'text/html', body: '<title>RunPod</title><p>Your key</p>' }),
     )
   await page.route('**/v1/executors/runpod/authorize', (route) =>
     route.fulfill({
@@ -98,18 +105,24 @@ test('a key RunPod shows on its page is pasted instead', async ({ page, request,
       },
     }),
   )
-  await page.route('**/v1/executors/runpod/authorize/apr_rp', (route) =>
-    route.fulfill({ json: { id: 'apr_rp', expires_at: new Date().toISOString(), status: 'shown' } }),
-  )
   await go(page, 'Encoding')
   await page.locator('[data-provider="runpod"]').getByRole('button', { name: 'Connect RunPod' }).click()
   const form = page.getByRole('form', { name: 'Connect RunPod' })
-  await form.getByLabel('Monthly limit ($)').fill('40')
-  await form.getByLabel('Rate ($ per machine-hour)').fill('0.45')
+  await expect(form.getByRole('button', { name: 'Connect RunPod' })).toBeDisabled()
   const popup = page.waitForEvent('popup')
-  await form.getByRole('button', { name: 'Connect with RunPod' }).click()
-  await (await popup).close()
-  await expect(form.getByRole('status')).toContainText('RunPod showed the key on its own page')
-  await expect(form.getByLabel('RunPod API key')).toBeVisible()
+  await form.getByRole('button', { name: 'Get a key from RunPod' }).click()
+  const tab = await popup
+  await expect(tab).toHaveURL(/\/approve-here\?request=r1$/)
+  expect(await tab.evaluate(() => window.opener)).toBeNull()
+  await tab.close()
+  await form.getByLabel('RunPod API key').fill('rpa_WRONG_KEY')
+  await expect(form.getByText('RunPod refused the API key')).toBeVisible()
+  await form.getByLabel('RunPod API key').fill(cfg.runpod_key)
+  const gpus = form.getByRole('list', { name: 'GPUs' })
+  await expect(gpus.getByRole('listitem')).toHaveCount(2)
+  await expect(gpus.getByRole('checkbox', { name: 'L4' })).toBeChecked()
+  await expect(gpus.getByRole('listitem').last()).toContainText('$0.25/hr')
+  await expect(form.getByRole('button', { name: 'Connect RunPod' })).toBeEnabled()
+  await noHorizontalScroll(page)
   await noViolations()
 })

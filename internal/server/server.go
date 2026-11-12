@@ -393,7 +393,7 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 	}
 	// Providers (P4-T04): each kind opens its adapter from its stored row.
 	rp := &runpod.Connector{
-		Pool: pool, Box: box, ProjectID: db.DefaultProjectID, API: cmp.Or(cfg.RunPodAPI, runpod.DefaultAPI),
+		Pool: pool, Box: box, ProjectID: db.DefaultProjectID, API: cmp.Or(cfg.RunPodAPI, runpod.DefaultAPI), Catalog: cfg.RunPodCatalog,
 		PublicURL: b.urls.PublicURL, AllowPrivateURL: cfg.ExecutorsAllowPrivateURL, DefaultImage: cfg.WorkerImage,
 		Resolver: net.DefaultResolver, Logger: logger,
 		SetupTest: func(ctx context.Context) error {

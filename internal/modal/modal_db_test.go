@@ -312,10 +312,10 @@ func TestConnectModalRefusesABadTokenWithoutEchoingIt(t *testing.T) {
 	if err != nil || res.Connected || stepNames(res) != "credentials:FAILED" || strings.Contains(res.Steps[0].Detail, "as-WRONGSECRET") {
 		t.Fatalf("bad token: %s %+v %v", stepNames(res), res.Steps, err)
 	}
-	noLimit := request
-	noLimit.MonthlyLimitCents = 0
-	if _, err := c.Connect(context.Background(), noLimit); !errors.Is(err, ErrInvalid) {
-		t.Fatalf("no monthly limit = %v, want ErrInvalid", err)
+	negative := request
+	negative.MonthlyLimitCents = -1
+	if _, err := c.Connect(context.Background(), negative); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("a negative monthly limit = %v, want ErrInvalid", err)
 	}
 }
 
@@ -382,5 +382,35 @@ func TestConnectModalByBrowserApproval(t *testing.T) {
 	a.Expires = time.Now().Add(-time.Second)
 	if st, _, _ := c.FinishApproval(ctx, a, settings); st != dispatch.ApprovalExpired {
 		t.Fatalf("an expired approval = %s, want expired", st)
+	}
+}
+
+// Choosing GPUs (D111): Modal's published prices for each NVENC GPU, plus
+// the sandbox's 4 cores and 16 GiB; left alone, Connect saves $50 a month
+// and the dearest chosen GPU's rate.
+func TestModalPricesTheChosenGPUs(t *testing.T) {
+	want := []GPU{
+		{ID: "L4", Name: "L4", MemoryGB: 24, CentsPerHour: 112, Recommended: true},
+		{ID: "T4", Name: "T4", MemoryGB: 16, CentsPerHour: 91},
+		{ID: "A10G", Name: "A10", MemoryGB: 24, CentsPerHour: 142},
+		{ID: "L40S", Name: "L40S", MemoryGB: 48, CentsPerHour: 227},
+	}
+	if got := GPUs(4, 16384); !reflect.DeepEqual(got, want) {
+		t.Fatalf("gpus = %+v, want %+v", got, want)
+	}
+	f := newFake()
+	c, _ := connector(t, f)
+	ctx := context.Background()
+	plain := Request{TokenID: tokenID, TokenSecret: tokenSecret, RegistryUsername: registrytest.Username, RegistryPassword: registrytest.Password, GPU: "T4,L4"}
+	if res, err := c.Connect(ctx, plain); err != nil || !res.Connected {
+		t.Fatalf("connect with defaults = %s, %v", stepNames(res), err)
+	}
+	row, _, _ := dispatch.Existing(ctx, c.Pool, "prj_default", "modal")
+	if row.MonthlyLimitCents != 5000 || row.RateCentsPerHour != 112 || row.MaxConcurrent != 1 {
+		t.Fatalf("saved limit %d, rate %d, machines %d; want 5000, 112, 1", row.MonthlyLimitCents, row.RateCentsPerHour, row.MaxConcurrent)
+	}
+	plain.GPU = "H100"
+	if _, err := c.Connect(ctx, plain); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("a GPU without NVENC = %v, want ErrInvalid", err)
 	}
 }

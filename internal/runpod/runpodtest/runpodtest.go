@@ -21,6 +21,17 @@ import (
 // Key is the API key the fake accepts.
 const Key = "rpa_TESTKEY0000000000000000000000000000"
 
+// Catalogue is what the fake's GPU catalog lists, in RunPod's shape: two
+// NVENC types on Secure Cloud, one without NVENC, one RunPod's NVENC
+// refuses, and one only on Community Cloud.
+var Catalogue = []map[string]any{
+	{"id": "NVIDIA RTX A4000", "name": "RTX A4000", "memory": 16, "secure": true, "price": map[string]float64{"secure": 0.25, "community": 0.17}},
+	{"id": "NVIDIA A100 80GB PCIe", "name": "A100 PCIe", "memory": 80, "secure": true, "price": map[string]float64{"secure": 1.64}},
+	{"id": "NVIDIA L4", "name": "L4", "memory": 24, "secure": true, "price": map[string]float64{"secure": 0.43}},
+	{"id": "NVIDIA GeForce RTX 4090", "name": "RTX 4090", "memory": 24, "secure": true, "price": map[string]float64{"secure": 0.69}},
+	{"id": "NVIDIA RTX A5000", "name": "RTX A5000", "memory": 24, "secure": false, "price": map[string]float64{"community": 0.16}},
+}
+
 // Pod is a pod as the fake holds it: what was asked for, and its state.
 type Pod struct {
 	runpod.PodInput
@@ -46,6 +57,8 @@ type Fake struct {
 	// GraphQL is where the browser approval runs (D109): unauthenticated,
 	// like RunPod's. Approve or Deny settles a request.
 	GraphQL string
+	// Catalog is the v2 API base whose /catalog/gpus lists Catalogue.
+	Catalog string
 
 	mu        sync.Mutex
 	pods      map[string]*Pod
@@ -120,6 +133,7 @@ func New(t *testing.T) *Fake {
 	})
 	f.URL = srv.URL + "/v1"
 	f.GraphQL = srv.URL + "/graphql"
+	f.Catalog = srv.URL + "/v2"
 	return f
 }
 
@@ -139,6 +153,10 @@ func (f *Fake) serve(w http.ResponseWriter, r *http.Request) {
 	f.calls = append(f.calls, Call{Method: r.Method, Path: r.URL.Path, Body: body})
 	f.mu.Unlock()
 
+	if r.URL.Path == "/v2/catalog/gpus" {
+		writeJSON(w, http.StatusOK, map[string]any{"gpus": Catalogue})
+		return
+	}
 	path := strings.TrimPrefix(r.URL.Path, "/v1")
 	switch {
 	case r.Method == http.MethodPost && path == "/pods":

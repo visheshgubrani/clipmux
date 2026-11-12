@@ -22,17 +22,24 @@ func TestConnectRunPodByApprovingInTheBrowser(t *testing.T) {
 	fake := runpodtest.New(t)
 	reg := registrytest.New(t)
 	r.m.RunPod = &runpod.Connector{
-		Pool: r.pool, Box: r.box, ProjectID: "prj_default", API: fake.URL, GraphQL: fake.GraphQL,
+		Pool: r.pool, Box: r.box, ProjectID: "prj_default", API: fake.URL, GraphQL: fake.GraphQL, Catalog: fake.Catalog,
 		Console: "https://console.example.test", PublicURL: func() string { return "https://93.184.215.14" },
 		Resolver: net.DefaultResolver, DefaultImage: reg.Image(), Registry: &registry.Resolver{HTTP: reg.Client},
 		Logger: slog.New(slog.DiscardHandler),
+	}
+	gpus := r.call("POST", "/v1/executors/runpod/gpus", map[string]string{"api_key": runpodtest.Key}, "")
+	if gpus.status != 200 || len(gpus.list) != 2 || gpus.list[0].(map[string]any)["id"] != "NVIDIA L4" || gpus.list[0].(map[string]any)["cents_per_hour"] != 43.0 {
+		t.Fatalf("gpus = %d %v, want L4 at 43 cents first", gpus.status, gpus.body)
+	}
+	if got := r.call("POST", "/v1/executors/runpod/gpus", map[string]string{"api_key": "rpa_WRONG"}, ""); got.status != 400 || code(got) != "key_rejected" {
+		t.Fatalf("gpus with a wrong key = %d %v, want 400 key_rejected", got.status, got.body)
 	}
 	settings := map[string]any{
 		"registry_username": registrytest.Username, "registry_password": registrytest.Password,
 		"max_concurrent": 2, "monthly_limit_cents": 5000, "rate_cents_per_hour": 45,
 	}
 
-	if got := r.call("POST", "/v1/executors/runpod/authorize", map[string]any{"max_concurrent": 2}, ""); got.status != http.StatusBadRequest || code(got) != "invalid_request" {
+	if got := r.call("POST", "/v1/executors/runpod/authorize", map[string]any{"max_concurrent": 200}, ""); got.status != http.StatusBadRequest || code(got) != "invalid_request" {
 		t.Fatalf("settings Connect would refuse = %d %v, want 400 before any approval starts", got.status, got.body)
 	}
 	started := r.call("POST", "/v1/executors/runpod/authorize", settings, "")

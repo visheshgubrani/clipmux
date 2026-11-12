@@ -47,7 +47,7 @@ func TestPlayerFixture(t *testing.T) {
 	if err := os.WriteFile(certFile, reg.CertPEM, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	in := start(t, "CLIPMUX_RUNPOD_API="+rp.URL, "CLIPMUX_EXECUTORS_ALLOW_PRIVATE_URL=true",
+	in := start(t, "CLIPMUX_RUNPOD_API="+rp.URL, "CLIPMUX_RUNPOD_CATALOG="+rp.Catalog, "CLIPMUX_EXECUTORS_ALLOW_PRIVATE_URL=true",
 		"SSL_CERT_FILE="+certFile, "CLIPMUX_WORKER_IMAGE="+reg.Image())
 	key, kid, priv := in.credentials("Browser suites")
 	// The owner connects a fake speech API and a fake LLM, so the video gets

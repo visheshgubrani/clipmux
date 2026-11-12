@@ -65,13 +65,18 @@ test('the owner routes jobs, connects RunPod and sees why each job went where it
   // waits for its setup test.
   await page.locator('[data-provider="runpod"]').getByRole('button', { name: 'Connect RunPod' }).click()
   const form = page.getByRole('form', { name: 'Connect RunPod' })
-  await form.getByRole('button', { name: 'Paste a key instead' }).click()
   await form.getByLabel('RunPod API key').fill(cfg.runpod_key)
-  await form.getByPlaceholder('Registry username (private image)').fill(cfg.registry_username)
-  await form.getByPlaceholder('Registry token with read:packages').fill(cfg.registry_password)
-  await form.getByLabel('At most this many machines').fill('2')
-  await form.getByLabel('Monthly limit ($)').fill('50')
-  await form.getByLabel('Rate ($ per machine-hour)').fill('0.45')
+  // RunPod's NVENC GPUs on Secure Cloud, priced from its catalog, the
+  // recommended one first and the first choices ticked (D111).
+  const gpus = form.getByRole('list', { name: 'GPUs' })
+  await expect(gpus.getByRole('listitem')).toHaveCount(2)
+  await expect(gpus.getByRole('listitem').first()).toContainText('L4')
+  await expect(gpus.getByRole('listitem').first()).toContainText('Recommended')
+  await expect(gpus.getByRole('listitem').first()).toContainText('$0.43/hr')
+  await expect(form.getByText('One machine at a time, at most $50.00 a month.')).toBeVisible()
+  await form.getByRole('button', { name: 'Advanced' }).click()
+  await form.getByLabel('Registry username').fill(cfg.registry_username)
+  await form.getByLabel('Registry token').fill(cfg.registry_password)
   await form.getByRole('button', { name: 'Connect RunPod' }).click()
   for (const step of [
     'Credentials',
@@ -88,7 +93,7 @@ test('the owner routes jobs, connects RunPod and sees why each job went where it
   const runpod = page.locator('[data-provider="runpod"]')
   await expect(runpod).toContainText('Setup test pending')
   await expect(runpod).toContainText('$0.00 of $50.00')
-  await expect(runpod).toContainText('$0.45 per machine-hour')
+  await expect(runpod).toContainText('$0.43 per machine-hour')
   // The API key never comes back to the page.
   await expect(page.locator('body')).not.toContainText(cfg.runpod_key)
 

@@ -32,6 +32,7 @@ A value that doesn't parse stops the command at start, naming the variable.
 | `CLIPMUX_CLOUDFLARE_API` | Cloudflare's v4 API | Cloudflare's API base, for a proxy or a test double. |
 | `CLIPMUX_R2_ENDPOINT` | `https://{account_id}.r2.cloudflarestorage.com` | R2's S3 endpoint, e.g. the EU jurisdiction's. |
 | `CLIPMUX_RUNPOD_API` | RunPod's v1 REST API | RunPod's API base, for a test double. |
+| `CLIPMUX_RUNPOD_CATALOG` | RunPod's v2 API | Where RunPod's GPU prices come from (D111), for a test double. |
 | `CLIPMUX_WORKER_IMAGE` | the image this build names | The image RunPod and Modal machines run (D058). |
 | `CLIPMUX_EXECUTORS_ALLOW_PRIVATE_URL` | `false` | Connect RunPod or Modal while the public URL is private: development only. |
 

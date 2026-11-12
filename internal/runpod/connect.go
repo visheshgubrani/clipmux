@@ -50,9 +50,9 @@ type Connector struct {
 	ProjectID string
 	// API is RunPod's REST API base (DefaultAPI, or a fake).
 	API string
-	// GraphQL and Console are where browser approval runs (D109); empty
-	// means DefaultGraphQL and DefaultConsole.
-	GraphQL, Console string
+	// GraphQL and Console are where browser approval runs (D109), and
+	// Catalog where GPU prices come from (D111); empty means the defaults.
+	GraphQL, Console, Catalog string
 	// PublicURL is the URL pods reach the worker API on.
 	PublicURL func() string
 	// AllowPrivateURL skips the public-URL check, for development and the
@@ -90,6 +90,9 @@ func (c *Connector) settings(req Request) (Request, dispatch.Settings, error) {
 	}
 	if req.MaxConcurrent == 0 {
 		req.MaxConcurrent = 1
+	}
+	if req.MonthlyLimitCents == 0 {
+		req.MonthlyLimitCents = dispatch.DefaultMonthlyLimitCents
 	}
 	settings := dispatch.Settings{
 		MaxConcurrent: req.MaxConcurrent, MonthlyLimitCents: req.MonthlyLimitCents,
@@ -146,7 +149,18 @@ func (c *Connector) Connect(ctx context.Context, req Request) (dispatch.Result, 
 			}
 			return "", err
 		}
-		return "the API key works", nil
+		if settings.RateCentsPerHour > 0 {
+			return "the API key works", nil
+		}
+		// No rate given: the dearest chosen GPU's price, from RunPod.
+		gpus, err := c.GPUs(ctx, req.APIKey)
+		if err != nil {
+			return "", fmt.Errorf("the API key works, but RunPod's GPU prices couldn't be read: %w", err)
+		}
+		if settings.RateCentsPerHour = rateFor(gpus, req.GPUTypeIDs); settings.RateCentsPerHour == 0 {
+			return "", errors.New("none of the chosen GPUs is for rent on Secure Cloud now; choose another")
+		}
+		return fmt.Sprintf("the API key works; up to $%d.%02d per machine-hour", settings.RateCentsPerHour/100, settings.RateCentsPerHour%100), nil
 	})
 	step("public_url", func() (string, error) {
 		if c.AllowPrivateURL {

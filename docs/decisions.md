@@ -1350,3 +1350,17 @@ Decision:
   - The routes step says where new uploads go.
 - Home's status line reads the default store. Its checklist gains "Store uploads in a bucket", done when the default isn't this server's disk.
 Consequence: D037's "make it the default store" and D099's "R2 still comes from Connect Cloudflare" are amended. Cloudflare delivery with uploads on disk works as before: assets on other stores play through origin.
+
+## D111 Connecting a cloud GPU asks for GPUs, not limits — accepted (2026-11-12)
+Context: the Modal and RunPod dialogs asked for a machine count, a monthly limit, a rate, an image and registry credentials before the key: too much for a first connect. The rate was a number the owner had to look up.
+Decision:
+- **GPUs from the provider, with prices.**
+  - `POST /v1/executors/runpod/gpus {api_key}` reads RunPod's catalog (`GET https://api.runpod.io/v2/catalog/gpus`, which needs the key) and lists the GPUs on Secure Cloud whose NVENC the worker can use, priced per hour. The key isn't kept.
+  - `GET /v1/executors/modal/gpus` lists Modal's NVENC GPUs (L4, T4, A10G, L40S) at Modal's published per-second prices, since Modal has no price API, plus the CPU and memory each sandbox gets.
+  - The L4 is marked recommended and listed first: Ada's NVENC with AV1, cheap, and proven on both. The dialog ticks the first three, which ClipMux tries in order when one has no capacity.
+- **The rate fills itself in.** Left out, it is the dearest chosen GPU's price: from RunPod's catalog during Connect's `credentials` step (a chosen GPU not on Secure Cloud fails that step), or from Modal's table. A Modal GPU outside the table is `400 invalid_request`.
+- **Limits default.** A monthly limit left out is $50 (`dispatch.DefaultMonthlyLimitCents`), and machines one. D055 holds: a provider is never connected without a limit. The dialog shows them as one line with Change.
+- **Image and registry wait under Advanced**, collapsed; they matter only while the worker image is private.
+- **RunPod is a key field**, like Cloudflare's token: "Get a key from RunPod" opens the approval page that creates a key and shows it (D109), and the pasted key lists the GPUs. Modal keeps "Connect with Modal", with pasting a token one click away.
+- `CLIPMUX_RUNPOD_CATALOG` points serve at a test double, as `CLIPMUX_RUNPOD_API` does.
+Consequence: a first connect is a key (or an approval) and a GPU choice. Modal's prices are a table to refresh when Modal changes them (known gaps).

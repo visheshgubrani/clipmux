@@ -129,6 +129,16 @@ func (c *Connector) settings(req Request) (Request, dispatch.Settings, error) {
 	if req.MaxConcurrent == 0 {
 		req.MaxConcurrent = 1
 	}
+	if req.MonthlyLimitCents == 0 {
+		req.MonthlyLimitCents = dispatch.DefaultMonthlyLimitCents
+	}
+	rate, err := rateFor(req.GPU, req.CPU, req.MemoryMiB)
+	if err != nil {
+		return req, dispatch.Settings{}, err
+	}
+	if req.RateCentsPerHour == 0 {
+		req.RateCentsPerHour = rate
+	}
 	settings := dispatch.Settings{
 		MaxConcurrent: req.MaxConcurrent, MonthlyLimitCents: req.MonthlyLimitCents,
 		RateCentsPerHour: req.RateCentsPerHour, DiskBytes: int64(req.DiskGB) << 30,

@@ -129,6 +129,8 @@ func (m *API) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/executors/runpod/authorize", m.owned(m.startRunPodApproval))
 	mux.HandleFunc("POST /v1/executors/modal/authorize", m.owned(m.startModalApproval))
 	mux.HandleFunc("GET /v1/executors/{kind}/authorize/{id}", m.owned(m.pollApproval))
+	mux.HandleFunc("GET /v1/executors/modal/gpus", m.owned(m.modalGPUs))
+	mux.HandleFunc("POST /v1/executors/runpod/gpus", m.owned(m.runPodGPUs))
 	mux.HandleFunc("DELETE /v1/executors/{kind}", m.owned(m.disconnectExecutor))
 	mux.HandleFunc("GET /v1/settings/speech", m.owned(m.getSpeech))
 	mux.HandleFunc("PUT /v1/settings/speech", m.owned(m.setSpeechMode))

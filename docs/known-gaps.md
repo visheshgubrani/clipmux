@@ -294,3 +294,7 @@ when you introduce or discover it; remove it when it is closed.
   replica, drops them, and the owner starts again.
 - Registry credentials for the private worker image are still pasted; they
   go away when the image is public (P6-T07).
+- Modal's GPU prices are a table in `internal/modal/gpus.go` (D111), copied
+  from modal.com/pricing on 2026-11-12, since Modal has no price API; the
+  spend estimate drifts when Modal changes its prices until the table is
+  refreshed. The NVENC lists for both providers are hand-kept too.

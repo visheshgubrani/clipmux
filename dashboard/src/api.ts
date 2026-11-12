@@ -317,6 +317,14 @@ export interface StepResult {
   connected: boolean
   steps: Step[]
 }
+/** A GPU a provider rents, with its price (GET /v1/executors/modal/gpus, POST …/runpod/gpus; D111). */
+export interface GPU {
+  id: string
+  name: string
+  memory_gb: number
+  cents_per_hour: number
+  recommended?: boolean
+}
 /** A provider's browser approval (POST /v1/executors/{kind}/authorize, D109). */
 export interface Approval {
   id: string
