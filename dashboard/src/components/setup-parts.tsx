@@ -45,7 +45,7 @@ export function UrlsForm({ setup, onSaved }: { setup: Setup; onSaved?: () => voi
           <FieldLabel htmlFor="public-url">Public URL</FieldLabel>
           <Input id="public-url" name="public" defaultValue={publicDefault} disabled={pinned} required />
           <FieldDescription>
-            Where browsers, apps and your PCs reach the dashboard and the API.
+            Where browsers and apps reach the dashboard and the API.
           </FieldDescription>
         </Field>
         <Field>
