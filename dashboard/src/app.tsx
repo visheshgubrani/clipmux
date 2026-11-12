@@ -72,10 +72,7 @@ export function App() {
         {signedIn ? (
           <Route element={<Shell email={session.data?.email ?? ''} />}>
             {/* Until the URLs are set, the first-run flow is the place to be. */}
-            <Route
-              path="/"
-              element={s.urls.confirmed ? <Home setup={s} /> : <Navigate to="/setup" replace />}
-            />
+            <Route path="/" element={s.urls.confirmed ? <Home /> : <Navigate to="/setup" replace />} />
             <Route path="/videos" element={<Videos />} />
             <Route path="/videos/:id" element={<VideoPage />} />
             <Route path="/upload" element={<UploadPage />} />

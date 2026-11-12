@@ -3,7 +3,7 @@ import { CheckIcon } from 'lucide-react'
 import { Link, Navigate } from 'react-router'
 import { describe, post, type Setup } from '@/api'
 import { CopyField } from '@/components/copy'
-import { SetupTestPanel, UrlsForm } from '@/components/setup-parts'
+import { UrlsForm } from '@/components/setup-parts'
 import { Button } from '@/components/ui/button'
 import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
@@ -12,10 +12,11 @@ import { cn } from '@/lib/utils'
 import { AuthLayout } from '@/pages/login'
 
 // First run (docs/architecture.md, "First boot"): the first visitor creates
-// the one owner account with the setup token from the server log, sets the
-// addresses, and the setup test plays a sample through the whole path.
+// the one owner account with the setup token from the server log and sets
+// the addresses. The setup test waits on Settings for when the owner wants
+// it (D115).
 
-const steps = ['Account', 'Your addresses', 'Test run']
+const steps = ['Account', 'Your addresses']
 
 function Stepper({ at }: { at: number }) {
   return (
@@ -48,33 +49,18 @@ function Stepper({ at }: { at: number }) {
 export function SetupWizard({ setup, signedIn }: { setup: Setup; signedIn: boolean }) {
   if (!setup.owner_exists) return <Register />
   if (!signedIn) return <Navigate to="/login?next=%2Fsetup" replace />
-  if (!setup.urls.confirmed)
-    return (
-      <AuthLayout wide>
-        <Stepper at={1} />
-        <div className="flex flex-col gap-1.5">
-          <h1 className="text-xl font-semibold">Where will people reach ClipMux?</h1>
-          <p className="text-sm text-muted-foreground">
-            Videos and uploads are addressed by these URLs. Keep localhost to try things out; you can change
-            them later in Settings.
-          </p>
-        </div>
-        <UrlsForm setup={setup} />
-      </AuthLayout>
-    )
+  if (setup.urls.confirmed) return <Navigate to="/" replace />
   return (
     <AuthLayout wide>
-      <Stepper at={2} />
+      <Stepper at={1} />
       <div className="flex flex-col gap-1.5">
-        <h1 className="text-xl font-semibold">Test run</h1>
+        <h1 className="text-xl font-semibold">Where will people reach ClipMux?</h1>
         <p className="text-sm text-muted-foreground">
-          A sample clip goes through upload, encoding, encryption and playback on this server, as an app's
-          video would.
+          Videos and uploads are addressed by these URLs. Keep localhost to try things out; you can change
+          them later in Settings.
         </p>
       </div>
-      <SetupTestPanel
-        after={(t) => t.status === 'passed' && <Button render={<Link to="/" />}>Go to your dashboard</Button>}
-      />
+      <UrlsForm setup={setup} />
     </AuthLayout>
   )
 }

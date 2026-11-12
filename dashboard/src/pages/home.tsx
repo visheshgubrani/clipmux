@@ -2,7 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import { CircleCheckIcon, CircleIcon, UploadIcon, XIcon } from 'lucide-react'
 import * as React from 'react'
 import { Link } from 'react-router'
-import type { LibraryAsset, Setup } from '@/api'
+import type { LibraryAsset } from '@/api'
 import { PageBody, PageHeader, Section } from '@/components/page'
 import { Poster } from '@/components/poster'
 import { QueryState } from '@/components/query-state'
@@ -28,7 +28,7 @@ import { q } from '@/queries'
 
 const HIDE_KEY = 'clipmux-hide-setup'
 
-export function Home({ setup }: { setup: Setup }) {
+export function Home() {
   const upload = useUpload()
   const recent = useQuery({ ...q.latest({}, 8), select: (d) => d.data })
   const attention = useQuery({ ...q.latest({ status: 'errored' }, 5), select: (d) => d.data })
@@ -46,7 +46,7 @@ export function Home({ setup }: { setup: Setup }) {
           </Button>
         }
       />
-      <Checklist setup={setup} />
+      <Checklist />
       {needs.length > 0 && (
         <Section title="Needs attention" aria-label="Needs attention">
           <ItemGroup className="gap-1">
@@ -139,7 +139,7 @@ export function PosterGridSkeleton({ count }: { count: number }) {
 }
 
 /** "Finish setting up": each optional upgrade as a row, until done or hidden. */
-function Checklist({ setup }: { setup: Setup }) {
+function Checklist() {
   const [hidden, setHidden] = React.useState(() => {
     try {
       return localStorage.getItem(HIDE_KEY) === '1'
@@ -153,14 +153,7 @@ function Checklist({ setup }: { setup: Setup }) {
   const executors = useQuery(q.executors())
   const chapters = useQuery(q.chapters())
   const apps = useQuery(q.apps())
-  const testPassed = setup.setup_test?.status === 'passed'
   const steps = [
-    {
-      done: testPassed,
-      title: 'Run the setup test',
-      detail: 'A sample plays end to end on this server.',
-      to: '/settings',
-    },
     {
       done: (storage.data?.data ?? []).some((s) => s.default && s.kind !== 'fs'),
       title: 'Store uploads in a bucket',

@@ -26,9 +26,6 @@ SELECT * FROM setup_tests WHERE id = $1;
 -- name: LatestSetupTest :one
 SELECT * FROM setup_tests WHERE project_id = $1 ORDER BY created_at DESC, id DESC LIMIT 1;
 
--- name: CountSetupTests :one
-SELECT count(*) FROM setup_tests WHERE project_id = $1;
-
 -- name: ListEarlierSetupTestAssets :many
 -- Earlier samples, deleted when a new test starts so they don't pile up.
 SELECT DISTINCT a.id FROM setup_tests t JOIN assets a ON a.id = t.asset_id

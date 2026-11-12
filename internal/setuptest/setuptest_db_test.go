@@ -170,44 +170,10 @@ func TestOnlyOneSetupTestRunsAtATime(t *testing.T) {
 	if err != nil || b.ID != a.ID || b.Status != "queued" {
 		t.Fatalf("second queue = %+v, %v; want the queued %s", b, err, a.ID)
 	}
-	if err := r.runner.QueueFirst(ctx); err != nil {
-		t.Fatal(err)
-	}
 	var n int
 	_ = r.pool.QueryRow(ctx, `SELECT count(*) FROM setup_tests`).Scan(&n)
 	if n != 1 {
-		t.Fatalf("setup tests = %d, want 1: a first-boot test is only queued on an install that never ran one", n)
-	}
-}
-
-// A fresh install whose owner hasn't chosen the URLs yet would only test
-// the placeholder default and greet the owner with a failed run; saving the
-// URLs queues the first test instead.
-func TestFirstBootWaitsForTheURLs(t *testing.T) {
-	ctx := context.Background()
-	pool := dbtest.New(t)
-	urls, err := settings.Load(ctx, pool, "prj_default", config.Config{PublicURL: "http://localhost:8080"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	runner := New(pool, nil, nil, urls, nil, nil, "")
-	if err := runner.QueueFirst(ctx); err != nil {
-		t.Fatal(err)
-	}
-	var n int
-	_ = pool.QueryRow(ctx, `SELECT count(*) FROM setup_tests`).Scan(&n)
-	if n != 0 {
-		t.Fatalf("setup tests before the URLs are chosen = %d, want 0", n)
-	}
-	if _, err := urls.Set(ctx, "https://video.example.com", ""); err != nil {
-		t.Fatal(err)
-	}
-	if err := runner.QueueFirst(ctx); err != nil {
-		t.Fatal(err)
-	}
-	_ = pool.QueryRow(ctx, `SELECT count(*) FROM setup_tests WHERE trigger = 'first_boot'`).Scan(&n)
-	if n != 1 {
-		t.Fatalf("first-boot tests once the URLs are confirmed = %d, want 1", n)
+		t.Fatalf("setup tests = %d, want 1", n)
 	}
 }
 

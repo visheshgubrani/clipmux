@@ -176,21 +176,6 @@ func (r *Runner) QueueThrough(ctx context.Context, trigger, executor string) (Te
 	return view(t), nil
 }
 
-// QueueFirst queues the first-boot test if no test has ever run and the
-// URLs are confirmed. Unconfirmed, it would test the placeholder default;
-// saving the URLs queues the first test then.
-func (r *Runner) QueueFirst(ctx context.Context) error {
-	if !r.urls.URLs().Confirmed {
-		return nil
-	}
-	n, err := db.New(r.pool).CountSetupTests(ctx, r.projectID)
-	if err != nil || n > 0 {
-		return err
-	}
-	_, err = r.Queue(ctx, "first_boot")
-	return err
-}
-
 // Latest returns the newest test, if any.
 func (r *Runner) Latest(ctx context.Context) (Test, bool, error) {
 	t, err := db.New(r.pool).LatestSetupTest(ctx, r.projectID)

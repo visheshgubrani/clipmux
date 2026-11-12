@@ -44,12 +44,12 @@ export function Settings({ setup }: { setup: Setup }) {
           <TabsTrigger value="about">About</TabsTrigger>
         </TabsList>
         <TabsContent value="general" className="flex flex-col gap-10 pt-8">
-          <Section title="Addresses" description="Saving runs the setup test again.">
+          <Section title="Addresses">
             <UrlsForm setup={setup} />
           </Section>
           <Section
             title="Setup test"
-            description="A sample through upload, encoding, encryption and playback."
+            description="Puts a sample through upload, encoding, encryption and playback, whenever you want to check the whole path."
           >
             <SetupTestPanel />
           </Section>

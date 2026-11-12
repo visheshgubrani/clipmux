@@ -234,16 +234,15 @@ rows.
 
    Sign-up then closes for good, and later visits show only **Sign in**.
 2. **Your addresses.** The public URL and the media URL, with "keep localhost
-   to try things out". **Save and test** runs the setup test.
-3. **Test run.** "14 of 14 checks passed", with the list collapsed, then the
-   sample in the player, then **Go to your dashboard**. If a check fails, the
-   page shows its name and detail, a link to the docs, and **Run again**.
-4. **Home** shows a **Finish setting up** checklist until each is done or
+   to try things out". **Save** lands on Home. The setup test isn't part of
+   the first run (D115); it waits on Settings → General, with its checks and
+   the sample in the player once it passes.
+3. **Home** shows a **Finish setting up** checklist until each is done or
    hidden:
+   - Store uploads in a bucket;
    - Connect Cloudflare;
-   - Connect a PC;
    - Add a cloud GPU;
-   - Turn on captions (it shows as done when speech works);
+   - Turn on chapters;
    - Create an app.
 
 **Sign in:**

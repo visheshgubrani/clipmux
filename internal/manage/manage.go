@@ -57,8 +57,6 @@ type API struct {
 	accounts *accounts.Service
 	urls     *settings.Store
 
-	// URLsSaved runs after the owner saves new URLs (the setup test).
-	URLsSaved func(settings.URLs)
 	// Tests runs setup tests; nil leaves their routes answering 404.
 	Tests *setuptest.Runner
 	// Cloudflare connects Worker delivery; nil leaves its routes 404.
@@ -450,9 +448,6 @@ func (m *API) saveURLs(w http.ResponseWriter, r *http.Request, _ accounts.Owner)
 		return err
 	}
 	m.Logger.Info("URLs saved", "public_url", u.Public, "media_url", u.Media)
-	if m.URLsSaved != nil {
-		m.URLsSaved(u)
-	}
 	httpjson.Write(w, http.StatusOK, map[string]any{"urls": u, "keys_allowed": m.urls.KeysAllowed()})
 	return nil
 }

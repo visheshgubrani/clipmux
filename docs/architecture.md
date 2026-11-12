@@ -742,8 +742,7 @@ clipmux listen   # forwards webhooks to a local URL
 2. The first visitor enters it and creates the owner account. Registration then closes, and later visits see only the login page.
 3. The owner enters the public URL and the media hostname, and Caddy obtains certificates for both. The owner can keep `localhost` to try things out. Presigned URLs and `base_url` are bound to the public URL, so while it is loopback an API key needs the owner's confirmation that it is for apps on this machine (D108).
 4. Filesystem storage, the built-in worker and built-in delivery are already active, and the server has generated the content key secret.
-5. A sample clip runs through the full pipeline and plays in the built-in player.
-6. The dashboard shows the optional upgrades below.
+5. The dashboard shows the optional upgrades below. The setup test (below) runs when the owner asks for it from Settings, not as part of first boot (D115).
 
 ### Optional upgrades
 
@@ -766,7 +765,7 @@ Connect Cloudflare is a single card because R2 and the Worker share a bucket and
 
 ### Setup test
 
-After any change, the app runs a real test job through the configured path. It uploads a sample, encodes it and plays it through delivery. Using the internal key, it then confirms that a valid `v` token plays and fetches the key, a `t` token can't fetch a segment or the key, and a request with no token is refused. It also reads one stored segment straight from storage and confirms it isn't a plain MP4 fragment.
+On request (Settings, `POST /v1/setup-test`, `clipmux admin setup-test`), after Connect or Disconnect Cloudflare, and through a newly connected cloud GPU, the app runs a real test job through the configured path. It uploads a sample, encodes it and plays it through delivery. Using the internal key, it then confirms that a valid `v` token plays and fetches the key, a `t` token can't fetch a segment or the key, and a request with no token is refused. It also reads one stored segment straight from storage and confirms it isn't a plain MP4 fragment.
 
 ## Build order
 

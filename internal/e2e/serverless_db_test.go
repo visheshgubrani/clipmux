@@ -213,8 +213,7 @@ func newCloud(t *testing.T, opts connectOpts) *cloud {
 	if err := os.WriteFile(certFile, reg.CertPEM, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	// The built-in worker stays on to take the first-boot setup test; once
-	// the primary is "agents" it idles.
+	// The built-in worker stays on; once the primary is "agents" it idles.
 	in := start(t, "CLIPMUX_RUNPOD_API="+rp.URL, "CLIPMUX_EXECUTORS_ALLOW_PRIVATE_URL=true",
 		"SSL_CERT_FILE="+certFile, "CLIPMUX_WORKER_IMAGE="+reg.Image())
 	c := &cloud{instance: in, rp: rp, pods: ps}

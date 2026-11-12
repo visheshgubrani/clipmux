@@ -1430,3 +1430,12 @@ Decision:
 - **Connect names the Worker after its hostname**, so this instance's Worker and D090's staging Worker share one Cloudflare account.
 - **The LMS replaces its adapter** rather than adding a second one beside it. Its plan is Edural's P36: Edural signs ES256 tokens with `vid`, and every playback ID is signed.
 Consequence: T19 doesn't wait for T07's release candidate or for T28. The launch exit's item 5 (the LMS through a soak window) is met by the LMS running in production on this instance, not by a timed soak.
+
+## D115 Onboarding ends at the addresses; the setup test runs on request — accepted (2026-11-12)
+Context: first boot, and every save of the URLs, queued the setup test (D026), and the wizard's last step waited for it (D032). On a CPU-only VPS that's minutes of watching checks, and a "clipmux-setup-test" video turns up in a library the owner hasn't used yet. The owner asked for less to sit through: people want to start, and can check the path when they choose.
+Decision:
+- **The wizard is two steps:** create the account, then the addresses. Saving the addresses ("Save", no longer "Save and test") lands on Home.
+- **No automatic run on first boot or on saving the URLs.** `setuptest.Runner.QueueFirst`, `manage.API.URLsSaved` and the `CountSetupTests` query are gone.
+- **The test stays one click away:** Settings → General → Setup test, `POST /v1/setup-test` and `clipmux admin setup-test --wait`. Connect and Disconnect Cloudflare still queue one, and connecting a cloud GPU still runs its own (D056), which is what verifies the provider.
+- Home's checklist drops "Run the setup test".
+Consequence: D026's first-boot and URL-save triggers and D032's test step are withdrawn. The `first_boot` and `urls_saved` trigger values stay in the schema for rows already written (Cloudflare's run still uses `urls_saved`).

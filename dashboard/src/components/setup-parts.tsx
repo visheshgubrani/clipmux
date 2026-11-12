@@ -13,7 +13,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Spinner } from '@/components/ui/spinner'
 import { q } from '@/queries'
 
-/** The public and media URLs. Saving runs the setup test. */
+/** The public and media URLs. */
 export function UrlsForm({ setup, onSaved }: { setup: Setup; onSaved?: () => void }) {
   const qc = useQueryClient()
   const pinned = setup.urls.pinned
@@ -28,7 +28,6 @@ export function UrlsForm({ setup, onSaved }: { setup: Setup; onSaved?: () => voi
         return
       }
       await qc.invalidateQueries({ queryKey: ['setup'] })
-      await qc.invalidateQueries({ queryKey: ['setup-test'] })
       onSaved?.()
     },
   })
@@ -79,7 +78,7 @@ export function UrlsForm({ setup, onSaved }: { setup: Setup; onSaved?: () => voi
           <div>
             <Button type="submit" disabled={save.isPending}>
               {save.isPending && <Spinner data-icon="inline-start" />}
-              Save and test
+              Save
             </Button>
           </div>
         )}
