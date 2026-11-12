@@ -692,7 +692,7 @@ func parseVTTTime(s string) (int64, error) {
 // storedTrackEncrypted reads the subtitles straight from storage: they must
 // not be WebVTT.
 func (r *Runner) storedTrackEncrypted(ctx context.Context, assetID, trackID string) error {
-	store, err := r.stores.ForAsset(ctx, assetID)
+	store, err := r.stores.MediaFor(ctx, assetID)
 	if err != nil {
 		return err
 	}
@@ -855,7 +855,7 @@ func isFragment(b []byte) bool {
 // plain MP4 fragment.
 func (r *Runner) storedEncrypted(ctx context.Context, assetID, segRel string) error {
 	// segRel is {output_id}/{rendition}/seg_…; storage keeps it under the asset.
-	store, err := r.stores.ForAsset(ctx, assetID)
+	store, err := r.stores.MediaFor(ctx, assetID)
 	if err != nil {
 		return err
 	}

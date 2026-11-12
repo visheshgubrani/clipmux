@@ -38,7 +38,6 @@ test('connects Cloudflare twice and passes the setup test at the edge', async ({
     await dialog.getByLabel('Zone').selectOption('clipmux.com', { timeout: 30_000 })
     await dialog.getByLabel('Subdomain').fill('media-test')
     await dialog.getByLabel('R2 bucket').selectOption('clipmux-staging')
-    await dialog.getByRole('checkbox', { name: 'Store new uploads in R2' }).check()
     const responsePromise = page.waitForResponse(
       (response) =>
         response.request().method() === 'POST' &&

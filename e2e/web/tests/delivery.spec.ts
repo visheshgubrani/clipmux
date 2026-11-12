@@ -1,10 +1,11 @@
 import { expect, test } from '@playwright/test'
 import { go, noHorizontalScroll, type OpsConfig, signIn, watchCSP } from './csp.ts'
 
-// Delivery (P6-T12, D109): built in until Cloudflare is connected. Connect
-// starts from a pre-filled create-token link; the pasted token is inspected
-// and the owner picks the account, the hostname under one of its zones and
-// the bucket, instead of typing IDs.
+// Delivery (P6-T12, D109, D117): built in until Cloudflare is connected,
+// with encoded files kept beside the uploads. Connect starts from a
+// pre-filled create-token link; the pasted token is inspected and the owner
+// picks the account, the hostname under one of its zones and the bucket the
+// encoded videos go to, instead of typing IDs. Where uploads go isn't asked.
 test('connecting Cloudflare picks the hostname and bucket from the token', async ({ page, request }) => {
   const noViolations = await watchCSP(page)
   const cfg = (await (await request.get('/config')).json()) as OpsConfig
@@ -51,6 +52,9 @@ test('connecting Cloudflare picks the hostname and bucket from the token', async
   })
   await go(page, 'Delivery')
   await expect(page.getByText('In use').first()).toBeVisible()
+  await expect(
+    page.getByText("Encoded files are kept with your uploads, on This server's disk."),
+  ).toBeVisible()
   await page.getByRole('button', { name: 'Connect Cloudflare' }).click()
   const dialog = page.getByRole('dialog', { name: 'Connect Cloudflare' })
   const link = dialog.getByRole('link', { name: 'Create token on Cloudflare' })
@@ -65,8 +69,7 @@ test('connecting Cloudflare picks the hostname and bucket from the token', async
   await dialog.getByLabel('Subdomain').fill('video')
   await expect(dialog).toContainText('https://video.lessons.dev')
   await expect(dialog.getByLabel('R2 bucket')).toHaveValue('clipmux-media')
-  await expect(dialog.getByRole('checkbox', { name: 'Store new uploads in R2' })).toBeChecked()
-  await dialog.getByRole('checkbox', { name: 'Store new uploads in R2' }).uncheck()
+  await expect(dialog.getByRole('checkbox')).toHaveCount(0)
   await dialog.getByRole('button', { name: 'Connect Cloudflare' }).click()
   await expect(dialog.getByText('stop here')).toBeVisible()
 
@@ -77,7 +80,6 @@ test('connecting Cloudflare picks the hostname and bucket from the token', async
       hostname: 'video.lessons.dev',
       bucket: 'clipmux-media',
       account_id: 'acct1',
-      default_storage: false,
     },
   ])
   await noHorizontalScroll(page)

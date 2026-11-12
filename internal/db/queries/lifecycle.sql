@@ -72,14 +72,16 @@ SELECT count(*) FROM playback_ids WHERE asset_id = $1 AND status <> 'revoked';
 
 -- name: QueueMoveJob :one
 -- One mutating job per asset: the partial unique index refuses a second.
-INSERT INTO jobs (id, project_id, asset_id, kind, source_storage_id, target_storage_id)
-VALUES ($1, $2, $3, 'move', $4, $5)
+-- The source moves to target, the encoded files to media_target (D117).
+INSERT INTO jobs (id, project_id, asset_id, kind, source_storage_id, target_storage_id, source_media_storage_id, target_media_storage_id)
+VALUES ($1, $2, $3, 'move', sqlc.arg(source), sqlc.arg(target), sqlc.arg(media_source), sqlc.arg(media_target))
 RETURNING *;
 
 -- name: ListAssetsToMove :many
--- Live assets not on the target store and with no active job.
-SELECT a.id, a.storage_id FROM assets a
-WHERE a.project_id = $1 AND a.status IN ('ready', 'errored') AND a.storage_id <> sqlc.arg(target)::text
+-- Live assets with a part away from its target, and no active job.
+SELECT a.id, a.storage_id, a.media_storage_id FROM assets a
+WHERE a.project_id = $1 AND a.status IN ('ready', 'errored')
+  AND (a.storage_id <> sqlc.arg(target)::text OR a.media_storage_id <> sqlc.arg(media_target)::text)
   AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.asset_id = a.id AND j.status IN ('queued', 'running'))
 ORDER BY a.created_at, a.id;
 
@@ -88,8 +90,9 @@ UPDATE jobs SET phase = sqlc.arg(phase), available_at = now() + make_interval(se
 WHERE id = sqlc.arg(id);
 
 -- name: MoveAssetStorage :execrows
-UPDATE assets SET storage_id = sqlc.arg(target)::text, version = version + 1, updated_at = now()
-WHERE id = sqlc.arg(id) AND storage_id = sqlc.arg(source)::text;
+UPDATE assets SET storage_id = sqlc.arg(target)::text, media_storage_id = sqlc.arg(media_target)::text,
+    version = version + 1, updated_at = now()
+WHERE id = sqlc.arg(id) AND storage_id = sqlc.arg(source)::text AND media_storage_id = sqlc.arg(media_source)::text;
 
 -- name: ListServableOutputIDs :many
 SELECT id FROM outputs WHERE asset_id = $1 AND status IN ('committed', 'retired') AND purged_at IS NULL ORDER BY id;
@@ -101,9 +104,12 @@ SELECT
     count(*) FILTER (WHERE j.status = 'failed')::bigint AS failed
 FROM jobs j WHERE j.project_id = $1 AND j.kind = 'move';
 
--- name: CountAssetsOffStore :one
-SELECT count(*) FROM assets
-WHERE project_id = $1 AND status IN ('ready', 'errored', 'processing') AND storage_id <> sqlc.arg(target)::text;
+-- name: CountAssetsElsewhere :one
+-- Live assets whose source isn't on the uploads target, and those whose
+-- encoded files aren't on the media target (D117).
+SELECT count(*) FILTER (WHERE storage_id <> sqlc.arg(target)::text)::bigint AS uploads,
+       count(*) FILTER (WHERE media_storage_id <> sqlc.arg(media_target)::text)::bigint AS media
+FROM assets WHERE project_id = $1 AND status IN ('ready', 'errored', 'processing');
 
 -- name: CountPendingRouteSyncsForAsset :one
 SELECT count(*) FROM outbox WHERE kind = 'route_sync' AND done_at IS NULL AND asset_id = $1;

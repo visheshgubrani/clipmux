@@ -98,7 +98,7 @@ func (p *Publisher) CommitTranscript(ctx context.Context, raw json.RawMessage) f
 		if err != nil {
 			return err
 		}
-		store, err := p.Stores.ForAssetIn(ctx, qs, asset.ID)
+		store, err := p.Stores.MediaForIn(ctx, qs, asset.ID)
 		if err != nil {
 			return err
 		}
@@ -243,7 +243,7 @@ func (p *Publisher) CommitChapters(ctx context.Context, qs *db.Queries, job db.J
 	if err != nil {
 		return err
 	}
-	store, err := p.Stores.ForAssetIn(ctx, qs, asset.ID)
+	store, err := p.Stores.MediaForIn(ctx, qs, asset.ID)
 	if err != nil {
 		return err
 	}

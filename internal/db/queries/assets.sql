@@ -9,8 +9,10 @@ INSERT INTO apps (id, project_id, name) VALUES ($1, $2, $3)
 RETURNING *;
 
 -- name: CreateAsset :one
-INSERT INTO assets (id, project_id, app_id, status, storage_id, passthrough, title)
-VALUES ($1, $2, $3, 'waiting_upload', $4, $5, $6)
+-- The source goes to $4, the default store; the encoded files to the media
+-- target (D117).
+INSERT INTO assets (id, project_id, app_id, status, storage_id, media_storage_id, passthrough, title)
+VALUES ($1, $2, $3, 'waiting_upload', $4, coalesce(media_target($2), $4), $5, $6)
 RETURNING *;
 
 -- name: GetAsset :one

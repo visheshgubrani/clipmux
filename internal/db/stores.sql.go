@@ -11,15 +11,22 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const assetStorageID = `-- name: AssetStorageID :one
-SELECT storage_id FROM assets WHERE id = $1
+const assetStores = `-- name: AssetStores :one
+SELECT storage_id, media_storage_id FROM assets WHERE id = $1
 `
 
-func (q *Queries) AssetStorageID(ctx context.Context, id string) (string, error) {
-	row := q.db.QueryRow(ctx, assetStorageID, id)
-	var storage_id string
-	err := row.Scan(&storage_id)
-	return storage_id, err
+type AssetStoresRow struct {
+	StorageID      string
+	MediaStorageID string
+}
+
+// The store holding an asset's source, and the one holding its encoded
+// files and tracks (D117).
+func (q *Queries) AssetStores(ctx context.Context, id string) (AssetStoresRow, error) {
+	row := q.db.QueryRow(ctx, assetStores, id)
+	var i AssetStoresRow
+	err := row.Scan(&i.StorageID, &i.MediaStorageID)
+	return i, err
 }
 
 const clearDefaultStorage = `-- name: ClearDefaultStorage :exec
@@ -65,6 +72,19 @@ func (q *Queries) CreateStorageConfig(ctx context.Context, arg CreateStorageConf
 		&i.RemovedAt,
 	)
 	return i, err
+}
+
+const getMediaTarget = `-- name: GetMediaTarget :one
+SELECT media_target($1::text)::text AS id
+`
+
+// Where new assets' encoded files go: the delivery bucket while the Worker
+// delivers, otherwise the default store.
+func (q *Queries) GetMediaTarget(ctx context.Context, projectID string) (string, error) {
+	row := q.db.QueryRow(ctx, getMediaTarget, projectID)
+	var id string
+	err := row.Scan(&id)
+	return id, err
 }
 
 const getStorageConfig = `-- name: GetStorageConfig :one
@@ -124,7 +144,7 @@ func (q *Queries) ListStorageConfigs(ctx context.Context, projectID string) ([]S
 
 const listStorageSummaries = `-- name: ListStorageSummaries :many
 SELECT c.id, c.kind, c.config, c.is_default, c.created_at,
-    (SELECT count(*) FROM assets a WHERE a.storage_id = c.id AND a.status <> 'deleted')::bigint AS asset_count,
+    (SELECT count(*) FROM assets a WHERE (a.storage_id = c.id OR a.media_storage_id = c.id) AND a.status <> 'deleted')::bigint AS asset_count,
     EXISTS (SELECT 1 FROM projects p WHERE p.id = c.project_id AND p.delivery = 'worker' AND p.delivery_storage_id = c.id)::boolean AS delivery
 FROM storage_configs c
 WHERE c.project_id = $1 AND c.removed_at IS NULL
@@ -142,7 +162,8 @@ type ListStorageSummariesRow struct {
 }
 
 // Each config the owner can see, with how many assets (deleted ones
-// aside) it holds, and whether Cloudflare delivery reads it.
+// aside) keep their source or encoded files on it, and whether Cloudflare
+// delivery reads it.
 func (q *Queries) ListStorageSummaries(ctx context.Context, projectID string) ([]ListStorageSummariesRow, error) {
 	rows, err := q.db.Query(ctx, listStorageSummaries, projectID)
 	if err != nil {
@@ -224,9 +245,10 @@ func (q *Queries) SetDefaultStorage(ctx context.Context, arg SetDefaultStoragePa
 
 const storageUsage = `-- name: StorageUsage :one
 SELECT
-    (SELECT count(*) FROM assets a WHERE a.storage_id = $1::text AND (a.status <> 'deleted' OR a.deleted_at IS NULL))::bigint AS assets,
+    (SELECT count(*) FROM assets a WHERE (a.storage_id = $1::text OR a.media_storage_id = $1::text)
+        AND (a.status <> 'deleted' OR a.deleted_at IS NULL))::bigint AS assets,
     (SELECT count(*) FROM jobs j WHERE j.status IN ('queued', 'running')
-        AND (j.source_storage_id = $1::text OR j.target_storage_id = $1::text))::bigint AS jobs,
+        AND $1::text IN (j.source_storage_id, j.target_storage_id, j.source_media_storage_id, j.target_media_storage_id))::bigint AS jobs,
     EXISTS (SELECT 1 FROM projects p WHERE p.delivery_storage_id = $1::text AND p.delivery = 'worker')::boolean AS delivery
 `
 

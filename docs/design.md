@@ -192,9 +192,10 @@ rows.
 | `/upload` | Upload (also a dialog from anywhere) | same |
 | `/analytics` | Analytics | new |
 | `/jobs` | Jobs | same |
-| `/encoding` | Encoding | `/workers` (redirect) |
-| `/workers/connect` | Approve a PC | unchanged; `clipmux worker` opens it |
-| `/delivery` | Delivery & storage | same |
+| `/encoding` | Encoding: this server, Modal or RunPod (D116) | `/workers` (redirect) |
+| `/workers/connect` | Approve a PC | unchanged; only `clipmux worker` opens it (D116) |
+| `/storage` | Storage: where uploaded originals go (D110, D117) | new |
+| `/delivery` | Delivery: how videos reach viewers, and where encoded files are kept (D117) | same |
 | `/captions` | Captions & AI | same |
 | `/apps`, `/apps/:id` | Apps & API | same |
 | `/settings` | Settings | `/account` (redirect); URLs move here from `/setup` |
@@ -216,7 +217,7 @@ rows.
 | --- | --- |
 | Loading | A skeleton in the shape of the content (posters, rows). It appears after 150 ms, so fast loads don't flash. |
 | Error | An icon, "Couldn't load …", the API's status and code in muted text, and **Try again**, which re-runs the load. The rest of the page keeps working. |
-| Empty | Left-aligned: a heading, one sentence on what goes here, and the one action (Upload, Add endpoint, Connect a PC). No icon tile. |
+| Empty | Left-aligned: a heading, one sentence on what goes here, and the one action (Upload, Add endpoint, Connect Modal). No icon tile. |
 | Not collecting (Analytics) | As Empty, explaining what will be counted and that nothing goes to a third party. The product never shows sample data. |
 | Edge not counted (Analytics) | With Cloudflare delivery and no edge analytics token: an Alert above the chart saying the numbers miss the edge, with Connect edge analytics, which opens Delivery's card. |
 | Confirm | An alert dialog: "Delete "Lesson 2"?", what stops working, and Cancel plus a red button whose label names the action. |
@@ -262,14 +263,15 @@ and sections instead of cards, the radius ladder, posters on black.
 
 | Page | What it holds |
 | --- | --- |
-| Home | (1) A wide "Good afternoon", a one-line summary and Upload. (2) **Finish setting up**: a checklist of rows, each a check circle, the step, one line on what it does (and what leaves, for Cloudflare and cloud GPUs) and its action; "2 of 5 done" and Hide; shown until done or hidden. (3) **Needs attention**: failed and encoding videos as rows with a poster thumbnail, what happened and what to do, and Retry or the progress; only when there are any. (4) **Recent videos**: 8 posters, the main content, with "All videos". (5) A muted status line in the footer, one plain field each for encoding, delivery, storage and captions, each label linking its page. No stat tiles: numbers live on Analytics |
+| Home | (1) A wide "Good afternoon", a one-line summary and Upload. (2) **Finish setting up**: a checklist of rows, each a check circle, the step, one line on what it does (and what leaves, for Cloudflare and cloud GPUs) and its action; "2 of 5 done" and Hide; shown until done or hidden. (3) **Needs attention**: failed and encoding videos as rows with a poster thumbnail, what happened and what to do, and Retry or the progress; only when there are any. (4) **Recent videos**: 8 posters, the main content, with "All videos". (5) A muted status line in the footer, one plain field each for encoding, delivery, uploads and captions, each label linking its page. No stat tiles: numbers live on Analytics |
 | Videos | A wide title and Upload. A toolbar: search (`InputGroup`; title, reference, ID); a status `ToggleGroup` with counts (All, Ready, Encoding, Failed, Waiting, from `/v1/library/counts`); an app `Select` when there is more than one app; a grid or list `ToggleGroup`. The poster grid (title, then time added or "Encoding, 64%", CC, ⋯ menu), or a hairline `Table` (thumbnail and title, status badge, privacy, duration, captions, added) that becomes `Item` rows on phones. Drop anywhere to upload; Load more |
 | A video | A breadcrumb; the wide title; a status badge; a ⋯ `DropdownMenu` (Rename, which opens a dialog; Re-encode; Copy ID; Delete video, which confirms). Tabs: **Overview**: the player on black with a **chapter timeline strip** under it, one labelled segment per chapter sized by its length, with its start time, which seeks; beside it the details as a description list (duration, privacy, added, app, renditions, captions, video ID with copy, reference), not a card. **Captions & chapters**: subtitles and chapters as timecoded rows, regenerate, delete, what was sent where. **Sharing**: Private/Public as radio rows, the embed when public, share links as rows (name, status, expiry, views in 30 days; copy link, stream URL and revoke), playback IDs under Advanced, a share link's ID named by its link. **Analytics**: one panel whose header is a metric `ToggleGroup` |
 | Upload | Several files with progress, pause and cancel, resuming after a reload; Private/Public; subtitles; chapters (disabled with "Connect an LLM" when there is none); Advanced: app and reference |
 | Analytics | Range (24 h, 7 d, 30 d, 90 d) and app; one chart card whose header is a segmented control showing each metric's total and change (Views, Watch time, Unique viewers, Bandwidth) and selecting the chart; this period against the previous one; Top videos |
 | Jobs | Status chips, kind, worker, video ID; rows expand to attempts (where it ran, route reason, encoder fallback, error, Retry); live indicator |
-| Encoding | Routing as a sentence; this server; Connect a PC (Linux or Docker) and the PCs; RunPod and Modal cards with spend against the limit |
-| Delivery | Built-in or Cloudflare cards; the Connect Cloudflare dialog with its steps; the library-move progress; Disconnect; Storage: list, Add S3, Rotate keys, Make default, Remove |
+| Encoding | One radio group (D116): This server (its GPU when it sees one, else the CPU, with Online), Modal and RunPod, each with Connect, then "Checking" or which check failed, then Ready with spend against the limit; "If it can't start a machine, encode on this server instead" while a cloud GPU is chosen |
+| Storage | Where uploaded originals go: the list (videos on each, Default), Use for new uploads, Add R2 bucket, Add S3 storage, Rotate keys, Remove; the uploads' library move (D110, D117) |
+| Delivery | Built-in or Cloudflare cards, each saying where encoded files are kept; the Connect Cloudflare dialog (hostname and bucket, no uploads choice) with its steps; the encoded files' library move; Disconnect; edge analytics (D117) |
 | Captions & AI | Subtitles: three modes, each saying what leaves; Connect a speech API. Chapters: Claude or OpenAI-compatible |
 | Apps & API | App list; Create app shows its secrets once; tabs for API keys (named, last used), Signing keys, Webhooks (health, deliveries, Redeliver, two-step secret rotation), Danger zone (disable) |
 | Settings | **General** (URLs, setup test), **Account** (password, two-factor), **Security** (rotate the content key, backups), **About** (version, licences) |

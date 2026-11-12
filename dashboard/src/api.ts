@@ -368,9 +368,15 @@ export interface EdgeAnalytics {
   last_pull_at?: string
   last_error?: string
 }
+/** The library move (D117): sources belong on the default store, encoded files on the media store. */
 export interface Moves {
+  default_storage_id: string
   default_kind: string
-  not_on_default: number
+  media_storage_id: string
+  /** Videos whose upload isn't on the default store. */
+  uploads_elsewhere: number
+  /** Videos whose encoded files aren't on the media store. */
+  media_elsewhere: number
   active: number
   moved: number
   failed: number

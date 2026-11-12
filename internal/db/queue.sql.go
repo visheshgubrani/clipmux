@@ -144,7 +144,7 @@ SELECT $1, p.id, $2, $3::text, $4::text, $5::text,
 FROM projects p
 LEFT JOIN setup_tests t ON t.asset_id = $2 AND t.executor IS NOT NULL
 WHERE p.id = $6
-RETURNING id, project_id, asset_id, kind, status, phase, progress, profile_id, profile_version, pinned_agent_id, lost_count, failed_count, error_code, routed_to, route_reason, available_at, created_at, started_at, finished_at, source_storage_id, target_storage_id, import_url, track_id
+RETURNING id, project_id, asset_id, kind, status, phase, progress, profile_id, profile_version, pinned_agent_id, lost_count, failed_count, error_code, routed_to, route_reason, available_at, created_at, started_at, finished_at, source_storage_id, target_storage_id, import_url, track_id, source_media_storage_id, target_media_storage_id
 `
 
 type CreateJobParams struct {
@@ -195,6 +195,8 @@ func (q *Queries) CreateJob(ctx context.Context, arg CreateJobParams) (Job, erro
 		&i.TargetStorageID,
 		&i.ImportUrl,
 		&i.TrackID,
+		&i.SourceMediaStorageID,
+		&i.TargetMediaStorageID,
 	)
 	return i, err
 }
@@ -377,7 +379,7 @@ func (q *Queries) GetAttemptByTokenHash(ctx context.Context, tokenHash []byte) (
 }
 
 const getJob = `-- name: GetJob :one
-SELECT id, project_id, asset_id, kind, status, phase, progress, profile_id, profile_version, pinned_agent_id, lost_count, failed_count, error_code, routed_to, route_reason, available_at, created_at, started_at, finished_at, source_storage_id, target_storage_id, import_url, track_id FROM jobs WHERE id = $1
+SELECT id, project_id, asset_id, kind, status, phase, progress, profile_id, profile_version, pinned_agent_id, lost_count, failed_count, error_code, routed_to, route_reason, available_at, created_at, started_at, finished_at, source_storage_id, target_storage_id, import_url, track_id, source_media_storage_id, target_media_storage_id FROM jobs WHERE id = $1
 `
 
 func (q *Queries) GetJob(ctx context.Context, id string) (Job, error) {
@@ -407,6 +409,8 @@ func (q *Queries) GetJob(ctx context.Context, id string) (Job, error) {
 		&i.TargetStorageID,
 		&i.ImportUrl,
 		&i.TrackID,
+		&i.SourceMediaStorageID,
+		&i.TargetMediaStorageID,
 	)
 	return i, err
 }
@@ -619,7 +623,7 @@ func (q *Queries) ListRoutableJobs(ctx context.Context, arg ListRoutableJobsPara
 }
 
 const lockAsset = `-- name: LockAsset :one
-SELECT id, project_id, app_id, status, error_code, version, storage_id, source_uri, agent_source_id, source_kept, current_output_id, passthrough, duration_seconds, created_at, updated_at, deleted_at, title FROM assets WHERE id = $1 FOR UPDATE
+SELECT id, project_id, app_id, status, error_code, version, storage_id, source_uri, agent_source_id, source_kept, current_output_id, passthrough, duration_seconds, created_at, updated_at, deleted_at, title, media_storage_id FROM assets WHERE id = $1 FOR UPDATE
 `
 
 func (q *Queries) LockAsset(ctx context.Context, id string) (Asset, error) {
@@ -643,6 +647,7 @@ func (q *Queries) LockAsset(ctx context.Context, id string) (Asset, error) {
 		&i.UpdatedAt,
 		&i.DeletedAt,
 		&i.Title,
+		&i.MediaStorageID,
 	)
 	return i, err
 }
@@ -692,7 +697,7 @@ func (q *Queries) LockAttempt(ctx context.Context, id string) (LockAttemptRow, e
 }
 
 const lockDispatchedJob = `-- name: LockDispatchedJob :one
-SELECT id, project_id, asset_id, kind, status, phase, progress, profile_id, profile_version, pinned_agent_id, lost_count, failed_count, error_code, routed_to, route_reason, available_at, created_at, started_at, finished_at, source_storage_id, target_storage_id, import_url, track_id FROM jobs
+SELECT id, project_id, asset_id, kind, status, phase, progress, profile_id, profile_version, pinned_agent_id, lost_count, failed_count, error_code, routed_to, route_reason, available_at, created_at, started_at, finished_at, source_storage_id, target_storage_id, import_url, track_id, source_media_storage_id, target_media_storage_id FROM jobs
 WHERE id = $1 AND status = 'queued' AND available_at <= now() AND routed_to = $2::text
 FOR UPDATE SKIP LOCKED
 `
@@ -731,12 +736,14 @@ func (q *Queries) LockDispatchedJob(ctx context.Context, arg LockDispatchedJobPa
 		&i.TargetStorageID,
 		&i.ImportUrl,
 		&i.TrackID,
+		&i.SourceMediaStorageID,
+		&i.TargetMediaStorageID,
 	)
 	return i, err
 }
 
 const lockJob = `-- name: LockJob :one
-SELECT id, project_id, asset_id, kind, status, phase, progress, profile_id, profile_version, pinned_agent_id, lost_count, failed_count, error_code, routed_to, route_reason, available_at, created_at, started_at, finished_at, source_storage_id, target_storage_id, import_url, track_id FROM jobs WHERE id = $1 FOR UPDATE
+SELECT id, project_id, asset_id, kind, status, phase, progress, profile_id, profile_version, pinned_agent_id, lost_count, failed_count, error_code, routed_to, route_reason, available_at, created_at, started_at, finished_at, source_storage_id, target_storage_id, import_url, track_id, source_media_storage_id, target_media_storage_id FROM jobs WHERE id = $1 FOR UPDATE
 `
 
 func (q *Queries) LockJob(ctx context.Context, id string) (Job, error) {
@@ -766,12 +773,14 @@ func (q *Queries) LockJob(ctx context.Context, id string) (Job, error) {
 		&i.TargetStorageID,
 		&i.ImportUrl,
 		&i.TrackID,
+		&i.SourceMediaStorageID,
+		&i.TargetMediaStorageID,
 	)
 	return i, err
 }
 
 const lockNextClaimableJob = `-- name: LockNextClaimableJob :one
-SELECT id, project_id, asset_id, kind, status, phase, progress, profile_id, profile_version, pinned_agent_id, lost_count, failed_count, error_code, routed_to, route_reason, available_at, created_at, started_at, finished_at, source_storage_id, target_storage_id, import_url, track_id FROM jobs
+SELECT id, project_id, asset_id, kind, status, phase, progress, profile_id, profile_version, pinned_agent_id, lost_count, failed_count, error_code, routed_to, route_reason, available_at, created_at, started_at, finished_at, source_storage_id, target_storage_id, import_url, track_id, source_media_storage_id, target_media_storage_id FROM jobs
 WHERE jobs.project_id = $1
   AND jobs.status = 'queued'
   AND available_at <= now()
@@ -837,12 +846,14 @@ func (q *Queries) LockNextClaimableJob(ctx context.Context, arg LockNextClaimabl
 		&i.TargetStorageID,
 		&i.ImportUrl,
 		&i.TrackID,
+		&i.SourceMediaStorageID,
+		&i.TargetMediaStorageID,
 	)
 	return i, err
 }
 
 const lockRoutableJob = `-- name: LockRoutableJob :one
-SELECT id, project_id, asset_id, kind, status, phase, progress, profile_id, profile_version, pinned_agent_id, lost_count, failed_count, error_code, routed_to, route_reason, available_at, created_at, started_at, finished_at, source_storage_id, target_storage_id, import_url, track_id FROM jobs
+SELECT id, project_id, asset_id, kind, status, phase, progress, profile_id, profile_version, pinned_agent_id, lost_count, failed_count, error_code, routed_to, route_reason, available_at, created_at, started_at, finished_at, source_storage_id, target_storage_id, import_url, track_id, source_media_storage_id, target_media_storage_id FROM jobs
 WHERE id = $1 AND status = 'queued' AND pinned_agent_id IS NULL AND available_at <= now()
 FOR UPDATE SKIP LOCKED
 `
@@ -874,6 +885,8 @@ func (q *Queries) LockRoutableJob(ctx context.Context, id string) (Job, error) {
 		&i.TargetStorageID,
 		&i.ImportUrl,
 		&i.TrackID,
+		&i.SourceMediaStorageID,
+		&i.TargetMediaStorageID,
 	)
 	return i, err
 }

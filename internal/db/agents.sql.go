@@ -136,9 +136,9 @@ func (q *Queries) CreateAgentSource(ctx context.Context, arg CreateAgentSourcePa
 }
 
 const createLocalAsset = `-- name: CreateLocalAsset :one
-INSERT INTO assets (id, project_id, app_id, status, storage_id, source_uri, agent_source_id, passthrough, title)
-VALUES ($1, $2, $3, 'processing', $4, $5, $6, $7, $8)
-RETURNING id, project_id, app_id, status, error_code, version, storage_id, source_uri, agent_source_id, source_kept, current_output_id, passthrough, duration_seconds, created_at, updated_at, deleted_at, title
+INSERT INTO assets (id, project_id, app_id, status, storage_id, media_storage_id, source_uri, agent_source_id, passthrough, title)
+VALUES ($1, $2, $3, 'processing', $4, coalesce(media_target($2), $4), $5, $6, $7, $8)
+RETURNING id, project_id, app_id, status, error_code, version, storage_id, source_uri, agent_source_id, source_kept, current_output_id, passthrough, duration_seconds, created_at, updated_at, deleted_at, title, media_storage_id
 `
 
 type CreateLocalAssetParams struct {
@@ -182,6 +182,7 @@ func (q *Queries) CreateLocalAsset(ctx context.Context, arg CreateLocalAssetPara
 		&i.UpdatedAt,
 		&i.DeletedAt,
 		&i.Title,
+		&i.MediaStorageID,
 	)
 	return i, err
 }

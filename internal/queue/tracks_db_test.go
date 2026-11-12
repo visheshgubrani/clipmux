@@ -95,7 +95,8 @@ func TestATranscriptionRunsBesideAReencode(t *testing.T) {
 		t.Fatalf("a second transcription: %v, want a unique violation", err)
 	}
 	f.exec(`INSERT INTO storage_configs (id, project_id, kind) VALUES ('sto_two', 'prj_default', 'fs')`)
-	if _, err := lifecycle.QueueMove(context.Background(), db.New(f.pool), "prj_default", asset, "sto_default", "sto_two"); !uniqueViolation(err) {
+	if _, err := lifecycle.QueueMove(context.Background(), db.New(f.pool), "prj_default", asset,
+		lifecycle.Move{Source: "sto_default", Target: "sto_two", MediaSource: "sto_default", MediaTarget: "sto_two"}); !uniqueViolation(err) {
 		t.Fatalf("a move during a transcription: %v, want a unique violation", err)
 	}
 }

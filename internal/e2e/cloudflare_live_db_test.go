@@ -167,8 +167,9 @@ func TestCloudflareLiveAcceptance(t *testing.T) {
 	}
 	newAsset, newPID := in.upload(cfg.APIKey, fixture(t, 8, 854, 480))
 	in.waitReady(cfg.APIKey, newAsset, 3*time.Minute)
-	if kind := in.scalar(`SELECT s.kind FROM assets a JOIN storage_configs s ON s.id=a.storage_id WHERE a.id=$1`, newAsset); kind != "r2" {
-		t.Fatal("new upload did not use R2")
+	// Its encoded files go to R2; its source stays where Storage sends it (D117).
+	if kind := in.scalar(`SELECT s.kind FROM assets a JOIN storage_configs s ON s.id=a.media_storage_id WHERE a.id=$1`, newAsset); kind != "r2" {
+		t.Fatal("new upload was not encoded into R2")
 	}
 	var keyVersion int32
 	if err := pool.QueryRow(t.Context(), `SELECT o.key_version FROM assets a JOIN outputs o ON o.id=a.current_output_id WHERE a.id=$1`, newAsset).Scan(&keyVersion); err != nil {
@@ -286,7 +287,7 @@ func TestCloudflareLiveAcceptance(t *testing.T) {
 		t.Fatalf("move library HTTP %d", s)
 	}
 	deadline = time.Now().Add(4 * time.Minute)
-	for in.scalar(`SELECT s.kind FROM assets a JOIN storage_configs s ON s.id=a.storage_id WHERE a.id=$1`, cfg.AssetID) != "r2" {
+	for in.scalar(`SELECT s.kind FROM assets a JOIN storage_configs s ON s.id=a.media_storage_id WHERE a.id=$1`, cfg.AssetID) != "r2" {
 		if time.Now().After(deadline) {
 			t.Fatal("move timed out")
 		}

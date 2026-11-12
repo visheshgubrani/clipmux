@@ -26,9 +26,9 @@ You need:
 Paste the token into the dialog. ClipMux reads what it reaches and offers
 the choices, so nothing is typed by hand: the account (only if the token
 reaches several), the media hostname as a subdomain of one of the account's
-active zones, the R2 bucket (an existing one, or `clipmux-media`, created
-for you), and whether new uploads go to R2 (recommended; checked on a first
-connect). A missing Workers Paid plan shows before anything changes.
+active zones, and the R2 bucket new videos are encoded into (an existing
+one, or `clipmux-media`, created for you). A missing Workers Paid plan
+shows before anything changes.
 
 Connect verifies the token, finds the zone, checks Workers Paid,
 creates the bucket if needed, derives R2 credentials from the token (its ID
@@ -52,19 +52,20 @@ live in Cloudflare: narrow or revoke them there when you no longer need to
 redeploy. A ClipMux upgrade that carries a newer Worker asks for a token to
 redeploy it.
 
-After a first connect, new uploads go to R2 unless you unticked it; a
-reconnect leaves the choice alone (D110). **Storage** shows where new uploads
-go and changes it, this server's disk included. Videos on any other store
-keep playing through this server (the Worker fetches them from origin) until
-they are moved there.
+Connect doesn't change where uploads go (D117): **Storage** keeps the
+originals, on this server's disk or a bucket of your choosing, and new
+videos' encoded files go to the delivery bucket. Videos encoded before keep
+playing through this server (the Worker fetches them from origin) until
+**Delivery** moves their encoded files into the bucket.
 
 ## R2 storage without Cloudflare delivery
 
 **Storage → Add R2 bucket** keeps uploads in R2 while this server still
-delivers them. Its **Create token on Cloudflare** link asks for **Workers R2
+delivers them; their encoded files sit beside them in the same bucket. Its **Create token on Cloudflare** link asks for **Workers R2
 Storage: Edit** only. ClipMux creates the bucket if it's new, derives its
 keys from the token as Connect does, and checks it with a test write.
-Connecting Cloudflare later reuses the same bucket.
+Connecting Cloudflare later with the same bucket reuses it, so one bucket
+holds both the originals and the encoded files.
 
 ## Edge analytics
 

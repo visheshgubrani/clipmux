@@ -260,10 +260,14 @@ function StatusLine() {
             ? 'this server'
             : 'this server (offline)',
     },
-    { to: '/delivery', label: 'Delivery', value: cloudflare.data?.connected ? 'Cloudflare' : 'built in' },
+    {
+      to: '/delivery',
+      label: 'Delivery',
+      value: cloudflare.data?.connected ? `Cloudflare, from R2 (${cloudflare.data.bucket})` : 'built in',
+    },
     {
       to: '/storage',
-      label: 'Storage',
+      label: 'Uploads',
       value: !store
         ? '…'
         : store.kind === 'fs'

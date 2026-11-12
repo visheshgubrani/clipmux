@@ -178,7 +178,7 @@ func (h *Handler) respond(w http.ResponseWriter, r *http.Request, token string, 
 
 	p := r.PathValue("path")
 	current := route.CurrentOutputID.String
-	store, err := h.stores.Get(ctx, route.StorageID)
+	store, err := h.stores.Get(ctx, route.MediaStorageID)
 	if err != nil {
 		h.fail(w, "storage", err)
 		return

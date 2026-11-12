@@ -253,11 +253,13 @@ func TestPhase2ExitAppsPlayUnchangedThroughTheWorker(t *testing.T) {
 	if v, _ := play(t, edge+"/v/"+sign(t, kid, priv, oldPID, time.Hour)+"/"+oldPID+"/master.m3u8"); v < 190 {
 		t.Fatalf("the old asset through the Worker decoded %d frames", v)
 	}
-	// A new upload, with the same API key, goes to R2 and plays from it.
+	// A new upload, with the same API key, is encoded into R2 and plays
+	// from it; its source stays where Storage sends uploads (D117).
 	newAsset, newPID := in.upload(key, fixture(t, 8, 854, 480))
 	in.waitReady(key, newAsset, 3*time.Minute)
-	if kind := in.scalar(`SELECT s.kind FROM assets a JOIN storage_configs s ON s.id = a.storage_id WHERE a.id = $1`, newAsset); kind != "r2" {
-		t.Fatalf("the new upload is on %s storage, want r2", kind)
+	if kinds := in.scalar(`SELECT s.kind || '/' || m.kind FROM assets a JOIN storage_configs s ON s.id = a.storage_id
+		JOIN storage_configs m ON m.id = a.media_storage_id WHERE a.id = $1`, newAsset); kinds != "fs/r2" {
+		t.Fatalf("the new upload's source/encoded files are on %s storage, want fs/r2", kinds)
 	}
 	newURL := edge + "/v/" + sign(t, kid, priv, newPID, time.Hour) + "/" + newPID + "/master.m3u8"
 	if v, a := play(t, newURL); v < 190 || a == 0 {
@@ -311,7 +313,7 @@ func TestPhase2ExitAppsPlayUnchangedThroughTheWorker(t *testing.T) {
 
 	// 4. Move the library to R2; the old asset then plays without serve.
 	var moved struct{ Queued int }
-	if s := ownerCall(t, owner, http.MethodPost, in.url+"/v1/storage/moves", nil, &moved); s != http.StatusAccepted || moved.Queued < 1 { // also the first-boot sample
+	if s := ownerCall(t, owner, http.MethodPost, in.url+"/v1/storage/moves", nil, &moved); s != http.StatusAccepted || moved.Queued < 1 {
 		t.Fatalf("move library: %d, queued %d", s, moved.Queued)
 	}
 	deadline := time.Now().Add(2 * time.Minute)

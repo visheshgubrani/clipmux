@@ -137,12 +137,16 @@ func TestMovingAnAssetCopiesItSwitchesItsRoutesThenCleansUp(t *testing.T) {
 	if got, _ := r.read(r.r2, "_routes/pid_1.json"); !strings.Contains(got, `"backend":"origin"`) {
 		t.Fatalf("route before the move = %s, want origin", got)
 	}
-	n, err := r.svc.MoveLibrary(ctx, db.DefaultProjectID, r.r2ID)
+	// Uploads go to R2 too, so both parts move there.
+	if err := r.svc.stores.SetDefault(ctx, db.DefaultProjectID, r.r2ID); err != nil {
+		t.Fatal(err)
+	}
+	n, err := r.svc.MoveLibrary(ctx, db.DefaultProjectID)
 	if err != nil || n != 1 {
 		t.Fatalf("MoveLibrary = %d, %v; want 1 queued", n, err)
 	}
 	// A second request queues nothing: the asset already has its move.
-	if n, _ := r.svc.MoveLibrary(ctx, db.DefaultProjectID, r.r2ID); n != 0 {
+	if n, _ := r.svc.MoveLibrary(ctx, db.DefaultProjectID); n != 0 {
 		t.Fatalf("second MoveLibrary queued %d", n)
 	}
 	r.run()
@@ -160,11 +164,11 @@ func TestMovingAnAssetCopiesItSwitchesItsRoutesThenCleansUp(t *testing.T) {
 	if _, ok := r.read(r.r2, "media/ast_1/out_lost/360p/seg_00001.m4s"); ok {
 		t.Fatal("a lost attempt's file was copied")
 	}
-	var storageID, phase string
-	_ = r.pool.QueryRow(ctx, `SELECT storage_id FROM assets WHERE id = 'ast_1'`).Scan(&storageID)
+	var storageID, mediaID, phase string
+	_ = r.pool.QueryRow(ctx, `SELECT storage_id, media_storage_id FROM assets WHERE id = 'ast_1'`).Scan(&storageID, &mediaID)
 	_ = r.pool.QueryRow(ctx, `SELECT coalesce(phase, '') FROM jobs WHERE kind = 'move'`).Scan(&phase)
-	if storageID != r.r2ID || phase != "cleanup" {
-		t.Fatalf("after the copy: storage %s, phase %q", storageID, phase)
+	if storageID != r.r2ID || mediaID != r.r2ID || phase != "cleanup" {
+		t.Fatalf("after the copy: source on %s, encoded files on %s, phase %q", storageID, mediaID, phase)
 	}
 	if _, err := r.commit.SyncRoutes(ctx, 100); err != nil {
 		t.Fatal(err)
@@ -190,10 +194,58 @@ func TestMovingAnAssetCopiesItSwitchesItsRoutesThenCleansUp(t *testing.T) {
 	}
 }
 
+// With uploads on disk and the Worker delivering from R2, a move takes the
+// encoded files and tracks to R2 and leaves the source where it is (D117).
+func TestAMoveCarriesEachPartToItsOwnStore(t *testing.T) {
+	r := newMoveRig(t)
+	ctx := context.Background()
+	if err := r.fs.Put(ctx, "media/ast_1/tracks/trk_1.vtt", strings.NewReader("sealed track")); err != nil {
+		t.Fatal(err)
+	}
+	r.segments["media/ast_1/tracks/trk_1.vtt"] = "sealed track"
+	var moves struct{ uploads, media int64 }
+	if err := r.pool.QueryRow(ctx, `SELECT count(*) FILTER (WHERE storage_id <> 'sto_default'), count(*) FILTER (WHERE media_storage_id <> media_target(project_id))
+		FROM assets`).Scan(&moves.uploads, &moves.media); err != nil || moves.uploads != 0 || moves.media != 1 {
+		t.Fatalf("away from their targets: %d sources and %d encoded, %v; want 0 and 1", moves.uploads, moves.media, err)
+	}
+	if n, err := r.svc.MoveLibrary(ctx, db.DefaultProjectID); err != nil || n != 1 {
+		t.Fatalf("MoveLibrary = %d, %v; want 1 queued", n, err)
+	}
+	r.run()
+	for k, want := range r.segments {
+		if got, _ := r.read(r.r2, k); got != want {
+			t.Fatalf("%s on R2 = %q, want %q", k, got, want)
+		}
+	}
+	if _, ok := r.read(r.r2, "uploads/ast_1/source"); ok {
+		t.Fatal("the source was copied to the delivery bucket")
+	}
+	var storageID, mediaID string
+	_ = r.pool.QueryRow(ctx, `SELECT storage_id, media_storage_id FROM assets WHERE id = 'ast_1'`).Scan(&storageID, &mediaID)
+	if storageID != "sto_default" || mediaID != r.r2ID {
+		t.Fatalf("source on %s, encoded files on %s; want sto_default and %s", storageID, mediaID, r.r2ID)
+	}
+	if _, err := r.commit.SyncRoutes(ctx, 100); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := r.read(r.r2, "_routes/pid_1.json"); !strings.Contains(got, `"backend":"r2"`) {
+		t.Fatalf("route after the move = %s, want r2", got)
+	}
+	r.exec(`UPDATE jobs SET available_at = now() WHERE kind = 'move'`)
+	r.run()
+	// Cleanup takes the encoded files off the disk and leaves the source.
+	if got, ok := r.read(r.fs, "uploads/ast_1/source"); !ok || got != string(r.source) {
+		t.Fatal("cleanup took the source off the disk")
+	}
+	if _, ok := r.read(r.fs, "media/ast_1/out_new/master.m3u8"); ok {
+		t.Fatal("cleanup left the encoded files on the disk")
+	}
+}
+
 func TestAMoveResumesWithoutCopyingTwice(t *testing.T) {
 	r := newMoveRig(t)
 	ctx := context.Background()
-	if _, err := r.svc.MoveLibrary(ctx, db.DefaultProjectID, r.r2ID); err != nil {
+	if _, err := r.svc.MoveLibrary(ctx, db.DefaultProjectID); err != nil {
 		t.Fatal(err)
 	}
 	// A crash after copying one file: the next pass copies the rest only.
@@ -206,9 +258,9 @@ func TestAMoveResumesWithoutCopyingTwice(t *testing.T) {
 	if before.ETag != after.ETag {
 		t.Fatal("an object already in the new store was copied again")
 	}
-	var storageID string
-	_ = r.pool.QueryRow(ctx, `SELECT storage_id FROM assets WHERE id = 'ast_1'`).Scan(&storageID)
-	if storageID != r.r2ID {
-		t.Fatalf("storage = %s", storageID)
+	var mediaID string
+	_ = r.pool.QueryRow(ctx, `SELECT media_storage_id FROM assets WHERE id = 'ast_1'`).Scan(&mediaID)
+	if mediaID != r.r2ID {
+		t.Fatalf("encoded files on %s, want %s", mediaID, r.r2ID)
 	}
 }
