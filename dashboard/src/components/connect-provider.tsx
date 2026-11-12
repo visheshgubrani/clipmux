@@ -202,7 +202,9 @@ function useConnected(kind: Kind | null, setSteps: (s: Step[]) => void) {
       setSteps(res.steps)
       void qc.invalidateQueries({ queryKey: ['executors'] })
       void qc.invalidateQueries({ queryKey: ['routing'] })
-      if (res.connected && kind) notify.done(`${names[kind]} connected`)
+      void qc.invalidateQueries({ queryKey: ['setup-test'] })
+      if (res.connected && kind)
+        notify.done(`${names[kind]} connected`, 'It takes over new videos once a sample encodes on it.')
     },
     [qc, kind, setSteps],
   )
@@ -304,8 +306,8 @@ function ConnectModal() {
       <DialogHeader>
         <DialogTitle>Connect Modal</DialogTitle>
         <DialogDescription>
-          Pick the GPUs, then approve ClipMux on Modal's page. ClipMux checks that Modal can reach this server
-          and runs a setup test before using it.
+          Pick the GPUs, then approve ClipMux on Modal's page. ClipMux checks that Modal can reach this
+          server, encodes a sample on it, then sends it new videos.
         </DialogDescription>
       </DialogHeader>
       <form
@@ -468,8 +470,8 @@ function ConnectRunPod() {
       <DialogHeader>
         <DialogTitle>Connect RunPod</DialogTitle>
         <DialogDescription>
-          Paste a RunPod API key and pick the GPUs. ClipMux checks that RunPod can reach this server and runs
-          a setup test before using it.
+          Paste a RunPod API key and pick the GPUs. ClipMux checks that RunPod can reach this server, encodes
+          a sample on it, then sends it new videos.
         </DialogDescription>
       </DialogHeader>
       <form

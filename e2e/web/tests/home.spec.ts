@@ -10,9 +10,10 @@ test('home lists the optional steps and the newest videos', async ({ page, reque
   await go(page, 'Home')
   await expect(page.getByRole('heading', { level: 1 })).toHaveText(/^Good (morning|afternoon|evening)$/)
   const setup = page.getByRole('region', { name: 'Finish setting up' })
-  // The fixture's PC is connected and an LLM is: those steps show done.
-  await expect(setup.getByRole('link', { name: /Connect a PC/ }).getByLabel('Done')).toBeVisible()
+  // The fixture's LLM is connected: that step shows done. PCs and the
+  // setup test aren't steps (D115, D116).
   await expect(setup.getByRole('link', { name: /Turn on chapters/ }).getByLabel('Done')).toBeVisible()
+  await expect(setup.getByRole('link', { name: /Connect a PC|Run the setup test/ })).toHaveCount(0)
   await expect(setup.getByRole('link', { name: /Connect Cloudflare/ }).getByLabel('Not done')).toBeVisible()
   const recent = page.getByRole('region', { name: 'Recent videos' })
   await expect(recent.getByRole('link').first()).toBeVisible()

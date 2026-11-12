@@ -80,9 +80,11 @@ type Check struct {
 
 // Test is one run.
 type Test struct {
-	ID         string     `json:"id"`
-	Status     string     `json:"status"`
-	Trigger    string     `json:"trigger"`
+	ID      string `json:"id"`
+	Status  string `json:"status"`
+	Trigger string `json:"trigger"`
+	// Executor is the provider a connect test runs on (D054), if any.
+	Executor   string     `json:"executor,omitempty"`
 	AssetID    string     `json:"asset_id,omitempty"`
 	Checks     []Check    `json:"checks"`
 	CreatedAt  time.Time  `json:"created_at"`
@@ -90,7 +92,7 @@ type Test struct {
 }
 
 func view(t db.SetupTest) Test {
-	out := Test{ID: t.ID, Status: t.Status, Trigger: t.Trigger, AssetID: t.AssetID.String, CreatedAt: t.CreatedAt.Time.UTC(), Checks: []Check{}}
+	out := Test{ID: t.ID, Status: t.Status, Trigger: t.Trigger, Executor: t.Executor.String, AssetID: t.AssetID.String, CreatedAt: t.CreatedAt.Time.UTC(), Checks: []Check{}}
 	_ = json.Unmarshal(t.Checks, &out.Checks)
 	if t.FinishedAt.Valid {
 		f := t.FinishedAt.Time.UTC()
@@ -110,6 +112,10 @@ type Runner struct {
 	projectID string
 	client    *http.Client
 
+	// ProviderFallback is the fallback a cloud GPU gets when its connect
+	// test passes and it becomes the primary (D116): the built-in worker,
+	// or "" when serve runs without one.
+	ProviderFallback string
 	// EncodeTimeout bounds the wait for the sample to become ready.
 	EncodeTimeout time.Duration
 	Poll          time.Duration
@@ -176,6 +182,24 @@ func (r *Runner) QueueThrough(ctx context.Context, trigger, executor string) (Te
 	return view(t), nil
 }
 
+// providerPassed records that a provider's own machines encoded the
+// sample: it may take work (D056), and it takes it now, as the primary with
+// ProviderFallback behind it, since the owner connected it to use it (D116).
+func (r *Runner) providerPassed(ctx context.Context, kind string) error {
+	return pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+		q := db.New(tx)
+		if err := q.VerifyExecutor(ctx, db.VerifyExecutorParams{ProjectID: r.projectID, Kind: kind}); err != nil {
+			return fmt.Errorf("verify executor: %w", err)
+		}
+		fallback := pgtype.Text{String: r.ProviderFallback, Valid: r.ProviderFallback != ""}
+		if err := q.SetRouting(ctx, db.SetRoutingParams{ID: r.projectID, PrimaryExecutor: kind, FallbackExecutor: fallback}); err != nil {
+			return fmt.Errorf("route to %s: %w", kind, err)
+		}
+		r.Logger.Info("cloud GPU in use", "executor", kind, "fallback", r.ProviderFallback)
+		return nil
+	})
+}
+
 // Latest returns the newest test, if any.
 func (r *Runner) Latest(ctx context.Context) (Test, bool, error) {
 	t, err := db.New(r.pool).LatestSetupTest(ctx, r.projectID)
@@ -221,9 +245,8 @@ func (r *Runner) Run(ctx context.Context) (int, error) {
 		return 1, fmt.Errorf("record setup test: %w", err)
 	}
 	if status == "passed" && (t.Executor.String == "modal" || t.Executor.String == "runpod") {
-		// The provider's own machines encoded the sample: it may take work.
-		if err := q.VerifyExecutor(context.WithoutCancel(ctx), db.VerifyExecutorParams{ProjectID: r.projectID, Kind: t.Executor.String}); err != nil {
-			return 1, fmt.Errorf("verify executor: %w", err)
+		if err := r.providerPassed(context.WithoutCancel(ctx), t.Executor.String); err != nil {
+			return 1, err
 		}
 	}
 	if status == "passed" {

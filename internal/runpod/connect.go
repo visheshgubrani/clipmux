@@ -201,7 +201,7 @@ func (c *Connector) Connect(ctx context.Context, req Request) (dispatch.Result, 
 				c.Logger.Warn("connect runpod: remove the old registry credentials", "err", err)
 			}
 		}
-		return "RunPod takes work once its setup test passes", nil
+		return "RunPod encodes new videos once a sample encodes on it", nil
 	})
 	if c.SetupTest != nil {
 		step("setup_test", func() (string, error) {

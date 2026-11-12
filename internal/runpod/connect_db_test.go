@@ -166,7 +166,7 @@ func TestConnectRunPodRefusesBadKeysPrivateURLsAndMissingLimits(t *testing.T) {
 	}
 }
 
-func TestDisconnectRunPodWaitsForRoutingAndMachines(t *testing.T) {
+func TestDisconnectRunPodWaitsForMachinesAndHandsWorkBack(t *testing.T) {
 	ctx := context.Background()
 	r := newConnectRig(t)
 	if res, _ := r.c.Connect(ctx, request); !res.Connected {
@@ -179,11 +179,16 @@ func TestDisconnectRunPodWaitsForRoutingAndMachines(t *testing.T) {
 		}
 	}
 	exec(`UPDATE executor_configs SET verified_at = now()`)
-	exec(`UPDATE projects SET primary_executor = 'agents', fallback_executor = 'runpod'`)
-	if err := r.c.Disconnect(ctx); !errors.Is(err, dispatch.ErrInUse) {
-		t.Fatalf("disconnect while it is the fallback = %v, want ErrInUse", err)
+	exec(`UPDATE projects SET primary_executor = 'runpod', fallback_executor = 'builtin', queue_age_fallback_minutes = 10`)
+	routing := func() string {
+		t.Helper()
+		var got string
+		if err := r.pool.QueryRow(ctx, `SELECT primary_executor || '/' || coalesce(fallback_executor, '-') || '/' || coalesce(queue_age_fallback_minutes::text, '-')
+			FROM projects WHERE id = 'prj_default'`).Scan(&got); err != nil {
+			t.Fatal(err)
+		}
+		return got
 	}
-	exec(`UPDATE projects SET fallback_executor = NULL`)
 	exec(`INSERT INTO assets (id, project_id, app_id, status, storage_id) VALUES ('ast_1', 'prj_default', 'app_dashboard', 'processing', 'sto_default')`)
 	exec(`INSERT INTO jobs (id, project_id, asset_id, kind, routed_to) VALUES ('job_1', 'prj_default', 'ast_1', 'transcode', 'runpod')`)
 	exec(`INSERT INTO dispatches (id, project_id, job_id, executor_config_id, kind, key_hash, key_sealed, rate_cents_per_hour, claim_deadline)
@@ -191,9 +196,16 @@ func TestDisconnectRunPodWaitsForRoutingAndMachines(t *testing.T) {
 	if err := r.c.Disconnect(ctx); !errors.Is(err, dispatch.ErrMachinesRunning) {
 		t.Fatalf("disconnect with a live dispatch = %v, want ErrMachinesRunning", err)
 	}
+	if got := routing(); got != "runpod/builtin/10" {
+		t.Fatalf("routing after a refused disconnect = %s, want it unchanged (runpod/builtin/10)", got)
+	}
 	exec(`UPDATE dispatches SET status = 'ended', ended_at = now(), end_reason = 'job_gone'`)
+	// Disconnecting the primary hands the work back to this server (D116).
 	if err := r.c.Disconnect(ctx); err != nil {
 		t.Fatal(err)
+	}
+	if got := routing(); got != "builtin/-/-" {
+		t.Fatalf("routing after disconnecting the primary = %s, want builtin/-/-", got)
 	}
 	sts, _ := dispatch.Statuses(ctx, r.pool, "prj_default")
 	if len(sts) != 1 || sts[0].Connected || sts[0].Verified || len(r.fake.Auths()) != 0 {

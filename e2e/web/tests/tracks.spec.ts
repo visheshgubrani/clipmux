@@ -239,8 +239,5 @@ test('the owner connects an LLM and sees which PCs can transcribe', async ({ pag
   await upload.getByRole('switch', { name: 'Generate chapters' }).click()
   await expect(upload.getByRole('switch', { name: 'Generate subtitles' })).toBeChecked()
   await page.keyboard.press('Escape')
-
-  await go(page, 'Encoding')
-  await expect(page.getByRole('listitem', { name: 'studio-pc' })).toContainText('vulkan, cpu')
   await noViolations()
 })

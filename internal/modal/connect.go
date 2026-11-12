@@ -233,7 +233,7 @@ func (c *Connector) Connect(ctx context.Context, req Request) (dispatch.Result, 
 		if _, err := dispatch.Save(ctx, c.Pool, c.Box, c.ProjectID, "modal", cfg, sec, settings); err != nil {
 			return "", err
 		}
-		return "Modal takes work once its setup test passes", nil
+		return "Modal encodes new videos once a sample encodes on it", nil
 	})
 	if c.SetupTest != nil {
 		steps.Do("setup_test", func() (string, error) {

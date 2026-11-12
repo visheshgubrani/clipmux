@@ -83,6 +83,8 @@ export interface SetupTest {
   id: string
   status: string
   trigger: string
+  /** The cloud GPU a connect test runs on (D054, D116). */
+  executor?: string
   asset_id?: string
   checks: Check[]
 }

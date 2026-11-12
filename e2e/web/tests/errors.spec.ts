@@ -7,7 +7,7 @@ const pages: [string, string, RegExp][] = [
   ['/', 'your videos', /\/v1\/library/],
   ['/videos', 'your videos', /\/v1\/library\?/],
   ['/jobs', 'jobs', /\/v1\/jobs\?/],
-  ['/encoding', 'routing', /\/v1\/settings\/routing/],
+  ['/encoding', 'encoding', /\/v1\/settings\/routing/],
   ['/delivery', 'delivery', /\/v1\/cloudflare$/],
   ['/captions', 'the speech settings', /\/v1\/settings\/speech$/],
   ['/apps', 'your apps', /\/v1\/apps$/],

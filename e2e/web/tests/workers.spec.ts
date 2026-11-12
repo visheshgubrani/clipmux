@@ -1,11 +1,11 @@
 import { expect, type Page, test } from '@playwright/test'
 import { expectSignedIn, go, noHorizontalScroll, watchCSP } from './csp.ts'
 
-// The Encoding and Jobs pages (D047, D053–D058), against the real serve the
-// fixture boots: its owner signs in, finds a connected PC, chooses routing,
-// connects RunPod (a fake API and a fake private registry), and sees on the
-// Jobs page where each job is routed and why. Runs after the other suites,
-// and puts routing back, because the fixture's PC is not a real worker.
+// The Encoding and Jobs pages (D116), against the real serve the fixture
+// boots: its owner signs in, finds this server encoding, connects RunPod (a
+// fake API and a fake private registry), watches it being checked, chooses
+// it once the fixture stands in for its sample, and sees on the Jobs page
+// where each job is routed and why. Puts this server back at the end.
 
 interface Config {
   ops: string
@@ -24,7 +24,7 @@ async function signIn(page: Page, cfg: Config) {
   await expectSignedIn(page)
 }
 
-test('the owner routes jobs, connects RunPod and sees why each job went where it did', async ({
+test('the owner connects RunPod, chooses it once checked, and sees why each job went where it did', async ({
   page,
   request,
 }) => {
@@ -36,33 +36,15 @@ test('the owner routes jobs, connects RunPod and sees why each job went where it
   await expect(page.getByRole('heading', { name: 'Encoding', level: 1 })).toBeVisible()
   await noHorizontalScroll(page)
 
-  // The connected PC, its encoders, and its scope.
-  const pc = studio(page)
-  await expect(pc).toContainText('Online')
-  await expect(pc).toContainText('h264_vaapi, libx264')
-  await expect(pc).toContainText('Sandboxed')
-  await pc.getByRole('combobox').selectOption('local')
-  await page.reload()
-  await expect(studio(page).getByRole('combobox')).toHaveValue('local')
+  // One choice: this server, or a cloud GPU once it's connected and checked.
+  const where = page.getByRole('radiogroup', { name: 'Where videos are encoded' })
+  await expect(where.getByRole('radio', { name: 'This server' })).toBeChecked()
+  await expect(where.getByRole('radio', { name: 'RunPod' })).toBeDisabled()
+  await expect(where.getByRole('radio', { name: 'Modal' })).toBeDisabled()
+  await expect(page.getByText(/Connect a PC|Your computers/)).toHaveCount(0)
 
-  // "My PC, else this server", after 5 minutes in the queue.
-  await page.getByLabel('Primary executor', { exact: true }).selectOption('agents')
-  await page.getByLabel('Fallback executor', { exact: true }).selectOption('builtin')
-  await page.getByLabel('Queue-age fallback', { exact: true }).check()
-  await page.getByLabel('Queue-age minutes').fill('5')
-  await page.getByRole('button', { name: 'Save routing' }).click()
-  await expect(page.getByText('Saved.')).toBeVisible()
-  await page.reload()
-  await expect(page.getByLabel('Primary executor', { exact: true })).toHaveValue('agents')
-  await expect(page.getByLabel('Fallback executor', { exact: true })).toHaveValue('builtin')
-  await expect(page.getByLabel('Queue-age minutes')).toHaveValue('5')
-  // RunPod isn't a choice until it is connected and verified.
-  await expect(
-    page.getByLabel('Fallback executor', { exact: true }).locator('option[value="runpod"]'),
-  ).toHaveCount(0)
-
-  // Connect RunPod: every step passes, the image is pinned by digest, and it
-  // waits for its setup test.
+  // Connect RunPod: every step passes, the image is pinned by digest, and
+  // a sample goes to RunPod first.
   await page.locator('[data-provider="runpod"]').getByRole('button', { name: 'Connect RunPod' }).click()
   const form = page.getByRole('form', { name: 'Connect RunPod' })
   await form.getByLabel('RunPod API key').fill(cfg.runpod_key)
@@ -91,9 +73,11 @@ test('the owner routes jobs, connects RunPod and sees why each job went where it
   await expect(page.getByText(/pinned to sha256:[0-9a-f]{64}/)).toBeVisible()
   await page.keyboard.press('Escape')
   const runpod = page.locator('[data-provider="runpod"]')
-  await expect(runpod).toContainText('Setup test pending')
+  await expect(runpod).toContainText('Checking')
+  await expect(runpod).toContainText('A sample video is encoding on RunPod')
   await expect(runpod).toContainText('$0.00 of $50.00')
   await expect(runpod).toContainText('$0.43 per machine-hour')
+  await expect(where.getByRole('radio', { name: 'RunPod' })).toBeDisabled()
   // The API key never comes back to the page.
   await expect(page.locator('body')).not.toContainText(cfg.runpod_key)
 
@@ -105,23 +89,28 @@ test('the owner routes jobs, connects RunPod and sees why each job went where it
   })
   await expect(runpodRow(page)).toBeVisible()
 
-  // Revoking the PC asks first, in a dialog, then marks it removed.
+  // The fixture stands in for the sample encoding on a pod: RunPod is
+  // ready, and choosing it puts this server behind it.
+  expect((await request.post('/verify-runpod')).status()).toBe(204)
   await go(page, 'Encoding')
-  await studio(page).getByRole('button', { name: 'Revoke' }).click()
-  const ask = page.getByRole('alertdialog')
-  await expect(ask).toContainText('Remove studio-pc?')
-  await ask.getByRole('button', { name: 'Cancel' }).click()
-  await expect(studio(page)).toContainText('Online')
-  await studio(page).getByRole('button', { name: 'Revoke' }).click()
-  await page.getByRole('alertdialog').getByRole('button', { name: 'Remove PC' }).click()
-  await expect(studio(page)).toContainText('Removed')
+  await expect(runpod).toContainText('Ready')
+  await where.getByRole('radio', { name: 'RunPod' }).click()
+  await expect(where.getByRole('radio', { name: 'RunPod' })).toBeChecked()
+  const fallback = page.getByLabel('If RunPod can’t start a machine, encode on this server instead')
+  await expect(fallback).toBeChecked()
+  await fallback.click()
+  await expect(fallback).not.toBeChecked()
+  await page.reload()
+  await expect(where.getByRole('radio', { name: 'RunPod' })).toBeChecked()
+  await expect(fallback).not.toBeChecked()
+  await go(page, 'Home')
+  await expect(page.locator('footer')).toContainText('Encoding: RunPod')
 
-  // Back to the default for whatever runs next.
-  await page.getByLabel('Primary executor', { exact: true }).selectOption('workers')
-  await page.getByLabel('Fallback executor', { exact: true }).selectOption('')
-  await page.getByLabel('Queue-age fallback', { exact: true }).uncheck()
-  await page.getByRole('button', { name: 'Save routing' }).click()
-  await expect(page.getByText('Saved.')).toBeVisible()
+  // Back to this server for whatever runs next.
+  await go(page, 'Encoding')
+  await where.getByRole('radio', { name: 'This server' }).click()
+  await expect(where.getByRole('radio', { name: 'This server' })).toBeChecked()
+  await expect(fallback).toHaveCount(0)
   await noViolations()
 })
 
@@ -132,5 +121,3 @@ const runpodRow = (page: Page) =>
     .getByRole('listitem')
     .filter({ hasText: 'Routed to RunPod' })
     .filter({ hasText: 'Queued' })
-
-const studio = (page: Page) => page.getByRole('listitem', { name: 'studio-pc' })

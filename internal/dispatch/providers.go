@@ -18,6 +18,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/db"
 	"github.com/visheshgubrani/clipmux/internal/ids"
 	"github.com/visheshgubrani/clipmux/internal/publicnet"
+	"github.com/visheshgubrani/clipmux/internal/queue"
 	"github.com/visheshgubrani/clipmux/internal/registry"
 	"github.com/visheshgubrani/clipmux/internal/secrets"
 )
@@ -136,8 +137,6 @@ func optTime(t pgtype.Timestamptz) *time.Time {
 
 // Disconnect refusals.
 var (
-	// ErrInUse: routing names the provider as primary or fallback.
-	ErrInUse = errors.New("dispatch: the provider is the primary or the fallback")
 	// ErrMachinesRunning: a dispatch is live or a machine isn't stopped.
 	ErrMachinesRunning = errors.New("dispatch: the provider still runs machines")
 	// ErrNotConnected: the provider isn't connected.
@@ -145,9 +144,10 @@ var (
 )
 
 // Disconnect forgets a provider's credentials, keeping its row as spend
-// history. It refuses while routing uses the provider or while it may run
-// a machine, since nothing could stop that machine afterwards. It returns
-// the row as it was, so the provider's package can clean up on its side.
+// history, and takes it out of routing (D116). It refuses while the
+// provider may run a machine, since nothing could stop that machine
+// afterwards. It returns the row as it was, so the provider's package can
+// clean up on its side.
 func Disconnect(ctx context.Context, pool *pgxpool.Pool, projectID, kind string) (db.ExecutorConfig, error) {
 	var was db.ExecutorConfig
 	err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
@@ -159,13 +159,6 @@ func Disconnect(ctx context.Context, pool *pgxpool.Pool, projectID, kind string)
 		if err != nil {
 			return err
 		}
-		routing, err := qs.GetRouting(ctx, projectID)
-		if err != nil {
-			return err
-		}
-		if routing.PrimaryExecutor == kind || routing.FallbackExecutor.String == kind {
-			return ErrInUse
-		}
 		statuses, err := qs.ExecutorStatus(ctx, projectID)
 		if err != nil {
 			return err
@@ -175,10 +168,41 @@ func Disconnect(ctx context.Context, pool *pgxpool.Pool, projectID, kind string)
 				return ErrMachinesRunning
 			}
 		}
+		routing, err := qs.GetRouting(ctx, projectID)
+		if err != nil {
+			return err
+		}
+		if next, changed := routingWithout(routing, kind); changed {
+			next.ID = projectID
+			if err := qs.SetRouting(ctx, next); err != nil {
+				return fmt.Errorf("route around %s: %w", kind, err)
+			}
+		}
 		was = row
 		return qs.DisconnectExecutor(ctx, row.ID)
 	})
 	return was, err
+}
+
+// routingWithout is routing once the provider kind is gone: a primary
+// gives way to the built-in worker and a fallback to none, and the
+// queue-age rule leaves with its fallback. changed is false when routing
+// didn't name the provider.
+func routingWithout(r db.GetRoutingRow, kind string) (next db.SetRoutingParams, changed bool) {
+	next = db.SetRoutingParams{PrimaryExecutor: r.PrimaryExecutor, FallbackExecutor: r.FallbackExecutor, QueueAgeFallbackMinutes: r.QueueAgeFallbackMinutes}
+	if r.PrimaryExecutor != kind && r.FallbackExecutor.String != kind {
+		return next, false
+	}
+	if next.PrimaryExecutor == kind {
+		next.PrimaryExecutor = queue.RouteBuiltin
+	}
+	if next.FallbackExecutor.String == kind || (next.PrimaryExecutor == queue.RouteBuiltin && next.FallbackExecutor.String == queue.RouteBuiltin) {
+		next.FallbackExecutor = pgtype.Text{}
+	}
+	if !next.FallbackExecutor.Valid {
+		next.QueueAgeFallbackMinutes = pgtype.Int4{}
+	}
+	return next, true
 }
 
 // CheckPublicURL refuses a public URL a provider's machines couldn't reach:

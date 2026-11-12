@@ -1439,3 +1439,14 @@ Decision:
 - **The test stays one click away:** Settings → General → Setup test, `POST /v1/setup-test` and `clipmux admin setup-test --wait`. Connect and Disconnect Cloudflare still queue one, and connecting a cloud GPU still runs its own (D056), which is what verifies the provider.
 - Home's checklist drops "Run the setup test".
 Consequence: D026's first-boot and URL-save triggers and D032's test step are withdrawn. The `first_boot` and `urls_saved` trigger values stay in the schema for rows already written (Cloudflare's run still uses `urls_saved`).
+
+## D116 Encoding is one choice: this server or a cloud GPU — accepted (2026-11-12)
+Context: the Encoding page had a primary/fallback/queue-age form (D053, D060), a list of PCs with pairing commands and scopes, and the cloud GPU cards. Connecting Modal didn't put it to work: the owner then had to find the routing form and name it. Self-hosters with a GPU don't need a PC agent, since the built-in worker already probes NVENC, VAAPI and CUDA (D046); VPS owners have Modal, RunPod or the CPU. The owner asked for the PC option to go and for the rest to just work.
+Decision:
+- **One radio group:** This server (its GPU when it sees one, otherwise the CPU), Modal, RunPod. A provider can be chosen once connected and verified; until then its card says a sample is encoding on it, or which check failed (`GET /v1/setup-test/latest` now carries `executor`).
+- **Connecting is choosing.** When a provider's connect test passes, `setuptest` verifies it (D056) and, in the same transaction, sets routing to that provider as primary, with the built-in worker as fallback when serve runs one (`Runner.ProviderFallback`) and no queue-age rule. Until it passes, jobs go where they went.
+- **One tick box while a cloud GPU is chosen:** "If it can't start a machine, encode on this server instead" (`fallback_executor` `builtin` or null). The queue-age rule stays in the API only.
+- **Choosing This server writes `builtin`.** The page reads `workers`, `agents` and `builtin` alike as This server.
+- **Disconnect hands the work back** instead of refusing (`409 executor_in_use` is gone): routing that named the provider moves to `builtin` as primary, or to no fallback, in the same transaction. It still refuses while one of its machines may run.
+- **PCs leave the dashboard:** no list, no pairing card, no "Connect a PC" on Home. `/workers/connect` stays, alone, because `clipmux worker --server` opens it, until the agent backend is removed.
+Consequence: D053's "my PC, else the server", D056's "routing must name it after the test", and D060's routing card are amended. The agent package, pairing, `push --local` and the `workers`/`agents` routing modes remain in the server and CLI without a dashboard (known gaps) until their removal.

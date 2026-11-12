@@ -73,8 +73,6 @@ func (m *API) disconnectExecutor(w http.ResponseWriter, r *http.Request, _ accou
 	switch {
 	case errors.Is(err, dispatch.ErrNotConnected):
 		return errNotFound
-	case errors.Is(err, dispatch.ErrInUse):
-		return httpjson.Fail(http.StatusConflict, "executor_in_use", "routing names this provider; choose another primary and fallback first")
 	case errors.Is(err, dispatch.ErrMachinesRunning):
 		return httpjson.Fail(http.StatusConflict, "machines_running", "this provider still runs machines; wait for them to stop")
 	case err != nil:

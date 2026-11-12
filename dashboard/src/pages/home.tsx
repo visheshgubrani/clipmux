@@ -149,7 +149,6 @@ function Checklist() {
   })
   const cloudflare = useQuery(q.cloudflare())
   const storage = useQuery(q.storage())
-  const agents = useQuery(q.agents())
   const executors = useQuery(q.executors())
   const chapters = useQuery(q.chapters())
   const apps = useQuery(q.apps())
@@ -165,12 +164,6 @@ function Checklist() {
       title: 'Connect Cloudflare',
       detail: 'Serve videos from the edge with a Worker.',
       to: '/delivery',
-    },
-    {
-      done: (agents.data?.data ?? []).some((a) => a.status !== 'revoked'),
-      title: 'Connect a PC',
-      detail: 'Encode on your own GPU with one command.',
-      to: '/encoding',
     },
     {
       done: (executors.data?.data ?? []).some((p) => p.connected),
@@ -244,27 +237,28 @@ function Checklist() {
   )
 }
 
+const cloudNames: Record<string, string> = { modal: 'Modal', runpod: 'RunPod' }
+
 /** One quiet line at the bottom: where things run and play from. */
 function StatusLine() {
-  const agents = useQuery(q.agents())
   const routing = useQuery(q.routing())
   const cloudflare = useQuery(q.cloudflare())
   const storage = useQuery(q.storage())
   const speech = useQuery(q.speech())
   const chapters = useQuery(q.chapters())
-  const online = (agents.data?.data ?? []).filter((a) => a.online).length
   const store = storage.data?.data.find((s) => s.default)
-  const server = routing.data?.builtin_worker.online
+  const r = routing.data
   const items = [
     {
       to: '/encoding',
       label: 'Encoding',
-      value:
-        server === undefined
-          ? '…'
-          : [server ? 'this server' : null, online ? `${online} PC${online > 1 ? 's' : ''}` : null]
-              .filter(Boolean)
-              .join(' and ') || 'no worker online',
+      value: !r
+        ? '…'
+        : r.primary_executor in cloudNames
+          ? `${cloudNames[r.primary_executor]}${r.fallback_executor === 'builtin' ? ', else this server' : ''}`
+          : r.builtin_worker.online
+            ? 'this server'
+            : 'this server (offline)',
     },
     { to: '/delivery', label: 'Delivery', value: cloudflare.data?.connected ? 'Cloudflare' : 'built in' },
     {

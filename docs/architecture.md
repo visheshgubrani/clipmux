@@ -358,7 +358,7 @@ Routes publish before `ready`, so an app never receives a webhook for a playback
 
 ### Routing and fallback
 
-Settings hold one default executor and an optional fallback, such as "my PC, else Modal". v1 has no scoring scheduler.
+Settings hold one default executor and an optional fallback, such as "Modal, else this server". v1 has no scoring scheduler. The dashboard offers one choice, this server or a connected cloud GPU, and a cloud GPU becomes the primary by itself once its connect test passes (D116); the API keeps the full table below.
 
 | Condition | Action |
 | --- | --- |
@@ -750,8 +750,7 @@ clipmux listen   # forwards webhooks to a local URL
 | --- | --- | --- |
 | Store uploads in a bucket | An R2 token (from a pre-filled link) or S3 keys | Creates the R2 bucket if needed, checks it, and sends new uploads there; this server's disk can be chosen again (D110) |
 | Connect Cloudflare | One API token, from a link that pre-fills its permissions; the zone, hostname and bucket are picked from what it reaches | Creates the bucket, applies CORS, derives S3 credentials, deploys the Worker with the content key secret, moves the media hostname to it, then offers to move the library to R2 (D109) |
-| Connect my PC | Nothing | Shows a one-line `clipmux worker` command with a new agent key; the agent waits as `pending` until approved |
-| Connect Modal or RunPod | A concurrency limit and a monthly spend limit, then an approval on the provider's page (or a pasted key) | Checks the public server URL and registers the worker image |
+| Connect Modal or RunPod | The GPUs to rent (limits default to one machine and $50 a month, D111), then an approval on the provider's page (or a pasted key) | Checks the public server URL, registers the worker image, encodes a sample on it, then sends it new videos with this server as the fallback (D116) |
 | Create an app | A name | Creates the app with an API key, a signing key and a webhook secret, and shows the secrets once |
 
 Connect Cloudflare is a single card because R2 and the Worker share a bucket and a token. Cloudflare can [derive S3 credentials from an API token](https://developers.cloudflare.com/r2/api/tokens/): the access key is the token ID, and the secret is the SHA-256 of its value.

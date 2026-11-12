@@ -301,6 +301,16 @@ when you introduce or discover it; remove it when it is closed.
   from modal.com/pricing on 2026-11-12, since Modal has no price API; the
   spend estimate drifts when Modal changes its prices until the table is
   refreshed. The NVENC lists for both providers are hand-kept too.
+- The PC agent has left the dashboard (D116) but not the server: the
+  `agents` package, pairing (`/v1/agents/*`, `/worker/v1/pair*`),
+  `clipmux worker --server/--pair`, `push --local`, pinned jobs and the
+  `workers`/`agents` routing modes still exist, and `/workers/connect`
+  still approves a PC. A PC paired from the CLI takes jobs only while the
+  primary is `workers` (a fresh install's default) or `agents`; choosing
+  This server on Encoding writes `builtin`. Nothing in the dashboard lists
+  or revokes a PC any more (`DELETE /v1/agents/{id}` does). Removing the
+  backend, with a migration that drops the agent tables and makes
+  `builtin` the default primary, is the follow-up.
 
 ## SDK and agents (D112)
 

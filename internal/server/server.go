@@ -387,6 +387,9 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 	appPairings.Logger = logger
 	tests := setuptest.New(pool, set, box, b.urls, upl, life, cfg.SelfDial)
 	tests.Logger = logger
+	if cfg.BuiltinWorker {
+		tests.ProviderFallback = queue.RouteBuiltin
+	}
 	mgmt.Tests = tests
 	mgmt.Life = life
 	mgmt.Stores = set
