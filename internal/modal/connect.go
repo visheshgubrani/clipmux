@@ -144,7 +144,9 @@ func (c *Connector) settings(req Request) (Request, dispatch.Settings, error) {
 		RateCentsPerHour: req.RateCentsPerHour, DiskBytes: int64(req.DiskGB) << 30,
 	}
 	switch {
-	case req.Image == "" || !imageRef.MatchString(req.Image):
+	case req.Image == "":
+		return req, settings, fmt.Errorf("%w: this server has no default worker image (it was not built by CI); set CLIPMUX_WORKER_IMAGE or enter an image under Advanced", ErrInvalid)
+	case !imageRef.MatchString(req.Image):
 		return req, settings, fmt.Errorf("%w: image must be an image reference such as ghcr.io/owner/clipmux:tag", ErrInvalid)
 	case (req.RegistryUsername == "") != (req.RegistryPassword == ""):
 		return req, settings, fmt.Errorf("%w: registry_username and registry_password go together", ErrInvalid)
