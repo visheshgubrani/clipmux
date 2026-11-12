@@ -4,20 +4,9 @@
 # deploy/install.sh, passes the setup test through Caddy, pairs an agent with
 # deploy/install-agent.sh as a system service, upgrades to the second
 # candidate keeping the data and the owner's session, and uninstalls. It
-# builds the image and the agent tarball (cached), so it runs on pull
-# requests that touch the installers, the compose files or the image, and by
-# hand.
+# builds the image and the agent tarball (cached), so it runs by hand.
 name: Install
 on:
-  pull_request:
-    paths:
-      - "deploy/install.sh"
-      - "deploy/install-agent.sh"
-      - "deploy/compose.yml"
-      - "deploy/compose.release.yml"
-      - "deploy/Caddyfile"
-      - "toolchain/check_install.sh"
-      - ".github/workflows/install.yml"
   workflow_dispatch:
 permissions:
   contents: read

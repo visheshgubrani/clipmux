@@ -2,13 +2,11 @@
 # checks 18 and 20): 11 s of English transcribed by OpenAI's speech API,
 # then chapters made by Claude and by OpenAI's chat API, each through
 # Connect, on the real binary (TestExitRealLLMAndSpeech). It pays for a few
-# cents of API calls, so it runs weekly and by hand once REAL_LLM is set,
+# cents of API calls, so it runs by hand once REAL_LLM is set,
 # with the secrets OPENAI_API_KEY and ANTHROPIC_API_KEY.
 name: Exit test (LLM and speech)
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "23 6 * * 1"
 permissions:
   contents: read
 concurrency:

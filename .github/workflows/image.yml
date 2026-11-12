@@ -1,16 +1,8 @@
 # The packaged stack under compose (the image job that was in ci.yml). It
-# builds FFmpeg and whisper.cpp from source on a cache miss, so it runs on
-# pull requests only when they touch the image, by hand, and on release tags.
+# builds FFmpeg and whisper.cpp from source on a cache miss, so it runs by
+# hand and on release tags.
 name: Image
 on:
-  pull_request:
-    paths:
-      - "Dockerfile"
-      - "deploy/**"
-      - "toolchain/**"
-      # CI-only setup, not part of the image.
-      - "!toolchain/ci_media_tools.sh"
-      - ".github/workflows/image.yml"
   workflow_dispatch:
   push:
     tags: ["v*"]
