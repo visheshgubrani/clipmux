@@ -60,6 +60,12 @@ norm() {
 }
 diff <(norm "$here/deploy/compose.yml") <(norm "$here/deploy/compose.release.yml") || fail "the two compose files drifted apart"
 
+step "deploy/compose.proxy.yml takes Caddy out of either stack and nothing else"
+for f in compose.yml compose.release.yml; do
+	services=$(POSTGRES_PASSWORD=x CLIPMUX_SECRETS_KEY=x CLIPMUX_VERSION=x docker compose -f "$here/deploy/$f" -f "$here/deploy/compose.proxy.yml" config --services | sort | tr '\n' ' ')
+	[ "$services" = "app postgres " ] || fail "$f with the proxy override runs: $services"
+done
+
 # Each release as its GitHub Release would hold it.
 release() {
 	local v=$1 d=$work/releases/$1

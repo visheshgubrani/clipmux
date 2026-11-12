@@ -1415,3 +1415,18 @@ Decision:
 - **`GET /v1/app`** answers any valid key whatever its scopes (`apikeys.AnyScope`), beside the asset routes. `signing_keys` lists the keys that still verify tokens (not revoked, not past `retired_at`), with their public PEM, so `doctor` can check the private key it holds matches one of them. `scopes` is the key's own.
 - **The dashboard** gets `/connect` (pick an app or "New app…", which defaults to the CLI's name, an optional webhook URL, the code shown large so it can be matched) and a "Connect your app" panel with the `init` one-liner on Apps & API and on each app's page (not the built-in Dashboard app), where "Create credentials" shows the `.env` block once.
 Consequence: docs/api.md has an App pairing section and the new routes; docs/configuration.md lists the five app-side variables. An approval nobody collects leaves an API key and a signing key the owner revokes by hand (known gaps).
+
+## D114 The LMS cutover replaces clipmux-lms outright, on a shared host — accepted (2026-11-12)
+Context: P6-T19 sketched the cutover as a release candidate installed by the one-liner, a library import, a second LMS adapter and a soak with `clipmux-lms` read-only. The owner confirmed the LMS (Edural) has no users and no videos to keep, and that the instance runs on the existing VPS beside other production apps.
+Decision:
+- **No import, no soak, no rollback window.** `clipmux-lms` is switched off once the new instance passes its setup test. Its database is dumped once, then removed with its buckets, Worker and Modal app. P6 open questions 4 and 6 (the library's subtitles, the import's write rate) no longer apply.
+- **Hostnames (open question 5):**
+  - `app.clipmux.com` is the public URL (dashboard and API), DNS-only to the VPS;
+  - `media.clipmux.com` is the Worker's custom domain;
+  - `clipmux.com` stays free for the docs site;
+  - `api.clipmux.com` retires with the legacy stack.
+- **A shared host.** The VPS is arm64, with 2 vCPU and 4 GB, and its own Caddy serves every app on ports 80 and 443. ClipMux runs without its in-stack Caddy, through a proxy override (`deploy/compose.proxy.yml`), published on loopback. The built-in worker is off, and encoding and speech go to Modal with no fallback.
+- **Before a release.** It runs a `sha-{commit}` image from `main`. `image.yml` builds it for amd64 (Modal) and arm64 (the VPS). The registry credentials are pasted into Connect Modal until the package is public.
+- **Connect names the Worker after its hostname**, so this instance's Worker and D090's staging Worker share one Cloudflare account.
+- **The LMS replaces its adapter** rather than adding a second one beside it. Its plan is Edural's P36: Edural signs ES256 tokens with `vid`, and every playback ID is signed.
+Consequence: T19 doesn't wait for T07's release candidate or for T28. The launch exit's item 5 (the LMS through a soak window) is met by the LMS running in production on this instance, not by a timed soak.

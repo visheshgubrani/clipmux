@@ -1,0 +1,26 @@
+# ClipMux behind a reverse proxy you already run (a host Caddy, nginx or
+# Traefik that owns ports 80 and 443 for other sites). It overrides the
+# stack instead of replacing it: compose.release.yml (or compose.yml) stays
+# the source of truth, and this file only takes Caddy out.
+#
+#   docker compose -f compose.yml -f compose.proxy.yml up -d --wait
+#
+# Your proxy terminates TLS for the public hostname and forwards to the app
+# on 127.0.0.1:${CLIPMUX_ADMIN_PORT}; set that port in .env if 8080 is taken.
+# Keep the public hostname off any CDN proxy that challenges API clients
+# (docs/operations.md, "Behind your own proxy").
+services:
+  caddy:
+    # Never started: your proxy serves the public hostname.
+    profiles: [own-caddy]
+
+  app:
+    environment:
+      # The setup test dials the public URLs as a browser would, through
+      # your proxy, rather than through a Caddy container that isn't there.
+      CLIPMUX_SELF_DIAL: ""
+      # A small or shared host sends encoding to a provider (Modal, RunPod)
+      # or a PC agent: set false in .env to run no worker beside serve.
+      CLIPMUX_BUILTIN_WORKER: ${CLIPMUX_BUILTIN_WORKER:-true}
+      # Empty means the image this build names.
+      CLIPMUX_WORKER_IMAGE: ${CLIPMUX_WORKER_IMAGE:-}

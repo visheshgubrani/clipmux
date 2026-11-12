@@ -164,6 +164,10 @@ when you introduce or discover it; remove it when it is closed.
   them; the bucket loses the Worker's route records and keys, so the Worker
   refuses what it is asked. A route sync already in flight as delivery
   switches may write one record back; it names an ID that was live then.
+- Connecting Cloudflare to a new media hostname deploys a new Worker named
+  after it (D114). The previous hostname's Worker and custom domain stay in
+  the account, serving from route records the bucket no longer updates,
+  until the owner removes them in Cloudflare.
 - Analytics (D100, D103): edge counts reach `/v1/analytics` only once the
   owner connects edge analytics with a second, read-only Cloudflare token
   (P7-T05); until then `collecting.edge` says `not_connected`. Installs

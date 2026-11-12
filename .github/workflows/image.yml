@@ -15,12 +15,26 @@ jobs:
   image:
     # The packaged stack: the image builds (FFmpeg from source, cached),
     # starts under compose behind Caddy, confines its tools, and passes the
-    # setup test end to end. Run by hand on main (or on a tag), an image that
-    # passed is pushed to the private ghcr package as sha-{commit}, which
-    # serverless providers pull (D052, D058). It is never pushed as /server or
-    # /web (D006), and never from a pull request.
-    runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    # setup test end to end, on amd64 and on arm64. Run by hand on main (or
+    # on a tag), each architecture that passed is pushed to the private ghcr
+    # package, and the manifest job joins them as sha-{commit}: serverless
+    # providers pull its amd64 half (D052, D058), arm64 servers the other
+    # (D114). It is never pushed as /server or /web (D006), and never from a
+    # pull request.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: amd64
+            # The default scope, which agent.yml also reads.
+            cache: buildkit
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+            cache: image-arm64
+    runs-on: ${{ matrix.runner }}
+    # A cold FFmpeg build on arm64 takes most of this.
+    timeout-minutes: 120
     permissions:
       contents: read
       packages: write
@@ -41,8 +55,8 @@ jobs:
           build-args: |
             VERSION=${{ github.sha }}
             WORKER_IMAGE=${{ env.IMAGE }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=${{ matrix.cache }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.cache }}
       - name: Start app, Postgres and Caddy
         working-directory: deploy
         run: |
@@ -76,12 +90,12 @@ jobs:
       - name: The binary names its own image
         run: |
           docker run --rm --entrypoint grep clipmux:local -aqF "$IMAGE" /usr/local/bin/clipmux
-      - name: Push to the private package (main or a tag, never a pull request)
+      - name: Push this architecture to the private package (main or a tag, never a pull request)
         if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
         run: |
           echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-          docker tag clipmux:local "$IMAGE"
-          docker push "$IMAGE"
+          docker tag clipmux:local "$IMAGE-${{ matrix.arch }}"
+          docker push "$IMAGE-${{ matrix.arch }}"
       - name: A stop drains within the grace period
         run: |
           start=$(date +%s)
@@ -94,3 +108,22 @@ jobs:
         if: failure()
         # No deploy/.env means the stack never started (e.g. the build failed).
         run: '[ -f deploy/.env ] || exit 0; docker compose -f deploy/compose.yml logs'
+  manifest:
+    # sha-{commit} names both architectures, so one reference runs on Modal
+    # and RunPod (amd64) and on an arm64 server; Docker picks the right half.
+    needs: image
+    if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ghcr.io/visheshgubrani/clipmux:sha-${{ github.sha }}
+    steps:
+      - uses: docker/setup-buildx-action@v3
+      - name: Join amd64 and arm64 as sha-{commit}
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker buildx imagetools create -t "$IMAGE" "$IMAGE-amd64" "$IMAGE-arm64"
+          docker buildx imagetools inspect "$IMAGE" | tee /dev/stderr | grep -q 'linux/arm64'

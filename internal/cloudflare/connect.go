@@ -39,11 +39,22 @@ func WorkerVersion() string {
 // against (worker/src/workerd.test.ts).
 const CompatibilityDate = "2026-07-01"
 
-// Defaults the owner can leave alone.
-const (
-	DefaultBucket = "clipmux-media"
-	DefaultScript = "clipmux-media"
-)
+// DefaultBucket is the R2 bucket Connect creates when the owner names none.
+const DefaultBucket = "clipmux-media"
+
+// ScriptFor names the Worker after its media hostname, so installs that
+// share a Cloudflare account (production and staging, say) each deploy
+// their own Worker instead of overwriting one. Cloudflare caps script names
+// at 63 characters: a longer name keeps its start and a hash of the
+// hostname, so two long hostnames still differ.
+func ScriptFor(hostname string) string {
+	name := "clipmux-" + strings.ReplaceAll(hostname, ".", "-")
+	if len(name) <= 63 {
+		return name
+	}
+	sum := sha256.Sum256([]byte(hostname))
+	return strings.TrimRight(name[:54], "-") + "-" + hex.EncodeToString(sum[:4])
+}
 
 // AnalyticsDataset is the Analytics Engine dataset the Worker writes to.
 // Installs sharing an account share it; each data point names its project.
@@ -145,13 +156,21 @@ func (c *Connector) Connect(ctx context.Context, req Request) (Result, error) {
 	}
 
 	q := db.New(c.Pool)
+	prev, err := q.GetCloudflareConnection(ctx, c.ProjectID)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return Result{}, fmt.Errorf("cloudflare connection: %w", err)
+	}
+	connected := err == nil
 	makeDefault := req.DefaultStorage != nil && *req.DefaultStorage
 	if req.DefaultStorage == nil {
-		_, err := q.GetCloudflareConnection(ctx, c.ProjectID)
-		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-			return Result{}, fmt.Errorf("cloudflare connection: %w", err)
-		}
-		makeDefault = errors.Is(err, pgx.ErrNoRows)
+		makeDefault = !connected
+	}
+	// A reconnect to the same hostname redeploys the Worker it made before,
+	// whatever that one is called (installs connected before Workers were
+	// named per hostname share one fixed name).
+	script := ScriptFor(req.Hostname)
+	if connected && prev.Hostname == req.Hostname {
+		script = prev.ScriptName
 	}
 
 	cf := c.client(req.Token)
@@ -176,7 +195,7 @@ func (c *Connector) Connect(ctx context.Context, req Request) (Result, error) {
 		}
 		return "subscribed", err
 	}) && c.r2Store(ctx, cf, req.Token, tokenID, accountID, req.Bucket, step, &storageID) && step("worker", func() (string, error) {
-		return "version " + WorkerVersion(), cf.UploadWorker(ctx, accountID, DefaultScript, workerJS, CompatibilityDate, []Binding{
+		return "version " + WorkerVersion(), cf.UploadWorker(ctx, accountID, script, workerJS, CompatibilityDate, []Binding{
 			{Type: "r2_bucket", Name: "MEDIA", BucketName: req.Bucket},
 			{Type: "plain_text", Name: "ORIGIN_URL", Text: c.URLs.PublicURL()},
 			{Type: "secret_text", Name: "CONTENT_KEYS", Text: c.Keys.WorkerSecret()},
@@ -207,7 +226,7 @@ func (c *Connector) Connect(ctx context.Context, req Request) (Result, error) {
 		r, err := routes.Reconcile(ctx, q, d, bucketID, c.ProjectID)
 		return fmt.Sprintf("%d routes written; %s", r.Written, where), err
 	}) && step("dns", func() (string, error) {
-		attached, err := cf.DomainMatches(ctx, accountID, zoneID, req.Hostname, DefaultScript)
+		attached, err := cf.DomainMatches(ctx, accountID, zoneID, req.Hostname, script)
 		if err != nil {
 			return "", err
 		}
@@ -217,7 +236,7 @@ func (c *Connector) Connect(ctx context.Context, req Request) (Result, error) {
 		n, err := cf.ClearHostname(ctx, zoneID, req.Hostname)
 		return fmt.Sprintf("%d records at %s removed", n, req.Hostname), err
 	}) && step("domain", func() (string, error) {
-		return req.Hostname, cf.AttachDomain(ctx, accountID, zoneID, req.Hostname, DefaultScript)
+		return req.Hostname, cf.AttachDomain(ctx, accountID, zoneID, req.Hostname, script)
 	}) && step("media_url", func() (string, error) {
 		want := "https://" + req.Hostname
 		if c.URLs.URLs().Pinned {
@@ -232,7 +251,7 @@ func (c *Connector) Connect(ctx context.Context, req Request) (Result, error) {
 	}) && step("saved", func() (string, error) {
 		_, err := q.SaveCloudflareConnection(ctx, db.SaveCloudflareConnectionParams{
 			ProjectID: c.ProjectID, AccountID: accountID, ZoneID: zoneID, Hostname: req.Hostname, Bucket: req.Bucket,
-			ScriptName: DefaultScript, TokenID: tokenID, StorageID: storageID, WorkerVersion: WorkerVersion(),
+			ScriptName: script, TokenID: tokenID, StorageID: storageID, WorkerVersion: WorkerVersion(),
 		})
 		return "the token itself is not kept; its Workers and DNS permissions stay live in Cloudflare", err
 	})

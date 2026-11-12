@@ -30,6 +30,38 @@ echo "v1:$(openssl rand -hex 32)"
 
 Store it outside the host as well as in `deploy/.env` (see Backups).
 
+### Behind your own proxy
+
+On a host where another proxy already owns ports 80 and 443 (a host Caddy
+serving other sites, say), add `deploy/compose.proxy.yml`. It leaves Caddy
+out and has the setup test dial the public URLs through your proxy:
+
+```bash
+docker compose -f deploy/compose.yml -f deploy/compose.proxy.yml up -d --build --wait
+```
+
+- **Port.** The app listens on `127.0.0.1:${CLIPMUX_ADMIN_PORT}` (8080 by
+  default; set another in `.env` if it's taken). Point your proxy at it:
+
+  ```caddyfile
+  video.example.com {
+      reverse_proxy 127.0.0.1:8108
+  }
+  ```
+
+- **Client addresses.** `CLIPMUX_TRUSTED_PROXIES` already trusts Docker's
+  ranges, which is where a proxy on the host connects from. Your proxy must
+  set `X-Forwarded-For` and `X-Forwarded-Proto`; Caddy, nginx's usual
+  config and Traefik do.
+- **No CDN proxy on the public hostname.** Point its DNS straight at the
+  host (DNS only on Cloudflare). A proxy that challenges API clients
+  (Cloudflare's Browser Integrity Check) refuses `@clipmux/node`, the CLI
+  and workers, and it hides the client's address. Playback goes through the
+  media hostname, which can be the Cloudflare Worker.
+- **Small or shared hosts.** Set `CLIPMUX_BUILTIN_WORKER=false` in `.env`,
+  and connect Modal, RunPod or a PC agent, so encoding doesn't compete with
+  the host's other services. The setup test then runs on that executor.
+
 ## Upgrade
 
 ```bash

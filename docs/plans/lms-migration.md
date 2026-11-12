@@ -1,39 +1,54 @@
-# LMS migration gate
+# LMS migration
 
-The LMS (private `visheshgubrani/LMS`) moves from `clipmux-lms` to ClipMux once
-ClipMux reaches Phase 2 (core + Cloudflare delivery) **and** every item below is
-met. Then `clipmux-lms` retires.
+The LMS (private `visheshgubrani/LMS`, the product Edural on edural.com) moves
+from `clipmux-lms` to ClipMux. Since D114 this is a replacement, not a
+migration: the LMS has no users and no videos to keep. `clipmux-lms` is
+switched off once the new instance passes its setup test.
 
-## What the LMS uses today (verified 2026-11-05)
+The LMS side is Edural's phase P36 (`docs/plans/P36-clipmux-go.md` in the LMS
+repository). It holds the flow-by-flow mapping from the old API to this one.
 
-- One server adapter: `server/src/utils/clipmux.ts` + `clipmuxTranscription.ts`,
-  configured by `CLIPMUX_API_URL` / `CLIPMUX_API_KEY`.
-- Browser uploads through vendored `@clipmux/uploader` 0.2.0; playback through
-  vendored `@clipmux/player` 0.2.0 (`client/vendor`, `dogfood-client/vendor`).
-- One webhook, `POST /api/v1/callback/clipmux`, HMAC over `${ts}.${body}`; event
-  names are ignored — it re-fetches the video. A 60 s reconciliation job does the same.
-- All academies share one clipmux organization; tenant separation lives in the
-  LMS through `correlation_ref` (the LMS upload-attempt ID).
+## What the LMS uses (verified 2026-11-12)
 
-## Gate
+- One server adapter, `api/src/integrations/clipmux.ts`. Only the media
+  module imports it. Today it is configured by `CLIPMUX_API_URL`,
+  `CLIPMUX_API_KEY` and `CLIPMUX_WEBHOOK_SECRET`.
+- Vendored `@clipmux/uploader` 0.2.0 and `@clipmux/player` 0.2.0 (Vidstack),
+  packed from a `clipmux-lms` commit by `scripts/bundle-clipmux.sh`.
+- One webhook, `POST /api/v1/hooks/clipmux`, with HMAC over `${ts}.${body}`
+  (the same scheme and `X-Webhook-*` headers ClipMux's webhooks use). Event names are ignored, and the video is
+  re-fetched. A one-minute reconcile job does the same.
+- One organization for all academies. Tenant separation lives in the LMS,
+  through the upload-attempt ID, which becomes `passthrough`.
 
-| LMS need | ClipMux equivalent | Status |
-| --- | --- | --- |
-| Single-file signed upload token tied to an LMS record | `POST /v1/uploads` with `passthrough` + `upload_token` | Phase 1 |
-| Find a video by LMS reference (recovery) | `GET /v1/assets?passthrough=` | Phase 1 (T05) |
-| Signed HLS, renewable in the player | App backend signs ES256 tokens; `@clipmux/player` (Video.js) `getToken()` | Phase 1 — LMS signs tokens itself instead of calling `/playback-token`, and swaps its vendored Vidstack player for the Video.js one |
-| Webhook trigger + re-fetch | Outbox webhooks + `GET /v1/assets/{id}` | Phase 1 |
-| Delete a video | `DELETE /v1/assets/{id}` | Phase 1 |
-| Auto subtitles, chapters, transcript VTT (feed AI summary/quiz/chat) | `"generate": {"subtitles", "chapters"}` at upload; whisper.cpp subtitles as a track (HLS and sidecar VTT); transcript JSON with ms segments; LLM chapters | Phase 5 ([P5-production.md](P5-production.md), D063), proven by a parity contract test |
-| Edge delivery at today's scale | Cloudflare Worker + R2 | Phase 2 |
-| Existing library | Import from URL from clipmux-lms R2 (or a one-off copy job) | Phase 2 |
+## What it needs from ClipMux
 
-## Cutover sketch
+| LMS need | ClipMux equivalent |
+| --- | --- |
+| A signed upload tied to an LMS record | `POST /v1/uploads` with `passthrough`, created by the LMS server; the browser sends the bytes with `@clipmux/uploader` 0.4.0 |
+| Find a video by LMS reference | `GET /v1/assets?passthrough=` |
+| Signed HLS, renewable in the player | The LMS signs ES256 tokens with `vid` (`@clipmux/node` `playback.session`); `<clipmux-player>` 0.5.0 renews through `getToken` |
+| A webhook trigger, then a re-fetch | Asset webhooks + `GET /v1/assets/{id}` |
+| Delete a video | `DELETE /v1/assets/{id}` |
+| Subtitles, chapters, transcript for the AI features | `generate: {subtitles, chapters}`; the transcript at `GET /v1/assets/{id}/tracks/{tid}/transcript` |
+| Edge delivery | The Cloudflare Worker on `media.clipmux.com`, R2 storage |
+| Encoding | Modal, with no fallback (the host is too small for the built-in worker) |
 
-1. Create an App for the LMS; store its API key, signing key and webhook secret in LMS env.
-2. Add a second adapter in the LMS behind the same interface; new uploads go to ClipMux.
-3. Import the existing library; map old video IDs to new asset/playback IDs by `passthrough`.
-4. Switch playback; keep clipmux-lms read-only for a rollback window; then retire it
-   and move `clipmux.com` hostnames as planned in [P6-launch.md](P6-launch.md)
-   (T19, before the public launch, D087).
-5. Update the LMS `vendor/manifest.json` source URLs (they still name the old repo).
+## Cutover (D114)
+
+1. **ClipMux prerequisites:**
+   - an amd64 and arm64 `sha-` image from `main`;
+   - the proxy override `deploy/compose.proxy.yml`;
+   - Connect naming the Worker after its hostname.
+2. **Install.** On the VPS, beside the legacy stack, behind the host's Caddy at `app.clipmux.com` (DNS-only). Then the owner and the URLs.
+3. **Connect.** Detach the legacy Worker from `media.clipmux.com`, then Connect Cloudflare there with a new bucket. Connect Modal, then an LLM for chapters. The setup test passes.
+4. **Credentials.** `clipmux admin create-integration --app edural --webhook-url https://api.edural.com/api/v1/hooks/clipmux`, into the LMS's `api.env` only.
+5. **The LMS.** It ships P36 and passes its end-to-end checks.
+6. **Remove `clipmux-lms`:**
+   - its stack, after a final dump;
+   - its Caddy blocks;
+   - its Worker and buckets;
+   - its Modal app;
+   - its queues, analytics and OAuth apps.
+
+   Keep `uploads.clipmux.com`: it is the LMS's own file bucket, not video.

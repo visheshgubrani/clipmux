@@ -38,6 +38,13 @@ the DNS records at the hostname, attaches the Worker as a custom domain, and
 runs the setup test through it. Each step is safe to repeat: fix what failed
 and connect again.
 
+The Worker is named after its hostname: `media.example.com` deploys
+`clipmux-media-example-com` (D114). Two installs can share one Cloudflare
+account, a production and a staging instance say, without overwriting each
+other's Worker. A reconnect to the same hostname redeploys the Worker it
+made before, so an install connected under the old fixed name
+`clipmux-media` keeps it.
+
 ClipMux keeps only the token's ID. Because R2's credentials derive from the
 token, **revoking or rolling it cuts off storage**; the Delivery page then
 shows *Reconnect Cloudflare*. The token's Workers and DNS permissions stay

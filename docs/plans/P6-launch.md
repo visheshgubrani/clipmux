@@ -205,7 +205,8 @@ Order:
   T16 and T17 (rescoped) after T28.
 - **T19** after T02, Track E, a release candidate from T07 and T08, and the Phase 7
   exit ([P7-sharing-analytics.md](P7-sharing-analytics.md), D102), so the
-  candidate carries share links and analytics.
+  candidate carries share links and analytics. D114 drops the release
+  candidate and Track E from this: T19 runs on a `sha-` image from `main`.
 - **T20** last.
 
 | Task | Scope | Port from |
@@ -228,7 +229,7 @@ Order:
 | T16 | **Integrator docs** (rescoped, D112): the quickstart is the four steps (`init`, one route file, two elements, three callbacks); token signing and webhook verification snippets in Python, Go and PHP under `docs/snippets/`, each tested in CI against both vector files; `docs/api.md` with a request and a response for every route; `llms.txt` and `llms-full.txt` from the docs and the spec (with T15). | `docs/api.md`, D015, D036 |
 | T17 | **Agent skills** `clipmux-integrate` and `clipmux-player` (rescoped, D112): the SDK path, `doctor`, and each error code with what to do; skill-creator evals against `skills/evals/lms-starter` (exit check 7). | — |
 | T18 | **Operator docs** for the release image and the installers: install, upgrade between releases, uninstall, the agent one-liner, and `docs/agents.md` without "until launch". | `docs/operations.md`, `docs/agents.md` |
-| T19 | **The LMS cutover**, as `lms-migration.md`'s sketch: install the LMS's instance with the one-liner on a release candidate; create its App; add the second adapter in the LMS; import the library (open questions 4 and 6); switch playback, with the LMS signing `vid` so unique viewers count (P7 open question 1); keep `clipmux-lms` read-only through the soak window; retire it, and move the `clipmux.com` hostnames (open question 5). | `lms-migration.md` |
+| T19 | **Rescoped (D114)**: the legacy `clipmux-lms` is replaced outright on the shared VPS (no import or soak), behind the host's Caddy, with Modal encoding and an amd64+arm64 `sha-` image; the LMS side is Edural's P36. Original scope: **The LMS cutover**, as `lms-migration.md`'s sketch: install the LMS's instance with the one-liner on a release candidate; create its App; add the second adapter in the LMS; import the library (open questions 4 and 6); switch playback, with the LMS signing `vid` so unique viewers count (P7 open question 1); keep `clipmux-lms` read-only through the soak window; retire it, and move the `clipmux.com` hostnames (open question 5). | `lms-migration.md` |
 | T21 | **done (D112)** — D112; AGENTS.md's package list and `examples/`; the webhook vectors `internal/webhooks/testdata/vectors.json`. | — |
 | T22 | **done (D112)** — **OpenAPI spec** `internal/openapi/openapi.json` (OpenAPI 3.1; JSON, so the standard library reads it): the integration API, delivery URLs, `GET /v1/app`, the public app-pairing routes, `webhooks:`, and each operation's error codes. Embedded and served at `GET /openapi.json` without auth. Go test: every spec operation is routed (401/403 unauthenticated, never 404/405), and every row of `docs/api.md`'s Integration table is in the spec. | `docs/api.md` |
 | T23 | **done (D113)** — **Server for the SDK:** `GET /v1/app` (any API key: app, scopes, URLs, the maximum token lifetime, signing kids with public keys); the credentials bundle (an API key, a signing key, an optional webhook endpoint, one transaction, D108's loopback rule) through `POST /v1/apps/{id}/credentials`, `clipmux admin create-integration` and app pairing (`/v1/app-pairings`, a device flow like agent pairing, sealed until one collecting poll, 10 minutes, D067's limits); the dashboard's `/connect` page and "Connect your app" panel. Tests on real Postgres and in Playwright. | `internal/agents` pairing |

@@ -46,6 +46,7 @@ type fakeCloudflare struct {
 	buckets  map[string]bool
 	records  []DNSRecord
 	script   []byte
+	scripts  []string // names of every Worker uploaded, in order
 	metadata map[string]any
 	domain   map[string]string
 }
@@ -110,7 +111,8 @@ func (f *fakeCloudflare) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewDecoder(r.Body).Decode(&b)
 		f.buckets[b["name"]] = true
 		ok(map[string]any{})
-	case p == "/accounts/acct1/workers/scripts/clipmux-media" && r.Method == http.MethodPut:
+	case strings.HasPrefix(p, "/accounts/acct1/workers/scripts/") && r.Method == http.MethodPut:
+		f.scripts = append(f.scripts, strings.TrimPrefix(p, "/accounts/acct1/workers/scripts/"))
 		_, params, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
 		mr := multipart.NewReader(r.Body, params["boundary"])
 		for {
@@ -232,7 +234,7 @@ func TestConnectMovesDeliveryToTheWorker(t *testing.T) {
 	if len(r.fake.records) != 1 || r.fake.records[0].Name != "www.example.com" {
 		t.Fatalf("dns records left = %+v", r.fake.records)
 	}
-	if r.fake.domain["hostname"] != "media.example.com" || r.fake.domain["service"] != "clipmux-media" || r.fake.domain["zone_id"] != "zone1" {
+	if r.fake.domain["hostname"] != "media.example.com" || r.fake.domain["service"] != "clipmux-media-example-com" || r.fake.domain["zone_id"] != "zone1" {
 		t.Fatalf("domain = %v", r.fake.domain)
 	}
 	// Delivery, default storage and the media URL all moved.
@@ -310,6 +312,33 @@ func TestConnectLeavesTheUploadStoreToTheOwner(t *testing.T) {
 	}
 	if def, _ := fresh.pool.GetDefaultStorage(ctx, db.DefaultProjectID); def.Kind != "fs" {
 		t.Fatalf("default_storage false still moved new uploads to %s", def.Kind)
+	}
+}
+
+// Workers are named after their hostname (D114), so two installs in one
+// account don't overwrite each other's; a reconnect keeps the name the
+// connection was saved with, including the fixed name installs used before.
+func TestConnectNamesTheWorkerAfterItsHostname(t *testing.T) {
+	ctx := context.Background()
+	r := newRig(t)
+	if res, err := r.conn.Connect(ctx, Request{Token: testToken, Hostname: "media.example.com", Bucket: r.bucket}); err != nil || !res.Connected {
+		t.Fatalf("connect: %+v, %v", res.Steps, err)
+	}
+	if _, err := r.raw.Exec(ctx, `UPDATE cloudflare_connections SET script_name = 'clipmux-media'`); err != nil {
+		t.Fatal(err)
+	}
+	if res, err := r.conn.Connect(ctx, Request{Token: testToken, Hostname: "media.example.com", Bucket: r.bucket}); err != nil || !res.Connected {
+		t.Fatalf("reconnect: %+v, %v", res.Steps, err)
+	}
+	if res, err := r.conn.Connect(ctx, Request{Token: testToken, Hostname: "edge.example.com", Bucket: r.bucket}); err != nil || !res.Connected {
+		t.Fatalf("connect elsewhere: %+v, %v", res.Steps, err)
+	}
+	if got := strings.Join(r.fake.scripts, ","); got != "clipmux-media-example-com,clipmux-media,clipmux-edge-example-com" {
+		t.Fatalf("Workers uploaded = %s", got)
+	}
+	row, err := r.pool.GetCloudflareConnection(ctx, db.DefaultProjectID)
+	if err != nil || row.ScriptName != "clipmux-edge-example-com" || r.fake.domain["service"] != "clipmux-edge-example-com" {
+		t.Fatalf("saved script = %q, %v; domain = %v", row.ScriptName, err, r.fake.domain)
 	}
 }
 
