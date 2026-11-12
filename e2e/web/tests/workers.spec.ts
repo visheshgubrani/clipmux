@@ -93,10 +93,13 @@ test('the owner connects RunPod, chooses it once checked, and sees why each job 
   // ready, and choosing it puts this server behind it.
   expect((await request.post('/verify-runpod')).status()).toBe(204)
   await go(page, 'Encoding')
+  await page.reload()
   await expect(runpod).toContainText('Ready')
   await where.getByRole('radio', { name: 'RunPod' }).click()
   await expect(where.getByRole('radio', { name: 'RunPod' })).toBeChecked()
-  const fallback = page.getByLabel('If RunPod can’t start a machine, encode on this server instead')
+  const fallback = page.getByRole('checkbox', {
+    name: 'If RunPod can’t start a machine, encode on this server instead',
+  })
   await expect(fallback).toBeChecked()
   await fallback.click()
   await expect(fallback).not.toBeChecked()
