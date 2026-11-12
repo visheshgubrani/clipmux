@@ -34,7 +34,7 @@ func TestOpenAPIOperationsAreRouted(t *testing.T) {
 	if len(ops) < 30 {
 		t.Fatalf("only %d operations in the spec", len(ops))
 	}
-	base := startServe(t)
+	base, client := startServe(t)
 	for _, op := range ops {
 		path := pathParam.ReplaceAllStringFunc(op.Path, func(p string) string {
 			if p == "{token}" {
@@ -51,7 +51,7 @@ func TestOpenAPIOperationsAreRouted(t *testing.T) {
 			t.Fatal(err)
 		}
 		req.Header.Set("Content-Type", "application/json")
-		res, err := http.DefaultClient.Do(req)
+		res, err := client.Do(req)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -131,8 +131,13 @@ func TestOpenAPICoversTheDocumentedIntegrationRoutes(t *testing.T) {
 }
 
 // startServe runs serve on a free port against a fresh schema and returns
-// its base URL; it stops when the test ends.
-func startServe(t *testing.T) string {
+// its base URL and a client for it; it stops when the test ends.
+//
+// The client keeps no connections: a pooled transport can dial a spare
+// connection it never sends on, and Shutdown waits up to 5 s for such a
+// connection's first request (golang.org/issue/22682), which made this
+// test's stop deadline flaky.
+func startServe(t *testing.T) (string, *http.Client) {
 	t.Helper()
 	pool := dbtest.New(t)
 	store, err := storage.OpenFilesystem(t.TempDir(), storage.FilesystemOptions{BaseURL: "http://localhost"})
@@ -158,12 +163,13 @@ func startServe(t *testing.T) string {
 		}
 	})
 	base := "http://" + ln.Addr().String()
+	client := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
 	for i := 0; ; i++ {
-		res, err := http.Get(base + "/readyz")
+		res, err := client.Get(base + "/readyz")
 		if err == nil {
 			res.Body.Close()
 			if res.StatusCode == http.StatusOK {
-				return base
+				return base, client
 			}
 		}
 		if i == 100 {
