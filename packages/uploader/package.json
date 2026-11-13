@@ -46,7 +46,7 @@
     "test": "node --test src/*.test.ts"
   },
   "peerDependencies": {
-    "@types/react": ">=19"
+    "@types/react": ">=18"
   },
   "peerDependenciesMeta": {
     "@types/react": {

@@ -81,7 +81,7 @@ For another player, `rewriteTokenUrl`, `TokenSession` and `createRefreshLoader`
 
 They bubble and are typed on `HTMLElementEventMap`, so
 `player.addEventListener('clipmux-chapters', (e) => e.detail.chapters)` needs
-no cast. For React 19, import the JSX types once; they type the attributes,
+no cast. For React (18 or 19), import the JSX types once; they type the attributes,
 the `token`/`getToken`/`hls` properties and `onclipmux-*` handlers, and add no
 React dependency:
 
@@ -142,6 +142,12 @@ export async function playbackToken(playbackId: string): Promise<string> {
 A public playback ID needs no token: set `playback-id` and leave `getToken`
 unset. The full contract, including posters and the maximum lifetime, is the
 Delivery section of [docs/api.md](https://github.com/visheshgubrani/clipmux/blob/main/docs/api.md#delivery).
+
+## TypeScript
+
+The element's types come with the package. Video.js 10.2's own declaration
+files don't all type-check, so keep `"skipLibCheck": true` (the default in
+most templates) in a project that imports the element.
 
 ## Content-Security-Policy
 

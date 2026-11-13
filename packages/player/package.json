@@ -51,7 +51,7 @@
     "hls.js": "1.6.19"
   },
   "peerDependencies": {
-    "@types/react": ">=19"
+    "@types/react": ">=18"
   },
   "peerDependenciesMeta": {
     "@types/react": {

@@ -43,11 +43,14 @@ Fixed before release:
 - The chapter type is `PlayerChapter` (seconds); `Chapter` is a deprecated
   alias.
 - Content-Security-Policy guidance in the README.
+- Installs next to `@types/react` 18 (the optional peer was `>=19`, which
+  npm refused).
 
 ### @clipmux/uploader 0.5.0
 
 - A given `upload` without `upload_token` is refused at once instead of
   sending `Bearer undefined`.
+- Installs next to `@types/react` 18.
 - Content-Security-Policy guidance in the README.
 
 ### Server

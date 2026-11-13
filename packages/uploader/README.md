@@ -35,7 +35,7 @@ resumes it.
   custom properties `--clipmux-uploader-accent`, `-border`, `-radius`,
   `-background`, `-color` and `-font`, and the default slot for the drop
   zone's text.
-- **React 19:** `import type {} from '@clipmux/uploader/react'` types the
+- **React 18 or 19:** `import type {} from '@clipmux/uploader/react'` types the
   element in JSX, including `onclipmux-uploaded`, with no React dependency.
 
 The same without the element:
