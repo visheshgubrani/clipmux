@@ -55,12 +55,20 @@ type Object struct {
 	ETag string
 }
 
+// PartLength is part n's length in an upload of size bytes split into
+// partSize parts: partSize, except the last, which holds the rest. A part
+// URL is signed for it (PresignPart).
+func PartLength(size, partSize int64, n int) int64 {
+	return min(partSize, size-int64(n-1)*partSize)
+}
+
 // Storage is the narrow interface every storage backend implements.
 type Storage interface {
 	// CreateMultipart starts an upload of exactly size bytes to key.
 	CreateMultipart(ctx context.Context, key string, size int64) (Multipart, error)
-	// PresignPart returns a URL a browser can PUT one part to.
-	PresignPart(ctx context.Context, key, uploadID string, part int, ttl time.Duration) (string, error)
+	// PresignPart returns a URL a browser can PUT one part of exactly size
+	// bytes to; a body of any other length is refused (D122).
+	PresignPart(ctx context.Context, key, uploadID string, part int, size int64, ttl time.Duration) (string, error)
 	ListParts(ctx context.Context, key, uploadID string) ([]Part, error)
 	CompleteMultipart(ctx context.Context, key, uploadID string, parts []Part) error
 	AbortMultipart(ctx context.Context, key, uploadID string) error

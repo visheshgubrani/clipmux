@@ -273,7 +273,7 @@ func (s *Service) SignParts(ctx context.Context, up db.Upload, numbers []int) (S
 	}
 	out := Signed{Parts: make([]SignedPart, 0, len(numbers)), ExpiresAt: time.Now().Add(s.PartURLTTL).UTC()}
 	for _, p := range slices.Compact(slices.Sorted(slices.Values(numbers))) {
-		url, err := store.PresignPart(ctx, sourceKey(up.AssetID), up.MultipartID, p, s.PartURLTTL)
+		url, err := store.PresignPart(ctx, sourceKey(up.AssetID), up.MultipartID, p, storage.PartLength(up.DeclaredSize, up.PartSize, p), s.PartURLTTL)
 		if err != nil {
 			return Signed{}, err
 		}

@@ -846,7 +846,7 @@ func (a *API) sourceParts(w http.ResponseWriter, r *http.Request) {
 			httpjson.Error(w, http.StatusBadRequest, "invalid_part", fmt.Sprintf("part %d is outside 1 to %d", n, count))
 			return
 		}
-		u, err := store.PresignPart(r.Context(), key, up.UploadID, n, sourceURLTTL)
+		u, err := store.PresignPart(r.Context(), key, up.UploadID, n, storage.PartLength(up.Size, up.PartSize, n), sourceURLTTL)
 		if err != nil {
 			a.internal(w, "sign part", err)
 			return

@@ -1497,3 +1497,11 @@ Decision:
 - **Wrong setup tokens are limited per address only.** The token is 130 bits, so the global limit only let others lock the installer out.
 - **Pairing keeps its global 100 per 15 minutes**: its code is about 39 bits, and an owner locked out of pairing for 15 minutes can still run `clipmux admin create-pairing`.
 Consequence: amends D024's "20 overall" and D067's setup-token limit. An owner on a new device during an attack still waits out the window; they can sign in from a device they used before, or reset the password on the host.
+
+## D122 A part URL binds the part's length — accepted (2026-11-14)
+Context: the security review's finding 5. On R2 and S3, a part URL didn't bind the part's length, so a holder of an upload token could PUT up to 5 GiB per part; complete then failed, but the bytes stayed until the upload was aborted.
+Decision:
+- **`Storage.PresignPart` takes the part's `size`.** The S3 adapter sets `ContentLength`, which the SDK's signer adds to `X-Amz-SignedHeaders`, so the store refuses a body of any other length (403). It refuses a size outside 1 byte to `PartSize`, since S3 doesn't keep the declared size. The filesystem adapter refuses a size other than the part's own and, as before, a body of any other length.
+- **Callers compute it** with `storage.PartLength`: the part size, except the last part, which holds the rest. `POST /v1/uploads/{id}/parts` and the worker API's source parts both do.
+- Browsers and Go's client send `Content-Length` themselves, so no client changes; CORS needs nothing, since `Content-Length` isn't an author header.
+Consequence: amends D034's "the declared size is ignored" for signing: parts are still 32 MiB, and each URL now carries its length.

@@ -225,7 +225,7 @@ func TestContractMultipartResumesAndCompletes(t *testing.T) {
 			t.Fatalf("CreateMultipart = %+v, %v; want part size %d", mp, err, s.partSize)
 		}
 		put := func(n int) {
-			u, err := s.PresignPart(ctx, key, mp.UploadID, n, 15*time.Minute)
+			u, err := s.PresignPart(ctx, key, mp.UploadID, n, int64(len(partBody(src, s.partSize, n))), 15*time.Minute)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -362,7 +362,7 @@ func TestS3BucketCORSAllowsBrowserPartUploads(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	u, err := store.PresignPart(ctx, "uploads/f/source", mp.UploadID, 1, time.Hour)
+	u, err := store.PresignPart(ctx, "uploads/f/source", mp.UploadID, 1, 10, time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -388,4 +388,36 @@ func TestS3BucketCORSAllowsBrowserPartUploads(t *testing.T) {
 	if !strings.Contains(strings.ToLower(res.Header.Get("Access-Control-Expose-Headers")), "etag") {
 		t.Fatalf("PUT exposes %q, want ETag", res.Header.Get("Access-Control-Expose-Headers"))
 	}
+}
+
+// A part URL binds the part's length: a holder of an upload token can't
+// park gigabytes in a part that complete would refuse anyway (finding 5).
+func TestContractPartURLBindsItsLength(t *testing.T) {
+	eachStore(t, func(t *testing.T, s contractStore) {
+		ctx := context.Background()
+		key := "uploads/len/source"
+		src := []byte("0123456") // one part on every store
+		mp, err := s.CreateMultipart(ctx, key, int64(len(src)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.PresignPart(ctx, key, mp.UploadID, 1, s.partSize+1, time.Minute); !errors.Is(err, ErrInvalidParts) {
+			t.Fatalf("PresignPart larger than a part = %v, want ErrInvalidParts", err)
+		}
+		u, err := s.PresignPart(ctx, key, mp.UploadID, 1, int64(len(src)), time.Minute)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, body := range [][]byte{append(slices.Clone(src), 'x'), src[:len(src)-1]} {
+			if code := send(t, http.MethodPut, u, body, nil); code < 400 {
+				t.Fatalf("PUT %d bytes to a %d-byte part: HTTP %d, want refused", len(body), len(src), code)
+			}
+		}
+		if parts, err := s.ListParts(ctx, key, mp.UploadID); err != nil || len(parts) != 0 {
+			t.Fatalf("ListParts after refused PUTs = %+v, %v; want none", parts, err)
+		}
+		if code := send(t, http.MethodPut, u, src, nil); code != http.StatusOK {
+			t.Fatalf("PUT the right length: HTTP %d", code)
+		}
+	})
 }
