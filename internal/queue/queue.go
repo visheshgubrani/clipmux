@@ -175,7 +175,8 @@ type Worker struct {
 	// LocalOnly agents claim only jobs pinned to them.
 	LocalOnly bool
 	// Untrusted agents run their tools unsandboxed, so they claim only jobs
-	// pinned to them and the owner's own (Dashboard app) uploads.
+	// pinned to them and the owner's own (Dashboard app) uploads, never a
+	// URL import (D123).
 	Untrusted bool
 	// DispatchID and JobID are set for a serverless machine's one-time key
 	// (D054): it claims that dispatch's job and nothing else.

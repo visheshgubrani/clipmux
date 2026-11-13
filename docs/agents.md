@@ -166,7 +166,8 @@ and, for CUDA's internal IPC, local `SOCK_SEQPACKET` sockets; never a
 network socket.
 An agent where the sandbox can't hold (not Linux, an old kernel) refuses to
 start unless you pass `--unsandboxed`. It then takes only jobs pinned to it
-and your own uploads, never an app's public uploads.
+and the files you upload in the dashboard, never an app's public uploads or
+a file imported from a URL.
 
 ## Check a PC
 

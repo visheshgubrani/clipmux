@@ -1505,3 +1505,11 @@ Decision:
 - **Callers compute it** with `storage.PartLength`: the part size, except the last part, which holds the rest. `POST /v1/uploads/{id}/parts` and the worker API's source parts both do.
 - Browsers and Go's client send `Content-Length` themselves, so no client changes; CORS needs nothing, since `Content-Length` isn't an author header.
 Consequence: amends D034's "the declared size is ignored" for signing: parts are still 32 MiB, and each URL now carries its length.
+
+## D123 The Dashboard app takes no API keys; unsandboxed agents take no URL imports — accepted (2026-11-14)
+Context: the security review's finding 3. An unsandboxed agent claims pinned jobs and "owner jobs", which `job_claimable_by` (00024) defined as the Dashboard app's. But an API key for the Dashboard app, or an import from any URL, could create those, so a file from anywhere could reach ffmpeg on the owner's unconfined PC.
+Decision:
+- **The routes that issue keys refuse the built-in app with `409 builtin_app`:** `POST /v1/apps/{id}/api-keys`, `POST /v1/apps/{id}/credentials`, and approving an app pairing for it (`apppairings.Issue`). `apikeys.Create` itself doesn't check, so tests can still act as that app.
+- **Migration 00035 revokes the keys the built-in app already has**, and redefines `job_claimable_by` so an untrusted worker's owner jobs exclude any asset with an `import` job. Its Down restores the old function and leaves the keys revoked.
+- So the owner's jobs are what the owner uploaded in the dashboard or pinned to the agent. The owner's session acting as an app (D025) still works.
+Consequence: amends D043's "owner jobs" and D025: an integration needs its own app. The deploy checks production's built-in-app keys before migrating, since 00035 revokes them.
