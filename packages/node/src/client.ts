@@ -39,6 +39,12 @@ export interface ClipMuxOptions {
   timeoutMs?: number
 }
 
+/**
+ * What uploads.create returns: the upload with its token and `endpoint`,
+ * the object `new ClipMuxUpload(file, { upload })` takes as it is.
+ */
+export type CreatedUpload = api.Upload & { upload_token: string; endpoint: string }
+
 /** What a player needs to play one playback ID: the session-url answer. */
 export interface PlaybackSession {
   playback_id: string
@@ -135,9 +141,19 @@ export class ClipMux {
        * `@clipmux/uploader`; it carries `endpoint`, so the browser needs no
        * other configuration, and its token reaches only this upload.
        */
-      create: async (body: api.CreateUpload, o: { idempotencyKey?: string } = {}) => {
+      create: async (body: api.CreateUpload, o: { idempotencyKey?: string } = {}): Promise<CreatedUpload> => {
         const r = await h.request<api.Upload>({ method: 'POST', path: '/v1/uploads', body, ...o })
-        return { ...r.body, endpoint: h.baseUrl.replace(/\/+$/, '') }
+        // A replay of an idempotency key whose upload has since completed,
+        // been cancelled or expired carries no token: nothing can be sent.
+        if (!r.body.upload_token) {
+          throw new ClipMuxError(
+            r.status,
+            'upload_not_active',
+            'this idempotency key made an upload that is no longer active, so it has no upload_token',
+            'POST /v1/uploads',
+          )
+        }
+        return { ...r.body, upload_token: r.body.upload_token, endpoint: h.baseUrl.replace(/\/+$/, '') }
       },
       /** Cancels an upload; its asset becomes `errored` / `upload_cancelled`. */
       cancel: async (uploadId: string) =>

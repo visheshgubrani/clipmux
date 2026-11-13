@@ -248,6 +248,9 @@ importers:
 
   e2e/web:
     dependencies:
+      '@clipmux/node':
+        specifier: workspace:*
+        version: link:../../packages/node
       '@clipmux/player':
         specifier: workspace:*
         version: link:../../packages/player

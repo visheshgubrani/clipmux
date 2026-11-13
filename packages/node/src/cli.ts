@@ -458,10 +458,9 @@ async function upload(args: string[], io: IO): Promise<number> {
     title: values.title ?? basename(path).slice(0, 200),
     ...(values.passthrough ? { passthrough: values.passthrough } : {}),
   })
-  if (!created.upload_token) throw new TypeError('the server returned an upload without an upload_token')
   let last = -1
   const asset = await new ClipMuxUpload(file, {
-    upload: { ...created, upload_token: created.upload_token },
+    upload: created,
     fetch: io.fetch,
     onProgress: (p) => {
       const pct = Math.floor((100 * p.bytesUploaded) / Math.max(1, p.bytesTotal))

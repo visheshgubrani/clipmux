@@ -77,7 +77,14 @@ const claims = (token: string) =>
 
 test('uploads.create sends the key and an idempotency key, and adds endpoint for the browser', async () => {
   const f = fake(
-    json(201, { upload_id: 'upl_1', asset_id: 'ast_1', part_size: 1, part_count: 1, playback_ids: [] }),
+    json(201, {
+      upload_id: 'upl_1',
+      asset_id: 'ast_1',
+      upload_token: 'upt_1',
+      part_size: 1,
+      part_count: 1,
+      playback_ids: [],
+    }),
   )
   const cm = new ClipMux({ env, fetch: f.fetch })
   const up = await cm.uploads.create({ size: 10, passthrough: 'lesson_42' })
@@ -87,6 +94,29 @@ test('uploads.create sends the key and an idempotency key, and adds endpoint for
   assert.equal(c.headers.get('Authorization'), 'Bearer cmx_test')
   assert.match(c.headers.get('Idempotency-Key') ?? '', /^[0-9a-f-]{36}$/)
   assert.deepEqual(c.body, { size: 10, passthrough: 'lesson_42' })
+})
+
+test('uploads.create returns the upload token, or refuses a replay that has none', async () => {
+  const f = fake(
+    json(201, {
+      upload_id: 'upl_1',
+      asset_id: 'ast_1',
+      upload_token: 'upt_1',
+      part_size: 1,
+      part_count: 1,
+      playback_ids: [],
+    }),
+    // An idempotent replay of an upload that has since completed (D034).
+    json(200, { upload_id: 'upl_1', asset_id: 'ast_1', part_size: 1, part_count: 1, playback_ids: [] }),
+  )
+  const cm = new ClipMux({ env, fetch: f.fetch })
+  const up = await cm.uploads.create({ size: 10 }, { idempotencyKey: 'k1' })
+  const token: string = up.upload_token
+  assert.equal(token, 'upt_1')
+  await assert.rejects(
+    cm.uploads.create({ size: 10 }, { idempotencyKey: 'k1' }),
+    (e: unknown) => e instanceof ClipMuxError && e.code === 'upload_not_active' && e.status === 200,
+  )
 })
 
 test('a retry reuses the idempotency key and honours Retry-After', async () => {

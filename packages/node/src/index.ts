@@ -1,6 +1,7 @@
 export {
   ClipMux,
   type ClipMuxOptions,
+  type CreatedUpload,
   type PlaybackSession,
   type SessionOptions,
   type TokenOptions,

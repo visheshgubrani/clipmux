@@ -12,6 +12,8 @@ const HINTS: Record<string, string> = {
   job_active: 'A job is already running on this asset; pass supersede: true to replace it, or wait.',
   not_found: 'No such resource for this app: check the ID, and that the key belongs to the app that owns it.',
   too_large: 'The upload is larger than this server accepts.',
+  upload_not_active:
+    'Create the upload with a new idempotency key; the old one belongs to an upload that has finished.',
   public_url_required:
     'The server still has a loopback public URL; set it in Settings, or confirm the key is local.',
   import_url_refused: 'Only public http(s) URLs without credentials can be imported.',
