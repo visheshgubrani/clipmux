@@ -3,6 +3,8 @@ package assets
 import (
 	"context"
 	"net/http"
+	"net/url"
+	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
@@ -21,9 +23,14 @@ type AppView struct {
 	Scopes    []string `json:"scopes"`
 	PublicURL string   `json:"public_url"`
 	// BaseURL is the media origin playback URLs start with.
-	BaseURL                 string      `json:"base_url"`
-	MaxTokenLifetimeSeconds int32       `json:"max_token_lifetime_seconds"`
-	SigningKeys             []PublicKey `json:"signing_keys"`
+	BaseURL                 string `json:"base_url"`
+	MaxTokenLifetimeSeconds int32  `json:"max_token_lifetime_seconds"`
+	// UploadOrigins are where a browser sends upload parts: the server
+	// itself (filesystem storage) and each bucket's public endpoint. With
+	// base_url, they are what a page with the uploader and player must
+	// allow in its Content-Security-Policy.
+	UploadOrigins []string    `json:"upload_origins"`
+	SigningKeys   []PublicKey `json:"signing_keys"`
 }
 
 // PublicKey is one of the app's signing keys that still verifies tokens.
@@ -50,7 +57,11 @@ func LoadApp(ctx context.Context, q *db.Queries, key apikeys.Key) (AppView, erro
 	}
 	v := AppView{
 		ID: app.ID, Name: app.Name, Scopes: key.Scopes, PublicURL: s.PublicUrl, BaseURL: s.BaseUrl,
-		MaxTokenLifetimeSeconds: s.MaxTokenLifetimeSeconds, SigningKeys: make([]PublicKey, 0, len(keys)),
+		MaxTokenLifetimeSeconds: s.MaxTokenLifetimeSeconds, UploadOrigins: []string{},
+		SigningKeys: make([]PublicKey, 0, len(keys)),
+	}
+	if o := originOf(s.PublicUrl); o != "" {
+		v.UploadOrigins = append(v.UploadOrigins, o)
 	}
 	for _, k := range keys {
 		pk := PublicKey{Kid: k.ID, PublicKeyPEM: k.PublicKeyPem, CreatedAt: k.CreatedAt.Time.UTC()}
@@ -74,5 +85,26 @@ func (a *API) getApp(w http.ResponseWriter, r *http.Request) {
 		httpjson.Error(w, http.StatusInternalServerError, "internal", "internal error")
 		return
 	}
+	if a.UploadOrigins != nil {
+		buckets, err := a.UploadOrigins(r.Context(), key.ProjectID)
+		if err != nil {
+			httpjson.Error(w, http.StatusInternalServerError, "internal", "internal error")
+			return
+		}
+		for _, o := range buckets {
+			if !slices.Contains(v.UploadOrigins, o) {
+				v.UploadOrigins = append(v.UploadOrigins, o)
+			}
+		}
+	}
 	httpjson.Write(w, http.StatusOK, v)
+}
+
+// originOf is a URL's scheme and host, or "" if it has neither.
+func originOf(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return ""
+	}
+	return u.Scheme + "://" + u.Host
 }

@@ -159,10 +159,22 @@ const goodEnv = {
 test('doctor passes a matching setup and prints no secret', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'cmx-'))
   await writeFile(join(dir, '.env'), mergeEnv('', goodEnv, '# test'))
-  const h = harness(dir, { 'GET /v1/app': app() })
+  const h = harness(dir, {
+    'GET /v1/app': app({
+      upload_origins: ['https://video.example.com', 'https://acct.r2.cloudflarestorage.com'],
+    }),
+  })
   assert.equal(await main(['doctor'], h.io), 0, h.out.join('\n'))
   const printed = h.out.join('\n')
   assert.match(printed, /CLIPMUX_SIGNING_KEY matches kid_app_a/)
+  // What a page with the uploader and player must allow, from /v1/app.
+  assert.match(
+    printed,
+    /connect-src https:\/\/video\.example\.com https:\/\/acct\.r2\.cloudflarestorage\.com https:\/\/media\.example\.net\n/,
+  )
+  assert.match(printed, /media-src blob: https:\/\/media\.example\.net\n/)
+  assert.match(printed, /img-src https:\/\/media\.example\.net\n/)
+  assert.match(printed, /style-src 'unsafe-inline'/)
   assert.ok(
     !printed.includes('cmx_SECRETAPIKEY') && !printed.includes('whsec_REAL') && !printed.includes('PRIVATE'),
   )

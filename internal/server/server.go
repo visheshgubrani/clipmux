@@ -442,6 +442,7 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 	mgmt.Chapters = chaptersLLM
 	assetsAPI := assets.New(pool)
 	assetsAPI.Drain = drain
+	assetsAPI.UploadOrigins = set.Origins
 	// The dashboard calls the integration API with the owner's session,
 	// acting as one app; integration keys never reach the management API.
 	// One set of per-key limits, so a key's budget is the same whichever

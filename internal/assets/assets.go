@@ -192,6 +192,9 @@ type API struct {
 	// Drain is done once serve starts shutting down: event long-polls then
 	// answer with what they have. nil never drains.
 	Drain context.Context
+	// UploadOrigins lists the S3 and R2 bucket origins browsers PUT upload
+	// parts to (stores.Set.Origins); nil means none besides the server.
+	UploadOrigins func(ctx context.Context, projectID string) ([]string, error)
 }
 
 // New returns the assets API.

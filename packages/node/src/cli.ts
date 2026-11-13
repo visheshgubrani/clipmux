@@ -324,8 +324,39 @@ async function doctor(args: string[], io: IO): Promise<number> {
   else if (secret.startsWith('whsec_local_')) {
     io.out(`${warn} CLIPMUX_WEBHOOK_SECRET is a local secret, for \`listen\` only.`)
   } else io.out(`${ok} CLIPMUX_WEBHOOK_SECRET is set`)
+  io.out(cspAdvice(app))
   io.out(failed ? `\n${bad} Fix the lines above.` : `\n${ok} Ready.`)
   return failed ? 1 : 0
+}
+
+// cspAdvice is what a page with <clipmux-uploader> and <clipmux-player>
+// must allow besides its own origin: the uploader calls the server and
+// sends parts to upload_origins; the player fetches playlists, segments,
+// keys and VTT from base_url, plays from blob: (Media Source) or the media
+// origin (native HLS), and shows the poster from it. Both inject styles.
+function cspAdvice(app: App): string {
+  const origin = (u: string) => {
+    try {
+      return new URL(u).origin
+    } catch {
+      return ''
+    }
+  }
+  const media = origin(app.base_url)
+  const connect = [origin(app.public_url), ...(app.upload_origins ?? []), media].filter(
+    (o, i, all) => o && all.indexOf(o) === i,
+  )
+  const lines = [
+    '',
+    'Pages with the uploader or player need, in their Content-Security-Policy:',
+    `  connect-src ${connect.join(' ')}`,
+    `  media-src blob: ${media}`,
+    `  img-src ${media}`,
+    "  style-src 'unsafe-inline'",
+  ]
+  if (!app.upload_origins)
+    lines.push('  (and the storage bucket upload parts go to; this server is too old to say)')
+  return lines.join('\n')
 }
 
 async function keysMatch(privateText: string, publicPEM: string): Promise<boolean> {
