@@ -13,7 +13,8 @@
 
 import { ClipMux } from './client.ts'
 import { ClipMuxError, WebhookVerificationError } from './errors.ts'
-import type { Asset, CreateUpload, WebhookEvent } from './schema.gen.ts'
+import type { Asset, CreateUpload } from './schema.gen.ts'
+import type { WebhookEvent } from './webhooks.ts'
 
 /** The file the browser is about to upload, as it describes it. */
 export interface UploadFile {

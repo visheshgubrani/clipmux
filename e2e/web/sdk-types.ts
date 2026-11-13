@@ -3,7 +3,7 @@
 // @clipmux/player unchanged. `pnpm run typecheck` fails if they drift apart.
 // Nothing here runs.
 
-import type { Chapter as ApiChapter, ClipMux } from '@clipmux/node'
+import type { Chapter as ApiChapter, ClipMux, WebhookEvent } from '@clipmux/node'
 import type { PlayerChapter, PlaybackSession as PlayerSession } from '@clipmux/player'
 import { ClipMuxUpload } from '@clipmux/uploader'
 
@@ -21,4 +21,10 @@ export async function sessionForPlayer(cm: ClipMux): Promise<PlayerSession> {
 // Chapters from the API (milliseconds) and the player (seconds) are distinct types.
 export function chapterSeconds(c: ApiChapter): PlayerChapter {
   return { startTime: c.start_ms / 1000, endTime: c.end_ms / 1000, title: c.title }
+}
+
+// A track event always names its track; narrowing on type says so.
+export function trackOf(e: WebhookEvent): string | null {
+  if (e.type === 'video.asset.track.ready') return `${e.track.kind}:${e.track.id}`
+  return null
 }

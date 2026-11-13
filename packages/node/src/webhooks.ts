@@ -4,7 +4,24 @@
 // internal/webhooks/testdata/vectors.json.
 
 import { WebhookVerificationError } from './errors.ts'
-import type { WebhookEvent } from './schema.gen.ts'
+import type { WebhookEvent as RawEvent } from './schema.gen.ts'
+
+type TrackType = Extract<RawEvent['type'], `video.asset.track.${string}`>
+
+/** An event about the asset itself: ready, updated, errored, re-encode failed, deleted. */
+export type AssetEvent = Omit<RawEvent, 'type' | 'track'> & { type: Exclude<RawEvent['type'], TrackType> }
+
+/** An event about one of the asset's tracks; it always names the track. */
+export type TrackEvent = Omit<RawEvent, 'type' | 'track'> & {
+  type: TrackType
+  track: { id: string; kind: 'subtitles' | 'chapters'; error_code?: string }
+}
+
+/**
+ * A webhook event, discriminated on `type`: narrow on it and a track event
+ * has its `track`. `data` is the asset as GET /v1/assets/{id} returns it.
+ */
+export type WebhookEvent = AssetEvent | TrackEvent
 
 /** Headers as a Fetch Headers object, or a Node/Express headers record. */
 export type HeadersLike = Headers | Record<string, string | string[] | undefined>
@@ -95,6 +112,8 @@ export async function verifyWebhook(
       'the signature does not match: check CLIPMUX_WEBHOOK_SECRET and that the body is the raw request body.',
     )
   }
+  // Signature only (the vectors are the contract): the body is trusted as
+  // ClipMux's event once it verifies.
   try {
     return JSON.parse(new TextDecoder().decode(body)) as WebhookEvent
   } catch {
