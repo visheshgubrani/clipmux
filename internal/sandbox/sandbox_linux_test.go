@@ -186,3 +186,41 @@ func TestGPUToolsMayWriteTheirOwnProcEntries(t *testing.T) {
 		t.Fatal("a CPU tool wrote its own /proc entry")
 	}
 }
+
+// A media tool can't make namespaces: unshare and setns are refused, and so
+// is clone with a CLONE_NEW* flag, which would expose user-namespace kernel
+// surface on a native agent (finding 6, D125). Ordinary threads and
+// processes still start, clone3 falling back to clone.
+func TestSandboxedToolCannotCreateNamespaces(t *testing.T) {
+	need(t, "unshare", "python3", "true")
+	if code, _, stderr := sandboxed(t, Policy{Write: t.TempDir()}, "unshare", "-U", "true"); code == 0 {
+		t.Fatalf("unshare -U ran under the sandbox (stderr %q)", stderr)
+	}
+	// clone(CLONE_NEWUSER | SIGCHLD) through the raw syscall; a child, if
+	// one were made, exits at once.
+	const cloneNewUser = `
+import ctypes, os, platform
+libc = ctypes.CDLL(None, use_errno=True)
+nr = {"x86_64": 56, "aarch64": 220}[platform.machine()]
+r = libc.syscall(nr, 0x10000000 | 17, 0, 0, 0, 0)
+if r == 0:
+    os._exit(0)
+if r > 0:
+    os.waitpid(r, 0)
+    print("cloned")
+else:
+    print("errno", ctypes.get_errno())
+`
+	if _, stdout, _ := sandboxed(t, Policy{Write: t.TempDir()}, "python3", "-I", "-c", cloneNewUser); strings.TrimSpace(stdout) != "errno 1" {
+		t.Fatalf("clone(CLONE_NEWUSER) printed %q, want errno 1 (EPERM)", stdout)
+	}
+	threads := `
+import subprocess, threading
+t = threading.Thread(target=lambda: None); t.start(); t.join()
+subprocess.run(["/bin/true"], check=True)
+print("ok")
+`
+	if code, stdout, stderr := sandboxed(t, Policy{Write: t.TempDir()}, "python3", "-I", "-c", threads); code != 0 || strings.TrimSpace(stdout) != "ok" {
+		t.Fatalf("threads and a child process: exit %d, stdout %q, stderr %q", code, stdout, stderr)
+	}
+}
