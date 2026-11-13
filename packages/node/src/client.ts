@@ -3,6 +3,7 @@
 // operationIds), offline playback tokens and webhook verification.
 
 import { ClipMuxConfigError, ClipMuxError } from './errors.ts'
+import { EventWindow } from './events.ts'
 import type * as api from './schema.gen.ts'
 import { type Audience, importSigningKey, seconds, signToken } from './tokens.ts'
 import { Transport } from './transport.ts'
@@ -189,8 +190,7 @@ export class ClipMux {
        */
       waitUntilReady: async (assetId: string, o: { timeoutMs?: number; signal?: AbortSignal } = {}) => {
         const deadline = Date.now() + (o.timeoutMs ?? 30 * 60_000)
-        const since = new Date(Date.now() - 5000).toISOString()
-        let after: string | undefined
+        const win = new EventWindow(new Date(Date.now() - 5000))
         for (;;) {
           const a = await this.assets.get(assetId)
           if (a.status === 'ready') return a
@@ -202,8 +202,8 @@ export class ClipMux {
           const wait = Math.min(25, Math.ceil((deadline - Date.now()) / 1000))
           if (wait <= 0)
             throw new ClipMuxError(0, 'timeout', 'the asset did not become ready in time', `wait ${assetId}`)
-          const page = await this.events.poll({ since, after, wait, signal: o.signal })
-          after = page.data.at(-1)?.id ?? after
+          const page = await this.events.poll({ since: win.since, after: win.after, wait, signal: o.signal })
+          win.advance(page.data)
         }
       },
     }

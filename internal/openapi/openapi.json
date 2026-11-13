@@ -4704,9 +4704,10 @@
             "in": "query",
             "required": false,
             "schema": {
-              "type": "string"
+              "type": "string",
+              "format": "date-time"
             },
-            "description": "The newest event ID you have."
+            "description": "The created_at (RFC 3339) of the newest event you have; the poll waits for a newer one."
           },
           {
             "name": "wait",

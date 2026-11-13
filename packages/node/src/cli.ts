@@ -14,7 +14,9 @@ import { ClipMuxUpload } from '@clipmux/uploader'
 import { ClipMux, VERSION } from './client.ts'
 import { mergeEnv, parseEnv } from './envfile.ts'
 import { ClipMuxConfigError, ClipMuxError } from './errors.ts'
+import { EventWindow } from './events.ts'
 import type { App, Credentials, Pairing, PairingStatus } from './schema.gen.ts'
+import { seconds } from './tokens.ts'
 import { signWebhook } from './webhooks.ts'
 
 const USAGE = `Usage: npx @clipmux/node <command> [options]
@@ -31,6 +33,7 @@ Commands:
            CLIPMUX_WEBHOOK_SECRET, so the app's handler verifies them unchanged.
              --forward-to URL  e.g. localhost:3000/api/clipmux/webhook
              --events LIST     only these types, comma separated
+             --since DURATION  also replay events from this long ago, e.g. 10m
   upload   Upload a file: npx @clipmux/node upload FILE [--passthrough REF] [--title T] [--public] [--wait]
 
 Every command takes --env-file FILE.
@@ -348,6 +351,7 @@ async function listen(args: string[], io: IO): Promise<number> {
     options: {
       'forward-to': { type: 'string' },
       events: { type: 'string' },
+      since: { type: 'string' },
       'env-file': { type: 'string' },
     },
   })
@@ -366,13 +370,12 @@ async function listen(args: string[], io: IO): Promise<number> {
   const app = await cm.app.get()
   io.out(`Forwarding "${app.name}" events to ${target}, signed with CLIPMUX_WEBHOOK_SECRET. Ctrl-C stops.`)
 
-  const since = new Date().toISOString()
-  let after: string | undefined
+  const win = new EventWindow(new Date(Date.now() - (values.since ? seconds(values.since) * 1000 : 0)))
   const sent = new Set<string>()
   while (!io.signal?.aborted) {
     let page: Awaited<ReturnType<typeof cm.events.poll>>
     try {
-      page = await cm.events.poll({ since, after, wait: 25, signal: io.signal })
+      page = await cm.events.poll({ since: win.since, after: win.after, wait: 25, signal: io.signal })
     } catch (err) {
       if (io.signal?.aborted) break
       if (err instanceof ClipMuxError && err.status >= 400 && err.status < 500 && err.status !== 429)
@@ -380,8 +383,8 @@ async function listen(args: string[], io: IO): Promise<number> {
       await io.sleep(5000)
       continue
     }
+    win.advance(page.data)
     for (const ev of page.data) {
-      after = ev.id
       if (sent.has(ev.id) || (only && !only.has(ev.body.type))) continue
       sent.add(ev.id)
       const status = await forward(io, target, secret, ev.id, ev.body.type, JSON.stringify(ev.body))

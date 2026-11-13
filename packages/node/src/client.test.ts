@@ -213,12 +213,18 @@ test('assets.changes pages until next_cursor runs out', async () => {
 test('waitUntilReady long-polls events until the asset is ready, and fails on errored', async () => {
   const f = fake(
     json(200, asset({ status: 'processing' })),
-    json(200, { data: [{ id: 'evt_1', created_at: '', body: {} }] }),
+    json(200, { data: [{ id: 'evt_1', created_at: '2027-01-01T00:00:00.123456Z', body: {} }] }),
+    json(200, asset({ status: 'processing' })),
+    json(200, { data: [] }),
     json(200, asset()),
   )
   const cm = new ClipMux({ env, fetch: f.fetch })
   assert.equal((await cm.assets.waitUntilReady('ast_1')).status, 'ready')
   assert.equal(f.calls[1]?.url.pathname, '/v1/events')
+  // The server takes times only (internal/assets/events.go): after is the
+  // newest event's created_at, as sent.
+  assert.equal(f.calls[1]?.url.searchParams.get('after'), null)
+  assert.equal(f.calls[3]?.url.searchParams.get('after'), '2027-01-01T00:00:00.123456Z')
   const g = fake(json(200, asset({ status: 'errored', error_code: 'transcode_failed' })))
   await assert.rejects(new ClipMux({ env, fetch: g.fetch }).assets.waitUntilReady('ast_1'), (e: unknown) => {
     return (
