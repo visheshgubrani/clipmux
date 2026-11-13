@@ -71,3 +71,40 @@ func TestFetchModelChecksTheDigest(t *testing.T) {
 		t.Fatalf("refetch: %v, %d downloads", err, hits.Load())
 	}
 }
+
+// A model baked into the image is used as it is (D118): nothing is
+// downloaded, and a file of the wrong size there falls back to the fetch.
+func TestFindModelPrefersTheBakedCopy(t *testing.T) {
+	body := []byte("model weights")
+	sum := sha256.Sum256(body)
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		_, _ = w.Write(body)
+	}))
+	defer srv.Close()
+	m := media.Model{Name: "test", URL: srv.URL + "/ggml-test.bin", SHA256: hex.EncodeToString(sum[:]), Size: int64(len(body))}
+	baked, cache := t.TempDir(), t.TempDir()
+	ctx := context.Background()
+
+	// Baked files are trusted on size: these bytes don't match the digest,
+	// and are used all the same.
+	if err := os.WriteFile(filepath.Join(baked, "ggml-test.bin"), []byte("baked weight!"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	path, err := findModel(ctx, srv.Client(), baked, cache, m)
+	if err != nil || path != filepath.Join(baked, "ggml-test.bin") || hits.Load() != 0 {
+		t.Fatalf("find = %s, %v, %d downloads; want the baked file and no download", path, err, hits.Load())
+	}
+
+	if err := os.WriteFile(filepath.Join(baked, "ggml-test.bin"), []byte("short"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	path, err = findModel(ctx, srv.Client(), baked, cache, m)
+	if err != nil || path != filepath.Join(cache, "ggml-test.bin") || hits.Load() != 1 {
+		t.Fatalf("find = %s, %v, %d downloads; want a fetch into the cache", path, err, hits.Load())
+	}
+	if _, ok := BakedModel("", m); ok {
+		t.Fatal("no baked directory must find nothing")
+	}
+}

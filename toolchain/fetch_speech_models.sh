@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Fetches the pinned speech models (versions.env) into DIR under their
-# upstream file names, verifying each sha256, for CI and for running the
-# speech tests by hand. Workers fetch their own (CLIPMUX_MODELS_DIR); this
-# is only for tests (CLIPMUX_TEST_MODELS_DIR).
+# upstream file names, verifying each sha256: for the image, which bakes
+# them in (Dockerfile, models stage; D118), for CI, and for running the
+# speech tests by hand (CLIPMUX_TEST_MODELS_DIR).
 #
 #   fetch_speech_models.sh DIR
 set -euo pipefail
