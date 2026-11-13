@@ -29,7 +29,7 @@ import '@videojs/html/media/hlsjs-video'
 import { type GetToken, TokenSession } from './refresh.ts'
 import { chaptersTrackOf, fetchSession, type PlaybackSession, SessionError } from './session.ts'
 import { clipmuxSource, playsNatively } from './source.ts'
-import { type Chapter, fetchTrack, parseChapters, trackUrl } from './tracks.ts'
+import { fetchTrack, type PlayerChapter, parseChapters, trackUrl } from './tracks.ts'
 
 interface MediaElement extends HTMLVideoElement {
   source: unknown
@@ -50,7 +50,7 @@ export interface ClipMuxErrorDetail {
   track?: string
 }
 export interface ClipMuxChaptersDetail {
-  chapters: Chapter[]
+  chapters: PlayerChapter[]
 }
 export type ClipMuxTokenEvent = CustomEvent<ClipMuxTokenDetail>
 export type ClipMuxDeniedEvent = CustomEvent<Record<string, never>>
@@ -110,7 +110,7 @@ export class ClipMuxPlayerElement extends HTMLElement {
   #playbackFor = ''
   #asking = ''
   #chaptersLoaded = ''
-  #chapters: Chapter[] = []
+  #chapters: PlayerChapter[] = []
   #chaptersTrack: TextTrack | null = null
 
   /** The playback token; unset for a public playback ID. */
@@ -142,7 +142,7 @@ export class ClipMuxPlayerElement extends HTMLElement {
   }
 
   /** The chapters of chapters-track, in seconds, once loaded. */
-  get chapters(): Chapter[] {
+  get chapters(): PlayerChapter[] {
     return this.#chapters
   }
 

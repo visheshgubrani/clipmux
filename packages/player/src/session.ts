@@ -14,20 +14,26 @@
 /** A track of the playback, as GET /v1/assets/{id} lists it. */
 export interface SessionTrack {
   id: string
-  kind: string
-  status: string
+  kind: 'subtitles' | 'chapters' | (string & {})
+  status: 'preparing' | 'ready' | 'errored' | (string & {})
   language?: string
   [field: string]: unknown
 }
 
-/** What the session URL answers. */
+/**
+ * What the session URL answers: `@clipmux/node`'s `playback.session()`
+ * and POST /s/{secret}/playback both fit it.
+ */
 export interface PlaybackSession {
   playback_id: string
   base_url: string
   /** The playback token; empty for a public playback ID. */
   token: string
-  expires_at?: string
+  /** When the token expires; null or absent for a public playback ID. */
+  expires_at?: string | null
   poster_url?: string
+  title?: string
+  duration_seconds?: number | null
   tracks?: SessionTrack[]
 }
 

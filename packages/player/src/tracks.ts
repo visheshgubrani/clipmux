@@ -7,12 +7,19 @@
 // other request) and parsed into chapters in seconds.
 import type { TokenSession } from './refresh.ts'
 
-/** One chapter: start and end in seconds, as players use them. */
-export interface Chapter {
+/**
+ * One chapter as the player uses it: start and end in seconds, parsed from
+ * the chapters VTT. (`@clipmux/node`'s `Chapter` is the API's, in
+ * milliseconds.)
+ */
+export interface PlayerChapter {
   startTime: number
   endTime: number
   title: string
 }
+
+/** @deprecated Use PlayerChapter; this name clashes with `@clipmux/node`'s API Chapter. */
+export type Chapter = PlayerChapter
 
 /** The URL of a track's VTT: the sidecar URL, private or public. */
 export function trackUrl(baseUrl: string, playbackId: string, trackId: string, token?: string): string {
@@ -40,8 +47,8 @@ function seconds(m: RegExpExecArray, at: number): number {
  * Parses the chapters VTT ClipMux writes: one cue per chapter, its title on
  * one line with &, < and > escaped.
  */
-export function parseChapters(vtt: string): Chapter[] {
-  const out: Chapter[] = []
+export function parseChapters(vtt: string): PlayerChapter[] {
+  const out: PlayerChapter[] = []
   const lines = vtt.replace(/\r\n?/g, '\n').split('\n')
   if (!lines[0]?.startsWith('WEBVTT')) throw new Error('not a WebVTT file')
   for (let i = 0; i < lines.length; i++) {

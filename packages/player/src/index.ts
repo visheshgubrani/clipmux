@@ -25,4 +25,4 @@ export {
   playsNatively,
   type SourceOptions,
 } from './source.ts'
-export { type Chapter, fetchTrack, parseChapters, trackUrl } from './tracks.ts'
+export { type Chapter, fetchTrack, type PlayerChapter, parseChapters, trackUrl } from './tracks.ts'
