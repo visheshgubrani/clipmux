@@ -161,8 +161,10 @@ test('a missing setting fails only the call that needs it, naming the variable',
   assert.throws(() => new ClipMux({ env: { CLIPMUX_URL: 'video.example.com' } }), /must be an http\(s\) URL/)
 })
 
+const appInfo = () => json(200, { max_token_lifetime_seconds: 604800, base_url: 'https://media.example.net' })
+
 test('playback.token signs sub, aud, a 15-minute default and the viewer', async () => {
-  const cm = new ClipMux({ env, fetch: fake().fetch })
+  const cm = new ClipMux({ env, fetch: fake(appInfo()).fetch })
   const c = claims(await cm.playback.token('pid_signed', { viewerId: 'stu_1' }))
   assert.equal(c.sub, 'pid_signed')
   assert.equal(c.aud, 'v')
@@ -207,12 +209,18 @@ test('playback.token waits at most 3 s for /v1/app, then signs with the default 
 })
 
 test("playback.session picks the asset's own signed ID, signs it, and lists ready tracks", async () => {
-  const cm = new ClipMux({ env, fetch: fake().fetch })
+  const cm = new ClipMux({ env, fetch: fake(appInfo()).fetch })
   const s = await cm.playback.session(asset({ title: 'Lesson 42' }), { viewerId: 'stu_1' })
   assert.equal(s.playback_id, 'pid_signed')
   assert.equal(s.base_url, 'https://media.example.net')
   assert.equal(claims(s.token).exp - claims(s.token).iat, 900)
-  assert.equal(s.poster_url, `https://media.example.net/v/${s.token}/pid_signed/poster.jpg`)
+  // The poster has its own token that fetches only the poster (docs/api.md).
+  const m = /^https:\/\/media\.example\.net\/v\/([^/]+)\/pid_signed\/poster\.jpg$/.exec(s.poster_url)
+  assert.ok(m, s.poster_url)
+  const poster = claims(m[1] as string)
+  assert.equal(poster.aud, 't')
+  assert.equal(poster.sub, 'pid_signed')
+  assert.equal(poster.exp, claims(s.token).exp)
   assert.deepEqual(
     s.tracks.map((t) => t.id),
     ['trk_ready'],

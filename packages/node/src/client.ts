@@ -5,7 +5,7 @@
 import { ClipMuxConfigError, ClipMuxError } from './errors.ts'
 import { EventWindow } from './events.ts'
 import type * as api from './schema.gen.ts'
-import { type Audience, importSigningKey, seconds, signToken } from './tokens.ts'
+import { type Audience, importSigningKey, seconds, signToken, type TokenClaims } from './tokens.ts'
 import { Transport } from './transport.ts'
 import { type HeadersLike, type RawBody, type VerifyOptions, verifyWebhook } from './webhooks.ts'
 
@@ -402,19 +402,23 @@ export class ClipMux {
       ? Math.min(max, Math.max(4 * 3600, d ? Math.ceil(2 * d) : 12 * 3600))
       : seconds(o.expiresIn ?? DEFAULT_TTL)
     if (ttl > max) throw new RangeError(`expiresIn ${ttl} s is longer than the server allows (${max} s)`)
-    const kid = this.#require('signingKid')
-    this.#key ??= importSigningKey(this.#require('signingKey'))
-    this.#key.catch(() => {
-      this.#key = undefined
-    })
     const iat = Math.floor(Date.now() / 1000)
-    return signToken(await this.#key, kid, {
+    return this.#sign({
       sub: playbackId,
       aud: o.audience === 'poster' ? 't' : 'v',
       iat,
       exp: iat + ttl,
       vid: o.viewerId,
     })
+  }
+
+  async #sign(claims: TokenClaims): Promise<string> {
+    const kid = this.#require('signingKid')
+    this.#key ??= importSigningKey(this.#require('signingKey'))
+    this.#key.catch(() => {
+      this.#key = undefined
+    })
+    return signToken(await this.#key, kid, claims)
   }
 
   async #session(target: Target, o: SessionOptions): Promise<PlaybackSession> {
@@ -425,6 +429,7 @@ export class ClipMux {
     const base = (asset?.base_url ?? (await this.app.get()).base_url).replace(/\/+$/, '')
     const duration = asset?.duration_seconds ?? null
     let token = ''
+    let posterToken = ''
     let expiresAt: string | null = null
     if (pick.policy === 'signed') {
       token = await this.#token(pick.id, {
@@ -433,14 +438,20 @@ export class ClipMux {
         native: o.native,
         durationSeconds: duration,
       })
-      expiresAt = new Date(claimsExp(token) * 1000).toISOString()
+      const c = claimsOf(token)
+      expiresAt = new Date(c.exp * 1000).toISOString()
+      // The poster gets a token that fetches only the poster, so a poster
+      // URL that leaks (an og:image, a log) can't play the video.
+      posterToken = await this.#sign({ sub: pick.id, aud: 't', iat: c.iat, exp: c.exp })
     }
     const s: PlaybackSession = {
       playback_id: pick.id,
       base_url: base,
       token,
       expires_at: expiresAt,
-      poster_url: token ? `${base}/v/${token}/${pick.id}/poster.jpg` : `${base}/p/${pick.id}/poster.jpg`,
+      poster_url: posterToken
+        ? `${base}/v/${posterToken}/${pick.id}/poster.jpg`
+        : `${base}/p/${pick.id}/poster.jpg`,
       duration_seconds: duration,
       tracks: (asset?.tracks ?? []).filter((t) => t.status === 'ready'),
     }
@@ -449,11 +460,10 @@ export class ClipMux {
   }
 }
 
-// claimsExp reads exp back from a token this client just signed.
-function claimsExp(token: string): number {
+// claimsOf reads the claims back from a token this client just signed.
+function claimsOf(token: string): TokenClaims {
   const body = token.split('.')[1] ?? ''
-  const json = atob(body.replace(/-/g, '+').replace(/_/g, '/'))
-  return (JSON.parse(json) as { exp: number }).exp
+  return JSON.parse(atob(body.replace(/-/g, '+').replace(/_/g, '/'))) as TokenClaims
 }
 
 // choose is the playback ID a session plays: an active signed one of the
