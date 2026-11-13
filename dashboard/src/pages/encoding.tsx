@@ -278,7 +278,12 @@ function Spend({ p }: { p: Provider }) {
         aria-label="Spend this month"
       />
       <span className="text-muted-foreground">
-        {p.machines} of at most {p.max_concurrent} running, {dollars(p.rate_cents_per_hour)} per machine-hour
+        {p.billed_through
+          ? `From ${names[p.kind as Cloud] ?? p.kind}'s bill up to ${new Date(p.billed_through).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}, and estimated since.`
+          : `Estimated: machine time at ${dollars(p.rate_cents_per_hour)} per machine-hour.`}
+      </span>
+      <span className="text-muted-foreground">
+        {p.machines} of at most {p.max_concurrent} running
       </span>
       {p.backoff_until && (
         <span className="text-destructive">

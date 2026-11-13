@@ -132,6 +132,8 @@ var passTimeouts = map[string]time.Duration{
 	"dispatch":             5 * time.Minute, // provider calls, 3 min each, a row per transaction
 	"dispatch_reaper":      2 * time.Minute,
 	"machine_reconciler":   5 * time.Minute,
+	"provider_bills":       2 * time.Minute, // one billing report per provider
+	"worker_image":         2 * time.Minute, // a registry lookup each, and a 30 s wait for Modal's conversion
 	"stranded_pinned_jobs": time.Minute,
 	"speech_wait":          time.Minute,
 	"speech_api":           2 * time.Hour,    // one whole transcription, every chunk of it
@@ -479,6 +481,15 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 	// The first pass runs at boot, which is when a crash may have left a
 	// machine nobody recorded.
 	loop(ReconcileInterval, "machine_reconciler", disp.Reconcile)
+	// Also first at boot: an upgraded server moves the providers it wakes to
+	// its own worker image.
+	// What the providers billed, for the spend shown and the monthly limit.
+	loop(ReconcileInterval, "provider_bills", disp.RefreshBills)
+	loop(ReconcileInterval, "worker_image", func(ctx context.Context) (int, error) {
+		n, err := md.Repin(ctx)
+		m, err2 := rp.Repin(ctx)
+		return n + m, errors.Join(err, err2)
+	})
 	loop(UploadSweepInterval, "stranded_pinned_jobs", func(ctx context.Context) (int, error) { return q.SweepStrandedPinned(ctx, 100) })
 	loop(UploadSweepInterval, "speech_wait", func(ctx context.Context) (int, error) { return q.SweepStaleTranscriptions(ctx, 100) })
 	loop(UploadSweepInterval, "uploads", func(ctx context.Context) (int, error) { return upl.Sweep(ctx, 500) })

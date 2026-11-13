@@ -22,6 +22,9 @@ import (
 type Config struct {
 	// Image is the worker image every sandbox runs.
 	Image string `json:"image"`
+	// ImageChosen is set when the owner entered the image; otherwise it is
+	// this build's, and moves with the server's upgrades (dispatch.Repin).
+	ImageChosen bool `json:"image_chosen,omitempty"`
 	// GPU is Modal's GPU type, e.g. "L4" (NVENC, D051).
 	GPU string `json:"gpu"`
 	// CPU (physical cores) and MemoryMiB size each sandbox.

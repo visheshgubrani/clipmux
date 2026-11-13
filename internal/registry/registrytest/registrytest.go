@@ -38,7 +38,13 @@ type Registry struct {
 }
 
 // New starts the fake for the test.
-func New(t *testing.T) *Registry {
+func New(t *testing.T) *Registry { t.Helper(); return start(t, false) }
+
+// NewPublic starts a fake whose image anyone may pull: like a public ghcr
+// package, the token endpoint hands anonymous callers a token too.
+func NewPublic(t *testing.T) *Registry { t.Helper(); return start(t, true) }
+
+func start(t *testing.T, public bool) *Registry {
 	t.Helper()
 	sum := sha256.Sum256(Manifest)
 	r := &Registry{Digest: "sha256:" + hex.EncodeToString(sum[:])}
@@ -46,7 +52,8 @@ func New(t *testing.T) *Registry {
 		switch {
 		case req.URL.Path == "/token":
 			user, pass, ok := req.BasicAuth()
-			if !ok || user != Username || pass != Password || req.URL.Query().Get("scope") != "repository:"+Repo+":pull" {
+			anonymous := public && !ok
+			if !anonymous && (!ok || user != Username || pass != Password) || req.URL.Query().Get("scope") != "repository:"+Repo+":pull" {
 				w.WriteHeader(http.StatusUnauthorized)
 				return
 			}

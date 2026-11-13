@@ -122,6 +122,7 @@ func (c *Connector) Connect(ctx context.Context, req Request) (dispatch.Result, 
 	if req.APIKey == "" {
 		return dispatch.Result{}, fmt.Errorf("%w: api_key is required", ErrInvalid)
 	}
+	chosen := req.Image != ""
 	req, settings, err := c.settings(req)
 	if err != nil {
 		return dispatch.Result{}, err
@@ -138,7 +139,7 @@ func (c *Connector) Connect(ctx context.Context, req Request) (dispatch.Result, 
 	if had {
 		_ = json.Unmarshal(existing.Config, &old)
 	}
-	cfg := Config{Image: req.Image, GPUTypeIDs: req.GPUTypeIDs, CloudType: "SECURE", DiskGB: req.DiskGB, Tag: old.Tag}
+	cfg := Config{Image: req.Image, ImageChosen: chosen, GPUTypeIDs: req.GPUTypeIDs, CloudType: "SECURE", DiskGB: req.DiskGB, Tag: old.Tag}
 	if cfg.Tag == "" {
 		cfg.Tag = strings.ToLower(rand.Text()[:8])
 	}
@@ -244,6 +245,22 @@ func (c *Connector) Disconnect(ctx context.Context) error {
 // for RunPod rows.
 func (c *Connector) Resolve(row db.ExecutorConfig) (dispatch.Executor, error) {
 	return Open(row, c.Box, c.API)
+}
+
+// Repin moves RunPod to this build's worker image after an upgrade
+// (dispatch.Repin). RunPod keeps the registry credentials, not ClipMux, so
+// only a public image re-pins; a private one waits for a reconnect.
+func (c *Connector) Repin(ctx context.Context) (int, error) {
+	row, ok, err := dispatch.Existing(ctx, c.Pool, c.ProjectID, "runpod")
+	if err != nil || !ok || len(row.SecretsEncrypted) == 0 || c.DefaultImage == "" {
+		return 0, err
+	}
+	pinned, err := dispatch.Repin(ctx, c.Pool, c.registry(), row, c.DefaultImage, "", "")
+	if err != nil || pinned == "" {
+		return 0, err
+	}
+	c.Logger.Info("re-pinned the worker image to this build's", "provider", "runpod", "image", pinned)
+	return 1, nil
 }
 
 func (c *Connector) registry() *registry.Resolver {

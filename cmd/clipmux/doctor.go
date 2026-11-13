@@ -108,6 +108,9 @@ func doctorSpeech(ctx context.Context, tools media.Tools, getenv func(string) st
 		return
 	}
 	dir := orEnv(getenv("CLIPMUX_MODELS_DIR"), filepath.Join(agentDir(getenv), "models"))
+	if _, ok := worker.BakedModel(getenv("CLIPMUX_BAKED_MODELS_DIR"), media.SpeechModel); ok {
+		dir = getenv("CLIPMUX_BAKED_MODELS_DIR") // the image's own (D118)
+	}
 	model, vad := filepath.Join(dir, media.SpeechModel.FileName()), filepath.Join(dir, media.VADModel.FileName())
 	for _, m := range []struct {
 		path string

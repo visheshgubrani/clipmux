@@ -9,6 +9,11 @@ when you introduce or discover it; remove it when it is closed.
   Integrity Check can reject legitimate API/media clients with error 1010.
   Real staging uses an owner-approved `bic: false` configuration rule scoped
   only to its two test hostnames (D090); production settings remain unchanged.
+- A dashboard page names the media origin it was served with in its
+  Content-Security-Policy. Connecting or disconnecting Cloudflare reloads
+  the page that did it; any other tab open from before can't play until it
+  is reloaded, and its player says so. The setup test runs from serve, not a
+  browser, so it can't catch a failure only a browser's policy causes.
 - Real Cloudflare tests are opt-in local runs. The proposed main/weekly
   real-account CI workflow and its repository secrets are still unconfigured.
 
@@ -92,8 +97,8 @@ when you introduce or discover it; remove it when it is closed.
 - Real providers pass the Phase 4 exit (D097), but only as a local run with
   keys in `.env`: `exit-providers.yml` needs the repository secrets and
   `REAL_PROVIDERS` before it runs in CI. Whisper on a provider runs on
-  Vulkan, at about 3–4 times slower than real time per 11 s clip (model
-  fetch included); CUDA speech stays refused (D077). Modal's GPU type isn't
+  Vulkan, at about 3–4 times slower than real time per 11 s clip (measured
+  with the model fetch, before the image carried it, D118); CUDA speech stays refused (D077). Modal's GPU type isn't
   recorded per attempt, so a measurement can't name the card it ran on. A
   failed real run can leave a RunPod registry credential behind when the
   test's disconnect is refused (409); it was deleted by hand.
@@ -203,9 +208,12 @@ when you introduce or discover it; remove it when it is closed.
   - The dashboard previews a public playback ID through its plain public
     URL, with no token, so those previews count as views. Signed IDs are
     previewed under the internal key and don't count.
-- Provider spend (D055) is an estimate from the hourly rate set in Connect,
-  not the provider's bill, and a machine that runs past its reservation
-  isn't stopped at the limit, so a month can overshoot by that much.
+- Provider spend (D055) is Modal's bill up to its last reported hour plus
+  an estimate since (D119); RunPod's is the estimate alone, from the hourly
+  rate set in Connect, since ClipMux reads no RunPod bill. Modal's report is
+  before credits, and a workspace plan without billing reports keeps the
+  estimate. A machine that runs past its reservation isn't stopped at the
+  limit, so a month can overshoot by that much.
 - Modal has no fake provider in the CI exit, only RunPod; its real path is
   proven only by the real-account run (D097).
 - Routing (D053) records the built-in worker's liveness per project, not per
@@ -296,11 +304,13 @@ when you introduce or discover it; remove it when it is closed.
 - Pending approvals live in serve's memory: a restart, or a second
   replica, drops them, and the owner starts again.
 - Registry credentials for the private worker image are still pasted; they
-  go away when the image is public (P6-T07).
+  go away when the image is public (P6-T07). RunPod keeps a private image's
+  credentials itself, so after an upgrade it re-pins only a public image
+  (D119); a private one runs the old build until RunPod is connected again.
 - Modal's GPU prices are a table in `internal/modal/gpus.go` (D111), copied
-  from modal.com/pricing on 2026-11-12, since Modal has no price API; the
-  spend estimate drifts when Modal changes its prices until the table is
-  refreshed. The NVENC lists for both providers are hand-kept too.
+  from modal.com/pricing on 2026-11-12, for the rate shown in Connect and
+  the estimate of the hour since Modal's last billed one (D119); they drift
+  when Modal changes its prices until the table is refreshed. The NVENC lists for both providers are hand-kept too.
 - The PC agent has left the dashboard (D116) and stays a command-line and
   API option (docs/agents.md): nothing in the dashboard lists, pairs or
   revokes a PC, and setting routing to `workers` or `agents` takes the API.

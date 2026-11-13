@@ -90,11 +90,12 @@ func ParseSpeechMode(s string) (SpeechMode, error) {
 	return "", fmt.Errorf("unknown speech mode %q: use auto, off, cpu or vulkan", s)
 }
 
-// SetupSpeech decides how this worker transcribes: it fetches the pinned
-// models by digest into modelsDir, then proves each candidate backend with
-// a real transcription under the sandbox, GPU first. It returns nil when
-// the worker won't transcribe, and says why in the log.
-func SetupSpeech(ctx context.Context, tools media.Tools, mode SpeechMode, modelsDir, probeDir string, client *http.Client, log *slog.Logger) *media.Speech {
+// SetupSpeech decides how this worker transcribes: it uses the models baked
+// into the image (bakedDir, D118) or fetches the pinned models by digest into
+// modelsDir, then proves each candidate backend with a real transcription
+// under the sandbox, GPU first. It returns nil when the worker won't
+// transcribe, and says why in the log.
+func SetupSpeech(ctx context.Context, tools media.Tools, mode SpeechMode, bakedDir, modelsDir, probeDir string, client *http.Client, log *slog.Logger) *media.Speech {
 	if mode == SpeechOff {
 		return nil
 	}
@@ -119,18 +120,19 @@ func SetupSpeech(ctx context.Context, tools media.Tools, mode SpeechMode, models
 			"cpus", runtime.NumCPU(), "min_cpus", AutoMinCPUs, "min_memory_bytes", AutoMinMemory)
 		return nil
 	}
-	// The first start downloads about 0.9 GB, which takes minutes; say so,
-	// or a missing subtitles track looks like a hang.
-	if fi, err := os.Stat(filepath.Join(modelsDir, media.SpeechModel.FileName())); err != nil || fi.Size() != media.SpeechModel.Size {
+	_, baked := BakedModel(bakedDir, media.SpeechModel)
+	// The first start without baked models downloads about 0.9 GB, which
+	// takes minutes; say so, or a missing subtitles track looks like a hang.
+	if fi, err := os.Stat(filepath.Join(modelsDir, media.SpeechModel.FileName())); !baked && (err != nil || fi.Size() != media.SpeechModel.Size) {
 		log.Info("speech: downloading the speech models; this worker transcribes once they are in place",
 			"model", media.SpeechModel.ID(), "bytes", media.SpeechModel.Size+media.VADModel.Size)
 	}
-	model, err := FetchModel(ctx, client, modelsDir, media.SpeechModel)
+	model, err := findModel(ctx, client, bakedDir, modelsDir, media.SpeechModel)
 	if err != nil {
 		log.Warn("speech: couldn't fetch the speech model; will try again at the next start", "err", err)
 		return nil
 	}
-	vad, err := FetchModel(ctx, client, modelsDir, media.VADModel)
+	vad, err := findModel(ctx, client, bakedDir, modelsDir, media.VADModel)
 	if err != nil {
 		log.Warn("speech: couldn't fetch the VAD model; will try again at the next start", "err", err)
 		return nil
@@ -200,6 +202,31 @@ func memTotal() (int64, bool) {
 		}
 	}
 	return 0, false
+}
+
+// BakedModel finds m among the models baked into the image (D118). The
+// image build checked each against its sha256 and the image is pinned by
+// digest, so the right size is enough here: re-hashing 0.9 GB would cost
+// every serverless cold start seconds.
+func BakedModel(dir string, m media.Model) (string, bool) {
+	if dir == "" {
+		return "", false
+	}
+	path := filepath.Join(dir, m.FileName())
+	fi, err := os.Stat(path)
+	if err != nil || !fi.Mode().IsRegular() || fi.Size() != m.Size {
+		return "", false
+	}
+	return path, true
+}
+
+// findModel prefers the baked copy of m and fetches it into modelsDir only
+// when the image has none.
+func findModel(ctx context.Context, client *http.Client, bakedDir, modelsDir string, m media.Model) (string, error) {
+	if path, ok := BakedModel(bakedDir, m); ok {
+		return path, nil
+	}
+	return FetchModel(ctx, client, modelsDir, m)
 }
 
 // FetchModel makes sure dir holds model, downloaded by the worker (never by

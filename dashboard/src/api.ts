@@ -297,6 +297,9 @@ export interface Provider {
   monthly_limit_cents: number
   rate_cents_per_hour: number
   month_cents: number
+  /** What the provider itself billed this month, up to billed_through (Modal). */
+  billed_cents?: number
+  billed_through?: string
   machines: number
   backoff_until?: string
 }

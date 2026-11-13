@@ -145,6 +145,7 @@ const executorStatus = `-- name: ExecutorStatus :many
 SELECT c.id, c.kind, c.config, (c.secrets_encrypted IS NOT NULL)::boolean AS connected, c.verified_at,
        c.max_concurrent, c.monthly_limit_cents, c.rate_cents_per_hour, c.disk_bytes, c.backoff_until,
        provider_month_cents(c.id)::double precision AS month_cents,
+       c.billed_month_cents, c.billed_through,
        (SELECT count(*) FROM dispatches d WHERE d.executor_config_id = c.id
           AND (d.status <> 'ended' OR (d.instance_id IS NOT NULL AND d.stopped_at IS NULL)))::bigint AS machines
 FROM executor_configs c WHERE c.project_id = $1 ORDER BY c.kind
@@ -162,6 +163,8 @@ type ExecutorStatusRow struct {
 	DiskBytes         int64
 	BackoffUntil      pgtype.Timestamptz
 	MonthCents        float64
+	BilledMonthCents  pgtype.Int8
+	BilledThrough     pgtype.Timestamptz
 	Machines          int64
 }
 
@@ -186,6 +189,8 @@ func (q *Queries) ExecutorStatus(ctx context.Context, projectID string) ([]Execu
 			&i.DiskBytes,
 			&i.BackoffUntil,
 			&i.MonthCents,
+			&i.BilledMonthCents,
+			&i.BilledThrough,
 			&i.Machines,
 		); err != nil {
 			return nil, err
@@ -261,7 +266,7 @@ func (q *Queries) GetDispatch(ctx context.Context, id string) (Dispatch, error) 
 }
 
 const getExecutorConfig = `-- name: GetExecutorConfig :one
-SELECT id, project_id, kind, config, secrets_encrypted, max_concurrent, monthly_limit_cents, rate_cents_per_hour, disk_bytes, claim_deadline_seconds, verified_at, created_at, updated_at, wake_failures, backoff_until FROM executor_configs WHERE id = $1
+SELECT id, project_id, kind, config, secrets_encrypted, max_concurrent, monthly_limit_cents, rate_cents_per_hour, disk_bytes, claim_deadline_seconds, verified_at, created_at, updated_at, wake_failures, backoff_until, billed_month_cents, billed_through, billed_checked_at FROM executor_configs WHERE id = $1
 `
 
 func (q *Queries) GetExecutorConfig(ctx context.Context, id string) (ExecutorConfig, error) {
@@ -283,12 +288,15 @@ func (q *Queries) GetExecutorConfig(ctx context.Context, id string) (ExecutorCon
 		&i.UpdatedAt,
 		&i.WakeFailures,
 		&i.BackoffUntil,
+		&i.BilledMonthCents,
+		&i.BilledThrough,
+		&i.BilledCheckedAt,
 	)
 	return i, err
 }
 
 const getExecutorConfigByKind = `-- name: GetExecutorConfigByKind :one
-SELECT id, project_id, kind, config, secrets_encrypted, max_concurrent, monthly_limit_cents, rate_cents_per_hour, disk_bytes, claim_deadline_seconds, verified_at, created_at, updated_at, wake_failures, backoff_until FROM executor_configs WHERE project_id = $1 AND kind = $2
+SELECT id, project_id, kind, config, secrets_encrypted, max_concurrent, monthly_limit_cents, rate_cents_per_hour, disk_bytes, claim_deadline_seconds, verified_at, created_at, updated_at, wake_failures, backoff_until, billed_month_cents, billed_through, billed_checked_at FROM executor_configs WHERE project_id = $1 AND kind = $2
 `
 
 type GetExecutorConfigByKindParams struct {
@@ -315,6 +323,9 @@ func (q *Queries) GetExecutorConfigByKind(ctx context.Context, arg GetExecutorCo
 		&i.UpdatedAt,
 		&i.WakeFailures,
 		&i.BackoffUntil,
+		&i.BilledMonthCents,
+		&i.BilledThrough,
+		&i.BilledCheckedAt,
 	)
 	return i, err
 }
@@ -359,7 +370,7 @@ func (q *Queries) ListDispatchesToEnd(ctx context.Context, arg ListDispatchesToE
 }
 
 const listExecutorConfigs = `-- name: ListExecutorConfigs :many
-SELECT id, project_id, kind, config, secrets_encrypted, max_concurrent, monthly_limit_cents, rate_cents_per_hour, disk_bytes, claim_deadline_seconds, verified_at, created_at, updated_at, wake_failures, backoff_until FROM executor_configs WHERE project_id = $1 AND secrets_encrypted IS NOT NULL ORDER BY kind
+SELECT id, project_id, kind, config, secrets_encrypted, max_concurrent, monthly_limit_cents, rate_cents_per_hour, disk_bytes, claim_deadline_seconds, verified_at, created_at, updated_at, wake_failures, backoff_until, billed_month_cents, billed_through, billed_checked_at FROM executor_configs WHERE project_id = $1 AND secrets_encrypted IS NOT NULL ORDER BY kind
 `
 
 // Connected providers: a disconnected one keeps its row (its dispatches
@@ -389,6 +400,9 @@ func (q *Queries) ListExecutorConfigs(ctx context.Context, projectID string) ([]
 			&i.UpdatedAt,
 			&i.WakeFailures,
 			&i.BackoffUntil,
+			&i.BilledMonthCents,
+			&i.BilledThrough,
+			&i.BilledCheckedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -466,7 +480,7 @@ func (q *Queries) LockDispatch(ctx context.Context, id string) (Dispatch, error)
 }
 
 const lockExecutorConfigByKind = `-- name: LockExecutorConfigByKind :one
-SELECT id, project_id, kind, config, secrets_encrypted, max_concurrent, monthly_limit_cents, rate_cents_per_hour, disk_bytes, claim_deadline_seconds, verified_at, created_at, updated_at, wake_failures, backoff_until FROM executor_configs WHERE project_id = $1 AND kind = $2 FOR UPDATE
+SELECT id, project_id, kind, config, secrets_encrypted, max_concurrent, monthly_limit_cents, rate_cents_per_hour, disk_bytes, claim_deadline_seconds, verified_at, created_at, updated_at, wake_failures, backoff_until, billed_month_cents, billed_through, billed_checked_at FROM executor_configs WHERE project_id = $1 AND kind = $2 FOR UPDATE
 `
 
 type LockExecutorConfigByKindParams struct {
@@ -493,6 +507,9 @@ func (q *Queries) LockExecutorConfigByKind(ctx context.Context, arg LockExecutor
 		&i.UpdatedAt,
 		&i.WakeFailures,
 		&i.BackoffUntil,
+		&i.BilledMonthCents,
+		&i.BilledThrough,
+		&i.BilledCheckedAt,
 	)
 	return i, err
 }
@@ -655,6 +672,41 @@ func (q *Queries) SetDispatchWoken(ctx context.Context, arg SetDispatchWokenPara
 	return err
 }
 
+const setExecutorBilled = `-- name: SetExecutorBilled :exec
+UPDATE executor_configs SET billed_month_cents = $1, billed_through = $2, billed_checked_at = now()
+WHERE id = $3
+`
+
+type SetExecutorBilledParams struct {
+	Cents   pgtype.Int8
+	Through pgtype.Timestamptz
+	ID      string
+}
+
+// The provider's own bill for this month, up to through (00033).
+func (q *Queries) SetExecutorBilled(ctx context.Context, arg SetExecutorBilledParams) error {
+	_, err := q.db.Exec(ctx, setExecutorBilled, arg.Cents, arg.Through, arg.ID)
+	return err
+}
+
+const setExecutorImage = `-- name: SetExecutorImage :exec
+UPDATE executor_configs SET config = jsonb_set(config, '{image}', to_jsonb($1::text)), updated_at = now()
+WHERE id = $2 AND config->>'image' = $3::text
+`
+
+type SetExecutorImageParams struct {
+	Image    string
+	ID       string
+	OldImage string
+}
+
+// A new pin for the same build's image (the server was upgraded): only the
+// config moves, so the provider stays verified and keeps its routing.
+func (q *Queries) SetExecutorImage(ctx context.Context, arg SetExecutorImageParams) error {
+	_, err := q.db.Exec(ctx, setExecutorImage, arg.Image, arg.ID, arg.OldImage)
+	return err
+}
+
 const upsertExecutorConfig = `-- name: UpsertExecutorConfig :one
 INSERT INTO executor_configs (id, project_id, kind, config, secrets_encrypted, max_concurrent, monthly_limit_cents,
                               rate_cents_per_hour, disk_bytes)
@@ -663,7 +715,7 @@ ON CONFLICT (project_id, kind) DO UPDATE
 SET config = EXCLUDED.config, secrets_encrypted = EXCLUDED.secrets_encrypted, max_concurrent = EXCLUDED.max_concurrent,
     monthly_limit_cents = EXCLUDED.monthly_limit_cents, rate_cents_per_hour = EXCLUDED.rate_cents_per_hour,
     disk_bytes = EXCLUDED.disk_bytes, verified_at = NULL, wake_failures = 0, backoff_until = NULL, updated_at = now()
-RETURNING id, project_id, kind, config, secrets_encrypted, max_concurrent, monthly_limit_cents, rate_cents_per_hour, disk_bytes, claim_deadline_seconds, verified_at, created_at, updated_at, wake_failures, backoff_until
+RETURNING id, project_id, kind, config, secrets_encrypted, max_concurrent, monthly_limit_cents, rate_cents_per_hour, disk_bytes, claim_deadline_seconds, verified_at, created_at, updated_at, wake_failures, backoff_until, billed_month_cents, billed_through, billed_checked_at
 `
 
 type UpsertExecutorConfigParams struct {
@@ -709,6 +761,9 @@ func (q *Queries) UpsertExecutorConfig(ctx context.Context, arg UpsertExecutorCo
 		&i.UpdatedAt,
 		&i.WakeFailures,
 		&i.BackoffUntil,
+		&i.BilledMonthCents,
+		&i.BilledThrough,
+		&i.BilledCheckedAt,
 	)
 	return i, err
 }

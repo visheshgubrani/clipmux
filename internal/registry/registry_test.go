@@ -50,12 +50,27 @@ func TestResolvePinsAPrivateImageWithItsCredentials(t *testing.T) {
 	if again, err := r.Resolve(ctx, reg.Pinned(), registrytest.Username, registrytest.Password); err != nil || again.Pinned() != reg.Pinned() {
 		t.Fatalf("Resolve(pinned) = %+v, %v", again, err)
 	}
-	for _, c := range []struct{ user, pass string }{{"", ""}, {registrytest.Username, "ghp_WRONG"}} {
-		if _, err := r.Resolve(ctx, reg.Image(), c.user, c.pass); !errors.Is(err, registry.ErrDenied) {
-			t.Errorf("Resolve as %q = %v, want ErrDenied", c.user, err)
-		}
+	// Each refusal says which it is, so Connect can tell the owner what to fix.
+	if _, err := r.Resolve(ctx, reg.Image(), "", ""); !errors.Is(err, registry.ErrDenied) {
+		t.Errorf("anonymously = %v, want ErrDenied", err)
 	}
-	if _, err := r.Resolve(ctx, reg.Host+"/"+registrytest.Repo+":no-such-tag", registrytest.Username, registrytest.Password); !errors.Is(err, registry.ErrDenied) {
-		t.Errorf("an unknown tag = %v, want ErrDenied", err)
+	if _, err := r.Resolve(ctx, reg.Image(), registrytest.Username, "ghp_WRONG"); !errors.Is(err, registry.ErrBadCredentials) {
+		t.Errorf("a wrong token = %v, want ErrBadCredentials", err)
+	}
+	if _, err := r.Resolve(ctx, reg.Host+"/"+registrytest.Repo+":no-such-tag", registrytest.Username, registrytest.Password); !errors.Is(err, registry.ErrNotFound) {
+		t.Errorf("an unknown tag = %v, want ErrNotFound", err)
+	}
+	if _, err := r.Resolve(ctx, reg.Host+"/"+registrytest.Repo+":no-such-tag", "", ""); !errors.Is(err, registry.ErrDenied) {
+		t.Errorf("an unknown tag, anonymously = %v, want ErrDenied (it may be private)", err)
+	}
+}
+
+// A public image (P6-T07) pins with no credentials at all.
+func TestResolvePinsAPublicImageAnonymously(t *testing.T) {
+	reg := registrytest.NewPublic(t)
+	r := &registry.Resolver{HTTP: reg.Client}
+	got, err := r.Resolve(context.Background(), reg.Image(), "", "")
+	if err != nil || got.Pinned() != reg.Pinned() {
+		t.Fatalf("Resolve = %+v, %v; want %s", got, err, reg.Pinned())
 	}
 }

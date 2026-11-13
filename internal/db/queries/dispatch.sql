@@ -130,6 +130,7 @@ UPDATE executor_configs SET secrets_encrypted = NULL, verified_at = NULL, update
 SELECT c.id, c.kind, c.config, (c.secrets_encrypted IS NOT NULL)::boolean AS connected, c.verified_at,
        c.max_concurrent, c.monthly_limit_cents, c.rate_cents_per_hour, c.disk_bytes, c.backoff_until,
        provider_month_cents(c.id)::double precision AS month_cents,
+       c.billed_month_cents, c.billed_through,
        (SELECT count(*) FROM dispatches d WHERE d.executor_config_id = c.id
           AND (d.status <> 'ended' OR (d.instance_id IS NOT NULL AND d.stopped_at IS NULL)))::bigint AS machines
 FROM executor_configs c WHERE c.project_id = $1 ORDER BY c.kind;
@@ -141,3 +142,14 @@ FROM executor_configs c WHERE c.project_id = $1 ORDER BY c.kind;
 SELECT id, instance_id FROM dispatches
 WHERE executor_config_id = $1
   AND (status <> 'ended' OR (instance_id IS NOT NULL AND stopped_at IS NULL));
+
+-- name: SetExecutorImage :exec
+-- A new pin for the same build's image (the server was upgraded): only the
+-- config moves, so the provider stays verified and keeps its routing.
+UPDATE executor_configs SET config = jsonb_set(config, '{image}', to_jsonb(sqlc.arg(image)::text)), updated_at = now()
+WHERE id = sqlc.arg(id) AND config->>'image' = sqlc.arg(old_image)::text;
+
+-- name: SetExecutorBilled :exec
+-- The provider's own bill for this month, up to through (00033).
+UPDATE executor_configs SET billed_month_cents = sqlc.arg(cents), billed_through = sqlc.arg(through), billed_checked_at = now()
+WHERE id = sqlc.arg(id);

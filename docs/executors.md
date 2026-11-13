@@ -14,16 +14,19 @@ uploads it through the worker API, and holds no storage credentials.
   worker API there, and, on filesystem storage, download sources and upload
   outputs there too.
 - **The worker image.** Machines run the image this server was built from:
-  CI pushes `ghcr.io/visheshgubrani/clipmux:sha-{commit}` on every main
-  commit that passes, and the binary carries that reference
+  the Image workflow, run by hand on main and on release tags, pushes
+  `ghcr.io/visheshgubrani/clipmux:sha-{commit}` once both architectures
+  pass, and the binary carries that reference
   (`CLIPMUX_WORKER_IMAGE` overrides it). Until launch the package is private,
   so Connect asks for a registry username and a token with `read:packages`
   (D052). Connect resolves the image to its digest with those credentials,
   which proves they can pull, and machines then run exactly that digest even
-  if the tag moves (D058).
+  if the tag moves (D058). When the server is upgraded, a provider on the
+  default image moves to the new build's digest by itself (D119).
 - **A monthly spend limit and an hourly rate.** ClipMux estimates spend from
-  the rate you enter and each machine's running time (D055); it isn't the
-  provider's bill. A job reserves its estimated run (an hour per 4 GiB of
+  the rate you enter and each machine's running time (D055). Modal's own
+  billing report replaces the estimate up to the last hour it covers (D119);
+  RunPod's spend stays the estimate. A job reserves its estimated run (an hour per 4 GiB of
   source, between 15 minutes and 6 h 15 min) before its machine starts, so
   the limit holds before any machine has run long. A machine already running
   isn't stopped at the limit.

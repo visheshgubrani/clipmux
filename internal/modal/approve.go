@@ -73,16 +73,23 @@ type grpcFlows struct{}
 const modalHost = "api.modal.com"
 
 func (grpcFlows) call(ctx context.Context, fn func(context.Context, pb.ModalClientClient) error) error {
+	return callModal(ctx, nil, fn)
+}
+
+// callModal calls Modal's API directly, for what the SDK doesn't wrap: the
+// token flow (no credentials) and the billing report (the token's headers,
+// as the SDK sends them).
+func callModal(ctx context.Context, headers []string, fn func(context.Context, pb.ModalClientClient) error) error {
 	conn, err := grpc.NewClient(modalHost+":443", grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{MinVersion: tls.VersionTLS12})))
 	if err != nil {
 		return fmt.Errorf("modal: %w", err)
 	}
 	defer conn.Close()
-	ctx = metadata.AppendToOutgoingContext(ctx,
+	ctx = metadata.AppendToOutgoingContext(ctx, append([]string{
 		"x-modal-client-type", strconv.Itoa(int(pb.ClientType_CLIENT_TYPE_LIBMODAL_GO)),
 		"x-modal-client-version", "1.0.0",
 		"x-modal-host", modalHost,
-	)
+	}, headers...)...)
 	return fn(ctx, pb.NewModalClientClient(conn))
 }
 

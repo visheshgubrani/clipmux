@@ -26,9 +26,20 @@ RUN --mount=type=cache,target=/var/tmp/ffmpeg-build,sharing=locked \
 # Its own layer: a failed download (GitHub releases can 504) keeps FFmpeg cached.
 RUN bash /tmp/clipmux-toolchain/install_packager.sh /usr/local/bin
 # whisper.cpp with its CPU variants and Vulkan, in its own directory
-# (toolchain/build_whisper.sh). The models are fetched by workers, not baked in.
+# (toolchain/build_whisper.sh). The models come from the models stage.
 RUN --mount=type=cache,target=/var/tmp/whisper-build,sharing=locked \
     CLIPMUX_BUILD_DIR=/var/tmp/whisper-build bash /tmp/clipmux-toolchain/build_whisper.sh /usr/local
+
+# ── The speech models (D118) ────────────────────────────────────────────────
+# Baked in, so a serverless machine (a new one for every job) never downloads
+# 0.9 GB before it can start. Checked against the sha256 in versions.env; the
+# layer depends only on the pins, so it is rebuilt only when they change.
+FROM ${BASE} AS models
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+ARG DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates && rm -rf /var/lib/apt/lists/*
+COPY toolchain/versions.env toolchain/fetch_speech_models.sh /tmp/clipmux-toolchain/
+RUN bash /tmp/clipmux-toolchain/fetch_speech_models.sh /models && chmod 0644 /models/*
 
 # ── The dashboard (embedded in the binary) ──────────────────────────────────
 FROM node:24 AS web
@@ -101,6 +112,7 @@ RUN ldconfig && bash /tmp/clipmux-toolchain/verify_toolchain.sh /usr/local/bin/f
     && bash /tmp/clipmux-toolchain/licenses.sh /usr/share/doc/clipmux/licenses /tmp/clipmux-toolchain/versions.env /tmp/clipmux-toolchain/LICENSE \
     && rm -rf /tmp/clipmux-toolchain
 COPY --from=build /out/clipmux /usr/local/bin/clipmux
+COPY --from=models /models/ /usr/share/clipmux/models/
 
 RUN useradd --system --uid 10001 --home-dir /var/lib/clipmux --create-home --shell /usr/sbin/nologin clipmux \
     && install -d -o clipmux -g clipmux -m 0750 /var/lib/clipmux/data \
@@ -115,6 +127,7 @@ USER 10001
 ENV CLIPMUX_DATA_DIR=/var/lib/clipmux/data \
     CLIPMUX_LISTEN=:8080 \
     CLIPMUX_MODELS_DIR=/var/lib/clipmux-agent/models \
+    CLIPMUX_BAKED_MODELS_DIR=/usr/share/clipmux/models \
     NVIDIA_DRIVER_CAPABILITIES=compute,video,utility,graphics
 VOLUME /var/lib/clipmux/data
 EXPOSE 8080

@@ -151,6 +151,8 @@ func runWorker(args []string, getenv func(string) string, stderr io.Writer) int 
 		return 2
 	}
 	modelsDir := orEnv(getenv("CLIPMUX_MODELS_DIR"), filepath.Join(agentDir(getenv), "models"))
+	// The image bakes the models in (D118); a PC agent has none and fetches.
+	bakedModels := getenv("CLIPMUX_BAKED_MODELS_DIR")
 	// Prove each GPU path with a real encode, under the same sandbox jobs
 	// use, before offering it.
 	var driverEnv []string
@@ -188,7 +190,7 @@ func runWorker(args []string, getenv func(string) string, stderr io.Writer) int 
 		}
 	}
 	setupSpeech := func(ctx context.Context) *media.Speech {
-		sp := worker.SetupSpeech(ctx, w.Tools, speechMode, modelsDir, *workDir, w.HTTP, logger)
+		sp := worker.SetupSpeech(ctx, w.Tools, speechMode, bakedModels, modelsDir, *workDir, w.HTTP, logger)
 		speech.Set(sp)
 		return sp
 	}

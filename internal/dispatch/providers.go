@@ -101,9 +101,15 @@ type Status struct {
 	MonthlyLimitCents int64           `json:"monthly_limit_cents"`
 	RateCentsPerHour  int32           `json:"rate_cents_per_hour"`
 	DiskBytes         int64           `json:"disk_bytes"`
-	MonthCents        float64         `json:"month_cents"`
-	Machines          int64           `json:"machines"`
-	BackoffUntil      *time.Time      `json:"backoff_until,omitempty"`
+	// MonthCents is the spend the monthly limit counts: the provider's bill
+	// plus the estimate since, or the estimate alone without a bill (00033).
+	MonthCents float64 `json:"month_cents"`
+	// BilledCents is what the provider itself billed this month, up to
+	// BilledThrough; both are absent when it reports no bill.
+	BilledCents   *int64     `json:"billed_cents,omitempty"`
+	BilledThrough *time.Time `json:"billed_through,omitempty"`
+	Machines      int64      `json:"machines"`
+	BackoffUntil  *time.Time `json:"backoff_until,omitempty"`
 }
 
 // Statuses lists every provider ever connected.
@@ -122,6 +128,9 @@ func Statuses(ctx context.Context, pool *pgxpool.Pool, projectID string) ([]Stat
 		}
 		if r.BackoffUntil.Valid && r.BackoffUntil.Time.After(time.Now()) {
 			st.BackoffUntil = &r.BackoffUntil.Time
+		}
+		if monthStart := MonthStart(time.Now()); r.BilledMonthCents.Valid && r.BilledThrough.Valid && !r.BilledThrough.Time.Before(monthStart) {
+			st.BilledCents, st.BilledThrough = &r.BilledMonthCents.Int64, &r.BilledThrough.Time
 		}
 		out = append(out, st)
 	}
@@ -278,14 +287,114 @@ func (s *Steps) Do(name string, fn func() (string, error)) bool {
 // every machine runs exactly what was connected, even if the tag moves.
 func PinImage(ctx context.Context, r *registry.Resolver, image, username, password string) (pinned, detail string, err error) {
 	ref, err := r.Resolve(ctx, image, username, password)
-	if errors.Is(err, registry.ErrDenied) {
-		if username == "" {
-			return "", "", fmt.Errorf("%s can't be pulled anonymously: give registry credentials that can read it", image)
-		}
-		return "", "", fmt.Errorf("%s can't be pulled with these registry credentials", image)
+	switch {
+	case errors.Is(err, registry.ErrDenied) && username == "":
+		return "", "", fmt.Errorf("%s is private, or isn't there: make the package public, or give a registry username and a token that can read it (for ghcr, read:packages)", image)
+	case errors.Is(err, registry.ErrDenied):
+		return "", "", fmt.Errorf("these registry credentials can't read %s: the token needs read:packages and access to the package", image)
+	case errors.Is(err, registry.ErrBadCredentials):
+		return "", "", fmt.Errorf("the registry refused these credentials for %s: check the username and token", image)
+	case errors.Is(err, registry.ErrNotFound):
+		return "", "", fmt.Errorf("%s isn't in the registry: no such tag (was the image built and pushed for this version?)", image)
 	}
 	if err != nil {
 		return "", "", err
 	}
 	return ref.Pinned(), "pinned to " + ref.Digest, nil
+}
+
+// Repin moves a provider that runs this build's worker image to the build
+// now running, so upgrading the server upgrades the machines it wakes: the
+// image a provider is pinned to is read at Connect, and nothing moved it
+// after. It applies only when the owner left the image to the default
+// (config "image_chosen" is false) and the pin is the same repository as
+// defaultImage. It returns the new pin, or "" when nothing moved.
+func Repin(ctx context.Context, pool *pgxpool.Pool, r *registry.Resolver, row db.ExecutorConfig, defaultImage, username, password string) (string, error) {
+	var cfg struct {
+		Image       string `json:"image"`
+		ImageChosen bool   `json:"image_chosen"`
+	}
+	if err := json.Unmarshal(row.Config, &cfg); err != nil {
+		return "", fmt.Errorf("%s config: %w", row.Kind, err)
+	}
+	if !SameRepository(cfg.Image, defaultImage) || cfg.ImageChosen {
+		return "", nil
+	}
+	pinned, _, err := PinImage(ctx, r, defaultImage, username, password)
+	if err != nil {
+		return "", err
+	}
+	if pinned == cfg.Image {
+		return "", nil
+	}
+	err = db.New(pool).SetExecutorImage(ctx, db.SetExecutorImageParams{ID: row.ID, Image: pinned, OldImage: cfg.Image})
+	if err != nil {
+		return "", fmt.Errorf("re-pin %s: %w", row.Kind, err)
+	}
+	return pinned, nil
+}
+
+// SameRepository reports whether two image references name the same
+// registry repository, whatever their tags or digests.
+func SameRepository(a, b string) bool {
+	ra, errA := registry.Parse(a)
+	rb, errB := registry.Parse(b)
+	return errA == nil && errB == nil && ra.Host == rb.Host && ra.Repo == rb.Repo
+}
+
+// Biller is an executor whose provider reports what it has billed: Modal's
+// billing report. RunPod's estimate stays ClipMux's own.
+type Biller interface {
+	// MonthSpend is what the provider billed this install from since (the
+	// month's start) up to through, the end of the last complete interval
+	// it reported.
+	MonthSpend(ctx context.Context, since time.Time) (cents int64, through time.Time, err error)
+}
+
+// MonthStart is the start of t's calendar month in UTC, as the limit
+// counts months.
+func MonthStart(t time.Time) time.Time {
+	t = t.UTC()
+	return time.Date(t.Year(), t.Month(), 1, 0, 0, 0, 0, time.UTC)
+}
+
+// RefreshBills asks every connected provider that reports a bill what it
+// has billed this month, and stores it for the spend shown and the monthly
+// limit. A provider that can't say (a Modal plan without billing reports)
+// keeps the estimate; that is logged, and the loop goes on.
+func (s *Service) RefreshBills(ctx context.Context) (int, error) {
+	cfgs, err := db.New(s.pool).ListExecutorConfigs(ctx, s.ProjectID)
+	if err != nil {
+		return 0, fmt.Errorf("list providers: %w", err)
+	}
+	n := 0
+	for _, cfg := range cfgs {
+		ex, err := s.Resolve(ctx, cfg)
+		if err != nil {
+			return n, fmt.Errorf("open %s: %w", cfg.Kind, err)
+		}
+		b, ok := ex.(Biller)
+		if !ok {
+			continue
+		}
+		cents, through, err := b.MonthSpend(ctx, MonthStart(time.Now()))
+		if err != nil {
+			// Once per provider and process: a plan without billing reports
+			// would say so every pass.
+			log := s.Logger.Debug
+			if _, said := s.billWarned.LoadOrStore(cfg.ID, true); !said {
+				log = s.Logger.Warn
+			}
+			log("the provider's bill couldn't be read; the spend shown is ClipMux's estimate", "provider", cfg.Kind, "err", err)
+			continue
+		}
+		s.billWarned.Delete(cfg.ID)
+		if err := db.New(s.pool).SetExecutorBilled(ctx, db.SetExecutorBilledParams{
+			ID: cfg.ID, Cents: pgtype.Int8{Int64: cents, Valid: true}, Through: pgtype.Timestamptz{Time: through, Valid: true},
+		}); err != nil {
+			return n, fmt.Errorf("store %s bill: %w", cfg.Kind, err)
+		}
+		n++
+	}
+	return n, nil
 }

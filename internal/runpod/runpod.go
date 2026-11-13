@@ -17,6 +17,9 @@ type Config struct {
 	// Image is the worker image every pod runs (T06 pins it to the server's
 	// build).
 	Image string `json:"image"`
+	// ImageChosen is set when the owner entered the image; otherwise it is
+	// this build's, and moves with the server's upgrades (dispatch.Repin).
+	ImageChosen bool `json:"image_chosen,omitempty"`
 	// GPUTypeIDs are the GPU types a pod may get, whichever has capacity.
 	GPUTypeIDs []string `json:"gpu_type_ids"`
 	// CloudType is SECURE: Community Cloud hosts are strangers' machines,

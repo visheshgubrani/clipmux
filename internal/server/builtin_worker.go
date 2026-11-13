@@ -72,7 +72,9 @@ func (b *builtinWorker) childEnv() []string {
 			env = append(env, name+"="+v)
 		}
 	}
-	for _, name := range append([]string{"CLIPMUX_ENCODER", "CLIPMUX_VAAPI_DEVICE", "CLIPMUX_SPEECH"}, sandbox.EnvAllowed...) {
+	// CLIPMUX_BAKED_MODELS_DIR: the image's models (D118), so the built-in
+	// worker never downloads them into the data volume.
+	for _, name := range append([]string{"CLIPMUX_ENCODER", "CLIPMUX_VAAPI_DEVICE", "CLIPMUX_SPEECH", "CLIPMUX_BAKED_MODELS_DIR"}, sandbox.EnvAllowed...) {
 		if v := os.Getenv(name); v != "" {
 			env = append(env, name+"="+v)
 		}

@@ -255,6 +255,13 @@ function DisconnectButton() {
     onSuccess: (res) => {
       setSteps(res.steps)
       if (res.disconnected) notify.done('Back on built-in delivery')
+      // The page's Content-Security-Policy names the media URL it was served
+      // with, and disconnecting moves it back to this server: reload, unless a
+      // failed step needs reading first.
+      if (res.disconnected && res.steps.every((s) => s.ok)) {
+        location.reload()
+        return
+      }
       void qc.invalidateQueries({ queryKey: ['cloudflare'] })
       void qc.invalidateQueries({ queryKey: ['setup'] })
       void qc.invalidateQueries({ queryKey: ['storage'] })
@@ -324,6 +331,13 @@ function ConnectCloudflare({
     },
   })
   const close = () => {
+    // Connect moved the media URL to the Worker's hostname, which the page's
+    // Content-Security-Policy doesn't name yet: until a reload the browser
+    // blocks every request to it and no video plays.
+    if (connect.data?.connected) {
+      location.reload()
+      return
+    }
     setToken('')
     setAccountID('')
     setSteps([])
