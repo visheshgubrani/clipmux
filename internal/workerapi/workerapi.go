@@ -214,7 +214,7 @@ func (a *API) source(ctx context.Context, assetID string) (Source, error) {
 			return Source{AgentSourceID: id, Size: size}, err
 		}
 	}
-	store, err := a.Stores.ForAsset(ctx, assetID)
+	store, err := a.Stores.SourceFor(ctx, assetID)
 	if err != nil {
 		return Source{}, err
 	}
@@ -519,7 +519,7 @@ func (a *API) audio(w http.ResponseWriter, r *http.Request) {
 		a.internal(w, "audio output", err)
 		return
 	}
-	store, err := a.Stores.ForAsset(r.Context(), att.AssetID)
+	store, err := a.Stores.MediaFor(r.Context(), att.AssetID)
 	if err != nil {
 		a.internal(w, "audio store", err)
 		return
@@ -606,7 +606,7 @@ func (a *API) sign(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp := SignResponse{Action: "continue", URLs: make(map[string]string, len(paths)), ExpiresAt: time.Now().Add(putURLTTL).UTC()}
-	store, err := a.Stores.ForAsset(r.Context(), att.AssetID)
+	store, err := a.Stores.MediaFor(r.Context(), att.AssetID)
 	if err != nil {
 		a.internal(w, "storage", err)
 		return
@@ -815,7 +815,7 @@ func (a *API) sourceParts(w http.ResponseWriter, r *http.Request) {
 		httpjson.Error(w, http.StatusBadRequest, "invalid_request", fmt.Sprintf("sign at most %d parts per call", MaxSourceParts))
 		return
 	}
-	store, err := a.Stores.ForAsset(r.Context(), att.AssetID)
+	store, err := a.Stores.SourceFor(r.Context(), att.AssetID)
 	if err != nil {
 		a.internal(w, "storage", err)
 		return
@@ -874,7 +874,7 @@ func (a *API) completeSource(w http.ResponseWriter, r *http.Request, token strin
 		httpjson.Error(w, http.StatusUnauthorized, "unauthorized", "unknown attempt token")
 		return
 	}
-	store, err := a.Stores.ForAsset(r.Context(), att.AssetID)
+	store, err := a.Stores.SourceFor(r.Context(), att.AssetID)
 	if err != nil {
 		a.internal(w, "storage", err)
 		return

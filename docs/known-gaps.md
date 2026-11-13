@@ -301,6 +301,11 @@ when you introduce or discover it; remove it when it is closed.
   from modal.com/pricing on 2026-11-12, since Modal has no price API; the
   spend estimate drifts when Modal changes its prices until the table is
   refreshed. The NVENC lists for both providers are hand-kept too.
+- The PC agent has left the dashboard (D116) and stays a command-line and
+  API option (docs/agents.md): nothing in the dashboard lists, pairs or
+  revokes a PC, and setting routing to `workers` or `agents` takes the API.
+  Whether to remove it, or to bring a small list back, is decided after
+  launch, from whether owners ask for it.
 
 ## SDK and agents (D112)
 

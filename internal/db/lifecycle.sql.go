@@ -13,7 +13,7 @@ import (
 
 const bumpAssetVersion = `-- name: BumpAssetVersion :one
 UPDATE assets SET version = version + 1, updated_at = now() WHERE id = $1
-RETURNING id, project_id, app_id, status, error_code, version, storage_id, source_uri, agent_source_id, source_kept, current_output_id, passthrough, duration_seconds, created_at, updated_at, deleted_at, title
+RETURNING id, project_id, app_id, status, error_code, version, storage_id, source_uri, agent_source_id, source_kept, current_output_id, passthrough, duration_seconds, created_at, updated_at, deleted_at, title, media_storage_id
 `
 
 func (q *Queries) BumpAssetVersion(ctx context.Context, id string) (Asset, error) {
@@ -37,6 +37,7 @@ func (q *Queries) BumpAssetVersion(ctx context.Context, id string) (Asset, error
 		&i.UpdatedAt,
 		&i.DeletedAt,
 		&i.Title,
+		&i.MediaStorageID,
 	)
 	return i, err
 }
@@ -51,7 +52,7 @@ WHERE id = (
     ORDER BY c.available_at, c.id
     LIMIT 1
     FOR UPDATE SKIP LOCKED)
-RETURNING id, project_id, asset_id, kind, status, phase, progress, profile_id, profile_version, pinned_agent_id, lost_count, failed_count, error_code, routed_to, route_reason, available_at, created_at, started_at, finished_at, source_storage_id, target_storage_id, import_url, track_id
+RETURNING id, project_id, asset_id, kind, status, phase, progress, profile_id, profile_version, pinned_agent_id, lost_count, failed_count, error_code, routed_to, route_reason, available_at, created_at, started_at, finished_at, source_storage_id, target_storage_id, import_url, track_id, source_media_storage_id, target_media_storage_id
 `
 
 type ClaimControlJobParams struct {
@@ -90,25 +91,36 @@ func (q *Queries) ClaimControlJob(ctx context.Context, arg ClaimControlJobParams
 		&i.TargetStorageID,
 		&i.ImportUrl,
 		&i.TrackID,
+		&i.SourceMediaStorageID,
+		&i.TargetMediaStorageID,
 	)
 	return i, err
 }
 
-const countAssetsOffStore = `-- name: CountAssetsOffStore :one
-SELECT count(*) FROM assets
-WHERE project_id = $1 AND status IN ('ready', 'errored', 'processing') AND storage_id <> $2::text
+const countAssetsElsewhere = `-- name: CountAssetsElsewhere :one
+SELECT count(*) FILTER (WHERE storage_id <> $2::text)::bigint AS uploads,
+       count(*) FILTER (WHERE media_storage_id <> $3::text)::bigint AS media
+FROM assets WHERE project_id = $1 AND status IN ('ready', 'errored', 'processing')
 `
 
-type CountAssetsOffStoreParams struct {
-	ProjectID string
-	Target    string
+type CountAssetsElsewhereParams struct {
+	ProjectID   string
+	Target      string
+	MediaTarget string
 }
 
-func (q *Queries) CountAssetsOffStore(ctx context.Context, arg CountAssetsOffStoreParams) (int64, error) {
-	row := q.db.QueryRow(ctx, countAssetsOffStore, arg.ProjectID, arg.Target)
-	var count int64
-	err := row.Scan(&count)
-	return count, err
+type CountAssetsElsewhereRow struct {
+	Uploads int64
+	Media   int64
+}
+
+// Live assets whose source isn't on the uploads target, and those whose
+// encoded files aren't on the media target (D117).
+func (q *Queries) CountAssetsElsewhere(ctx context.Context, arg CountAssetsElsewhereParams) (CountAssetsElsewhereRow, error) {
+	row := q.db.QueryRow(ctx, countAssetsElsewhere, arg.ProjectID, arg.Target, arg.MediaTarget)
+	var i CountAssetsElsewhereRow
+	err := row.Scan(&i.Uploads, &i.Media)
+	return i, err
 }
 
 const countLivePlaybackIDs = `-- name: CountLivePlaybackIDs :one
@@ -149,7 +161,7 @@ func (q *Queries) DeferJob(ctx context.Context, arg DeferJobParams) error {
 }
 
 const getActiveJobForAsset = `-- name: GetActiveJobForAsset :many
-SELECT id, project_id, asset_id, kind, status, phase, progress, profile_id, profile_version, pinned_agent_id, lost_count, failed_count, error_code, routed_to, route_reason, available_at, created_at, started_at, finished_at, source_storage_id, target_storage_id, import_url, track_id FROM jobs WHERE asset_id = $1 AND status IN ('queued', 'running') AND kind = ANY ($2::text[])
+SELECT id, project_id, asset_id, kind, status, phase, progress, profile_id, profile_version, pinned_agent_id, lost_count, failed_count, error_code, routed_to, route_reason, available_at, created_at, started_at, finished_at, source_storage_id, target_storage_id, import_url, track_id, source_media_storage_id, target_media_storage_id FROM jobs WHERE asset_id = $1 AND status IN ('queued', 'running') AND kind = ANY ($2::text[])
 ORDER BY id
 `
 
@@ -193,6 +205,8 @@ func (q *Queries) GetActiveJobForAsset(ctx context.Context, arg GetActiveJobForA
 			&i.TargetStorageID,
 			&i.ImportUrl,
 			&i.TrackID,
+			&i.SourceMediaStorageID,
+			&i.TargetMediaStorageID,
 		); err != nil {
 			return nil, err
 		}
@@ -254,25 +268,28 @@ func (q *Queries) LateWritesUntil(ctx context.Context, arg LateWritesUntilParams
 }
 
 const listAssetsToMove = `-- name: ListAssetsToMove :many
-SELECT a.id, a.storage_id FROM assets a
-WHERE a.project_id = $1 AND a.status IN ('ready', 'errored') AND a.storage_id <> $2::text
+SELECT a.id, a.storage_id, a.media_storage_id FROM assets a
+WHERE a.project_id = $1 AND a.status IN ('ready', 'errored')
+  AND (a.storage_id <> $2::text OR a.media_storage_id <> $3::text)
   AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.asset_id = a.id AND j.status IN ('queued', 'running'))
 ORDER BY a.created_at, a.id
 `
 
 type ListAssetsToMoveParams struct {
-	ProjectID string
-	Target    string
+	ProjectID   string
+	Target      string
+	MediaTarget string
 }
 
 type ListAssetsToMoveRow struct {
-	ID        string
-	StorageID string
+	ID             string
+	StorageID      string
+	MediaStorageID string
 }
 
-// Live assets not on the target store and with no active job.
+// Live assets with a part away from its target, and no active job.
 func (q *Queries) ListAssetsToMove(ctx context.Context, arg ListAssetsToMoveParams) ([]ListAssetsToMoveRow, error) {
-	rows, err := q.db.Query(ctx, listAssetsToMove, arg.ProjectID, arg.Target)
+	rows, err := q.db.Query(ctx, listAssetsToMove, arg.ProjectID, arg.Target, arg.MediaTarget)
 	if err != nil {
 		return nil, err
 	}
@@ -280,7 +297,7 @@ func (q *Queries) ListAssetsToMove(ctx context.Context, arg ListAssetsToMovePara
 	items := []ListAssetsToMoveRow{}
 	for rows.Next() {
 		var i ListAssetsToMoveRow
-		if err := rows.Scan(&i.ID, &i.StorageID); err != nil {
+		if err := rows.Scan(&i.ID, &i.StorageID, &i.MediaStorageID); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -375,7 +392,7 @@ func (q *Queries) LockActiveUploadForAsset(ctx context.Context, assetID string) 
 const markAssetDeleted = `-- name: MarkAssetDeleted :one
 UPDATE assets SET status = 'deleted', error_code = NULL, version = version + 1, updated_at = now()
 WHERE id = $1
-RETURNING id, project_id, app_id, status, error_code, version, storage_id, source_uri, agent_source_id, source_kept, current_output_id, passthrough, duration_seconds, created_at, updated_at, deleted_at, title
+RETURNING id, project_id, app_id, status, error_code, version, storage_id, source_uri, agent_source_id, source_kept, current_output_id, passthrough, duration_seconds, created_at, updated_at, deleted_at, title, media_storage_id
 `
 
 func (q *Queries) MarkAssetDeleted(ctx context.Context, id string) (Asset, error) {
@@ -399,6 +416,7 @@ func (q *Queries) MarkAssetDeleted(ctx context.Context, id string) (Asset, error
 		&i.UpdatedAt,
 		&i.DeletedAt,
 		&i.Title,
+		&i.MediaStorageID,
 	)
 	return i, err
 }
@@ -418,7 +436,7 @@ func (q *Queries) MarkAssetFilesDeleted(ctx context.Context, id string) (int64, 
 const markAssetReprocessing = `-- name: MarkAssetReprocessing :one
 UPDATE assets SET status = 'processing', error_code = NULL, version = version + 1, updated_at = now()
 WHERE id = $1
-RETURNING id, project_id, app_id, status, error_code, version, storage_id, source_uri, agent_source_id, source_kept, current_output_id, passthrough, duration_seconds, created_at, updated_at, deleted_at, title
+RETURNING id, project_id, app_id, status, error_code, version, storage_id, source_uri, agent_source_id, source_kept, current_output_id, passthrough, duration_seconds, created_at, updated_at, deleted_at, title, media_storage_id
 `
 
 // A re-encode of an errored asset whose source was kept.
@@ -443,6 +461,7 @@ func (q *Queries) MarkAssetReprocessing(ctx context.Context, id string) (Asset, 
 		&i.UpdatedAt,
 		&i.DeletedAt,
 		&i.Title,
+		&i.MediaStorageID,
 	)
 	return i, err
 }
@@ -485,18 +504,27 @@ func (q *Queries) MarkPlaybackIDsRevoking(ctx context.Context, assetID string) (
 }
 
 const moveAssetStorage = `-- name: MoveAssetStorage :execrows
-UPDATE assets SET storage_id = $1::text, version = version + 1, updated_at = now()
-WHERE id = $2 AND storage_id = $3::text
+UPDATE assets SET storage_id = $1::text, media_storage_id = $2::text,
+    version = version + 1, updated_at = now()
+WHERE id = $3 AND storage_id = $4::text AND media_storage_id = $5::text
 `
 
 type MoveAssetStorageParams struct {
-	Target string
-	ID     string
-	Source string
+	Target      string
+	MediaTarget string
+	ID          string
+	Source      string
+	MediaSource string
 }
 
 func (q *Queries) MoveAssetStorage(ctx context.Context, arg MoveAssetStorageParams) (int64, error) {
-	result, err := q.db.Exec(ctx, moveAssetStorage, arg.Target, arg.ID, arg.Source)
+	result, err := q.db.Exec(ctx, moveAssetStorage,
+		arg.Target,
+		arg.MediaTarget,
+		arg.ID,
+		arg.Source,
+		arg.MediaSource,
+	)
 	if err != nil {
 		return 0, err
 	}
@@ -525,27 +553,32 @@ func (q *Queries) MoveProgress(ctx context.Context, projectID string) (MoveProgr
 }
 
 const queueMoveJob = `-- name: QueueMoveJob :one
-INSERT INTO jobs (id, project_id, asset_id, kind, source_storage_id, target_storage_id)
-VALUES ($1, $2, $3, 'move', $4, $5)
-RETURNING id, project_id, asset_id, kind, status, phase, progress, profile_id, profile_version, pinned_agent_id, lost_count, failed_count, error_code, routed_to, route_reason, available_at, created_at, started_at, finished_at, source_storage_id, target_storage_id, import_url, track_id
+INSERT INTO jobs (id, project_id, asset_id, kind, source_storage_id, target_storage_id, source_media_storage_id, target_media_storage_id)
+VALUES ($1, $2, $3, 'move', $4, $5, $6, $7)
+RETURNING id, project_id, asset_id, kind, status, phase, progress, profile_id, profile_version, pinned_agent_id, lost_count, failed_count, error_code, routed_to, route_reason, available_at, created_at, started_at, finished_at, source_storage_id, target_storage_id, import_url, track_id, source_media_storage_id, target_media_storage_id
 `
 
 type QueueMoveJobParams struct {
-	ID              string
-	ProjectID       string
-	AssetID         string
-	SourceStorageID pgtype.Text
-	TargetStorageID pgtype.Text
+	ID          string
+	ProjectID   string
+	AssetID     string
+	Source      pgtype.Text
+	Target      pgtype.Text
+	MediaSource pgtype.Text
+	MediaTarget pgtype.Text
 }
 
 // One mutating job per asset: the partial unique index refuses a second.
+// The source moves to target, the encoded files to media_target (D117).
 func (q *Queries) QueueMoveJob(ctx context.Context, arg QueueMoveJobParams) (Job, error) {
 	row := q.db.QueryRow(ctx, queueMoveJob,
 		arg.ID,
 		arg.ProjectID,
 		arg.AssetID,
-		arg.SourceStorageID,
-		arg.TargetStorageID,
+		arg.Source,
+		arg.Target,
+		arg.MediaSource,
+		arg.MediaTarget,
 	)
 	var i Job
 	err := row.Scan(
@@ -572,6 +605,8 @@ func (q *Queries) QueueMoveJob(ctx context.Context, arg QueueMoveJobParams) (Job
 		&i.TargetStorageID,
 		&i.ImportUrl,
 		&i.TrackID,
+		&i.SourceMediaStorageID,
+		&i.TargetMediaStorageID,
 	)
 	return i, err
 }

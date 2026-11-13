@@ -23,7 +23,8 @@ func TestDisconnectReturnsToBuiltInDelivery(t *testing.T) {
 		t.Fatalf("connect: %+v, %v", res.Steps, err)
 	}
 	def, _ := r.pool.GetDefaultStorage(ctx, db.DefaultProjectID)
-	bucket, _ := r.stash.Get(ctx, def.ID)
+	delivered, _ := r.pool.GetProjectDelivery(ctx, db.DefaultProjectID)
+	bucket, _ := r.stash.Get(ctx, delivered.DeliveryStorageID.String)
 	if err := bucket.Put(ctx, routes.RouteKey("pid_1"), strings.NewReader(`{"v":1}`)); err != nil {
 		t.Fatal(err)
 	}
@@ -56,8 +57,13 @@ func TestDisconnectReturnsToBuiltInDelivery(t *testing.T) {
 	if _, err := bucket.Head(ctx, "media/ast_1/out_1/master.m3u8"); err != nil {
 		t.Fatalf("an asset's files must stay: %v", err)
 	}
+	// Uploads stay where they went, and new videos' encoded files go
+	// beside them again (D117).
 	if after, _ := r.pool.GetDefaultStorage(ctx, db.DefaultProjectID); after.ID != def.ID {
-		t.Fatalf("default storage = %s, want the R2 store %s kept", after.ID, def.ID)
+		t.Fatalf("default storage = %s, want %s unchanged", after.ID, def.ID)
+	}
+	if media, _ := r.pool.GetMediaTarget(ctx, db.DefaultProjectID); media != def.ID {
+		t.Fatalf("media target after disconnect = %s, want the default %s", media, def.ID)
 	}
 	if st, err := r.conn.Status(ctx); err != nil || st.Connected {
 		t.Fatalf("status = %+v, %v; want not connected", st, err)

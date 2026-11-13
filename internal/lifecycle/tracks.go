@@ -217,7 +217,7 @@ func (s *Service) DeleteTrack(ctx context.Context, key apikeys.Key, assetID, tra
 	}
 	q := db.New(s.pool)
 	if servable {
-		store, err := s.stores.ForAsset(ctx, assetID)
+		store, err := s.stores.MediaFor(ctx, assetID)
 		if err != nil {
 			return assets.View{}, false, err
 		}

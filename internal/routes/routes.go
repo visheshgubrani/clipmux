@@ -207,7 +207,7 @@ func Desired(ctx context.Context, q *db.Queries, playbackID, bucketID string) (*
 	}
 	r := &Record{
 		V: 1, AppID: rt.AppID, AssetID: rt.AssetID, OutputID: rt.CurrentOutputID.String, Policy: rt.Policy,
-		Backend: backend(rt.StorageID, bucketID), Outputs: make(map[string]int32, len(outs)), Denied: rt.AppDisabled,
+		Backend: backend(rt.MediaStorageID, bucketID), Outputs: make(map[string]int32, len(outs)), Denied: rt.AppDisabled,
 		Share: rt.Share,
 	}
 	for _, o := range outs {
@@ -229,8 +229,10 @@ func Desired(ctx context.Context, q *db.Queries, playbackID, bucketID string) (*
 	return r, nil
 }
 
-func backend(storageID, bucketID string) string {
-	if storageID == bucketID {
+// backend says where the Worker reads an asset's encoded files: from its
+// own bucket when they are there, otherwise through origin (D036, D117).
+func backend(mediaStorageID, bucketID string) string {
+	if mediaStorageID == bucketID {
 		return BackendR2
 	}
 	return BackendOrigin
@@ -391,7 +393,7 @@ func desiredAll(ctx context.Context, q *db.Queries, projectID, bucketID string) 
 		}
 		want[rt.PlaybackID] = encode(Record{
 			V: 1, AppID: rt.AppID, AssetID: rt.AssetID, OutputID: rt.CurrentOutputID.String, Policy: rt.Policy,
-			Backend: backend(rt.StorageID, bucketID), Outputs: outputs, Denied: rt.AppDisabled,
+			Backend: backend(rt.MediaStorageID, bucketID), Outputs: outputs, Denied: rt.AppDisabled,
 			Tracks: tracksOf[rt.AssetID], NoAudio: silent[rt.AssetID], Share: rt.Share,
 		})
 	}

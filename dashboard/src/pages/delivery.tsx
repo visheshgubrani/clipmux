@@ -19,7 +19,6 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card'
-import { Checkbox } from '@/components/ui/checkbox'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
@@ -28,18 +27,23 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Spinner } from '@/components/ui/spinner'
 import { ago, fullDate } from '@/lib/format'
 import { notify } from '@/lib/notify'
-import { storageName } from '@/pages/storage'
+import { LibraryMove, storageName } from '@/pages/storage'
 import { q } from '@/queries'
 
-// Delivery (docs/architecture.md, "Optional upgrades"): how videos reach
-// viewers, built in or through Cloudflare. Where files live is Storage.
+// Delivery (docs/architecture.md, "Optional upgrades", D117): how videos
+// reach viewers, and so where their encoded files are kept: with the
+// uploads when this server streams them, in R2 when Cloudflare does. Where
+// uploads are kept is Storage.
 
 const DEFAULT_BUCKET = 'clipmux-media'
 
 export function Delivery() {
   return (
     <PageBody>
-      <PageHeader title="Delivery" description="How videos reach viewers." />
+      <PageHeader
+        title="Delivery"
+        description="How videos reach viewers, and where their encoded files are kept."
+      />
       <DeliverySection />
     </PageBody>
   )
@@ -80,6 +84,9 @@ function DeliverySection() {
                   </CardTitle>
                   <CardDescription>
                     This server streams every video. Simple, and fine for a few hundred viewers at once.
+                    {def &&
+                      !s.connected &&
+                      ` Encoded files are kept with your uploads, on ${storageName(def)}.`}
                   </CardDescription>
                 </CardHeader>
               </Card>
@@ -90,17 +97,18 @@ function DeliverySection() {
                   </CardTitle>
                   <CardDescription>
                     {s.connected
-                      ? `The Worker at ${s.hostname} serves playback from the R2 bucket ${s.bucket}. Your apps, tokens and playback IDs stay the same.`
-                      : "Serve from Cloudflare's edge with a Worker. ClipMux creates the R2 bucket, deploys the Worker and points your media hostname at it. Needs a zone on Workers Paid."}
+                      ? `The Worker at ${s.hostname} serves playback from the R2 bucket ${s.bucket}, where new videos are encoded. Your apps, tokens and playback IDs stay the same.`
+                      : "Serve from Cloudflare's edge with a Worker. ClipMux creates an R2 bucket for encoded videos, deploys the Worker and points your media hostname at it. Needs a zone on Workers Paid."}
                   </CardDescription>
                 </CardHeader>
-                {s.connected && def && (
+                {def && (
                   <CardContent className="text-sm text-muted-foreground">
-                    New uploads go to {storageName(def)}.{' '}
+                    Uploads stay on {storageName(def)}
+                    {s.connected ? '' : ' either way'}.{' '}
                     <Link to="/storage" className="text-link underline-offset-4 hover:underline">
-                      Change it under Storage
-                    </Link>
-                    .
+                      Storage
+                    </Link>{' '}
+                    chooses where.
                   </CardContent>
                 )}
                 <CardFooter className="gap-2">
@@ -115,12 +123,8 @@ function DeliverySection() {
                 </CardFooter>
               </Card>
             </div>
-            <ConnectCloudflare
-              open={connecting}
-              onOpenChange={setConnecting}
-              status={s}
-              r2IsDefault={!!def?.cloudflare_delivery}
-            />
+            {s.connected && <LibraryMove part="media" />}
+            <ConnectCloudflare open={connecting} onOpenChange={setConnecting} status={s} />
             <EdgeAnalyticsCard cloudflare={s.connected} tokenURL={s.analytics_token_url} />
           </>
         )}
@@ -298,12 +302,10 @@ function ConnectCloudflare({
   open,
   onOpenChange,
   status,
-  r2IsDefault,
 }: {
   open: boolean
   onOpenChange: (o: boolean) => void
   status: Cloudflare
-  r2IsDefault: boolean
 }) {
   const qc = useQueryClient()
   const [token, setToken] = React.useState('')
@@ -354,7 +356,6 @@ function ConnectCloudflare({
               hostname,
               bucket: String(f.get('bucket') ?? '').trim() || undefined,
               account_id: found?.account_id,
-              default_storage: f.get('default_storage') === 'on',
             })
           }}
         >
@@ -406,7 +407,6 @@ function ConnectCloudflare({
                 key={`${found.account_id}:${(found.zones ?? []).join(',')}:${(found.buckets ?? []).join(',')}`}
                 found={found}
                 status={status}
-                storeUploads={status.connected ? r2IsDefault : true}
               />
             )}
             {connect.isError && <FieldError>{describe(connect.error)}</FieldError>}
@@ -436,16 +436,8 @@ function ConnectCloudflare({
   )
 }
 
-/** The media hostname, bucket and upload choice, from what the token reaches. */
-function Choices({
-  found,
-  status,
-  storeUploads,
-}: {
-  found: CloudflareInspection
-  status: Cloudflare
-  storeUploads: boolean
-}) {
+/** The media hostname and the bucket, from what the token reaches. */
+function Choices({ found, status }: { found: CloudflareInspection; status: Cloudflare }) {
   const zones = found.zones ?? []
   const buckets = found.buckets ?? []
   const pickZones = zones.length > 0
@@ -459,7 +451,6 @@ function Choices({
       : 'media',
   )
   const [bucket, setBucket] = React.useState(status.bucket || DEFAULT_BUCKET)
-  const [toR2, setToR2] = React.useState(storeUploads)
   // The bucket it starts on stays a choice when it doesn't exist yet.
   const first = status.bucket || DEFAULT_BUCKET
   const bucketOptions = buckets.includes(first) ? buckets : [first, ...buckets]
@@ -549,20 +540,10 @@ function Choices({
             onChange={(e) => setBucket(e.target.value)}
           />
         )}
-        <FieldDescription>The Worker serves from it. A new bucket is created for you.</FieldDescription>
-      </Field>
-      <Field orientation="horizontal">
-        <input type="hidden" name="default_storage" value={toR2 ? 'on' : 'off'} />
-        <Checkbox id="cf-default" checked={toR2} onCheckedChange={(v) => setToR2(v === true)} />
-        <div className="flex flex-col gap-1">
-          <FieldLabel htmlFor="cf-default" className="font-normal">
-            Store new uploads in R2
-          </FieldLabel>
-          <FieldDescription>
-            Recommended: the Worker serves them from the edge. Otherwise uploads stay where they are now and
-            play through this server; change it under Storage any time.
-          </FieldDescription>
-        </div>
+        <FieldDescription>
+          New videos are encoded into it and the Worker serves them from it; uploads stay where Storage keeps
+          them. A new bucket is created for you.
+        </FieldDescription>
       </Field>
     </>
   )

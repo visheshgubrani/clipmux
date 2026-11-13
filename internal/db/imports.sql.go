@@ -20,7 +20,7 @@ WHERE id = (
     ORDER BY c.available_at, c.id
     LIMIT 1
     FOR UPDATE SKIP LOCKED)
-RETURNING id, project_id, asset_id, kind, status, phase, progress, profile_id, profile_version, pinned_agent_id, lost_count, failed_count, error_code, routed_to, route_reason, available_at, created_at, started_at, finished_at, source_storage_id, target_storage_id, import_url, track_id
+RETURNING id, project_id, asset_id, kind, status, phase, progress, profile_id, profile_version, pinned_agent_id, lost_count, failed_count, error_code, routed_to, route_reason, available_at, created_at, started_at, finished_at, source_storage_id, target_storage_id, import_url, track_id, source_media_storage_id, target_media_storage_id
 `
 
 // serve fetches imports itself; a claim leases the job for the fetch.
@@ -51,6 +51,8 @@ func (q *Queries) ClaimImportJob(ctx context.Context, leaseSeconds float64) (Job
 		&i.TargetStorageID,
 		&i.ImportUrl,
 		&i.TrackID,
+		&i.SourceMediaStorageID,
+		&i.TargetMediaStorageID,
 	)
 	return i, err
 }
@@ -58,7 +60,7 @@ func (q *Queries) ClaimImportJob(ctx context.Context, leaseSeconds float64) (Job
 const createImportJob = `-- name: CreateImportJob :one
 INSERT INTO jobs (id, project_id, asset_id, kind, import_url)
 VALUES ($1, $2, $3, 'import', $4)
-RETURNING id, project_id, asset_id, kind, status, phase, progress, profile_id, profile_version, pinned_agent_id, lost_count, failed_count, error_code, routed_to, route_reason, available_at, created_at, started_at, finished_at, source_storage_id, target_storage_id, import_url, track_id
+RETURNING id, project_id, asset_id, kind, status, phase, progress, profile_id, profile_version, pinned_agent_id, lost_count, failed_count, error_code, routed_to, route_reason, available_at, created_at, started_at, finished_at, source_storage_id, target_storage_id, import_url, track_id, source_media_storage_id, target_media_storage_id
 `
 
 type CreateImportJobParams struct {
@@ -100,15 +102,17 @@ func (q *Queries) CreateImportJob(ctx context.Context, arg CreateImportJobParams
 		&i.TargetStorageID,
 		&i.ImportUrl,
 		&i.TrackID,
+		&i.SourceMediaStorageID,
+		&i.TargetMediaStorageID,
 	)
 	return i, err
 }
 
 const createImportedAsset = `-- name: CreateImportedAsset :one
 
-INSERT INTO assets (id, project_id, app_id, status, storage_id, passthrough, title)
-VALUES ($1, $2, $3, 'processing', $4, $5, $6)
-RETURNING id, project_id, app_id, status, error_code, version, storage_id, source_uri, agent_source_id, source_kept, current_output_id, passthrough, duration_seconds, created_at, updated_at, deleted_at, title
+INSERT INTO assets (id, project_id, app_id, status, storage_id, media_storage_id, passthrough, title)
+VALUES ($1, $2, $3, 'processing', $4, coalesce(media_target($2), $4), $5, $6)
+RETURNING id, project_id, app_id, status, error_code, version, storage_id, source_uri, agent_source_id, source_kept, current_output_id, passthrough, duration_seconds, created_at, updated_at, deleted_at, title, media_storage_id
 `
 
 type CreateImportedAssetParams struct {
@@ -149,6 +153,7 @@ func (q *Queries) CreateImportedAsset(ctx context.Context, arg CreateImportedAss
 		&i.UpdatedAt,
 		&i.DeletedAt,
 		&i.Title,
+		&i.MediaStorageID,
 	)
 	return i, err
 }

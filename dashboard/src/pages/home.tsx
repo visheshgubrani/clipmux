@@ -2,7 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import { CircleCheckIcon, CircleIcon, UploadIcon, XIcon } from 'lucide-react'
 import * as React from 'react'
 import { Link } from 'react-router'
-import type { LibraryAsset, Setup } from '@/api'
+import type { LibraryAsset } from '@/api'
 import { PageBody, PageHeader, Section } from '@/components/page'
 import { Poster } from '@/components/poster'
 import { QueryState } from '@/components/query-state'
@@ -28,7 +28,7 @@ import { q } from '@/queries'
 
 const HIDE_KEY = 'clipmux-hide-setup'
 
-export function Home({ setup }: { setup: Setup }) {
+export function Home() {
   const upload = useUpload()
   const recent = useQuery({ ...q.latest({}, 8), select: (d) => d.data })
   const attention = useQuery({ ...q.latest({ status: 'errored' }, 5), select: (d) => d.data })
@@ -46,7 +46,7 @@ export function Home({ setup }: { setup: Setup }) {
           </Button>
         }
       />
-      <Checklist setup={setup} />
+      <Checklist />
       {needs.length > 0 && (
         <Section title="Needs attention" aria-label="Needs attention">
           <ItemGroup className="gap-1">
@@ -139,7 +139,7 @@ export function PosterGridSkeleton({ count }: { count: number }) {
 }
 
 /** "Finish setting up": each optional upgrade as a row, until done or hidden. */
-function Checklist({ setup }: { setup: Setup }) {
+function Checklist() {
   const [hidden, setHidden] = React.useState(() => {
     try {
       return localStorage.getItem(HIDE_KEY) === '1'
@@ -149,18 +149,10 @@ function Checklist({ setup }: { setup: Setup }) {
   })
   const cloudflare = useQuery(q.cloudflare())
   const storage = useQuery(q.storage())
-  const agents = useQuery(q.agents())
   const executors = useQuery(q.executors())
   const chapters = useQuery(q.chapters())
   const apps = useQuery(q.apps())
-  const testPassed = setup.setup_test?.status === 'passed'
   const steps = [
-    {
-      done: testPassed,
-      title: 'Run the setup test',
-      detail: 'A sample plays end to end on this server.',
-      to: '/settings',
-    },
     {
       done: (storage.data?.data ?? []).some((s) => s.default && s.kind !== 'fs'),
       title: 'Store uploads in a bucket',
@@ -172,12 +164,6 @@ function Checklist({ setup }: { setup: Setup }) {
       title: 'Connect Cloudflare',
       detail: 'Serve videos from the edge with a Worker.',
       to: '/delivery',
-    },
-    {
-      done: (agents.data?.data ?? []).some((a) => a.status !== 'revoked'),
-      title: 'Connect a PC',
-      detail: 'Encode on your own GPU with one command.',
-      to: '/encoding',
     },
     {
       done: (executors.data?.data ?? []).some((p) => p.connected),
@@ -251,32 +237,37 @@ function Checklist({ setup }: { setup: Setup }) {
   )
 }
 
+const cloudNames: Record<string, string> = { modal: 'Modal', runpod: 'RunPod' }
+
 /** One quiet line at the bottom: where things run and play from. */
 function StatusLine() {
-  const agents = useQuery(q.agents())
   const routing = useQuery(q.routing())
   const cloudflare = useQuery(q.cloudflare())
   const storage = useQuery(q.storage())
   const speech = useQuery(q.speech())
   const chapters = useQuery(q.chapters())
-  const online = (agents.data?.data ?? []).filter((a) => a.online).length
   const store = storage.data?.data.find((s) => s.default)
-  const server = routing.data?.builtin_worker.online
+  const r = routing.data
   const items = [
     {
       to: '/encoding',
       label: 'Encoding',
-      value:
-        server === undefined
-          ? '…'
-          : [server ? 'this server' : null, online ? `${online} PC${online > 1 ? 's' : ''}` : null]
-              .filter(Boolean)
-              .join(' and ') || 'no worker online',
+      value: !r
+        ? '…'
+        : r.primary_executor in cloudNames
+          ? `${cloudNames[r.primary_executor]}${r.fallback_executor === 'builtin' ? ', else this server' : ''}`
+          : r.builtin_worker.online
+            ? 'this server'
+            : 'this server (offline)',
     },
-    { to: '/delivery', label: 'Delivery', value: cloudflare.data?.connected ? 'Cloudflare' : 'built in' },
+    {
+      to: '/delivery',
+      label: 'Delivery',
+      value: cloudflare.data?.connected ? `Cloudflare, from R2 (${cloudflare.data.bucket})` : 'built in',
+    },
     {
       to: '/storage',
-      label: 'Storage',
+      label: 'Uploads',
       value: !store
         ? '…'
         : store.kind === 'fs'

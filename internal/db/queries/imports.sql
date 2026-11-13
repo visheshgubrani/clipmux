@@ -1,8 +1,8 @@
 -- Import from URL (P2-T06).
 
 -- name: CreateImportedAsset :one
-INSERT INTO assets (id, project_id, app_id, status, storage_id, passthrough, title)
-VALUES ($1, $2, $3, 'processing', $4, $5, $6)
+INSERT INTO assets (id, project_id, app_id, status, storage_id, media_storage_id, passthrough, title)
+VALUES ($1, $2, $3, 'processing', $4, coalesce(media_target($2), $4), $5, $6)
 RETURNING *;
 
 -- name: CreateImportJob :one

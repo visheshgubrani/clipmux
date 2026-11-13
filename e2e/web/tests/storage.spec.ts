@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test'
 import { dismissToast, go, noHorizontalScroll, type OpsConfig, signIn, watchCSP } from './csp.ts'
 
-// Storage (P6-T13, D110): where uploads go. A generic S3 bucket is checked
+// Storage (P6-T13, D110, D117): where uploaded originals go. A generic S3 bucket is checked
 // before it's saved, takes new uploads, hands them back to this server's
 // disk, has its keys rotated and is removed. An R2 bucket comes from a
 // pasted Cloudflare token and a bucket picked from what it reaches.

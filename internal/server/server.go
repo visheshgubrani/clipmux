@@ -387,6 +387,9 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 	appPairings.Logger = logger
 	tests := setuptest.New(pool, set, box, b.urls, upl, life, cfg.SelfDial)
 	tests.Logger = logger
+	if cfg.BuiltinWorker {
+		tests.ProviderFallback = queue.RouteBuiltin
+	}
 	mgmt.Tests = tests
 	mgmt.Life = life
 	mgmt.Stores = set
@@ -527,20 +530,8 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 	files := retention.NewFiles(pool, set, store)
 	files.Logger = logger
 	loop(RetentionInterval, "file_retention", files.Run)
-	// Saving the URLs re-runs the setup test: a wrong hostname should fail
-	// here, not in an app.
-	mgmt.URLsSaved = func(settings.URLs) {
-		if _, err := tests.Queue(ctx, "urls_saved"); err != nil {
-			logger.Error("queue setup test", "err", err)
-		}
-	}
-	// With the built-in worker the sample can encode right away, so a fresh
-	// install proves its path on first boot.
-	if cfg.BuiltinWorker {
-		if err := tests.QueueFirst(ctx); err != nil {
-			return err
-		}
-	}
+	// The setup test runs when the owner asks for it (D115), not on first
+	// boot or when the URLs are saved.
 	var builtinDone <-chan struct{} // nil: no built-in worker to wait for
 	if cfg.BuiltinWorker {
 		bw := &builtinWorker{

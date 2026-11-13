@@ -237,17 +237,19 @@ func TestConnectMovesDeliveryToTheWorker(t *testing.T) {
 	if r.fake.domain["hostname"] != "media.example.com" || r.fake.domain["service"] != "clipmux-media-example-com" || r.fake.domain["zone_id"] != "zone1" {
 		t.Fatalf("domain = %v", r.fake.domain)
 	}
-	// Delivery, default storage and the media URL all moved.
+	// Delivery and the media URL moved; uploads stay where Storage sends
+	// them, and new videos' encoded files go to the bucket (D117).
 	p, _ := r.pool.GetProjectDelivery(ctx, db.DefaultProjectID)
 	def, _ := r.pool.GetDefaultStorage(ctx, db.DefaultProjectID)
-	if p.Delivery != "worker" || p.DeliveryStorageID.String != def.ID || def.Kind != "r2" {
-		t.Fatalf("delivery = %+v, default storage = %+v", p, def)
+	media, _ := r.pool.GetMediaTarget(ctx, db.DefaultProjectID)
+	if p.Delivery != "worker" || def.Kind != "fs" || media != p.DeliveryStorageID.String {
+		t.Fatalf("delivery = %+v, default storage = %+v, media target %s", p, def, media)
 	}
 	if r.urls.MediaURL() != "https://media.example.com" {
 		t.Fatalf("media URL = %s", r.urls.MediaURL())
 	}
 	// The bucket holds _keys.json, and the raw token is stored nowhere.
-	bucket, _ := r.stash.Get(ctx, def.ID)
+	bucket, _ := r.stash.Get(ctx, p.DeliveryStorageID.String)
 	if _, err := bucket.Head(ctx, routes.KeysKey); err != nil {
 		t.Fatalf("_keys.json: %v", err)
 	}
@@ -278,8 +280,8 @@ func TestConnectMovesDeliveryToTheWorker(t *testing.T) {
 	}
 }
 
-// The owner chooses where uploads go (D110): the first connect makes R2 the
-// default unless told not to, and a reconnect leaves the choice alone.
+// The owner chooses where uploads go, under Storage (D110, D117): Connect
+// never changes it, on a first connect or a reconnect.
 func TestConnectLeavesTheUploadStoreToTheOwner(t *testing.T) {
 	ctx := context.Background()
 	r := newRig(t)
@@ -287,31 +289,22 @@ func TestConnectLeavesTheUploadStoreToTheOwner(t *testing.T) {
 	if err != nil || !res.Connected {
 		t.Fatalf("connect: %+v, %v", res.Steps, err)
 	}
-	if def, _ := r.pool.GetDefaultStorage(ctx, db.DefaultProjectID); def.Kind != "r2" {
-		t.Fatalf("after the first connect new uploads go to %s, want r2", def.Kind)
+	if def, _ := r.pool.GetDefaultStorage(ctx, db.DefaultProjectID); def.Kind != "fs" {
+		t.Fatalf("after the first connect new uploads go to %s, want fs", def.Kind)
 	}
-	if err := r.stash.SetDefault(ctx, db.DefaultProjectID, "sto_default"); err != nil {
+	if d := stepDetail(res, "routes"); !strings.Contains(d, "new videos are encoded into the bucket") {
+		t.Fatalf("routes step says %q, want it to say where new videos are encoded", d)
+	}
+	p, _ := r.pool.GetProjectDelivery(ctx, db.DefaultProjectID)
+	if err := r.stash.SetDefault(ctx, db.DefaultProjectID, p.DeliveryStorageID.String); err != nil {
 		t.Fatal(err)
 	}
 	res, err = r.conn.Connect(ctx, Request{Token: testToken, Hostname: "media.example.com", Bucket: r.bucket})
 	if err != nil || !res.Connected {
 		t.Fatalf("reconnect: %+v, %v", res.Steps, err)
 	}
-	if def, _ := r.pool.GetDefaultStorage(ctx, db.DefaultProjectID); def.Kind != "fs" {
-		t.Fatalf("a reconnect moved new uploads to %s; the owner chose fs", def.Kind)
-	}
-	if d := stepDetail(res, "routes"); !strings.Contains(d, "new uploads stay on this server") {
-		t.Fatalf("routes step says %q, want it to say uploads stay on this server", d)
-	}
-
-	keep := false
-	fresh := newRig(t)
-	res, err = fresh.conn.Connect(ctx, Request{Token: testToken, Hostname: "media.example.com", Bucket: fresh.bucket, DefaultStorage: &keep})
-	if err != nil || !res.Connected {
-		t.Fatalf("connect keeping uploads on disk: %+v, %v", res.Steps, err)
-	}
-	if def, _ := fresh.pool.GetDefaultStorage(ctx, db.DefaultProjectID); def.Kind != "fs" {
-		t.Fatalf("default_storage false still moved new uploads to %s", def.Kind)
+	if def, _ := r.pool.GetDefaultStorage(ctx, db.DefaultProjectID); def.Kind != "r2" {
+		t.Fatalf("a reconnect moved new uploads to %s; the owner chose r2", def.Kind)
 	}
 }
 

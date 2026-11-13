@@ -57,8 +57,6 @@ type API struct {
 	accounts *accounts.Service
 	urls     *settings.Store
 
-	// URLsSaved runs after the owner saves new URLs (the setup test).
-	URLsSaved func(settings.URLs)
 	// Tests runs setup tests; nil leaves their routes answering 404.
 	Tests *setuptest.Runner
 	// Cloudflare connects Worker delivery; nil leaves its routes 404.
@@ -193,7 +191,11 @@ func (m *API) moveProgress(w http.ResponseWriter, r *http.Request, o accounts.Ow
 	if err != nil {
 		return err
 	}
-	off, err := q.CountAssetsOffStore(r.Context(), db.CountAssetsOffStoreParams{ProjectID: o.ProjectID, Target: def.ID})
+	media, err := q.GetMediaTarget(r.Context(), o.ProjectID)
+	if err != nil {
+		return err
+	}
+	off, err := q.CountAssetsElsewhere(r.Context(), db.CountAssetsElsewhereParams{ProjectID: o.ProjectID, Target: def.ID, MediaTarget: media})
 	if err != nil {
 		return err
 	}
@@ -202,26 +204,25 @@ func (m *API) moveProgress(w http.ResponseWriter, r *http.Request, o accounts.Ow
 		return err
 	}
 	httpjson.Write(w, http.StatusOK, map[string]any{
-		"default_storage_id": def.ID, "default_kind": def.Kind, "not_on_default": off,
+		"default_storage_id": def.ID, "default_kind": def.Kind, "media_storage_id": media,
+		"uploads_elsewhere": off.Uploads, "media_elsewhere": off.Media,
 		"active": p.Active, "moved": p.Moved, "failed": p.Failed,
 	})
 	return nil
 }
 
-// moveLibrary queues a move to the default store for every asset elsewhere.
+// moveLibrary queues a move for every asset with a part away from where the
+// settings put it: sources on the default store, encoded files on the
+// media target (D117).
 func (m *API) moveLibrary(w http.ResponseWriter, r *http.Request, o accounts.Owner) error {
 	if m.Life == nil {
 		return errNotFound
 	}
-	def, err := db.New(m.pool).GetDefaultStorage(r.Context(), o.ProjectID)
+	n, err := m.Life.MoveLibrary(r.Context(), o.ProjectID)
 	if err != nil {
 		return err
 	}
-	n, err := m.Life.MoveLibrary(r.Context(), o.ProjectID, def.ID)
-	if err != nil {
-		return err
-	}
-	httpjson.Write(w, http.StatusAccepted, map[string]any{"queued": n, "target_storage_id": def.ID})
+	httpjson.Write(w, http.StatusAccepted, map[string]any{"queued": n})
 	return nil
 }
 
@@ -450,9 +451,6 @@ func (m *API) saveURLs(w http.ResponseWriter, r *http.Request, _ accounts.Owner)
 		return err
 	}
 	m.Logger.Info("URLs saved", "public_url", u.Public, "media_url", u.Media)
-	if m.URLsSaved != nil {
-		m.URLsSaved(u)
-	}
 	httpjson.Write(w, http.StatusOK, map[string]any{"urls": u, "keys_allowed": m.urls.KeysAllowed()})
 	return nil
 }

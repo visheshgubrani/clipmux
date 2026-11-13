@@ -313,20 +313,26 @@ func (s *Service) runDelete(ctx context.Context, job db.Job) error {
 	if err != nil {
 		return err
 	}
-	store, err := s.stores.ForAsset(ctx, job.AssetID)
+	source, err := s.stores.SourceFor(ctx, job.AssetID)
+	if err != nil {
+		return err
+	}
+	media, err := s.stores.MediaFor(ctx, job.AssetID)
 	if err != nil {
 		return err
 	}
 	for _, up := range ups {
 		// Multipart staging lives outside the asset's prefixes.
-		if err := store.AbortMultipart(ctx, sourceKey(job.AssetID), up.MultipartID); err != nil && !errors.Is(err, storage.ErrNotFound) {
+		if err := source.AbortMultipart(ctx, sourceKey(job.AssetID), up.MultipartID); err != nil && !errors.Is(err, storage.ErrNotFound) {
 			return err
 		}
 	}
-	for _, prefix := range []string{"uploads/" + job.AssetID + "/", "media/" + job.AssetID + "/"} {
-		if err := store.DeletePrefix(ctx, prefix); err != nil {
-			return err
-		}
+	// The source and the encoded files may sit on different stores (D117).
+	if err := source.DeletePrefix(ctx, "uploads/"+job.AssetID+"/"); err != nil {
+		return err
+	}
+	if err := media.DeletePrefix(ctx, "media/"+job.AssetID+"/"); err != nil {
+		return err
 	}
 	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 		qs := db.New(tx)

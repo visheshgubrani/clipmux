@@ -30,12 +30,16 @@ uploads it through the worker API, and holds no storage credentials.
 - **A concurrency limit.** At most this many machines run at once.
 
 A provider takes no work until a setup test through it passes: after Connect,
-a sample must encode on one of its machines and play. Routing (**Encoding →
-Routing**, or `PUT /v1/settings/routing`) can name it only after that.
+a sample must encode on one of its machines and play. When it passes, the
+provider becomes the primary, with the built-in worker as its fallback when
+serve runs one (D116); until then new videos encode where they did. On
+**Encoding** the owner picks this server or a connected provider, and ticks
+whether this server takes over when the provider can't start a machine.
+`PUT /v1/settings/routing` sets the same, with the queue-age rule too.
 
 ## RunPod
 
-**Encoding → Cloud GPUs → Connect RunPod**: **Get a key from RunPod** opens
+**Encoding → RunPod → Connect RunPod**: **Get a key from RunPod** opens
 RunPod's console, which creates a key for ClipMux and shows it (the page
 names RunPod's Flash CLI, D109); paste it into the field. A key you create
 yourself under **Settings → API Keys**, with read and write access to pods
@@ -71,13 +75,14 @@ rotate the key or change settings; the provider then needs a new setup test.
   ClipMux stops each pod when its attempt ends, when it doesn't claim within
   10 minutes, or after 6 h 15 min. Every 15 minutes, and at boot, it also
   stops any of its pods that no dispatch accounts for.
-- **Disconnect** with `DELETE /v1/executors/runpod`. It is refused while
-  routing names RunPod, or while a RunPod pod may still run. It forgets the
-  key and removes the registry credentials from the account.
+- **Disconnect** with `DELETE /v1/executors/runpod`. It is refused while a
+  RunPod pod may still run. Routing that named RunPod moves back to this
+  server (D116). It forgets the key and removes the registry credentials
+  from the account.
 
 ## Modal
 
-**Encoding → Cloud GPUs → Connect Modal**: pick GPUs (Modal's NVENC ones,
+**Encoding → Modal → Connect Modal**: pick GPUs (Modal's NVENC ones,
 priced with each sandbox's CPU and memory; limits default as for RunPod,
 D111), then **Connect with Modal** opens the page Modal's CLI uses to issue a token (D109); approve
 it there and the token goes straight to this server. To paste one instead,

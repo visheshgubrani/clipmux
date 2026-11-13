@@ -131,7 +131,7 @@ func (f *Files) PurgeRetiredTracks(ctx context.Context) (int, error) {
 		if err != nil {
 			return n, fmt.Errorf("purge track %s: %w", t.ID, err)
 		}
-		store, err := f.stores.ForAsset(ctx, t.AssetID)
+		store, err := f.stores.MediaFor(ctx, t.AssetID)
 		if err != nil {
 			return n, err
 		}
@@ -165,7 +165,7 @@ func (f *Files) PurgeAbandoned(ctx context.Context) (int, error) {
 }
 
 func (f *Files) deletePrefix(ctx context.Context, assetID, prefix string) error {
-	store, err := f.stores.ForAsset(ctx, assetID)
+	store, err := f.stores.MediaFor(ctx, assetID)
 	if err != nil {
 		return fmt.Errorf("store of %s: %w", assetID, err)
 	}
@@ -215,7 +215,7 @@ func (f *Files) sweepAsset(ctx context.Context, q *db.Queries, assetID string) (
 	for _, id := range known {
 		keep[id] = true
 	}
-	store, err := f.stores.ForAsset(ctx, assetID)
+	store, err := f.stores.MediaFor(ctx, assetID)
 	if err != nil {
 		return 0, err
 	}

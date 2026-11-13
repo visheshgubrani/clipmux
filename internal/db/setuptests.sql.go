@@ -35,17 +35,6 @@ func (q *Queries) ClaimSetupTest(ctx context.Context, projectID string) (SetupTe
 	return i, err
 }
 
-const countSetupTests = `-- name: CountSetupTests :one
-SELECT count(*) FROM setup_tests WHERE project_id = $1
-`
-
-func (q *Queries) CountSetupTests(ctx context.Context, projectID string) (int64, error) {
-	row := q.db.QueryRow(ctx, countSetupTests, projectID)
-	var count int64
-	err := row.Scan(&count)
-	return count, err
-}
-
 const finishSetupTest = `-- name: FinishSetupTest :exec
 UPDATE setup_tests SET status = $2, checks = $3, finished_at = now() WHERE id = $1
 `

@@ -17,7 +17,7 @@ ORDER BY id;
 
 -- name: ListServableRoutes :many
 -- Every playback ID the built-in handler would serve, for the reconciler.
-SELECT p.id AS playback_id, p.policy, a.id AS asset_id, a.app_id, a.current_output_id, a.storage_id,
+SELECT p.id AS playback_id, p.policy, a.id AS asset_id, a.app_id, a.current_output_id, a.media_storage_id,
        (ap.disabled_at IS NOT NULL)::boolean AS app_disabled,
        EXISTS (SELECT 1 FROM share_links s WHERE s.playback_id = p.id)::boolean AS share
 FROM playback_ids p

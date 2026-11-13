@@ -267,7 +267,7 @@ func (s *Service) SignParts(ctx context.Context, up db.Upload, numbers []int) (S
 	if err := db.New(s.pool).TouchUpload(ctx, up.ID); err != nil {
 		return Signed{}, err
 	}
-	store, err := s.stores.ForAsset(ctx, up.AssetID)
+	store, err := s.stores.SourceFor(ctx, up.AssetID)
 	if err != nil {
 		return Signed{}, err
 	}
@@ -294,7 +294,7 @@ func (s *Service) ListParts(ctx context.Context, up db.Upload) ([]StoredPart, er
 	if up.Status != "active" {
 		return nil, errNotActive
 	}
-	store, err := s.stores.ForAsset(ctx, up.AssetID)
+	store, err := s.stores.SourceFor(ctx, up.AssetID)
 	if err != nil {
 		return nil, err
 	}
@@ -343,7 +343,7 @@ func (s *Service) Complete(ctx context.Context, uploadID string, parts []storage
 // attempt already did, and checks the stored size.
 func (s *Service) finishStorage(ctx context.Context, up db.Upload, parts []storage.Part) error {
 	key := sourceKey(up.AssetID)
-	store, err := s.stores.ForAsset(ctx, up.AssetID)
+	store, err := s.stores.SourceFor(ctx, up.AssetID)
 	if err != nil {
 		return err
 	}
@@ -420,7 +420,7 @@ func (s *Service) Cancel(ctx context.Context, uploadID string) (assets.View, err
 
 // end aborts the storage upload and errors the asset, with an event.
 func (s *Service) end(ctx context.Context, q *db.Queries, up db.Upload, status, code string) error {
-	store, err := s.stores.ForAsset(ctx, up.AssetID)
+	store, err := s.stores.SourceFor(ctx, up.AssetID)
 	if err != nil {
 		return err
 	}
@@ -497,7 +497,7 @@ func (s *Service) sweepOne(ctx context.Context, id string) (bool, error) {
 		if err != nil || up.Status != "active" {
 			return err // cancelled, expired or completed since listing: never touch it
 		}
-		store, err := s.stores.ForAssetIn(ctx, q, up.AssetID)
+		store, err := s.stores.SourceForIn(ctx, q, up.AssetID)
 		if err != nil {
 			return err
 		}

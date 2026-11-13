@@ -170,44 +170,10 @@ func TestOnlyOneSetupTestRunsAtATime(t *testing.T) {
 	if err != nil || b.ID != a.ID || b.Status != "queued" {
 		t.Fatalf("second queue = %+v, %v; want the queued %s", b, err, a.ID)
 	}
-	if err := r.runner.QueueFirst(ctx); err != nil {
-		t.Fatal(err)
-	}
 	var n int
 	_ = r.pool.QueryRow(ctx, `SELECT count(*) FROM setup_tests`).Scan(&n)
 	if n != 1 {
-		t.Fatalf("setup tests = %d, want 1: a first-boot test is only queued on an install that never ran one", n)
-	}
-}
-
-// A fresh install whose owner hasn't chosen the URLs yet would only test
-// the placeholder default and greet the owner with a failed run; saving the
-// URLs queues the first test instead.
-func TestFirstBootWaitsForTheURLs(t *testing.T) {
-	ctx := context.Background()
-	pool := dbtest.New(t)
-	urls, err := settings.Load(ctx, pool, "prj_default", config.Config{PublicURL: "http://localhost:8080"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	runner := New(pool, nil, nil, urls, nil, nil, "")
-	if err := runner.QueueFirst(ctx); err != nil {
-		t.Fatal(err)
-	}
-	var n int
-	_ = pool.QueryRow(ctx, `SELECT count(*) FROM setup_tests`).Scan(&n)
-	if n != 0 {
-		t.Fatalf("setup tests before the URLs are chosen = %d, want 0", n)
-	}
-	if _, err := urls.Set(ctx, "https://video.example.com", ""); err != nil {
-		t.Fatal(err)
-	}
-	if err := runner.QueueFirst(ctx); err != nil {
-		t.Fatal(err)
-	}
-	_ = pool.QueryRow(ctx, `SELECT count(*) FROM setup_tests WHERE trigger = 'first_boot'`).Scan(&n)
-	if n != 1 {
-		t.Fatalf("first-boot tests once the URLs are confirmed = %d, want 1", n)
+		t.Fatalf("setup tests = %d, want 1", n)
 	}
 }
 
@@ -322,5 +288,57 @@ func TestTheEncodeCheckWaitsOutOneFailedWake(t *testing.T) {
 	ended("dsp_4", "wake_timeout")
 	if err := r.runner.waitReady(ctx, "ast_p"); err == nil || err.Error() != "the runpod machine never took the sample: wake_timeout" {
 		t.Fatalf("a machine that never claimed: %v", err)
+	}
+}
+
+// Connecting a cloud GPU is asking for it (D116): once its own test
+// passes, it is the primary, with the built-in worker behind it and no
+// queue-age rule.
+func TestAPassingProviderTestPutsTheProviderToWork(t *testing.T) {
+	r := newRig(t, "", true)
+	ctx := context.Background()
+	if _, err := r.pool.Exec(ctx, `
+		INSERT INTO executor_configs (id, project_id, kind, config, secrets_encrypted, max_concurrent, monthly_limit_cents, rate_cents_per_hour, disk_bytes)
+		VALUES ('exe_modal', 'prj_default', 'modal', '{"gpu": "L4"}', 'sealed', 1, 5000, 80, 50000000000);
+		UPDATE projects SET primary_executor = 'runpod', fallback_executor = 'builtin', queue_age_fallback_minutes = 10 WHERE id = 'prj_default';`); err != nil {
+		t.Fatal(err)
+	}
+	r.runner.ProviderFallback = "builtin"
+	if err := r.runner.providerPassed(ctx, "modal"); err != nil {
+		t.Fatal(err)
+	}
+	var primary, fallback string
+	var queueAge *int32
+	var verified bool
+	if err := r.pool.QueryRow(ctx, `SELECT primary_executor, coalesce(fallback_executor, ''), queue_age_fallback_minutes,
+		(SELECT verified_at IS NOT NULL FROM executor_configs WHERE id = 'exe_modal') FROM projects WHERE id = 'prj_default'`).
+		Scan(&primary, &fallback, &queueAge, &verified); err != nil {
+		t.Fatal(err)
+	}
+	if primary != "modal" || fallback != "builtin" || queueAge != nil || !verified {
+		t.Fatalf("routing = %s, %q, %v, verified %v; want modal, builtin, no queue age, verified", primary, fallback, queueAge, verified)
+	}
+}
+
+// Without a built-in worker (the LMS host, D114) the provider has no
+// fallback.
+func TestAPassingProviderTestWithoutABuiltinWorkerHasNoFallback(t *testing.T) {
+	r := newRig(t, "", true)
+	ctx := context.Background()
+	if _, err := r.pool.Exec(ctx, `
+		INSERT INTO executor_configs (id, project_id, kind, config, secrets_encrypted, max_concurrent, monthly_limit_cents, rate_cents_per_hour, disk_bytes)
+		VALUES ('exe_modal', 'prj_default', 'modal', '{"gpu": "L4"}', 'sealed', 1, 5000, 80, 50000000000);`); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.runner.providerPassed(ctx, "modal"); err != nil {
+		t.Fatal(err)
+	}
+	var primary string
+	var fallback *string
+	if err := r.pool.QueryRow(ctx, `SELECT primary_executor, fallback_executor FROM projects WHERE id = 'prj_default'`).Scan(&primary, &fallback); err != nil {
+		t.Fatal(err)
+	}
+	if primary != "modal" || fallback != nil {
+		t.Fatalf("routing = %s, %v; want modal with no fallback", primary, fallback)
 	}
 }

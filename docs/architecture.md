@@ -358,7 +358,7 @@ Routes publish before `ready`, so an app never receives a webhook for a playback
 
 ### Routing and fallback
 
-Settings hold one default executor and an optional fallback, such as "my PC, else Modal". v1 has no scoring scheduler.
+Settings hold one default executor and an optional fallback, such as "Modal, else this server". v1 has no scoring scheduler. The dashboard offers one choice, this server or a connected cloud GPU, and a cloud GPU becomes the primary by itself once its connect test passes (D116); the API keeps the full table below.
 
 | Condition | Action |
 | --- | --- |
@@ -574,9 +574,9 @@ The filesystem adapter keeps the same contract by issuing app-signed URLs that t
 
 ### Per-asset storage
 
-Each asset records its `storage_id`, and new uploads use the project default. Delivery belongs to the project, not to a storage config. The route's `backend` tells the Worker whether to read its own bucket or fetch from the built-in handler.
+Each asset records two stores (D117): `storage_id` holds its source (`uploads/{asset}/…`) and comes from the project default, which the Storage page sets; `media_storage_id` holds its outputs and tracks (`media/{asset}/…`) and is the media target when the asset is created: the Cloudflare delivery bucket while the Worker delivers, otherwise the default store, beside the source. Delivery belongs to the project, not to a storage config. The route's `backend` tells the Worker whether to read its own bucket (the asset's encoded files are there) or fetch from the built-in handler.
 
-Changing the default leaves old assets on their original storage, so they keep playing at the same URLs. A `move` job copies an asset's source and current output to new storage, then republishes its routes. Nothing redirects, because the hostname never changed. Encrypted outputs move as they are, because their keys depend only on IDs.
+Changing either target leaves old assets where they are, so they keep playing at the same URLs. A `move` job puts each part where the settings now say: it copies the source to the default store and the servable outputs and tracks to the media target, skipping a part that is already there, then republishes its routes. Nothing redirects, because the hostname never changed. Encrypted outputs move as they are, because their keys depend only on IDs.
 
 `move` and `delete` are internal jobs that run in the control plane, because they need storage credentials. Executors only run media work.
 
@@ -742,31 +742,29 @@ clipmux listen   # forwards webhooks to a local URL
 2. The first visitor enters it and creates the owner account. Registration then closes, and later visits see only the login page.
 3. The owner enters the public URL and the media hostname, and Caddy obtains certificates for both. The owner can keep `localhost` to try things out. Presigned URLs and `base_url` are bound to the public URL, so while it is loopback an API key needs the owner's confirmation that it is for apps on this machine (D108).
 4. Filesystem storage, the built-in worker and built-in delivery are already active, and the server has generated the content key secret.
-5. A sample clip runs through the full pipeline and plays in the built-in player.
-6. The dashboard shows the optional upgrades below.
+5. The dashboard shows the optional upgrades below. The setup test (below) runs when the owner asks for it from Settings, not as part of first boot (D115).
 
 ### Optional upgrades
 
 | Upgrade | Asks for | What the app does |
 | --- | --- | --- |
-| Store uploads in a bucket | An R2 token (from a pre-filled link) or S3 keys | Creates the R2 bucket if needed, checks it, and sends new uploads there; this server's disk can be chosen again (D110) |
-| Connect Cloudflare | One API token, from a link that pre-fills its permissions; the zone, hostname and bucket are picked from what it reaches | Creates the bucket, applies CORS, derives S3 credentials, deploys the Worker with the content key secret, moves the media hostname to it, then offers to move the library to R2 (D109) |
-| Connect my PC | Nothing | Shows a one-line `clipmux worker` command with a new agent key; the agent waits as `pending` until approved |
-| Connect Modal or RunPod | A concurrency limit and a monthly spend limit, then an approval on the provider's page (or a pasted key) | Checks the public server URL and registers the worker image |
+| Store uploads in a bucket | An R2 token (from a pre-filled link) or S3 keys | Creates the R2 bucket if needed, checks it, and sends new uploads (the originals) there; this server's disk can be chosen again (D110) |
+| Connect Cloudflare | One API token, from a link that pre-fills its permissions; the zone, hostname and bucket are picked from what it reaches | Creates the bucket, applies CORS, derives S3 credentials, deploys the Worker with the content key secret, moves the media hostname to it, encodes new videos into the bucket, then offers to move existing videos' encoded files there (D109, D117). Uploads stay where Storage keeps them |
+| Connect Modal or RunPod | The GPUs to rent (limits default to one machine and $50 a month, D111), then an approval on the provider's page (or a pasted key) | Checks the public server URL, registers the worker image, encodes a sample on it, then sends it new videos with this server as the fallback (D116) |
 | Create an app | A name | Creates the app with an API key, a signing key and a webhook secret, and shows the secrets once |
 
-Connect Cloudflare is a single card because R2 and the Worker share a bucket and a token. Cloudflare can [derive S3 credentials from an API token](https://developers.cloudflare.com/r2/api/tokens/): the access key is the token ID, and the secret is the SHA-256 of its value.
+Connect Cloudflare is a single card because R2 and the Worker share a bucket and a token. The bucket holds encoded files only, unless the owner also chose it for uploads under Storage; the two prefixes never meet. Cloudflare can [derive S3 credentials from an API token](https://developers.cloudflare.com/r2/api/tokens/): the access key is the token ID, and the secret is the SHA-256 of its value.
 
 - **Prerequisite:** [The domain must be an active zone in that Cloudflare account](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/), and the hostname can't already have a CNAME record. Before attaching the Worker, the flow removes the record that pointed the media hostname at the app. The account also needs Workers Paid.
 - **Token after setup:** The S3 credentials are derived from the token, so the token must stay active in Cloudflare, and revoking or rolling it cuts off storage. "Discard" means the app forgets the raw value and keeps only the token ID and hash, which can't deploy code. The token's Workers and DNS permissions stay live in Cloudflare, and the dashboard says so. If storage authentication fails, the dashboard shows "Reconnect Cloudflare" instead of failing jobs.
 - **Bucket scope:** To limit the token's R2 permission to one bucket, the owner creates the bucket before the token. Otherwise the app creates it, and the dashboard warns that the token reaches every bucket in the account.
-- **Library move:** The flow ends by offering to move existing assets to R2 and shows progress on the Jobs page. Assets that haven't moved are served through origin and still need the control plane.
+- **Library move:** The Delivery page then offers to move existing videos' encoded files to R2 and shows progress on the Jobs page. Videos whose encoded files haven't moved are served through origin and still need the control plane.
 - **Fallback:** Manual `wrangler` instructions ship for anyone who won't paste a token.
 - **Upgrades:** The Worker carries a version, and the app redeploys it on upgrade. If the token was discarded, the dashboard asks for one. Worker secrets survive a redeploy, so the content key secret is set once.
 
 ### Setup test
 
-After any change, the app runs a real test job through the configured path. It uploads a sample, encodes it and plays it through delivery. Using the internal key, it then confirms that a valid `v` token plays and fetches the key, a `t` token can't fetch a segment or the key, and a request with no token is refused. It also reads one stored segment straight from storage and confirms it isn't a plain MP4 fragment.
+On request (Settings, `POST /v1/setup-test`, `clipmux admin setup-test`), after Connect or Disconnect Cloudflare, and through a newly connected cloud GPU, the app runs a real test job through the configured path. It uploads a sample, encodes it and plays it through delivery. Using the internal key, it then confirms that a valid `v` token plays and fetches the key, a `t` token can't fetch a segment or the key, and a request with no token is refused. It also reads one stored segment straight from storage and confirms it isn't a plain MP4 fragment.
 
 ## Build order
 

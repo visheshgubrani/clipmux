@@ -5,28 +5,55 @@ its GPU if it has one. It connects out to the server, so it works behind NAT,
 and it holds no storage credentials: each job gives it an attempt token and
 signed URLs for that job only.
 
+## An advanced, command-line option
+
+The dashboard doesn't offer PCs (D116). Most installs don't need one: the
+server's own worker already uses its GPU when it can see one, and a VPS has
+Modal or RunPod on **Encoding**. A PC agent still works, for the case of a
+small server and a GPU at home, and is managed from the command line and the
+API instead:
+
+| To | Run |
+| --- | --- |
+| Connect a PC | `clipmux worker --server URL` on the PC (below) |
+| Pair one without a browser | `clipmux admin create-pairing [--app NAME]` on the server |
+| Send jobs to PCs | `PUT /v1/settings/routing {"primary_executor": "workers"}` (this server and PCs) or `"agents"` (PCs only) |
+| List PCs | `GET /v1/agents` |
+| Revoke a PC | `DELETE /v1/agents/{id}`, then `POST /v1/agents/{id}/reencode` if you no longer trust what it encoded |
+
+The `/v1/settings/routing` and `/v1/agents` routes need the owner's session
+(D025): call them from a signed-in browser, or with its session cookie.
+
+**Which jobs a PC takes.** A fresh install's routing is `workers`, so a
+paired PC takes jobs alongside this server. Choosing **This server** on
+Encoding writes `builtin` and choosing a cloud GPU writes that provider; a
+PC then takes only the jobs of videos it registered with `push --local`.
+Because the dashboard lists no PCs, revoke one you no longer use; it keeps
+its key until you do.
+
 ## Connect the PC you're using
 
 ```bash
 clipmux worker --server https://video.example.com
 ```
 
-The agent prints a code and opens the dashboard's connect page in your
-browser. Check that the code matches and click **Connect**. The agent keeps its
+The agent prints a code and opens the server's connect page
+(`/workers/connect`) in your browser. Check that the code matches and click
+**Connect**. The agent keeps its
 key in `agent.json` (mode 0600) in your config directory, so from then on
 `clipmux worker` alone starts it. On a machine without a browser, open the
 printed link anywhere you're signed in to the dashboard.
 
 ## Connect another machine
 
-On the dashboard's **Workers** page, choose **Create a command**. It shows a
-one-time command that works for 15 minutes:
+On the server, `clipmux admin create-pairing` (or `POST /v1/agents/pairings`)
+makes a one-time command that works for 15 minutes:
 
 ```bash
 clipmux worker --server https://video.example.com --pair ABCD-EFGH
 ```
 
-The page shows the PC as connected the moment the command runs.
+The PC is connected the moment the command runs; `GET /v1/agents` lists it.
 
 ## Linux without Docker
 
@@ -154,6 +181,6 @@ before it is connected.
 
 ## Disconnect
 
-**Revoke** on the Workers page stops the agent at once. Its running job moves
-to another worker without using up a retry. Afterwards the page offers to
-re-encode the videos whose current version that PC encoded.
+`DELETE /v1/agents/{id}` stops the agent at once. Its running job moves to
+another worker without using up a retry. `POST /v1/agents/{id}/reencode`
+then re-encodes the videos whose current version that PC encoded.

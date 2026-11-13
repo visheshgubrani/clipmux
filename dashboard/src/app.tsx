@@ -15,8 +15,9 @@ import { AnalyticsPage } from '@/pages/analytics'
 import { AppDetail, Apps } from '@/pages/apps'
 import { Captions } from '@/pages/captions'
 import { ConnectApp } from '@/pages/connect'
+import { ConnectPC } from '@/pages/connect-pc'
 import { Delivery } from '@/pages/delivery'
-import { ConnectPC, Encoding } from '@/pages/encoding'
+import { Encoding } from '@/pages/encoding'
 import { Home } from '@/pages/home'
 import { Jobs } from '@/pages/jobs'
 import { Login } from '@/pages/login'
@@ -72,10 +73,7 @@ export function App() {
         {signedIn ? (
           <Route element={<Shell email={session.data?.email ?? ''} />}>
             {/* Until the URLs are set, the first-run flow is the place to be. */}
-            <Route
-              path="/"
-              element={s.urls.confirmed ? <Home setup={s} /> : <Navigate to="/setup" replace />}
-            />
+            <Route path="/" element={s.urls.confirmed ? <Home /> : <Navigate to="/setup" replace />} />
             <Route path="/videos" element={<Videos />} />
             <Route path="/videos/:id" element={<VideoPage />} />
             <Route path="/upload" element={<UploadPage />} />

@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/visheshgubrani/clipmux/internal/db"
@@ -91,6 +92,71 @@ func TestBadCredentialsStoreNothing(t *testing.T) {
 	}
 }
 
+// Uploads and encoded files live apart (D117): a new asset's source goes to
+// the default store, and its encoded files to the Cloudflare delivery
+// bucket while the Worker delivers, otherwise beside the source.
+func TestANewAssetsEncodedFilesGoWhereDeliveryReads(t *testing.T) {
+	cfg, sec := testBucket(t)
+	set, pool, fs, _ := newSet(t)
+	ctx := context.Background()
+	q := db.New(pool)
+	app, err := q.GetBuiltinApp(ctx, db.DefaultProjectID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fsID, _, err := set.Default(ctx, db.DefaultProjectID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r2, err := set.AddS3(ctx, db.DefaultProjectID, KindR2, cfg, sec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	create := func() db.Asset {
+		t.Helper()
+		def, _, err := set.Default(ctx, db.DefaultProjectID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		a, err := q.CreateAsset(ctx, db.CreateAssetParams{ID: ids.New(ids.Asset), ProjectID: db.DefaultProjectID, AppID: app.ID, StorageID: def})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return a
+	}
+	for _, c := range []struct {
+		name                string
+		delivery, defaultTo string
+		wantSource, wantMed string
+	}{
+		{"built-in delivery, uploads on disk", "builtin", fsID, fsID, fsID},
+		{"Worker delivery, uploads on disk", "worker", fsID, fsID, r2.ID},
+		{"built-in delivery, uploads in R2", "builtin", r2.ID, r2.ID, r2.ID},
+		{"Worker delivery, uploads in R2", "worker", r2.ID, r2.ID, r2.ID},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			bucket := pgtype.Text{String: r2.ID, Valid: c.delivery == "worker"}
+			if err := q.SetProjectDelivery(ctx, db.SetProjectDeliveryParams{ID: db.DefaultProjectID, Delivery: c.delivery, DeliveryStorageID: bucket}); err != nil {
+				t.Fatal(err)
+			}
+			if err := set.SetDefault(ctx, db.DefaultProjectID, c.defaultTo); err != nil {
+				t.Fatal(err)
+			}
+			a := create()
+			if a.StorageID != c.wantSource || a.MediaStorageID != c.wantMed {
+				t.Fatalf("source on %s, encoded files on %s; want %s and %s", a.StorageID, a.MediaStorageID, c.wantSource, c.wantMed)
+			}
+			media, err := set.MediaFor(ctx, a.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, onR2 := media.(*storage.S3); onR2 != (c.wantMed == r2.ID) || (!onR2 && media != storage.Storage(fs)) {
+				t.Fatalf("MediaFor = %T, want the store %s", media, c.wantMed)
+			}
+		})
+	}
+}
+
 // Changing the default moves new uploads only; old assets keep playing
 // from where they are (docs/architecture.md, "Per-asset storage").
 func TestEachAssetKeepsItsOwnStore(t *testing.T) {
@@ -121,8 +187,11 @@ func TestEachAssetKeepsItsOwnStore(t *testing.T) {
 	if err != nil || newID != row.ID {
 		t.Fatalf("Default = %s, %v; want %s", newID, err, row.ID)
 	}
-	if st, err := set.ForAsset(ctx, old.ID); err != nil || st != storage.Storage(fs) {
-		t.Fatalf("old asset's store = %T, %v; want the filesystem", st, err)
+	if st, err := set.SourceFor(ctx, old.ID); err != nil || st != storage.Storage(fs) {
+		t.Fatalf("old asset's source store = %T, %v; want the filesystem", st, err)
+	}
+	if st, err := set.MediaFor(ctx, old.ID); err != nil || st != storage.Storage(fs) {
+		t.Fatalf("old asset's media store = %T, %v; want the filesystem", st, err)
 	}
 	if _, ok := newStore.(*storage.S3); !ok {
 		t.Fatalf("new default = %T, want S3", newStore)

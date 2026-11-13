@@ -16,15 +16,15 @@ import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from '@/c
 import { Input } from '@/components/ui/input'
 import { Item, ItemActions, ItemContent, ItemDescription, ItemTitle } from '@/components/ui/item'
 import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
-import { Progress } from '@/components/ui/progress'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Spinner } from '@/components/ui/spinner'
 import { notify } from '@/lib/notify'
 import { q } from '@/queries'
 
-// Storage (D099, D110): where uploads and their encoded files are kept. The
-// owner picks the store new uploads go to (this server's disk, an R2 bucket
-// or any S3 bucket) and moves the library there.
+// Storage (D099, D110, D117): where uploaded originals are kept. The owner
+// picks the store new uploads go to (this server's disk, an R2 bucket or
+// any S3 bucket) and moves the library there. Where encoded files are kept
+// follows from Delivery.
 
 export const kindNames: Record<StorageConfig['kind'], string> = {
   fs: "This server's disk",
@@ -41,15 +41,17 @@ const DEFAULT_BUCKET = 'clipmux-media'
 
 export function Storage() {
   const storage = useQuery(q.storage())
+  const cloudflare = useQuery(q.cloudflare())
   const def = storage.data?.data.find((s) => s.default)
+  const encoded = cloudflare.data?.connected
+    ? `Encoded videos are kept in R2 (${cloudflare.data.bucket}) for Cloudflare to serve.`
+    : 'Encoded videos are kept with them.'
   return (
     <PageBody>
       <PageHeader
         title="Storage"
         description={
-          def
-            ? `New uploads go to ${storageName(def)}. Existing videos stay where they are until you move them.`
-            : 'Where uploaded videos and their encoded files are kept.'
+          def ? `New uploads go to ${storageName(def)}. ${encoded}` : 'Where uploaded originals are kept.'
         }
       />
       <StorageSection />
@@ -86,7 +88,7 @@ function StorageSection() {
   return (
     <Section
       title="Where uploads are stored"
-      description="New uploads go to the default. A storage can be removed once no video uses it."
+      description="Uploaded originals go to the default, and ClipMux keeps them to encode again. A storage can be removed once no video uses it."
       actions={
         <div className="flex flex-wrap gap-2">
           <Button variant="outline" size="sm" onClick={() => setAdding('r2')}>
@@ -115,7 +117,7 @@ function StorageSection() {
                     <ItemDescription>
                       {s.asset_count} video{s.asset_count === 1 ? '' : 's'}
                       {s.endpoint ? `, ${s.endpoint}` : ''}
-                      {s.cloudflare_delivery ? ', read by the Cloudflare Worker' : ''}
+                      {s.cloudflare_delivery ? ', holds encoded videos for Cloudflare' : ''}
                     </ItemDescription>
                   </ItemContent>
                   <ItemActions className="flex-wrap">
@@ -159,13 +161,13 @@ function StorageSection() {
           </ul>
         )}
       </QueryState>
-      <MoveProgress />
+      <LibraryMove part="uploads" />
       <p className="text-sm text-muted-foreground">
-        Serving from Cloudflare's edge is set up under{' '}
+        Where encoded videos are kept, and how viewers get them, is under{' '}
         <Link to="/delivery" className="text-link underline-offset-4 hover:underline">
           Delivery
         </Link>
-        ; it reads its own R2 bucket and plays everything else through this server.
+        .
       </p>
       <AddR2 open={adding === 'r2'} onOpenChange={(o) => setAdding(o ? 'r2' : null)} onDone={refresh} />
       <AddS3 open={adding === 's3'} onOpenChange={(o) => setAdding(o ? 's3' : null)} onDone={refresh} />
@@ -174,8 +176,12 @@ function StorageSection() {
   )
 }
 
-/** The library move: videos not on the default yet, and moving them there. */
-function MoveProgress() {
+/**
+ * The library move (D117): videos with a part away from where the settings
+ * put it. Storage shows uploads off the default; Delivery shows encoded
+ * files off the media store. One move puts both parts in place.
+ */
+export function LibraryMove({ part }: { part: 'uploads' | 'media' }) {
   const qc = useQueryClient()
   const moves = useQuery(q.moves())
   const storage = useQuery(q.storage())
@@ -188,26 +194,35 @@ function MoveProgress() {
     onError: (err) => notify.failed("Couldn't start the move", err),
   })
   const m = moves.data
-  const def = storage.data?.data.find((s) => s.default)
-  if (!m || !def || (m.not_on_default === 0 && m.active === 0 && m.moved === 0)) return null
-  const total = m.not_on_default + m.moved
-  const name = storageName(def)
+  const target = storage.data?.data.find(
+    (s) => s.id === (part === 'uploads' ? m?.default_storage_id : m?.media_storage_id),
+  )
+  if (!m || !target) return null
+  const elsewhere = part === 'uploads' ? m.uploads_elsewhere : m.media_elsewhere
+  if (elsewhere === 0 && m.active === 0) return null
+  const name = storageName(target)
+  const waiting = elsewhere - m.active
   return (
-    <section className="flex flex-col gap-2 rounded-lg border bg-card p-4 text-sm" aria-label="Library move">
-      <div className="flex justify-between gap-4">
-        <span className="text-muted-foreground">Library on {name}</span>
-        <span className="type-timecode">
-          {m.moved} of {total}
-          {m.failed > 0 && <span className="text-destructive">, {m.failed} failed</span>}
-        </span>
-      </div>
-      <Progress value={total ? (m.moved / total) * 100 : 0} aria-label={`Library moved to ${name}`} />
-      {m.not_on_default > m.active && (
-        <div>
-          <Button size="sm" variant="outline" onClick={() => move.mutate()} disabled={move.isPending}>
-            Move {m.not_on_default - m.active} videos to {name}
-          </Button>
-        </div>
+    <section
+      className="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-lg border bg-card p-4 text-sm"
+      aria-label="Library move"
+    >
+      <span className="min-w-0 flex-[1_1_16rem] text-muted-foreground">
+        {m.active > 0 ? (
+          <span className="flex items-center gap-2">
+            <Spinner /> Moving {m.active} video{m.active === 1 ? '' : 's'}…
+          </span>
+        ) : part === 'uploads' ? (
+          `${elsewhere} video${elsewhere === 1 ? '' : 's'} keep their upload on another storage.`
+        ) : (
+          `${elsewhere} video${elsewhere === 1 ? '' : 's'} still play through this server.`
+        )}
+        {m.failed > 0 && <span className="text-destructive"> {m.failed} moves failed; see Jobs.</span>}
+      </span>
+      {waiting > 0 && m.active === 0 && (
+        <Button size="sm" variant="outline" onClick={() => move.mutate()} disabled={move.isPending}>
+          Move {part === 'uploads' ? 'them' : 'their encoded files'} to {name}
+        </Button>
       )}
     </section>
   )
@@ -267,8 +282,8 @@ function AddR2({
         <DialogHeader>
           <DialogTitle>Add R2 bucket</DialogTitle>
           <DialogDescription>
-            Keep uploads in Cloudflare R2. ClipMux creates the bucket if it's new and checks it with a test
-            write. Delivery doesn't change: connect Cloudflare under Delivery to serve from the edge.
+            Keep uploaded originals in Cloudflare R2. ClipMux creates the bucket if it's new and checks it
+            with a test write.
           </DialogDescription>
         </DialogHeader>
         <form

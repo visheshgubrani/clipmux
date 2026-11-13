@@ -1,7 +1,8 @@
 // Package stores resolves an asset's storage (docs/architecture.md,
-// "Per-asset storage"). Each asset records its storage_id; new uploads use
-// the project default, and changing the default leaves old assets where they
-// are. The filesystem store is one per install; R2 and S3 configs are
+// "Per-asset storage"). Each asset records two stores: storage_id for its
+// source, from the project default, and media_storage_id for its encoded
+// files and tracks, the Cloudflare delivery bucket when the Worker delivers
+// (D117). Changing either target leaves old assets where they are. The filesystem store is one per install; R2 and S3 configs are
 // storage_configs rows whose credentials are sealed with the secrets key
 // (D017, associated data storage_configs/{id}).
 package stores
@@ -110,22 +111,46 @@ func (s *Set) GetIn(ctx context.Context, q *db.Queries, id string) (storage.Stor
 	return st, nil
 }
 
-// ForAsset returns the store holding an asset's source and outputs.
-func (s *Set) ForAsset(ctx context.Context, assetID string) (storage.Storage, error) {
-	return s.ForAssetIn(ctx, db.New(s.pool), assetID)
+// SourceFor returns the store holding an asset's source, uploads/{asset}/….
+func (s *Set) SourceFor(ctx context.Context, assetID string) (storage.Storage, error) {
+	return s.SourceForIn(ctx, db.New(s.pool), assetID)
 }
 
-// ForAssetIn is ForAsset reading through q, a caller's transaction (see
+// SourceForIn is SourceFor reading through q, a caller's transaction (see
 // GetIn).
-func (s *Set) ForAssetIn(ctx context.Context, q *db.Queries, assetID string) (storage.Storage, error) {
+func (s *Set) SourceForIn(ctx context.Context, q *db.Queries, assetID string) (storage.Storage, error) {
+	at, err := s.assetStores(ctx, q, assetID)
+	if err != nil || s.fixed != nil {
+		return s.fixed, err
+	}
+	return s.GetIn(ctx, q, at.StorageID)
+}
+
+// MediaFor returns the store holding an asset's encoded files and tracks,
+// media/{asset}/… (D117).
+func (s *Set) MediaFor(ctx context.Context, assetID string) (storage.Storage, error) {
+	return s.MediaForIn(ctx, db.New(s.pool), assetID)
+}
+
+// MediaForIn is MediaFor reading through q, a caller's transaction (see
+// GetIn).
+func (s *Set) MediaForIn(ctx context.Context, q *db.Queries, assetID string) (storage.Storage, error) {
+	at, err := s.assetStores(ctx, q, assetID)
+	if err != nil || s.fixed != nil {
+		return s.fixed, err
+	}
+	return s.GetIn(ctx, q, at.MediaStorageID)
+}
+
+func (s *Set) assetStores(ctx context.Context, q *db.Queries, assetID string) (db.AssetStoresRow, error) {
 	if s.fixed != nil {
-		return s.fixed, nil
+		return db.AssetStoresRow{}, nil
 	}
-	id, err := q.AssetStorageID(ctx, assetID)
+	row, err := q.AssetStores(ctx, assetID)
 	if err != nil {
-		return nil, fmt.Errorf("storage of %s: %w", assetID, err)
+		return row, fmt.Errorf("storage of %s: %w", assetID, err)
 	}
-	return s.GetIn(ctx, q, id)
+	return row, nil
 }
 
 // Default returns the project's default store, which new assets use.

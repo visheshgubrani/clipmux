@@ -1430,3 +1430,36 @@ Decision:
 - **Connect names the Worker after its hostname**, so this instance's Worker and D090's staging Worker share one Cloudflare account.
 - **The LMS replaces its adapter** rather than adding a second one beside it. Its plan is Edural's P36: Edural signs ES256 tokens with `vid`, and every playback ID is signed.
 Consequence: T19 doesn't wait for T07's release candidate or for T28. The launch exit's item 5 (the LMS through a soak window) is met by the LMS running in production on this instance, not by a timed soak.
+
+## D115 Onboarding ends at the addresses; the setup test runs on request — accepted (2026-11-12)
+Context: first boot, and every save of the URLs, queued the setup test (D026), and the wizard's last step waited for it (D032). On a CPU-only VPS that's minutes of watching checks, and a "clipmux-setup-test" video turns up in a library the owner hasn't used yet. The owner asked for less to sit through: people want to start, and can check the path when they choose.
+Decision:
+- **The wizard is two steps:** create the account, then the addresses. Saving the addresses ("Save", no longer "Save and test") lands on Home.
+- **No automatic run on first boot or on saving the URLs.** `setuptest.Runner.QueueFirst`, `manage.API.URLsSaved` and the `CountSetupTests` query are gone.
+- **The test stays one click away:** Settings → General → Setup test, `POST /v1/setup-test` and `clipmux admin setup-test --wait`. Connect and Disconnect Cloudflare still queue one, and connecting a cloud GPU still runs its own (D056), which is what verifies the provider.
+- Home's checklist drops "Run the setup test".
+Consequence: D026's first-boot and URL-save triggers and D032's test step are withdrawn. The `first_boot` and `urls_saved` trigger values stay in the schema for rows already written (Cloudflare's run still uses `urls_saved`).
+
+## D116 Encoding is one choice: this server or a cloud GPU — accepted (2026-11-12)
+Context: the Encoding page had a primary/fallback/queue-age form (D053, D060), a list of PCs with pairing commands and scopes, and the cloud GPU cards. Connecting Modal didn't put it to work: the owner then had to find the routing form and name it. Self-hosters with a GPU don't need a PC agent, since the built-in worker already probes NVENC, VAAPI and CUDA (D046); VPS owners have Modal, RunPod or the CPU. The owner asked for the PC option to go and for the rest to just work.
+Decision:
+- **One radio group:** This server (its GPU when it sees one, otherwise the CPU), Modal, RunPod. A provider can be chosen once connected and verified; until then its card says a sample is encoding on it, or which check failed (`GET /v1/setup-test/latest` now carries `executor`).
+- **Connecting is choosing.** When a provider's connect test passes, `setuptest` verifies it (D056) and, in the same transaction, sets routing to that provider as primary, with the built-in worker as fallback when serve runs one (`Runner.ProviderFallback`) and no queue-age rule. Until it passes, jobs go where they went.
+- **One tick box while a cloud GPU is chosen:** "If it can't start a machine, encode on this server instead" (`fallback_executor` `builtin` or null). The queue-age rule stays in the API only.
+- **Choosing This server writes `builtin`.** The page reads `workers`, `agents` and `builtin` alike as This server.
+- **Disconnect hands the work back** instead of refusing (`409 executor_in_use` is gone): routing that named the provider moves to `builtin` as primary, or to no fallback, in the same transaction. It still refuses while one of its machines may run.
+- **PCs leave the dashboard:** no list, no pairing card, no "Connect a PC" on Home. `/workers/connect` stays, alone, because `clipmux worker --server` opens it, until the agent backend is removed.
+- **The PC agent stays, as a command-line option.** The agent package, pairing, `push --local` and the `workers`/`agents` routing modes are kept and documented in docs/agents.md (pair with `clipmux worker --server` or `clipmux admin create-pairing`; list, revoke and route through the API). Removing them is decided after launch, from whether owners ask for PCs; deleting a tested phase now would cost more than keeping it.
+Consequence: D053's "my PC, else the server", D056's "routing must name it after the test", and D060's routing card are amended.
+
+## D117 Storage holds the uploads; Delivery holds the encoded files — accepted (2026-11-12)
+Context: each asset had one store for its source, outputs and tracks (D034). Storage and Delivery both asked for an R2 token, and adding R2 under Storage left Delivery saying "Built in" while the Worker, connected under Delivery, could serve only the assets in its own bucket. Owners expect Storage to be where uploads are kept and Delivery to be where the files viewers get are kept. Raw masters are also the largest, coldest files: they needn't sit in the delivery bucket.
+Decision:
+- **Two stores per asset, both fixed at creation.** `assets.storage_id` holds `uploads/{asset}/…` and comes from the default store, as before. `assets.media_storage_id` (migration 00032) holds `media/{asset}/…`, outputs and tracks, and comes from `media_target(project)`: the delivery bucket while `projects.delivery = 'worker'`, otherwise the default store. The create queries set it; a trigger fills it from `storage_id` for an insert that names none.
+- **Every store lookup names its part.** `stores.Set` has `SourceFor` and `MediaFor` (and their `…In` forms) instead of `ForAsset`. Uploads, imports and source uploads use the source store; outputs, audio, tracks, delivery, retention, the setup test's storage reads and the speech API use the media store; a delete purges each prefix from its own store.
+- **Route records follow the encoded files:** `backend` is `r2` when `media_storage_id` is the delivery bucket.
+- **A move carries each part to its own target.** `jobs` gains `source_media_storage_id` and `target_media_storage_id`; the job copies the source when its store changes and the servable outputs and tracks when theirs does, switches both columns in one update, and cleans up each prefix from the store it left. A move with no media stores (queued before this) moves the encoded files with the source. `GET /v1/storage/moves` reports `uploads_elsewhere` and `media_elsewhere`; `POST` queues moves to both targets.
+- **Connect Cloudflare no longer touches where uploads go:** `default_storage` is gone from the request and the dialog. Its bucket becomes the media target through `delivery_storage_id`. Disconnect leaves the media target to fall back to the default store; encoded files already in R2 keep playing through origin, and the R2 store stays while assets use it.
+- **The pages say so.** Storage is "where uploaded originals are kept" and offers moving uploads; Delivery says where encoded files are kept for the delivery chosen and, under Cloudflare, offers moving them into the bucket. Home's status line reads "Uploads" and "Delivery".
+- A store is in use, and can't be removed, while any asset's source or encoded files are on it, or a move reads or writes it.
+Consequence: D034's per-asset store becomes a pair, D037's "Connect makes R2 the default" and D110's `default_storage` are withdrawn, and D038's move job moves parts. Down for 00032 refuses while any asset keeps the two apart.

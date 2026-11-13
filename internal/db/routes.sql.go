@@ -188,7 +188,7 @@ func (q *Queries) ListServableOutputsForProject(ctx context.Context, projectID s
 }
 
 const listServableRoutes = `-- name: ListServableRoutes :many
-SELECT p.id AS playback_id, p.policy, a.id AS asset_id, a.app_id, a.current_output_id, a.storage_id,
+SELECT p.id AS playback_id, p.policy, a.id AS asset_id, a.app_id, a.current_output_id, a.media_storage_id,
        (ap.disabled_at IS NOT NULL)::boolean AS app_disabled,
        EXISTS (SELECT 1 FROM share_links s WHERE s.playback_id = p.id)::boolean AS share
 FROM playback_ids p
@@ -205,7 +205,7 @@ type ListServableRoutesRow struct {
 	AssetID         string
 	AppID           string
 	CurrentOutputID pgtype.Text
-	StorageID       string
+	MediaStorageID  string
 	AppDisabled     bool
 	Share           bool
 }
@@ -226,7 +226,7 @@ func (q *Queries) ListServableRoutes(ctx context.Context, projectID string) ([]L
 			&i.AssetID,
 			&i.AppID,
 			&i.CurrentOutputID,
-			&i.StorageID,
+			&i.MediaStorageID,
 			&i.AppDisabled,
 			&i.Share,
 		); err != nil {

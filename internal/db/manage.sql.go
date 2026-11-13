@@ -87,7 +87,7 @@ func (q *Queries) GetApp(ctx context.Context, arg GetAppParams) (App, error) {
 }
 
 const getAssetInProject = `-- name: GetAssetInProject :one
-SELECT id, project_id, app_id, status, error_code, version, storage_id, source_uri, agent_source_id, source_kept, current_output_id, passthrough, duration_seconds, created_at, updated_at, deleted_at, title FROM assets WHERE project_id = $1 AND id = $2
+SELECT id, project_id, app_id, status, error_code, version, storage_id, source_uri, agent_source_id, source_kept, current_output_id, passthrough, duration_seconds, created_at, updated_at, deleted_at, title, media_storage_id FROM assets WHERE project_id = $1 AND id = $2
 `
 
 type GetAssetInProjectParams struct {
@@ -116,12 +116,13 @@ func (q *Queries) GetAssetInProject(ctx context.Context, arg GetAssetInProjectPa
 		&i.UpdatedAt,
 		&i.DeletedAt,
 		&i.Title,
+		&i.MediaStorageID,
 	)
 	return i, err
 }
 
 const getJobInProject = `-- name: GetJobInProject :one
-SELECT j.id, j.project_id, j.asset_id, j.kind, j.status, j.phase, j.progress, j.profile_id, j.profile_version, j.pinned_agent_id, j.lost_count, j.failed_count, j.error_code, j.routed_to, j.route_reason, j.available_at, j.created_at, j.started_at, j.finished_at, j.source_storage_id, j.target_storage_id, j.import_url, j.track_id, s.app_id, s.passthrough FROM jobs j
+SELECT j.id, j.project_id, j.asset_id, j.kind, j.status, j.phase, j.progress, j.profile_id, j.profile_version, j.pinned_agent_id, j.lost_count, j.failed_count, j.error_code, j.routed_to, j.route_reason, j.available_at, j.created_at, j.started_at, j.finished_at, j.source_storage_id, j.target_storage_id, j.import_url, j.track_id, j.source_media_storage_id, j.target_media_storage_id, s.app_id, s.passthrough FROM jobs j
 JOIN assets s ON s.id = j.asset_id
 WHERE j.project_id = $1 AND j.id = $2
 `
@@ -132,31 +133,33 @@ type GetJobInProjectParams struct {
 }
 
 type GetJobInProjectRow struct {
-	ID              string
-	ProjectID       string
-	AssetID         string
-	Kind            string
-	Status          string
-	Phase           pgtype.Text
-	Progress        pgtype.Float4
-	ProfileID       string
-	ProfileVersion  int32
-	PinnedAgentID   pgtype.Text
-	LostCount       int32
-	FailedCount     int32
-	ErrorCode       pgtype.Text
-	RoutedTo        pgtype.Text
-	RouteReason     pgtype.Text
-	AvailableAt     pgtype.Timestamptz
-	CreatedAt       pgtype.Timestamptz
-	StartedAt       pgtype.Timestamptz
-	FinishedAt      pgtype.Timestamptz
-	SourceStorageID pgtype.Text
-	TargetStorageID pgtype.Text
-	ImportUrl       pgtype.Text
-	TrackID         pgtype.Text
-	AppID           string
-	Passthrough     pgtype.Text
+	ID                   string
+	ProjectID            string
+	AssetID              string
+	Kind                 string
+	Status               string
+	Phase                pgtype.Text
+	Progress             pgtype.Float4
+	ProfileID            string
+	ProfileVersion       int32
+	PinnedAgentID        pgtype.Text
+	LostCount            int32
+	FailedCount          int32
+	ErrorCode            pgtype.Text
+	RoutedTo             pgtype.Text
+	RouteReason          pgtype.Text
+	AvailableAt          pgtype.Timestamptz
+	CreatedAt            pgtype.Timestamptz
+	StartedAt            pgtype.Timestamptz
+	FinishedAt           pgtype.Timestamptz
+	SourceStorageID      pgtype.Text
+	TargetStorageID      pgtype.Text
+	ImportUrl            pgtype.Text
+	TrackID              pgtype.Text
+	SourceMediaStorageID pgtype.Text
+	TargetMediaStorageID pgtype.Text
+	AppID                string
+	Passthrough          pgtype.Text
 }
 
 func (q *Queries) GetJobInProject(ctx context.Context, arg GetJobInProjectParams) (GetJobInProjectRow, error) {
@@ -186,6 +189,8 @@ func (q *Queries) GetJobInProject(ctx context.Context, arg GetJobInProjectParams
 		&i.TargetStorageID,
 		&i.ImportUrl,
 		&i.TrackID,
+		&i.SourceMediaStorageID,
+		&i.TargetMediaStorageID,
 		&i.AppID,
 		&i.Passthrough,
 	)
@@ -372,7 +377,7 @@ func (q *Queries) ListJobAttempts(ctx context.Context, jobIds []string) ([]ListJ
 }
 
 const listJobs = `-- name: ListJobs :many
-SELECT j.id, j.project_id, j.asset_id, j.kind, j.status, j.phase, j.progress, j.profile_id, j.profile_version, j.pinned_agent_id, j.lost_count, j.failed_count, j.error_code, j.routed_to, j.route_reason, j.available_at, j.created_at, j.started_at, j.finished_at, j.source_storage_id, j.target_storage_id, j.import_url, j.track_id, s.app_id, s.passthrough FROM jobs j
+SELECT j.id, j.project_id, j.asset_id, j.kind, j.status, j.phase, j.progress, j.profile_id, j.profile_version, j.pinned_agent_id, j.lost_count, j.failed_count, j.error_code, j.routed_to, j.route_reason, j.available_at, j.created_at, j.started_at, j.finished_at, j.source_storage_id, j.target_storage_id, j.import_url, j.track_id, j.source_media_storage_id, j.target_media_storage_id, s.app_id, s.passthrough FROM jobs j
 JOIN assets s ON s.id = j.asset_id
 WHERE j.project_id = $1
   AND ($2::text IS NULL OR j.status = $2)
@@ -395,31 +400,33 @@ type ListJobsParams struct {
 }
 
 type ListJobsRow struct {
-	ID              string
-	ProjectID       string
-	AssetID         string
-	Kind            string
-	Status          string
-	Phase           pgtype.Text
-	Progress        pgtype.Float4
-	ProfileID       string
-	ProfileVersion  int32
-	PinnedAgentID   pgtype.Text
-	LostCount       int32
-	FailedCount     int32
-	ErrorCode       pgtype.Text
-	RoutedTo        pgtype.Text
-	RouteReason     pgtype.Text
-	AvailableAt     pgtype.Timestamptz
-	CreatedAt       pgtype.Timestamptz
-	StartedAt       pgtype.Timestamptz
-	FinishedAt      pgtype.Timestamptz
-	SourceStorageID pgtype.Text
-	TargetStorageID pgtype.Text
-	ImportUrl       pgtype.Text
-	TrackID         pgtype.Text
-	AppID           string
-	Passthrough     pgtype.Text
+	ID                   string
+	ProjectID            string
+	AssetID              string
+	Kind                 string
+	Status               string
+	Phase                pgtype.Text
+	Progress             pgtype.Float4
+	ProfileID            string
+	ProfileVersion       int32
+	PinnedAgentID        pgtype.Text
+	LostCount            int32
+	FailedCount          int32
+	ErrorCode            pgtype.Text
+	RoutedTo             pgtype.Text
+	RouteReason          pgtype.Text
+	AvailableAt          pgtype.Timestamptz
+	CreatedAt            pgtype.Timestamptz
+	StartedAt            pgtype.Timestamptz
+	FinishedAt           pgtype.Timestamptz
+	SourceStorageID      pgtype.Text
+	TargetStorageID      pgtype.Text
+	ImportUrl            pgtype.Text
+	TrackID              pgtype.Text
+	SourceMediaStorageID pgtype.Text
+	TargetMediaStorageID pgtype.Text
+	AppID                string
+	Passthrough          pgtype.Text
 }
 
 // Jobs across the library, newest first, keyset-paged on (created_at, id).
@@ -464,6 +471,8 @@ func (q *Queries) ListJobs(ctx context.Context, arg ListJobsParams) ([]ListJobsR
 			&i.TargetStorageID,
 			&i.ImportUrl,
 			&i.TrackID,
+			&i.SourceMediaStorageID,
+			&i.TargetMediaStorageID,
 			&i.AppID,
 			&i.Passthrough,
 		); err != nil {
@@ -478,7 +487,7 @@ func (q *Queries) ListJobs(ctx context.Context, arg ListJobsParams) ([]ListJobsR
 }
 
 const listLibrary = `-- name: ListLibrary :many
-SELECT id, project_id, app_id, status, error_code, version, storage_id, source_uri, agent_source_id, source_kept, current_output_id, passthrough, duration_seconds, created_at, updated_at, deleted_at, title FROM assets
+SELECT id, project_id, app_id, status, error_code, version, storage_id, source_uri, agent_source_id, source_kept, current_output_id, passthrough, duration_seconds, created_at, updated_at, deleted_at, title, media_storage_id FROM assets
 WHERE project_id = $1
   AND ($2::text IS NULL OR app_id = $2)
   AND ($3::text IS NULL OR status = $3)
@@ -543,6 +552,7 @@ func (q *Queries) ListLibrary(ctx context.Context, arg ListLibraryParams) ([]Ass
 			&i.UpdatedAt,
 			&i.DeletedAt,
 			&i.Title,
+			&i.MediaStorageID,
 		); err != nil {
 			return nil, err
 		}

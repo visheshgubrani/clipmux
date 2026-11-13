@@ -127,7 +127,7 @@ func (c *Committer) verify(ctx context.Context, att db.Attempt, m media.Manifest
 		want[f.Path] = f.Size
 	}
 
-	store, err := c.stores.ForAsset(ctx, att.AssetID)
+	store, err := c.stores.MediaFor(ctx, att.AssetID)
 	if err != nil {
 		return err
 	}

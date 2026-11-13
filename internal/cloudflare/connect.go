@@ -68,10 +68,6 @@ type Request struct {
 	Hostname  string `json:"hostname"`
 	Bucket    string `json:"bucket,omitempty"`
 	AccountID string `json:"account_id,omitempty"`
-	// DefaultStorage says whether new uploads go to the bucket (D110). Left
-	// out, the first connect makes it the default and a reconnect leaves the
-	// owner's choice alone.
-	DefaultStorage *bool `json:"default_storage,omitempty"`
 }
 
 // R2Request adds an R2 bucket as storage without moving delivery (D110): a
@@ -161,10 +157,6 @@ func (c *Connector) Connect(ctx context.Context, req Request) (Result, error) {
 		return Result{}, fmt.Errorf("cloudflare connection: %w", err)
 	}
 	connected := err == nil
-	makeDefault := req.DefaultStorage != nil && *req.DefaultStorage
-	if req.DefaultStorage == nil {
-		makeDefault = !connected
-	}
 	// A reconnect to the same hostname redeploys the Worker it made before,
 	// whatever that one is called (installs connected before Workers were
 	// named per hostname share one fixed name).
@@ -205,18 +197,10 @@ func (c *Connector) Connect(ctx context.Context, req Request) (Result, error) {
 		})
 	}) && step("routes", func() (string, error) {
 		// The bucket gets every route before the hostname moves, so the
-		// Worker serves from its first request. Assets on other stores play
-		// through origin until they move.
+		// Worker serves from its first request. New videos' encoded files go
+		// to the bucket (D117); uploads stay where Storage sends them, and
+		// videos encoded elsewhere play through origin until they move.
 		if err := q.SetProjectDelivery(ctx, db.SetProjectDeliveryParams{ID: c.ProjectID, Delivery: "worker", DeliveryStorageID: pgtype.Text{String: storageID, Valid: true}}); err != nil {
-			return "", err
-		}
-		if makeDefault {
-			if err := c.Stores.SetDefault(ctx, c.ProjectID, storageID); err != nil {
-				return "", err
-			}
-		}
-		where, err := c.uploadsGo(ctx, storageID)
-		if err != nil {
 			return "", err
 		}
 		d, bucketID, err := routes.ForProject(ctx, q, c.Stores, c.ProjectID)
@@ -224,7 +208,7 @@ func (c *Connector) Connect(ctx context.Context, req Request) (Result, error) {
 			return "", err
 		}
 		r, err := routes.Reconcile(ctx, q, d, bucketID, c.ProjectID)
-		return fmt.Sprintf("%d routes written; %s", r.Written, where), err
+		return fmt.Sprintf("%d routes written; new videos are encoded into the bucket", r.Written), err
 	}) && step("dns", func() (string, error) {
 		attached, err := cf.DomainMatches(ctx, accountID, zoneID, req.Hostname, script)
 		if err != nil {
@@ -383,20 +367,6 @@ func (c *Connector) r2Store(ctx context.Context, cf *Client, token, tokenID, acc
 		*storageID = row.ID
 		return "R2 bucket checked: list, write, read, delete and CORS", err
 	})
-}
-
-// uploadsGo says where new uploads go, for a step's detail.
-func (c *Connector) uploadsGo(ctx context.Context, r2ID string) (string, error) {
-	def, err := db.New(c.Pool).GetDefaultStorage(ctx, c.ProjectID)
-	switch {
-	case err != nil:
-		return "", fmt.Errorf("default storage: %w", err)
-	case def.ID == r2ID:
-		return "new uploads go to R2", nil
-	case def.Kind == stores.KindFilesystem:
-		return "new uploads stay on this server; choose R2 under Storage to move them", nil
-	}
-	return "new uploads stay on storage " + def.ID + "; choose R2 under Storage to move them", nil
 }
 
 // ErrNotConnected means there is no Cloudflare connection to undo.

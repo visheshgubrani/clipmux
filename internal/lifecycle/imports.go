@@ -167,7 +167,7 @@ func (f *importFailure) Error() string { return f.code + ": " + f.cause.Error() 
 
 func (s *Service) runImport(ctx context.Context, job db.Job) error {
 	q := db.New(s.pool)
-	store, err := s.stores.ForAsset(ctx, job.AssetID)
+	store, err := s.stores.SourceFor(ctx, job.AssetID)
 	if err != nil {
 		return err
 	}

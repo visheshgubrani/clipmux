@@ -121,7 +121,7 @@ func (r *Runner) transcribe(ctx context.Context, c *queue.Claim) (*transcripts.T
 	if err != nil {
 		return nil, "source_download_failed", false, err
 	}
-	store, err := r.Stores.ForAsset(ctx, c.Job.AssetID)
+	store, err := r.Stores.MediaFor(ctx, c.Job.AssetID)
 	if err != nil {
 		return nil, "source_download_failed", false, err
 	}
