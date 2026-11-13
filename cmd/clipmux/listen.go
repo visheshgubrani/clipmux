@@ -27,6 +27,10 @@ machine the server can't reach. Each event is POSTed exactly as a webhook
 endpoint would receive it, signed with a secret printed at start: set your
 app's webhook secret to it. The key needs assets:read.
 
+An app built with @clipmux/node can run "npx @clipmux/node listen" instead,
+which signs with the app's own CLIPMUX_WEBHOOK_SECRET; this command is for
+any other stack. Both take CLIPMUX_URL and CLIPMUX_API_KEY.
+
 Flags:
 `
 
@@ -34,7 +38,11 @@ func runListen(args []string, getenv func(string) string, stdout, stderr io.Writ
 	fs := flag.NewFlagSet("listen", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = func() { fmt.Fprint(stderr, listenUsage); fs.PrintDefaults() }
-	server := fs.String("server", getenv("CLIPMUX_SERVER"), "ClipMux's public URL (or CLIPMUX_SERVER)")
+	defaultServer := getenv("CLIPMUX_SERVER")
+	if defaultServer == "" {
+		defaultServer = getenv("CLIPMUX_URL") // the SDK's env file
+	}
+	server := fs.String("server", defaultServer, "ClipMux's public URL (or CLIPMUX_SERVER, or CLIPMUX_URL)")
 	forward := fs.String("forward-to", "", "the local webhook URL, e.g. localhost:3000/webhooks")
 	events := fs.String("events", "", "comma-separated event types to forward (default: all)")
 	since := fs.Duration("since", 0, "also replay events from this long ago, e.g. 10m")
