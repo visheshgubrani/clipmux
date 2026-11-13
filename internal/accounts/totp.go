@@ -254,10 +254,11 @@ func (s *Service) ownerFor(w http.ResponseWriter, r *http.Request) (Owner, bool)
 }
 
 // passwordOK re-checks the owner's password before an account change,
-// limited like a sign-in.
+// limited like a sign-in from the same address. The request already has
+// the owner's session, so failures elsewhere don't refuse it (D121).
 func (s *Service) passwordOK(w http.ResponseWriter, r *http.Request, ownerID, password string) bool {
 	key := ratelimit.AddrKey(s.clientIP(r))
-	if ok, wait := s.limiter.Allow(key); !ok {
+	if ok, wait := s.limiter.AllowKey(key); !ok {
 		ratelimit.Refuse(w, wait)
 		return false
 	}

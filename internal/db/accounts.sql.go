@@ -160,6 +160,17 @@ func (q *Queries) EnableOwnerTOTP(ctx context.Context, arg EnableOwnerTOTPParams
 	return result.RowsAffected(), nil
 }
 
+const getDeviceKey = `-- name: GetDeviceKey :one
+SELECT device_key_sealed FROM projects WHERE id = $1
+`
+
+func (q *Queries) GetDeviceKey(ctx context.Context, id string) ([]byte, error) {
+	row := q.db.QueryRow(ctx, getDeviceKey, id)
+	var device_key_sealed []byte
+	err := row.Scan(&device_key_sealed)
+	return device_key_sealed, err
+}
+
 const getOwner = `-- name: GetOwner :one
 SELECT id, project_id, email, password_hash, created_at, password_changed_at, totp_secret_encrypted, totp_enabled_at, totp_last_step FROM owners WHERE project_id = $1
 `
@@ -290,6 +301,21 @@ func (q *Queries) OwnerExists(ctx context.Context, projectID string) (bool, erro
 	var exists bool
 	err := row.Scan(&exists)
 	return exists, err
+}
+
+const setDeviceKeyIfUnset = `-- name: SetDeviceKeyIfUnset :exec
+UPDATE projects SET device_key_sealed = $1 WHERE id = $2 AND device_key_sealed IS NULL
+`
+
+type SetDeviceKeyIfUnsetParams struct {
+	Sealed []byte
+	ID     string
+}
+
+// Another serve may have set one first; the caller reads back what won.
+func (q *Queries) SetDeviceKeyIfUnset(ctx context.Context, arg SetDeviceKeyIfUnsetParams) error {
+	_, err := q.db.Exec(ctx, setDeviceKeyIfUnset, arg.Sealed, arg.ID)
+	return err
 }
 
 const setOwnerPassword = `-- name: SetOwnerPassword :exec

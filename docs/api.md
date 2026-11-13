@@ -32,8 +32,8 @@ are per serve process.
 | Integration API (API key, or the owner's session acting as an app) | key | 20 requests a second, bursts of 200; of those, writes (`POST`, `DELETE`) 2 a second, bursts of 60 |
 | `GET /v1/events` | key | 4 long-polls at once |
 | `/v1/uploads/{id}/*` with an upload token | upload | 10 requests a second, bursts of 50 |
-| `POST /v1/session` | address, and overall | 5 failed sign-ins per address and 20 overall in 15 minutes (`too_many_attempts`) |
-| `POST /v1/setup/owner` | address, and overall | 5 wrong setup tokens per address and 20 overall in 15 minutes |
+| `POST /v1/session` | address, and overall | 5 failed sign-ins per address and 20 overall in 15 minutes (`too_many_attempts`). A browser holding the owner's known-device cookie (`__Host-clipmux_device`) skips the overall limit (D121) |
+| `POST /v1/setup/owner` | address | 5 wrong setup tokens per address in 15 minutes (D121) |
 | `POST /worker/v1/pair` | address, and overall | 10 wrong codes per address and 100 overall in 15 minutes |
 | `POST /worker/v1/pairings` | address | 20 an hour (and at most 10 waiting at once, `too_many_pairings`) |
 | `POST /worker/v1/pairings/poll` | address | 2 a second, bursts of 4 |

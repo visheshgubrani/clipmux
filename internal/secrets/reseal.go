@@ -36,6 +36,7 @@ var Columns = []Column{
 	{"edge_analytics", "token_sealed", "project_id", "edge_analytics"},
 	{"share_links", "secret_sealed", "id", "share_links"},
 	{"app_pairings", "credentials_sealed", "id", "app_pairings"},
+	{"projects", "device_key_sealed", "id", "projects_device"},
 }
 
 // CheckVersions refuses a box that can't open every sealed value: after a

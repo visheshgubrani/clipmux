@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -375,5 +377,127 @@ func TestWrongCurrentPasswordsAreThrottled(t *testing.T) {
 	res := r.do("PUT", "/v1/session/password", map[string]string{"current_password": goodPassword, "new_password": "a brand new long password"}, here, nil)
 	if res.StatusCode != http.StatusTooManyRequests || res.Header.Get("Retry-After") == "" || r.hashes.Load() != before {
 		t.Fatalf("sixth try = %d (Retry-After %q, hashed %d more), want 429 before hashing", res.StatusCode, res.Header.Get("Retry-After"), r.hashes.Load()-before)
+	}
+}
+
+// from sends a request as if from addr, through a trusted proxy.
+func from(addr string) map[string]string { return map[string]string{"X-Forwarded-For": addr} }
+
+func deviceCookie(res *http.Response) *http.Cookie {
+	for _, c := range res.Cookies() {
+		if strings.HasSuffix(c.Name, "clipmux_device") {
+			return c
+		}
+	}
+	return nil
+}
+
+// newProxiedRig is a rig whose requests come through a trusted proxy, so
+// each test picks its client address, and whose service has a box to seal
+// the device key.
+func newProxiedRig(t *testing.T, publicURL string) *rig {
+	t.Helper()
+	r := newRig(t, publicURL)
+	box, err := secrets.NewBox(1, bytes.Repeat([]byte{9}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.svc.Box = box
+	r.svc.TrustedProxies = []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8")}
+	return r
+}
+
+// lockOut fails 20 sign-ins from four addresses, past the global limit.
+func (r *rig) lockOut() {
+	r.t.Helper()
+	for i := range 20 {
+		addr := fmt.Sprintf("198.51.100.%d", i/5+1)
+		if res := r.do("POST", "/v1/session", map[string]string{"email": "owner@example.com", "password": "not the password"}, nil, from(addr)); res.StatusCode != http.StatusUnauthorized {
+			r.t.Fatalf("failed login %d = %d, want 401", i+1, res.StatusCode)
+		}
+	}
+}
+
+// Anyone can fail 20 sign-ins from four addresses every 15 minutes; the
+// owner signing in from a device they used before isn't refused for it
+// (finding 2, D121). Everyone else still is.
+func TestAKnownDeviceSignsInPastTheGlobalLimit(t *testing.T) {
+	r := newProxiedRig(t, "https://clipmux.example.com")
+	r.register()
+	res := r.do("POST", "/v1/session", map[string]string{"email": "owner@example.com", "password": goodPassword}, nil, from("203.0.113.7"))
+	device := deviceCookie(res)
+	if res.StatusCode != http.StatusOK || device == nil {
+		t.Fatalf("login = %d, device cookie %v", res.StatusCode, device)
+	}
+	if device.Name != "__Host-clipmux_device" || !device.HttpOnly || !device.Secure || device.SameSite != http.SameSiteStrictMode || device.Path != "/" || device.MaxAge < 364*24*3600 {
+		t.Fatalf("device cookie %+v: want __Host-, HttpOnly, Secure, SameSite=Strict, a year", device)
+	}
+	r.lockOut()
+	if res := r.do("POST", "/v1/session", map[string]string{"email": "owner@example.com", "password": goodPassword}, nil, from("192.0.2.50")); res.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("an unknown device past the global limit = %d, want 429", res.StatusCode)
+	}
+	forged := &http.Cookie{Name: device.Name, Value: device.Value[:len(device.Value)-2] + "AA"}
+	if res := r.do("POST", "/v1/session", map[string]string{"email": "owner@example.com", "password": goodPassword}, forged, from("192.0.2.50")); res.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("a forged device cookie = %d, want 429", res.StatusCode)
+	}
+	if res := r.do("POST", "/v1/session", map[string]string{"email": "owner@example.com", "password": goodPassword}, device, from("192.0.2.50")); res.StatusCode != http.StatusOK {
+		t.Fatalf("the owner's device past the global limit = %d, want 200", res.StatusCode)
+	}
+	// The per-address limit still holds for a known device.
+	for range 5 {
+		r.do("POST", "/v1/session", map[string]string{"email": "owner@example.com", "password": "not the password"}, device, from("192.0.2.51"))
+	}
+	if res := r.do("POST", "/v1/session", map[string]string{"email": "owner@example.com", "password": goodPassword}, device, from("192.0.2.51")); res.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("a known device's address past its own limit = %d, want 429", res.StatusCode)
+	}
+}
+
+// A device cookie issued before a password reset no longer passes the
+// global limit: whoever stole it signed in with the old password.
+func TestADeviceCookieDiesOnAPasswordReset(t *testing.T) {
+	r := newProxiedRig(t, "http://localhost:8080")
+	r.register()
+	res := r.do("POST", "/v1/session", map[string]string{"email": "owner@example.com", "password": goodPassword}, nil, from("203.0.113.7"))
+	device := deviceCookie(res)
+	if device == nil {
+		t.Fatal("no device cookie")
+	}
+	const next = "a brand new long password"
+	if err := ResetPassword(context.Background(), r.pool, "prj_default", next); err != nil {
+		t.Fatal(err)
+	}
+	r.lockOut()
+	if res := r.do("POST", "/v1/session", map[string]string{"email": "owner@example.com", "password": next}, device, from("192.0.2.50")); res.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("a device cookie from before the reset = %d, want 429", res.StatusCode)
+	}
+}
+
+// The setup token is 130 bits: wrong tokens from other addresses mustn't
+// keep the installer out.
+func TestWrongSetupTokensFromOtherAddressesDontBlock(t *testing.T) {
+	r := newProxiedRig(t, "http://localhost:8080")
+	for i := range 25 {
+		addr := fmt.Sprintf("198.51.100.%d", i/5+1)
+		if res := r.do("POST", "/v1/setup/owner", map[string]string{"setup_token": "wrong", "email": "owner@example.com", "password": goodPassword}, nil, from(addr)); res.StatusCode != http.StatusForbidden {
+			t.Fatalf("wrong token %d = %d, want 403", i+1, res.StatusCode)
+		}
+	}
+	token, _, err := r.svc.SetupToken(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res := r.do("POST", "/v1/setup/owner", map[string]string{"setup_token": token, "email": "owner@example.com", "password": goodPassword}, nil, from("203.0.113.7")); res.StatusCode != http.StatusCreated {
+		t.Fatalf("the installer after 25 wrong tokens elsewhere = %d, want 201", res.StatusCode)
+	}
+}
+
+// Re-entering the password for an account change needs a session already,
+// so only the address's own failures limit it, not everyone's.
+func TestPasswordChecksIgnoreTheGlobalLimit(t *testing.T) {
+	r := newProxiedRig(t, "http://localhost:8080")
+	here := r.register()
+	r.lockOut()
+	if res := r.do("PUT", "/v1/session/password", map[string]string{"current_password": goodPassword, "new_password": "a brand new long password"}, here, from("203.0.113.7")); res.StatusCode != http.StatusNoContent {
+		t.Fatalf("a password change past the global limit = %d, want 204", res.StatusCode)
 	}
 }

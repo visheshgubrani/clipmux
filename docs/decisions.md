@@ -1487,3 +1487,13 @@ Decision:
 - **serve and `clipmux worker` mark themselves undumpable** (`sandbox.Undumpable`, `PR_SET_DUMPABLE=0`) first thing; a failure is a warning. Another process of the same user then can't read their environment or ptrace them.
 - **Agents and serverless providers are unchanged.** Modal's gVisor reports Landlock ABI 0 by design (D051), and a provider machine holds only one attempt's token; an agent's tools run on the owner's own PC.
 Consequence: amends D027's "Landlock is reported, not required" for the built-in worker. An install whose kernel lacks Landlock either encodes on a provider or an agent, or opts out knowing its tools can read serve's files.
+
+## D121 The owner's known device skips the global sign-in limit — accepted (2026-11-14)
+Context: the security review's finding 2. The global limit of 20 failed sign-ins per 15 minutes refused every address, so 20 wrong passwords from four addresses every 15 minutes kept the owner out. The setup-token limiter worked the same way.
+Decision:
+- **A successful sign-in, registration or password change sets `__Host-clipmux_device`** (`clipmux_device` on plain http): HttpOnly, Secure, SameSite=Strict, Path=/, one year. Its value is the owner ID, the issue time in microseconds, and an HMAC-SHA256 over both and the project. The key is 32 random bytes made on first use and sealed in `projects.device_key_sealed` (migration 00034, `secrets.Columns` as `projects_device`), like the analytics key.
+- **The cookie is worth one thing: a sign-in that skips the global limit.** The 5-per-address limit, the password and the second factor still apply. It is believed only if its MAC holds, it is under a year old, it names the project's owner, and it was issued no earlier than `owners.password_changed_at`, so a password change or `admin reset-password` retires every cookie issued before it. Only a cookie whose MAC holds costs a database read, and nothing is hashed before the limiter.
+- **Re-entering the password for an account change** (`passwordOK`: password, TOTP) uses the per-address limit only: the request already carries the owner's session.
+- **Wrong setup tokens are limited per address only.** The token is 130 bits, so the global limit only let others lock the installer out.
+- **Pairing keeps its global 100 per 15 minutes**: its code is about 39 bits, and an owner locked out of pairing for 15 minutes can still run `clipmux admin create-pairing`.
+Consequence: amends D024's "20 overall" and D067's setup-token limit. An owner on a new device during an attack still waits out the window; they can sign in from a device they used before, or reset the password on the host.

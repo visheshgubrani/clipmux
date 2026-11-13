@@ -391,6 +391,7 @@ type Project struct {
 	BuiltinSpeech           bool
 	SpeechMode              string
 	AnalyticsKeySealed      []byte
+	DeviceKeySealed         []byte
 }
 
 type RetentionCursor struct {
