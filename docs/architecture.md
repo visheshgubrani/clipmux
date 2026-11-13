@@ -200,7 +200,7 @@ Sources are kept by default so assets can be re-encoded. A project can delete th
 
 `_keys.json` holds public token-signing keys. No content key is ever written to storage, so outputs there are ciphertext only. Sources stay as uploaded.
 
-Files from a failed or lost attempt are deleted 30 minutes after a newer attempt replaces it or the job ends. That outlasts the attempt's 15-minute PUT URLs, so a stale worker can't recreate files after cleanup. A daily sweep also deletes any output prefix with no `committed` or `writing` Output.
+Files from a failed or lost attempt are deleted 30 minutes after a newer attempt replaces it or the job ends. That outlasts the attempt's 15-minute PUT URLs, so a stale worker can't recreate files after cleanup. A daily sweep also deletes any output prefix with no `committed` or `writing` Output. Built-in delivery serves only the files a committed manifest lists, and 16 minutes after a commit, once its PUT URLs have expired, the retention loop deletes anything else under that output (D124).
 
 ### Accounts and tenancy
 

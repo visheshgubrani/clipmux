@@ -106,6 +106,10 @@ func newRig(t *testing.T, mediaURL string, encrypted bool) *rig {
 		if err := store.Put(ctx, "media/ast_1/out_1/"+name, bytes.NewReader(body)); err != nil {
 			t.Fatal(err)
 		}
+		// Delivery serves only what the committed manifest lists (D124).
+		if _, err := pool.Exec(ctx, `UPDATE outputs SET manifest = jsonb_set(manifest, '{files}', coalesce(manifest->'files', '[]') || jsonb_build_array(jsonb_build_object('path', $1::text, 'size', $2::bigint))) WHERE id = 'out_1'`, name, len(body)); err != nil {
+			t.Fatal(err)
+		}
 	}
 	return &rig{t: t, pool: pool, store: store, ring: ring, runner: New(pool, stores.Fixed(store), box, urls, nil, nil, "")}
 }

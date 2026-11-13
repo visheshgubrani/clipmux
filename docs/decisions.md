@@ -1513,3 +1513,10 @@ Decision:
 - **Migration 00035 revokes the keys the built-in app already has**, and redefines `job_claimable_by` so an untrusted worker's owner jobs exclude any asset with an `import` job. Its Down restores the old function and leaves the keys revoked.
 - So the owner's jobs are what the owner uploaded in the dashboard or pinned to the agent. The owner's session acting as an app (D025) still works.
 Consequence: amends D043's "owner jobs" and D025: an integration needs its own app. The deploy checks production's built-in-app keys before migrating, since 00035 revokes them.
+
+## D124 Only the committed manifest's files are served, and the rest are swept — accepted (2026-11-14)
+Context: the security review's finding 4. Commit verifies storage against the manifest, but the worker's PUT URLs last 15 minutes, so a file could be added under an output after its verification, and delivery served any grammar-valid name under a committed output.
+Decision:
+- **Built-in delivery serves only the names `out.Manifest` lists**, pinned paths and the unpinned poster alike. The delivery cache keeps each output's listed files with the output (D072), so a segment still costs no query.
+- **The `file_retention` loop sweeps each committed output once** (`SweepUnlisted`): 16 minutes after its commit (`CommitGrace`), when no URL can write there, it deletes every object under the output's prefix that the manifest doesn't list, `manifest.json` aside, and records `outputs.unlisted_swept_at` (migration 00036). Outputs committed earlier are swept on the first passes, 100 a pass. A manifest that lists nothing is left alone. This covers the Cloudflare Worker, which reads the bucket, without changing the shared delivery vectors.
+Consequence: on the Worker a file added after commit can be served for at most the loop's period after the grace (about 76 minutes); the Worker gaining the manifest check is left to Phase 2's vectors.

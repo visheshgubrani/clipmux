@@ -116,3 +116,15 @@ DELETE FROM playback_viewer_days WHERE (project_id, day, app_id, viewer) IN (
 DELETE FROM playback_viewers WHERE (project_id, day, asset_id, viewer) IN (
     SELECT v.project_id, v.day, v.asset_id, v.viewer FROM playback_viewers v
     WHERE v.day < sqlc.arg(before)::date LIMIT sqlc.arg(max_rows));
+
+-- name: ListUnsweptOutputs :many
+-- Committed outputs past their PUT URLs (committed before before) whose
+-- files haven't been checked against their manifest yet.
+SELECT id, asset_id, prefix, manifest FROM outputs
+WHERE status IN ('committed', 'retired') AND purged_at IS NULL AND unlisted_swept_at IS NULL
+  AND committed_at < sqlc.arg(before)
+ORDER BY committed_at, id
+LIMIT sqlc.arg(max_rows);
+
+-- name: MarkOutputSwept :exec
+UPDATE outputs SET unlisted_swept_at = now() WHERE id = $1;

@@ -2,6 +2,7 @@ package retention
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -29,6 +30,10 @@ const (
 	// staged write lasts seconds, and an upload idle for a day is aborted.
 	TmpAge     = 24 * time.Hour
 	StagingAge = 7 * 24 * time.Hour
+	// CommitGrace: an output's files are checked against its manifest
+	// this long after its commit. The worker's PUT URLs last 15 minutes and
+	// a committed attempt can't sign more, so nothing can add a file after.
+	CommitGrace = 16 * time.Minute
 	// SweepAssets is how many assets each pass checks for orphaned output
 	// prefixes, resuming where the last pass stopped.
 	SweepAssets = 500
@@ -65,6 +70,7 @@ func (f *Files) Run(ctx context.Context) (int, error) {
 		{"retired_tracks", f.PurgeRetiredTracks},
 		{"abandoned_outputs", f.PurgeAbandoned},
 		{"orphan_prefixes", f.SweepOrphans},
+		{"unlisted_files", f.SweepUnlisted},
 		{"filesystem_leftovers", f.sweepFS},
 	} {
 		n, err := rule.run(ctx)
@@ -243,6 +249,75 @@ func (f *Files) sweepAsset(ctx context.Context, q *db.Queries, assetID string) (
 			return n, fmt.Errorf("delete orphan %s%s/: %w", base, id, err)
 		}
 		n++
+	}
+	return n, nil
+}
+
+// SweepUnlisted deletes the files of committed outputs that their manifest
+// doesn't list (manifest.json aside), once CommitGrace has passed: a worker
+// could add them after the commit's verification while its PUT URLs were
+// still valid (D124). Built-in delivery already refuses them; this removes
+// them for the Cloudflare Worker too, which reads the bucket. Each output
+// is checked once.
+func (f *Files) SweepUnlisted(ctx context.Context) (int, error) {
+	q := db.New(f.pool)
+	rows, err := q.ListUnsweptOutputs(ctx, db.ListUnsweptOutputsParams{Before: f.ts(f.Now().Add(-CommitGrace)), MaxRows: 100})
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, o := range rows {
+		var m struct {
+			Files []struct {
+				Path string `json:"path"`
+			} `json:"files"`
+		}
+		if err := json.Unmarshal(o.Manifest, &m); err != nil {
+			return n, fmt.Errorf("manifest of %s: %w", o.ID, err)
+		}
+		// A commit always lists the playlists; a manifest that lists
+		// nothing wasn't verified by one, so its files stay.
+		if len(m.Files) == 0 {
+			f.Logger.Warn("output's manifest lists no files; not sweeping it", "output", o.ID)
+			if err := q.MarkOutputSwept(ctx, o.ID); err != nil {
+				return n, fmt.Errorf("mark %s swept: %w", o.ID, err)
+			}
+			continue
+		}
+		keep := map[string]bool{"manifest.json": true}
+		for _, file := range m.Files {
+			keep[file.Path] = true
+		}
+		store, err := f.stores.MediaFor(ctx, o.AssetID)
+		if err != nil {
+			return n, fmt.Errorf("store of %s: %w", o.AssetID, err)
+		}
+		var extra []string
+		for cursor := ""; ; {
+			objs, next, err := store.List(ctx, o.Prefix.String, cursor)
+			if err != nil {
+				return n, fmt.Errorf("list %s: %w", o.Prefix.String, err)
+			}
+			for _, obj := range objs {
+				if !keep[strings.TrimPrefix(obj.Key, o.Prefix.String)] {
+					extra = append(extra, obj.Key)
+				}
+			}
+			if next == "" {
+				break
+			}
+			cursor = next
+		}
+		for _, key := range extra {
+			if err := store.Delete(ctx, key); err != nil {
+				return n, fmt.Errorf("delete %s: %w", key, err)
+			}
+			f.Logger.Warn("deleted a file added to an output after its commit", "output", o.ID, "key", key)
+			n++
+		}
+		if err := q.MarkOutputSwept(ctx, o.ID); err != nil {
+			return n, fmt.Errorf("mark %s swept: %w", o.ID, err)
+		}
 	}
 	return n, nil
 }
