@@ -689,7 +689,7 @@ function Sharing({ asset: a, app }: { asset: Asset; app?: string | undefined }) 
             <span className="text-sm font-medium">Embed</span>
             <CopyBlock
               label="embed code"
-              value={`<clipmux-player base-url="${a.base_url}" playback-id="${first.id}"></clipmux-player>`}
+              value={`<!-- npm i @clipmux/player, then in your bundle: import '@clipmux/player/element' -->\n<clipmux-player base-url="${a.base_url}" playback-id="${first.id}"></clipmux-player>`}
             />
             <span className="text-sm font-medium">Stream URL</span>
             <CopyBlock label="stream URL" value={`${a.base_url}/p/${first.id}/master.m3u8`} />

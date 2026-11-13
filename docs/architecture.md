@@ -658,7 +658,7 @@ A share link (D104) is `{public_url}/s/{secret}`: a page that plays one video fo
 - **Scope:** An app's endpoints receive only events for that app's assets.
 - **Signing:** Each request carries an HMAC-SHA256 signature over the timestamp and body, which also blocks replays.
 - **Events:** `video.asset.ready`, `video.asset.updated`, `video.asset.reencode_failed`, `video.asset.errored` and `video.asset.deleted`.
-- **Local development:** `clipmux listen --forward-to localhost:3000/webhooks` relays an app's events to a laptop that can't receive webhooks.
+- **Local development:** `npx @clipmux/node listen --forward-to localhost:3000/api/clipmux/webhook` relays an app's events to a laptop that can't receive webhooks, signed with the app's own webhook secret. `clipmux listen` does the same for a backend in any language, with a secret of its own.
 
 ## Security
 

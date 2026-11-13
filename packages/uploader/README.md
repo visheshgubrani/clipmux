@@ -66,9 +66,13 @@ memory.forget(file)
 
 - Parts are the upload's `part_size` (32 MiB); up to four are in flight.
 - After a reload, `start()` asks ClipMux which parts are stored and sends the rest.
-- Network errors, 5xx, 408 and 429 are retried (Retry-After honoured, offline waits for `online`);
-  a failure rejects with a `ClipMuxUploadError` (`code`, `status`, `retryable`) and leaves the upload
-  resumable for 24 hours. `cancel()` ends it for good.
+- Retries honour Retry-After, and offline waits for `online`. Part uploads
+  retry network errors, 5xx, 408 and 429; the calls to ClipMux and to
+  `create-url` retry network errors, 5xx and 429. A 4xx such as `413
+  too_large` fails at once.
+- A failure rejects with a `ClipMuxUploadError` (`code`, `status`,
+  `retryable`) and leaves the upload resumable for 24 hours. `cancel()` ends
+  it for good.
 - Storage must expose the `ETag` header to the page (ClipMux's own storage does).
 - With `createUrl`, a remembered upload that has expired or was cancelled is
   replaced by a new one; `store: null` turns the memory off.
@@ -80,6 +84,16 @@ Uppy users can map its `@uppy/aws-s3` callbacks to the same endpoints instead (d
 The browser never holds an API key. Your backend creates the upload with one
 (scope `uploads:write`) and hands the body to the page; `passthrough` is your
 own reference, which comes back on the asset and its webhooks.
+
+With `@clipmux/node`, `uploads.create` returns exactly what `ClipMuxUpload`
+takes, `endpoint` included:
+
+```ts
+const upload = await clipmux.uploads.create({ size, playback_policy: 'signed', passthrough: lessonId })
+return Response.json(upload) // the page: new ClipMuxUpload(file, { upload }).start()
+```
+
+Or with `fetch`:
 
 ```ts
 // POST /api/uploads, after your own access check
@@ -112,6 +126,17 @@ export function verifyWebhook(raw: string, headers: Headers, secret: string): bo
 
 Delivery is at least once: dedupe on `X-Webhook-Id`. Every route and field is
 in [docs/api.md](https://github.com/visheshgubrani/clipmux/blob/main/docs/api.md).
+
+## Content-Security-Policy
+
+A page with the uploader must allow, besides its own origin:
+- `connect-src`: the ClipMux URL (signing and completing parts) and the
+  storage bucket's origin (the part PUTs), which is the ClipMux URL itself
+  when it stores files on its own disk;
+- `style-src 'unsafe-inline'`: the element's styles.
+
+`npx @clipmux/node doctor` prints the exact origins, from `GET /v1/app`
+(`public_url` and `upload_origins`).
 
 ## Licence
 
