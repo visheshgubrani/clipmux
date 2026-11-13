@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
-import { ClipMux } from './client.ts'
+import { ClipMux, VERSION } from './client.ts'
 import { ClipMuxConfigError, ClipMuxError } from './errors.ts'
 import type { Asset } from './schema.gen.ts'
 import { signWebhook } from './webhooks.ts'
@@ -312,4 +312,9 @@ test('webhooks.verify uses CLIPMUX_WEBHOOK_SECRET', async () => {
     'x-webhook-signature': sig,
   })
   assert.equal(ev.type, 'video.asset.ready')
+})
+
+test('VERSION, sent in the User-Agent, is the package version', () => {
+  const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
+  assert.equal(VERSION, pkg.version)
 })

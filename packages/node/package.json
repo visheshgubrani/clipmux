@@ -24,7 +24,7 @@
   },
   "type": "module",
   "engines": {
-    "node": ">=20"
+    "node": ">=20.19"
   },
   "exports": {
     ".": {
@@ -54,8 +54,7 @@
     "generate:check": "node scripts/generate.ts --check"
   },
   "publishConfig": {
-    "access": "public",
-    "provenance": true
+    "access": "public"
   },
   "bin": {
     "clipmux-node": "./dist/bin.js"

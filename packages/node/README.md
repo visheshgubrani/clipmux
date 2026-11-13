@@ -152,12 +152,12 @@ alone, sign `playback.token(id, { audience: 'poster' })`.
 A page with `<clipmux-uploader>` or `<clipmux-player>` must allow, besides
 its own origin:
 
-| Directive | Sources | Why |
-| --- | --- | --- |
+| Directive     | Sources                                                        | Why                                                                                                                                 |
+| ------------- | -------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
 | `connect-src` | the ClipMux URL, the storage bucket's origin, the media origin | the uploader signs and completes parts on the server and PUTs them to storage; the player fetches playlists, segments, keys and VTT |
-| `media-src` | `blob:` and the media origin | Media Source playback, and native HLS |
-| `img-src` | the media origin | the poster |
-| `style-src` | `'unsafe-inline'` | both elements inject their styles |
+| `media-src`   | `blob:` and the media origin                                   | Media Source playback, and native HLS                                                                                               |
+| `img-src`     | the media origin                                               | the poster                                                                                                                          |
+| `style-src`   | `'unsafe-inline'`                                              | both elements inject their styles                                                                                                   |
 
 `npx @clipmux/node doctor` prints the exact origins, from `GET /v1/app`
 (`public_url`, `upload_origins`, `base_url`). hls.js runs on the main thread,
