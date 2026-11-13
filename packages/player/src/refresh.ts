@@ -34,8 +34,22 @@ export function rewriteTokenUrl(url: string, mediaOrigin: string, playbackId: st
   return u.toString()
 }
 
-/** Your callback for a fresh token; null means this viewer may not watch. */
-export type GetToken = () => Promise<string | null>
+/** What the player asks getToken for. */
+export interface TokenRequest {
+  playbackId: string
+  /**
+   * The browser plays HLS itself (iOS before 17.1, AirPlay), so the token
+   * can't be refreshed: sign it for the whole session, as
+   * `clipmux.playback.token(id, { native: true })` does.
+   */
+  native: boolean
+}
+
+/**
+ * Your callback for a fresh token; null means this viewer may not watch.
+ * A callback that takes no arguments still fits.
+ */
+export type GetToken = (request: TokenRequest) => Promise<string | null>
 
 export interface SessionOptions {
   delay?: (ms: number) => Promise<void>
@@ -50,12 +64,12 @@ export interface SessionOptions {
  */
 export class TokenSession {
   #current: string
-  #getToken: GetToken | undefined
+  #getToken: (() => Promise<string | null>) | undefined
   #pending: Promise<string | null> | null = null
   #denied = false
   readonly #opts: SessionOptions
 
-  constructor(token: string, getToken?: GetToken, options: SessionOptions = {}) {
+  constructor(token: string, getToken?: () => Promise<string | null>, options: SessionOptions = {}) {
     this.#current = token
     this.#getToken = getToken
     this.#opts = options
@@ -91,7 +105,7 @@ export class TokenSession {
 
   async #fetch(): Promise<string | null> {
     const delay = this.#opts.delay ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)))
-    const getToken = this.#getToken as GetToken
+    const getToken = this.#getToken as () => Promise<string | null>
     let failure: unknown
     for (const wait of [0, 1000, 2000, 4000]) {
       if (wait) await delay(wait)

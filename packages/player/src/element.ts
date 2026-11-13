@@ -3,7 +3,8 @@
 //
 //   import '@clipmux/player/element'
 //   const player = document.querySelector('clipmux-player')
-//   player.getToken = async () => (await fetch('/my/token')).text()
+//   player.getToken = async ({ playbackId, native }) =>
+//     (await fetch(`/my/token?id=${playbackId}&native=${native}`)).text()
 //
 // With getToken and no token, the element asks for the first token itself;
 // set token instead to start with one. autoplay and muted pass through to
@@ -195,7 +196,7 @@ export class ClipMuxPlayerElement extends HTMLElement {
     if (!this.#token && this.#getToken) {
       if (!this.#fetching) {
         this.#fetching = true
-        this.#getToken().then(
+        this.#getToken({ playbackId, native: playsNatively() }).then(
           (t) => {
             this.#fetching = false
             if (this.#token) return // a token was set meanwhile; it wins
@@ -261,10 +262,11 @@ export class ClipMuxPlayerElement extends HTMLElement {
 
   // A fresh token for the session: getToken's, else the session URL's.
   async #nextToken(): Promise<string | null> {
-    if (this.#getToken) return this.#getToken()
     const sessionUrl = this.getAttribute('session-url')
     const playbackId = this.getAttribute('playback-id')
-    if (!sessionUrl || !playbackId) return null
+    if (!playbackId) return null
+    if (this.#getToken) return this.#getToken({ playbackId, native: playsNatively() })
+    if (!sessionUrl) return null
     const s = await fetchSession(sessionUrl, playbackId, playsNatively())
     if (s === null) return null
     if (`${sessionUrl}|${playbackId}` === this.#playbackFor && this.#playback) {

@@ -8,6 +8,7 @@ export {
   type LoaderClass,
   rewriteTokenUrl,
   type SessionOptions,
+  type TokenRequest,
   TokenSession,
 } from './refresh.ts'
 export {

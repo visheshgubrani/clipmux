@@ -175,6 +175,37 @@ test('playback.token signs sub, aud, a 15-minute default and the viewer', async 
   await assert.rejects(cm.playback.token('pid_signed', { expiresIn: '8d' }), /longer than the server allows/)
 })
 
+test("playback.token for a native player lasts the session, within the server's maximum", async () => {
+  // The first token reads the server's maximum from /v1/app, once.
+  const f = fake(json(200, { max_token_lifetime_seconds: 8 * 3600, base_url: 'https://media.example.net' }))
+  const cm = new ClipMux({ env, fetch: f.fetch })
+  const ttl = async (o: Parameters<typeof cm.playback.token>[1]) => {
+    const c = claims(await cm.playback.token('pid_signed', o))
+    return c.exp - c.iat
+  }
+  assert.equal(await ttl({ native: true, durationSeconds: 3 * 3600 }), 6 * 3600)
+  assert.equal(await ttl({ native: true, durationSeconds: 600 }), 4 * 3600)
+  assert.equal(await ttl({ native: true }), 8 * 3600, '12 h without a duration, capped at the maximum')
+  assert.equal(await ttl({ native: false }), 900)
+  await assert.rejects(
+    cm.playback.token('pid_signed', { expiresIn: '9h' }),
+    /longer than the server allows \(28800 s\)/,
+  )
+  assert.equal(f.calls.length, 1)
+  assert.equal(f.calls[0]?.url.pathname, '/v1/app')
+})
+
+test('playback.token waits at most 3 s for /v1/app, then signs with the default maximum', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const never = (() => new Promise<Response>(() => {})) as typeof globalThis.fetch
+  const cm = new ClipMux({ env, fetch: never })
+  const signing = cm.playback.token('pid_signed', { expiresIn: '6d' })
+  await Promise.resolve()
+  t.mock.timers.tick(3000)
+  const c = claims(await signing)
+  assert.equal(c.exp - c.iat, 6 * 86400)
+})
+
 test("playback.session picks the asset's own signed ID, signs it, and lists ready tracks", async () => {
   const cm = new ClipMux({ env, fetch: fake().fetch })
   const s = await cm.playback.session(asset({ title: 'Lesson 42' }), { viewerId: 'stu_1' })

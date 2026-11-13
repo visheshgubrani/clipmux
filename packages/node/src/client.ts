@@ -66,6 +66,15 @@ export interface TokenOptions {
   audience?: Audience | undefined
   /** A stable ID for this viewer, for unique-viewer analytics (D103). */
   viewerId?: string | undefined
+  /**
+   * The player plays HLS itself and can't refresh (getToken's `native`):
+   * the token lasts the larger of twice `durationSeconds` and 4 hours (12
+   * hours without a duration), within the server's maximum. Overrides
+   * `expiresIn`.
+   */
+  native?: boolean | undefined
+  /** The video's duration, for a native token. */
+  durationSeconds?: number | null | undefined
 }
 
 export interface SessionOptions {
@@ -369,9 +378,29 @@ export class ClipMux {
     return v
   }
 
+  // The server's longest token, read from /v1/app once. Signing stays
+  // offline in spirit: if the API is slow or down, it waits at most 3 s and
+  // uses the default maximum (delivery has the last word either way).
+  async #maxTtl(): Promise<number> {
+    let timer: Parameters<typeof clearTimeout>[0]
+    const late = new Promise<undefined>((resolve) => {
+      timer = setTimeout(resolve, 3000)
+    })
+    try {
+      const app = await Promise.race([this.app.get().catch(() => undefined), late])
+      return app?.max_token_lifetime_seconds ?? FALLBACK_MAX_TTL
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+
   async #token(playbackId: string, o: TokenOptions): Promise<string> {
-    const ttl = seconds(o.expiresIn ?? DEFAULT_TTL)
-    const max = (await this.#app?.catch(() => undefined))?.max_token_lifetime_seconds ?? FALLBACK_MAX_TTL
+    const max = await this.#maxTtl()
+    // Without a duration, 12 hours covers any lesson-length video.
+    const d = o.durationSeconds
+    const ttl = o.native
+      ? Math.min(max, Math.max(4 * 3600, d ? Math.ceil(2 * d) : 12 * 3600))
+      : seconds(o.expiresIn ?? DEFAULT_TTL)
     if (ttl > max) throw new RangeError(`expiresIn ${ttl} s is longer than the server allows (${max} s)`)
     const kid = this.#require('signingKid')
     this.#key ??= importSigningKey(this.#require('signingKey'))
@@ -398,15 +427,13 @@ export class ClipMux {
     let token = ''
     let expiresAt: string | null = null
     if (pick.policy === 'signed') {
-      let ttl = seconds(o.expiresIn ?? DEFAULT_TTL)
-      if (o.native) {
-        const max =
-          (await this.app.get().catch(() => undefined))?.max_token_lifetime_seconds ?? FALLBACK_MAX_TTL
-        // Without a duration, 12 hours covers any lesson-length video.
-        ttl = Math.min(max, Math.max(4 * 3600, duration ? Math.ceil(2 * duration) : 12 * 3600))
-      }
-      token = await this.#token(pick.id, { expiresIn: ttl, viewerId: o.viewerId })
-      expiresAt = new Date((Math.floor(Date.now() / 1000) + ttl) * 1000).toISOString()
+      token = await this.#token(pick.id, {
+        expiresIn: o.expiresIn,
+        viewerId: o.viewerId,
+        native: o.native,
+        durationSeconds: duration,
+      })
+      expiresAt = new Date(claimsExp(token) * 1000).toISOString()
     }
     const s: PlaybackSession = {
       playback_id: pick.id,
@@ -420,6 +447,13 @@ export class ClipMux {
     if (asset?.title) s.title = asset.title
     return s
   }
+}
+
+// claimsExp reads exp back from a token this client just signed.
+function claimsExp(token: string): number {
+  const body = token.split('.')[1] ?? ''
+  const json = atob(body.replace(/-/g, '+').replace(/_/g, '/'))
+  return (JSON.parse(json) as { exp: number }).exp
 }
 
 // choose is the playback ID a session plays: an active signed one of the
