@@ -20,6 +20,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/db"
 	"github.com/visheshgubrani/clipmux/internal/db/dbtest"
 	"github.com/visheshgubrani/clipmux/internal/outbox"
+	"github.com/visheshgubrani/clipmux/internal/sandbox"
 	"github.com/visheshgubrani/clipmux/internal/secrets"
 	"github.com/visheshgubrani/clipmux/internal/settings"
 	"github.com/visheshgubrani/clipmux/internal/storage"
@@ -358,3 +359,37 @@ func TestSetupTokenIsPrintedOnlyWhileNoOwnerExists(t *testing.T) {
 type writerFunc func([]byte) (int, error)
 
 func (f writerFunc) Write(p []byte) (int, error) { return f(p) }
+
+// Without Landlock a tool reads any file serve's user can, including the
+// data directory's keys (finding 1): the built-in worker stays off unless
+// the owner opted out with CLIPMUX_UNSANDBOXED_WORKER.
+func TestBuiltinWorkerRequiresLandlock(t *testing.T) {
+	enforced := sandbox.Status{Rlimits: true, NoNewPrivs: true, Seccomp: true}
+	withLandlock := enforced
+	withLandlock.LandlockABI = 4
+	for _, c := range []struct {
+		name        string
+		st          sandbox.Status
+		err         error
+		unsandboxed bool
+		want        bool
+	}{
+		{"landlock", withLandlock, nil, false, true},
+		{"no landlock", enforced, nil, false, false},
+		{"no landlock, opted out", enforced, nil, true, true},
+		{"no sandbox", sandbox.Status{}, errors.New("only none holds"), false, false},
+		{"no sandbox, opted out", sandbox.Status{}, errors.New("only none holds"), true, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			b := &builtinWorker{logger: slog.New(slog.DiscardHandler), unsandboxed: c.unsandboxed,
+				probe: func(context.Context, string) (sandbox.Status, error) { return c.st, c.err }}
+			if got := b.sandboxAllows(t.Context(), "clipmux"); got != c.want {
+				t.Fatalf("sandboxAllows = %v, want %v", got, c.want)
+			}
+			// Opting out for want of Landlock keeps seccomp and the limits.
+			if confined := strings.Contains(strings.Join(b.args(), " "), "--sandbox"); c.want && confined != (c.err == nil) {
+				t.Fatalf("args %q: --sandbox = %v, want %v", b.args(), confined, c.err == nil)
+			}
+		})
+	}
+}

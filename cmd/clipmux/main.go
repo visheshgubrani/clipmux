@@ -83,6 +83,11 @@ func serve(stderr io.Writer) int {
 		logger.Error("invalid configuration", "err", err)
 		return 1
 	}
+	// serve's environment holds the secrets key and the database password;
+	// the built-in worker's tools run as the same user (finding 1, D120).
+	if err := sandbox.Undumpable(); err != nil {
+		logger.Warn("serve stays dumpable", "err", err)
+	}
 	cfg, err := config.FromEnv(os.Getenv)
 	if err != nil {
 		logger.Error("invalid configuration", "err", err)

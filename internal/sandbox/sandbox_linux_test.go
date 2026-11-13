@@ -20,6 +20,9 @@ func TestMain(m *testing.M) {
 	if len(os.Args) > 1 && os.Args[1] == "die-with-parent-helper" {
 		dieWithParentHelper()
 	}
+	if len(os.Args) > 1 && (os.Args[1] == "undumpable-helper" || os.Args[1] == "dumpable-helper") {
+		undumpableHelper(os.Args[1] == "undumpable-helper")
+	}
 	os.Exit(m.Run())
 }
 

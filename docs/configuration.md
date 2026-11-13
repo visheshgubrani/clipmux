@@ -21,7 +21,7 @@ A value that doesn't parse stops the command at start, naming the variable.
 | `CLIPMUX_TRUSTED_PROXIES` | none | Addresses or CIDR ranges (Caddy's) whose `X-Forwarded-For`, `X-Forwarded-Proto` and `X-Request-Id` are believed. Rate limits, sign-in limits, request IDs and the https redirect all depend on it (D064, D065, D067). |
 | `CLIPMUX_MAX_UPLOAD_BYTES` | the storage limit (~312 GiB) | The largest declared upload. |
 | `CLIPMUX_BUILTIN_WORKER` | `true` | Start `clipmux worker` as serve's child. |
-| `CLIPMUX_UNSANDBOXED_WORKER` | `false` | Run the built-in worker where the media tool sandbox doesn't hold. Only if the host isolates it another way (D027). |
+| `CLIPMUX_UNSANDBOXED_WORKER` | `false` | Run the built-in worker where the media tool sandbox or Landlock doesn't hold. Only if the host isolates it another way (D027, D120). Where only Landlock is missing, the tools keep seccomp and the limits. |
 | `CLIPMUX_TOOL_MEMORY_MB` | `8192` | Memory limit for each media tool. Passed to the built-in worker. |
 | `CLIPMUX_FFMPEG`, `CLIPMUX_FFPROBE`, `CLIPMUX_PACKAGER`, `CLIPMUX_WHISPER` | found on `PATH` | The media tools. Shaka Packager must be 3.9.1 or later; `whisper-cli` is the pinned whisper.cpp from `toolchain/build_whisper.sh`, used only to transcribe. |
 | `CLIPMUX_LOG_FORMAT` | `text` | `text` or `json` (D064). Passed to the built-in worker. |
