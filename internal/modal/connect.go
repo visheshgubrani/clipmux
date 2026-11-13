@@ -169,6 +169,7 @@ func (c *Connector) Connect(ctx context.Context, req Request) (dispatch.Result, 
 	if req.TokenID == "" || req.TokenSecret == "" {
 		return dispatch.Result{}, fmt.Errorf("%w: token_id and token_secret are required", ErrInvalid)
 	}
+	chosen := req.Image != ""
 	req, settings, err := c.settings(req)
 	if err != nil {
 		return dispatch.Result{}, err
@@ -181,7 +182,7 @@ func (c *Connector) Connect(ctx context.Context, req Request) (dispatch.Result, 
 	if had {
 		_ = json.Unmarshal(existing.Config, &old)
 	}
-	cfg := Config{Image: req.Image, GPU: req.GPU, CPU: req.CPU, MemoryMiB: req.MemoryMiB, Tag: old.Tag, Environment: req.Environment}
+	cfg := Config{Image: req.Image, ImageChosen: chosen, GPU: req.GPU, CPU: req.CPU, MemoryMiB: req.MemoryMiB, Tag: old.Tag, Environment: req.Environment}
 	if cfg.Tag == "" {
 		cfg.Tag = strings.ToLower(rand.Text()[:8])
 	}
@@ -293,6 +294,36 @@ func (c *Connector) Resolve(row db.ExecutorConfig) (dispatch.Executor, error) {
 	ex := &Executor{api: a, cfg: cfg, secret: sec}
 	c.cache[row.ID] = cached{updated: row.UpdatedAt.Time, ex: ex, api: a}
 	return ex, nil
+}
+
+// Repin moves Modal to this build's worker image after an upgrade
+// (dispatch.Repin), then starts Modal converting it, so the next job doesn't
+// wait minutes for the conversion. It is a sweeper task: it returns how
+// many providers moved.
+func (c *Connector) Repin(ctx context.Context) (int, error) {
+	row, ok, err := dispatch.Existing(ctx, c.Pool, c.ProjectID, "modal")
+	if err != nil || !ok || len(row.SecretsEncrypted) == 0 || c.DefaultImage == "" {
+		return 0, err
+	}
+	cfg, sec, err := open(row, c.Box)
+	if err != nil {
+		return 0, err
+	}
+	pinned, err := dispatch.Repin(ctx, c.Pool, c.registry(), row, c.DefaultImage, sec.RegistryUsername, sec.RegistryPassword)
+	if err != nil || pinned == "" {
+		return 0, err
+	}
+	c.Logger.Info("re-pinned the worker image to this build's", "provider", "modal", "image", pinned)
+	a, err := c.open(sec.TokenID, sec.TokenSecret, cfg.Environment)
+	if err != nil {
+		return 1, err
+	}
+	defer a.close()
+	if _, err := a.prepare(ctx, sandboxRequest{App: "clipmux-" + cfg.Tag, Image: pinned,
+		RegistryUsername: sec.RegistryUsername, RegistryPassword: sec.RegistryPassword}); err != nil {
+		return 1, fmt.Errorf("modal: convert the new image: %w", redact(err, sec.TokenSecret))
+	}
+	return 1, nil
 }
 
 func (c *Connector) registry() *registry.Resolver {

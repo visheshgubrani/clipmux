@@ -19,6 +19,8 @@ import (
 type sdkAPI struct {
 	client *sdk.Client
 	env    string
+	// The token, for the billing report the SDK doesn't wrap.
+	tokenID, tokenSecret string
 }
 
 // imageWait is how long a wake waits for Modal to have the image, and
@@ -47,7 +49,7 @@ func newSDK(tokenID, tokenSecret, environment string) (*sdkAPI, error) {
 	if err != nil {
 		return nil, fmt.Errorf("modal client: %w", err)
 	}
-	return &sdkAPI{client: c, env: environment}, nil
+	return &sdkAPI{client: c, env: environment, tokenID: tokenID, tokenSecret: tokenSecret}, nil
 }
 
 func (a *sdkAPI) close() { a.client.Close() }

@@ -38,3 +38,21 @@ func TestRoutingWithoutAProvider(t *testing.T) {
 		})
 	}
 }
+
+func TestWakeEnvTurnsSpeechOffForAnythingButTranscription(t *testing.T) {
+	for _, tc := range []struct {
+		kind, speech string
+	}{
+		{"transcode", "off"},
+		{"reencode", "off"},
+		{"transcribe", ""},
+	} {
+		env := WakeEnv("https://video.example.com", "cmxd_secret", tc.kind)
+		if env["CLIPMUX_SERVER"] != "https://video.example.com" || env["CLIPMUX_WORKER_KEY"] != "cmxd_secret" {
+			t.Errorf("%s: env = %v", tc.kind, env)
+		}
+		if got, set := env["CLIPMUX_SPEECH"]; got != tc.speech || set != (tc.speech != "") {
+			t.Errorf("%s: CLIPMUX_SPEECH = %q (set %v), want %q", tc.kind, got, set, tc.speech)
+		}
+	}
+}

@@ -152,10 +152,18 @@ function LimitsLine({ limits, onChange }: { limits: Limits; onChange: (l: Limits
   )
 }
 
-/** The worker image and registry login, only for a private image. */
-function Advanced() {
+/**
+ * The worker image and registry login, only for a private image. It opens by
+ * itself when Connect couldn't pull the image, where the fix is.
+ */
+function Advanced({ steps }: { steps: Step[] }) {
+  const imageFailed = steps.some((s) => s.name === 'image' && !s.ok)
+  const [open, setOpen] = React.useState(false)
+  React.useEffect(() => {
+    if (imageFailed) setOpen(true)
+  }, [imageFailed])
   return (
-    <Collapsible>
+    <Collapsible open={open} onOpenChange={setOpen}>
       <CollapsibleTrigger className="group flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
         <ChevronDownIcon className="size-4 transition-transform group-data-[panel-open]:rotate-180" />
         Advanced
@@ -331,7 +339,7 @@ function ConnectModal() {
             />
           )}
           <LimitsLine limits={limits} onChange={setLimits} />
-          <Advanced />
+          <Advanced steps={steps} />
           {!paste ? (
             <div className="flex flex-col gap-3">
               <div className="flex flex-wrap items-center gap-3">
@@ -546,7 +554,7 @@ function ConnectRunPod() {
               <FieldError>RunPod has none of the GPUs ClipMux encodes on for rent right now.</FieldError>
             ))}
           {gpus.data && <LimitsLine limits={limits} onChange={setLimits} />}
-          <Advanced />
+          <Advanced steps={steps} />
           {connect.isError && <FieldError>{describe(connect.error)}</FieldError>}
           <Steps steps={steps} />
           <div>

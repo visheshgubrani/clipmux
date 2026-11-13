@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -82,6 +83,9 @@ type Service struct {
 	// Resolve opens the adapter for a provider's config.
 	Resolve func(ctx context.Context, cfg db.ExecutorConfig) (Executor, error)
 	Logger  *slog.Logger
+	// billWarned holds the providers whose bill couldn't be read, so that is
+	// said once (RefreshBills).
+	billWarned sync.Map
 	// CallTimeout bounds each provider call (a wake or a stop), so one stuck
 	// provider fails its own call rather than its whole pass (D097). Modal
 	// takes over a minute to create a GPU sandbox.
@@ -246,6 +250,18 @@ func (s *Service) Publish(ctx context.Context, limit int) (int, error) {
 	return done, nil
 }
 
+// WakeEnv is what a woken machine is told: where serve is, its one-time
+// key, and, for any job but a transcription, to skip speech. A machine runs
+// the one job it was woken for, so proving speech (loading the 0.9 GB
+// model) would only delay an encode.
+func WakeEnv(server, key, jobKind string) map[string]string {
+	env := map[string]string{"CLIPMUX_SERVER": server, "CLIPMUX_WORKER_KEY": key}
+	if jobKind != "transcribe" {
+		env["CLIPMUX_SPEECH"] = "off"
+	}
+	return env
+}
+
 func (s *Service) wake(ctx context.Context, qs *db.Queries, dispatchID string) error {
 	d, err := qs.LockDispatch(ctx, dispatchID)
 	if err != nil {
@@ -273,7 +289,7 @@ func (s *Service) wake(ctx context.Context, qs *db.Queries, dispatchID string) e
 	defer cancel()
 	instance, err := ex.Wake(call, Wake{
 		DispatchID: d.ID, Name: Name(d.ID), Config: cfg.Config, Lifetime: MaxLifetime,
-		Env: map[string]string{"CLIPMUX_SERVER": s.ServerURL(), "CLIPMUX_WORKER_KEY": string(key)},
+		Env: WakeEnv(s.ServerURL(), string(key), job.Kind),
 	})
 	if err != nil {
 		if ctx.Err() != nil {

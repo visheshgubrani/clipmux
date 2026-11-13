@@ -222,6 +222,9 @@ type ExecutorConfig struct {
 	UpdatedAt            pgtype.Timestamptz
 	WakeFailures         int32
 	BackoffUntil         pgtype.Timestamptz
+	BilledMonthCents     pgtype.Int8
+	BilledThrough        pgtype.Timestamptz
+	BilledCheckedAt      pgtype.Timestamptz
 }
 
 type IdempotencyKey struct {

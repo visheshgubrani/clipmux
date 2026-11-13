@@ -92,9 +92,18 @@ var accept = strings.Join([]string{
 	"application/vnd.docker.distribution.manifest.v2+json",
 }, ", ")
 
-// ErrDenied means the registry refused the credentials, or the image
-// doesn't exist for them (registries don't tell the two apart).
+// ErrDenied means the image can't be read with the credentials given (or
+// anonymously): it is private to others, or it doesn't exist for them, since
+// registries don't tell the two apart.
 var ErrDenied = errors.New("registry: the image can't be pulled with these credentials")
+
+// ErrBadCredentials means the registry refused the username and token
+// themselves, before any image was asked for.
+var ErrBadCredentials = errors.New("registry: the credentials were refused")
+
+// ErrNotFound means credentials the registry accepted found no such image or
+// tag.
+var ErrNotFound = errors.New("registry: no such image or tag")
 
 // Resolve pins ref to its digest, pulling the manifest as username and
 // password would (anonymously when both are empty). A reference that names
@@ -151,10 +160,10 @@ func (r *Resolver) get(ctx context.Context, u string, p Ref, username, password 
 		}
 		return res, nil
 	}
-	ok := func(res *http.Response, err error) (*http.Response, error) { return check(res, err, p) }
+	ok := func(res *http.Response, err error) (*http.Response, error) { return check(res, err, p, username != "") }
 	res, err := do("")
 	if err != nil || res.StatusCode != http.StatusUnauthorized {
-		return ok(res, err)
+		return check(res, err, p, false)
 	}
 	challenge := res.Header.Get("WWW-Authenticate")
 	res.Body.Close()
@@ -177,13 +186,18 @@ func (r *Resolver) get(ctx context.Context, u string, p Ref, username, password 
 	return nil, fmt.Errorf("registry %s: unsupported auth challenge %q", p.Host, scheme)
 }
 
-func check(res *http.Response, err error, p Ref) (*http.Response, error) {
+// check maps the manifest's status. A 404 means no such tag only to
+// credentials the registry accepted; anonymously it may be a private image.
+func check(res *http.Response, err error, p Ref, authed bool) (*http.Response, error) {
 	if err != nil {
 		return nil, err
 	}
 	switch {
 	case res.StatusCode == http.StatusOK:
 		return res, nil
+	case res.StatusCode == http.StatusNotFound && authed:
+		res.Body.Close()
+		return nil, ErrNotFound
 	case res.StatusCode == http.StatusUnauthorized || res.StatusCode == http.StatusForbidden || res.StatusCode == http.StatusNotFound:
 		res.Body.Close()
 		return nil, ErrDenied
@@ -221,6 +235,9 @@ func (r *Resolver) token(ctx context.Context, params map[string]string, p Ref, u
 	}
 	defer res.Body.Close()
 	if res.StatusCode == http.StatusUnauthorized || res.StatusCode == http.StatusForbidden {
+		if username != "" {
+			return "", ErrBadCredentials
+		}
 		return "", ErrDenied
 	}
 	if res.StatusCode != http.StatusOK {

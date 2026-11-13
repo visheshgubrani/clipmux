@@ -429,7 +429,8 @@ The windows are constants, because each follows from another rule:
   Silero VAD model are fetched by the worker, never by the sandboxed tool,
   into `{data_dir}/models`, verified against digests in
   `toolchain/versions.env`. Weights are not baked into the image, which
-  would slow every serverless cold start.
+  would slow every serverless cold start. (Superseded by D118: the image
+  carries them, since a serverless machine downloaded them on every job.)
 - **The transcript comes back in `complete`.** No new file type is written by
   a worker, so the path grammar and the commit checks are unchanged.
 
