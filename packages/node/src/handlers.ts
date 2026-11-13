@@ -57,7 +57,13 @@ export interface HandlerOptions {
   asset?: (asset: Asset, event: WebhookEvent) => Promise<void> | void
   /** Every verified webhook event as it arrived, before `asset`. */
   event?: (event: WebhookEvent) => Promise<void> | void
-  /** Called with errors the handler turned into a 4xx or 5xx; default console.error for 5xx. */
+  /**
+   * Called with errors the handler turned into a 4xx or 5xx; default
+   * console.error for 5xx. ClipMux's 400, 409, 413 and 422 pass through
+   * with their code, 429 with Retry-After; a wrong key or app is 500
+   * `clipmux_misconfigured`; ClipMux unreachable or failing is 502
+   * `clipmux_unavailable`.
+   */
   onError?: (err: unknown, req: Request) => void
 }
 
@@ -86,6 +92,32 @@ async function readJSON(req: Request): Promise<Record<string, unknown> | Respons
   }
 }
 
+// The caller's own mistakes ClipMux reports, passed on as they are: the
+// browser must not retry them.
+const PASS_THROUGH = new Set([400, 409, 413, 422])
+
+// failure answers an error a callback or ClipMux raised. The browser
+// elements retry 5xx and 429, so only what can pass later is retryable:
+// ClipMux unreachable or failing is 502; this server's own key or app being
+// wrong is 500 (retrying won't fix it, and it is logged); ClipMux refusing
+// the request itself keeps its status and code.
+function failure(err: unknown): Response {
+  if (!(err instanceof ClipMuxError)) return fail(500, 'internal', 'internal error')
+  const message = err.message.startsWith(`${err.request}: `)
+    ? err.message.slice(err.request.length + 2)
+    : err.message
+  if (PASS_THROUGH.has(err.status)) return fail(err.status, err.code, message)
+  if (err.status === 429) {
+    const res = fail(429, err.code, message)
+    const after = err.details.retry_after
+    if (after && /^\d+$/.test(after)) res.headers.set('Retry-After', after)
+    return res
+  }
+  if (err.status === 0 || err.status === 408 || err.status >= 500)
+    return fail(502, 'clipmux_unavailable', `ClipMux could not answer: ${err.code}`)
+  return fail(500, 'clipmux_misconfigured', `ClipMux refused this server's request: ${err.code}`)
+}
+
 /** Returns the Fetch handler for upload, playback and webhook routes. */
 export function clipmuxHandler(options: HandlerOptions): (req: Request) => Promise<Response> {
   let cm = options.clipmux
@@ -111,9 +143,9 @@ export function clipmuxHandler(options: HandlerOptions): (req: Request) => Promi
       if (action === 'playback') return await playback(req)
       return await webhook(req)
     } catch (err) {
-      const status = err instanceof ClipMuxError && err.status >= 400 && err.status < 500 ? 502 : 500
-      report(err, req, status)
-      return fail(status, 'clipmux_error', err instanceof ClipMuxError ? err.code : 'internal error')
+      const res = failure(err)
+      report(err, req, res.status)
+      return res
     }
   }
 
