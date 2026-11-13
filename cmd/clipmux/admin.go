@@ -36,7 +36,7 @@ import (
 )
 
 const adminUsage = `Usage:
-  clipmux admin create-key --app NAME [--name KEY_NAME] [--scopes uploads:write,assets:read] [--allow-loopback]
+  clipmux admin create-key --app NAME [--name KEY_NAME] [--scopes uploads:write,assets:read,assets:write] [--allow-loopback]
   clipmux admin create-signing-key --app NAME
   clipmux admin create-webhook --app NAME --url URL
   clipmux admin create-integration --app NAME [--webhook-url URL] [--allow-loopback] >> .env
@@ -125,7 +125,7 @@ func admin(args []string, getenv func(string) string, stdin io.Reader, stdout, s
 	fs.SetOutput(stderr)
 	app := fs.String("app", "", "app name (created if missing)")
 	name := fs.String("name", "default", "key name (create-key)")
-	scopes := fs.String("scopes", apikeys.UploadsWrite+","+apikeys.AssetsRead, "comma-separated scopes (create-key)")
+	scopes := fs.String("scopes", strings.Join(apikeys.DefaultScopes(), ","), "comma-separated scopes (create-key)")
 	endpoint := fs.String("url", "", "endpoint URL (create-webhook)")
 	webhookURL := fs.String("webhook-url", "", "also register a webhook endpoint (create-integration)")
 	allowLoopback := fs.Bool("allow-loopback", false, "issue a key while the public URL is loopback (create-key, create-integration; development only)")
@@ -153,7 +153,7 @@ func admin(args []string, getenv func(string) string, stdin io.Reader, stdout, s
 	switch cmd {
 	case "create-key":
 		if err = keysAllowed(ctx, pool, getenv, *allowLoopback); err == nil {
-			err = createKey(ctx, pool, *app, *name, strings.Split(*scopes, ","), stdout)
+			err = createKey(ctx, pool, *app, *name, splitScopes(*scopes), stdout)
 		}
 	case "create-signing-key":
 		err = createSigningKey(ctx, pool, *app, stdout)
@@ -259,6 +259,17 @@ func appID(ctx context.Context, q *db.Queries, name string) (string, error) {
 }
 
 // createKey finds or creates the app and issues an API key for it.
+// splitScopes reads a comma-separated scope list, spaces allowed.
+func splitScopes(s string) []string {
+	var out []string
+	for _, f := range strings.Split(s, ",") {
+		if f = strings.TrimSpace(f); f != "" {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
 func createKey(ctx context.Context, pool *pgxpool.Pool, appName, keyName string, scopes []string, out io.Writer) error {
 	var secret, app string
 	err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {

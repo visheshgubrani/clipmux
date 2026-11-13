@@ -3,7 +3,10 @@ package main
 import (
 	"bytes"
 	"context"
+	"net/url"
+	"os"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -38,6 +41,56 @@ func TestCreateKeyCreatesTheAppOnceAndPrintsAWorkingKey(t *testing.T) {
 	key, err := apikeys.Authenticate(ctx, pool, m[1])
 	if err != nil || !key.Can(apikeys.UploadsWrite) {
 		t.Fatalf("printed key: %+v, %v", key, err)
+	}
+}
+
+func TestCreateKeyDefaultsToTheScopesAnIntegrationNeeds(t *testing.T) {
+	ctx := context.Background()
+	pool := dbtest.New(t)
+	var schema string
+	if err := pool.QueryRow(ctx, `SELECT current_schema()`).Scan(&schema); err != nil {
+		t.Fatal(err)
+	}
+	u, err := url.Parse(os.Getenv("TEST_DATABASE_URL"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	q := u.Query()
+	q.Set("search_path", schema)
+	u.RawQuery = q.Encode()
+	getenv := func(k string) string {
+		if k == "DATABASE_URL" {
+			return u.String()
+		}
+		return ""
+	}
+	cases := []struct {
+		args []string
+		want []string
+	}{
+		// The dashboard's and create-integration's defaults, which doctor checks.
+		{[]string{"create-key", "--app", "LMS", "--allow-loopback"}, []string{apikeys.UploadsWrite, apikeys.AssetsRead, apikeys.AssetsWrite}},
+		// A list typed with spaces after the commas.
+		{[]string{"create-key", "--app", "LMS", "--allow-loopback", "--scopes", "uploads:write, assets:read"}, []string{apikeys.UploadsWrite, apikeys.AssetsRead}},
+	}
+	for _, c := range cases {
+		var out, errOut bytes.Buffer
+		if code := admin(c.args, getenv, strings.NewReader(""), &out, &errOut); code != 0 {
+			t.Fatalf("%v: exit %d: %s", c.args, code, errOut.String())
+		}
+		m := keyLine.FindStringSubmatch(out.String())
+		if m == nil {
+			t.Fatalf("no key in output:\n%s", out.String())
+		}
+		key, err := apikeys.Authenticate(ctx, pool, m[1])
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, s := range []string{apikeys.UploadsWrite, apikeys.AssetsRead, apikeys.AssetsWrite, apikeys.AnalyticsRead} {
+			if key.Can(s) != slices.Contains(c.want, s) {
+				t.Errorf("%v: key can %s = %v, want scopes %v", c.args, s, key.Can(s), c.want)
+			}
+		}
 	}
 }
 
