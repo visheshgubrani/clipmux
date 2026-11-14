@@ -309,12 +309,13 @@ Every retry gets a fresh attempt and output, so a failed run can't leave partial
 
 ```json
 {
-  "contract_version": 1,
+  "contract_version": 2,
   "attempt_id": "att_01",
   "attempt_token": "...",
   "lease_seconds": 90,
   "source": { "url": "https://...", "size": 4294967296 },
   "profile": { "id": "default", "version": 1 },
+  "renditions": ["1080p", "720p", "480p", "360p"],
   "output_format": 1,
   "encryption": { "method": "aes-128", "key_version": 1, "key": "..." }
 }
@@ -391,7 +392,7 @@ media/{asset_id}/{output_id}/
 - **Encoding:** ffmpeg encodes the whole ladder in one pass, H.264 video and AAC audio, with keyframes aligned across renditions. The results stay on the worker's disk.
 - **Packaging:** Shaka Packager cuts those files into CMAF fMP4 segments, encrypts each whole segment with AES-128 and writes the playlists. [ffmpeg's HLS muxer refuses to encrypt fMP4](https://github.com/FFmpeg/FFmpeg/blob/master/libavformat/hlsenc.c), and [Shaka Packager added AES-128 for MP4 in 3.8 and fixed it for CMAF in 3.9.1](https://github.com/shaka-project/shaka-packager/releases), so workers need 3.9.1 or later.
 - **Audio:** Shaka Packager writes one stream per output, so audio is its own rendition, shared by every video rendition. This replaces muxed audio and doubles segment requests.
-- **Default ladder:** 1080p, 720p, 480p and 360p, capped at the source height.
+- **Ladder:** 2160p, 1440p, 1080p, 720p, 480p and 360p, capped at the source's short side (and 4096 on the long side), or the renditions the upload chose (D130).
 - **Segments:** 6 seconds, for video and audio alike.
 - **Paths:** Playlists use relative URLs only, including the key URI.
 - **One attempt, all renditions:** A single attempt encodes and packages the whole ladder, so renditions always align.

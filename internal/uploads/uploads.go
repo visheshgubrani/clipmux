@@ -112,6 +112,9 @@ type CreateRequest struct {
 	// Generate asks for subtitles and chapters (P5-T16); chapters imply
 	// subtitles. They are made after the video is ready.
 	Generate tracks.Generate `json:"generate,omitzero"`
+	// Renditions are the ladder rungs to encode, e.g. ["1080p", "480p"]
+	// (D130); absent is every rung up to the source.
+	Renditions []string `json:"renditions,omitempty"`
 }
 
 // Created is the response to POST /v1/uploads.
@@ -146,6 +149,10 @@ func (s *Service) Create(ctx context.Context, key apikeys.Key, req CreateRequest
 	if err != nil {
 		return Created{}, err
 	}
+	renditions, err := assets.Renditions(req.Renditions)
+	if err != nil {
+		return Created{}, err
+	}
 	canonical, _ := json.Marshal(req)
 
 	var out Created
@@ -168,6 +175,7 @@ func (s *Service) Create(ctx context.Context, key apikeys.Key, req CreateRequest
 		asset, err := q.CreateAsset(ctx, db.CreateAssetParams{
 			ID: ids.New(ids.Asset), ProjectID: key.ProjectID, AppID: key.AppID, StorageID: st.ID,
 			Passthrough: pgtype.Text{String: req.Passthrough, Valid: req.Passthrough != ""}, Title: title,
+			Renditions: renditions,
 		})
 		if err != nil {
 			return err

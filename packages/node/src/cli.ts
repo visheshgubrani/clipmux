@@ -15,7 +15,7 @@ import { ClipMux, VERSION } from './client.ts'
 import { mergeEnv, parseEnv } from './envfile.ts'
 import { ClipMuxConfigError, ClipMuxError } from './errors.ts'
 import { EventWindow } from './events.ts'
-import type { App, Credentials, Pairing, PairingStatus } from './schema.gen.ts'
+import type { App, Credentials, Pairing, PairingStatus, Renditions } from './schema.gen.ts'
 import { seconds } from './tokens.ts'
 import { signWebhook } from './webhooks.ts'
 
@@ -34,7 +34,7 @@ Commands:
              --forward-to URL  e.g. localhost:3000/api/clipmux/webhook
              --events LIST     only these types, comma separated
              --since DURATION  also replay events from this long ago, e.g. 10m
-  upload   Upload a file: npx @clipmux/node upload FILE [--passthrough REF] [--title T] [--public] [--wait]
+  upload   Upload a file: npx @clipmux/node upload FILE [--passthrough REF] [--title T] [--renditions 1080p,480p] [--public] [--wait]
 
 Every command takes --env-file FILE.
 `
@@ -470,6 +470,8 @@ async function upload(args: string[], io: IO): Promise<number> {
     options: {
       passthrough: { type: 'string' },
       title: { type: 'string' },
+      // Comma-separated ladder rungs; left out, every rung up to the source.
+      renditions: { type: 'string' },
       public: { type: 'boolean' },
       wait: { type: 'boolean' },
       'env-file': { type: 'string' },
@@ -488,6 +490,9 @@ async function upload(args: string[], io: IO): Promise<number> {
     playback_policy: values.public ? 'public' : 'signed',
     title: values.title ?? basename(path).slice(0, 200),
     ...(values.passthrough ? { passthrough: values.passthrough } : {}),
+    ...(values.renditions
+      ? { renditions: values.renditions.split(',').map((r) => r.trim()) as Renditions }
+      : {}),
   })
   let last = -1
   const asset = await new ClipMuxUpload(file, {

@@ -98,8 +98,9 @@ func (e *Executor) Wake(ctx context.Context, w dispatch.Wake) (string, error) {
 		}
 	}
 	env := map[string]string{
-		// NVENC needs the video capability of the injected driver.
-		"NVIDIA_DRIVER_CAPABILITIES": "compute,video,utility",
+		// NVENC needs the video capability of the injected driver, CUDA
+		// whisper compute, and Vulkan whisper graphics (the Vulkan ICD, D131).
+		"NVIDIA_DRIVER_CAPABILITIES": "compute,video,utility,graphics",
 	}
 	for k, v := range w.Env {
 		env[k] = v

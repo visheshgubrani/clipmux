@@ -231,6 +231,32 @@ func TestAnAssetWithoutPlaybackIDsIsReadyAtOnce(t *testing.T) {
 	}
 }
 
+// rung adds a rendition's files and its master entry to an output.
+func rung(name string) map[string]string {
+	return map[string]string{
+		"master.m3u8":           master + "#EXT-X-STREAM-INF:BANDWIDTH=3000000,AUDIO=\"a\"\n" + name + "/index.m3u8\n",
+		name + "/index.m3u8":    mediaPL,
+		name + "/init.mp4":      "init-v",
+		name + "/seg_00001.m4s": "seg-v-1-cipher..",
+		name + "/seg_00002.m4s": "seg-v-2-cipher..",
+	}
+}
+
+func withRung(m media.Manifest, name string) media.Manifest {
+	m.Renditions = append([]media.Rendition{{Name: name}}, m.Renditions...)
+	return m
+}
+
+func TestCommitAcceptsTheRenditionsTheAssetAskedFor(t *testing.T) {
+	f := newFx(t)
+	f.asset("processing", 0, "transcode")
+	f.exec(`UPDATE assets SET renditions = '{720p,360p}'`)
+	c := f.claim()
+	if _, err := f.c.Commit(context.Background(), c.Token, withRung(f.write(c, rung("720p")), "720p")); err != nil {
+		t.Fatalf("commit of the 720p and 360p asked for: %v", err)
+	}
+}
+
 func TestCommitRejectsOutputsThatDontMatchStorageOrArentEncrypted(t *testing.T) {
 	cases := map[string]func(f *fx, c *queue.Claim) media.Manifest{
 		"a manifest file is missing from storage": func(f *fx, c *queue.Claim) media.Manifest {
@@ -268,6 +294,19 @@ func TestCommitRejectsOutputsThatDontMatchStorageOrArentEncrypted(t *testing.T) 
 		"the output format is unknown": func(f *fx, c *queue.Claim) media.Manifest {
 			m := f.write(c, nil)
 			m.OutputFormat = 2
+			return m
+		},
+		// The renditions the asset asked for (D130).
+		"a rendition below the largest was left out": func(f *fx, c *queue.Claim) media.Manifest {
+			return withRung(f.write(c, rung("720p")), "720p") // the whole ladder, but no 480p
+		},
+		"a rendition that wasn't asked for": func(f *fx, c *queue.Claim) media.Manifest {
+			f.exec(`UPDATE assets SET renditions = '{720p}'`)
+			return withRung(f.write(c, rung("720p")), "720p")
+		},
+		"the manifest's renditions aren't the output's": func(f *fx, c *queue.Claim) media.Manifest {
+			m := f.write(c, nil)
+			m.Renditions = []media.Rendition{{Name: "480p", Width: 854, Height: 480}}
 			return m
 		},
 	}

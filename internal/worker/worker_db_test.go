@@ -5,6 +5,7 @@ package worker
 // TEST_DATABASE_URL or the media tools.
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -160,7 +161,7 @@ func TestWorkerUploadsAnEncryptedOutputThroughSignedURLs(t *testing.T) {
 		t.Fatalf("claim: %v, %v", job, err)
 	}
 	dir := filepath.Join(r.worker.WorkDir, job.AttemptID)
-	m, code, err := r.worker.process(ctx, job, dir, func(string, float64) {})
+	m, code, err := r.worker.process(ctx, job, dir, func(string, float64) {}, &phases{})
 	if err != nil {
 		t.Fatalf("process (%s): %v", code, err)
 	}
@@ -305,9 +306,30 @@ func TestRunOnceTakesAnUploadedSourceToReady(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	var logs bytes.Buffer
+	r.worker.Logger = slog.New(slog.NewJSONHandler(&logs, nil))
 	got, err := r.worker.RunOnce(ctx)
 	if err != nil || !got {
 		t.Fatalf("RunOnce = %v, %v", got, err)
+	}
+	// The commit logs where the attempt's time went, phase by phase.
+	var committed map[string]any
+	for line := range strings.Lines(logs.String()) {
+		var rec map[string]any
+		if json.Unmarshal([]byte(line), &rec) == nil && rec["msg"] == "attempt committed" {
+			committed = rec
+		}
+	}
+	if committed == nil {
+		t.Fatalf("no attempt committed line in:\n%s", logs.String())
+	}
+	for _, k := range []string{"download_ms", "probe_ms", "video_ms", "audio_ms", "package_ms", "upload_ms", "total_ms", "files", "bytes"} {
+		if _, ok := committed[k].(float64); !ok {
+			t.Errorf("attempt committed has no %s: %v", k, committed)
+		}
+	}
+	if committed["kind"] != "transcode" || committed["encoder"] != "cpu" || committed["renditions"] != "360p" {
+		t.Errorf("attempt committed = %v, want a transcode on the cpu stage with 360p", committed)
 	}
 	var asset, output, job, event string
 	err = r.pool.QueryRow(ctx, `SELECT a.status, o.status, j.status, e.payload->>'type'

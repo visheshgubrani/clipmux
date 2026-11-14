@@ -135,7 +135,7 @@ func TestWakeStartsOneSandboxWithTheDispatchsEnvironment(t *testing.T) {
 		Command: []string{"worker", "--once"},
 		Env: map[string]string{
 			"CLIPMUX_SERVER": "https://video.example.com", "CLIPMUX_WORKER_KEY": "cmxd_secret",
-			"NVIDIA_DRIVER_CAPABILITIES": "compute,video,utility",
+			"NVIDIA_DRIVER_CAPABILITIES": "compute,video,utility,graphics",
 		},
 		GPU: "L4", CPU: 4, MemoryMiB: 16384, Timeout: 6*time.Hour + 15*time.Minute,
 		Tags: map[string]string{"clipmux": "inst0001", "clipmux_dispatch": "dsp_1"},

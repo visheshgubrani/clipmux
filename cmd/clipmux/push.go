@@ -49,6 +49,7 @@ func runPush(args []string, getenv func(string) string, stdout, stderr io.Writer
 	server := fs.String("server", getenv("CLIPMUX_SERVER"), "ClipMux's public URL (or CLIPMUX_SERVER)")
 	policy := fs.String("policy", "signed", "playback policy: signed or public")
 	passthrough := fs.String("passthrough", "", "your own reference, returned in webhooks (one file only)")
+	renditions := fs.String("renditions", "", "comma-separated rungs to encode, e.g. 1080p,480p (default: every rung up to the source)")
 	waitReady := fs.Bool("wait", false, "wait until each video is ready to play")
 	quiet := fs.Bool("quiet", false, "print only asset and playback IDs")
 	local := fs.Bool("local", false, "keep the files on this PC; its agent encodes them and uploads only the outputs")
@@ -79,6 +80,12 @@ func runPush(args []string, getenv func(string) string, stdout, stderr io.Writer
 		fmt.Fprintln(stderr, "clipmux push: --passthrough names one video; push files one at a time to set it")
 		return 2
 	}
+	var chosen []string
+	for r := range strings.SplitSeq(*renditions, ",") {
+		if r = strings.TrimSpace(r); r != "" {
+			chosen = append(chosen, r)
+		}
+	}
 	state, err := os.UserCacheDir()
 	if err != nil {
 		state = os.TempDir()
@@ -92,7 +99,7 @@ func runPush(args []string, getenv func(string) string, stdout, stderr io.Writer
 
 	failed := 0
 	for _, f := range files {
-		opts := push.Options{Policy: *policy, Passthrough: *passthrough}
+		opts := push.Options{Policy: *policy, Passthrough: *passthrough, Renditions: chosen}
 		if !*quiet {
 			opts.Progress = progressLine(stderr, filepath.Base(f))
 		}

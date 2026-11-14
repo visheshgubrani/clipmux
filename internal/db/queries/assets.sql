@@ -11,8 +11,8 @@ RETURNING *;
 -- name: CreateAsset :one
 -- The source goes to $4, the default store; the encoded files to the media
 -- target (D117).
-INSERT INTO assets (id, project_id, app_id, status, storage_id, media_storage_id, passthrough, title)
-VALUES ($1, $2, $3, 'waiting_upload', $4, coalesce(media_target($2), $4), $5, $6)
+INSERT INTO assets (id, project_id, app_id, status, storage_id, media_storage_id, passthrough, title, renditions)
+VALUES ($1, $2, $3, 'waiting_upload', $4, coalesce(media_target($2), $4), $5, $6, $7)
 RETURNING *;
 
 -- name: GetAsset :one
@@ -48,3 +48,14 @@ LIMIT sqlc.arg(max_events);
 UPDATE assets SET title = sqlc.narg(title), version = version + 1, updated_at = now()
 WHERE id = sqlc.arg(id)
 RETURNING *;
+
+-- name: GetAssetRenditions :one
+-- The renditions the asset's next output encodes (D130); NULL is every
+-- rung up to the source.
+SELECT renditions FROM assets WHERE id = $1;
+
+-- name: SetAssetRenditions :exec
+-- A re-encode's choice, kept for the outputs after it. A change like a
+-- title's: version and updated_at move only when the choice does.
+UPDATE assets SET renditions = sqlc.narg(renditions), version = version + 1, updated_at = now()
+WHERE id = sqlc.arg(id) AND renditions IS DISTINCT FROM sqlc.narg(renditions);

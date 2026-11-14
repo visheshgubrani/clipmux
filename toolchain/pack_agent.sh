@@ -49,6 +49,10 @@ bundle_deps "$lx/ffprobe"
 # there too. Vulkan drivers stay the host's (mesa's or NVIDIA's ICD); a host
 # without one transcribes on the CPU.
 cp -a /usr/local/libexec/clipmux-whisper "$lx/whisper"
+# The CUDA backend and its libraries (about 1 GB) stay in the image, for the
+# serverless providers; an agent's NVIDIA card transcribes over Vulkan (D131).
+rm -f "$lx"/whisper/libggml-cuda.so "$lx"/whisper/libcudart.so* "$lx"/whisper/libcublas*.so*
+rm -rf /usr/local/share/doc/clipmux-whisper/NVIDIA-CUDA
 for f in "$lx"/whisper/*; do
   [ -L "$f" ] && continue
   ldd "$f" | awk '/=> \// { print $3 }' | while read -r lib; do

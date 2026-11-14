@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"os"
 	"os/exec"
@@ -62,12 +63,13 @@ type SpeechMode string
 
 // Speech modes.
 const (
-	// SpeechAuto transcribes on a GPU whose Vulkan probe passes, else on a
-	// CPU with at least AutoMinCPUs and AutoMinMemory.
+	// SpeechAuto transcribes on a GPU whose probe passes (CUDA, then
+	// Vulkan), else on a CPU with at least AutoMinCPUs and AutoMinMemory.
 	SpeechAuto   SpeechMode = "auto"
 	SpeechOff    SpeechMode = "off"
 	SpeechCPU    SpeechMode = "cpu"
 	SpeechVulkan SpeechMode = "vulkan"
+	SpeechCUDA   SpeechMode = "cuda"
 )
 
 // What auto asks of a machine before it transcribes on the CPU, where
@@ -82,12 +84,33 @@ func ParseSpeechMode(s string) (SpeechMode, error) {
 	switch m := SpeechMode(s); m {
 	case "", SpeechAuto:
 		return SpeechAuto, nil
-	case SpeechOff, SpeechCPU, SpeechVulkan:
+	case SpeechOff, SpeechCPU, SpeechVulkan, SpeechCUDA:
 		return m, nil
-	case "cuda":
-		return "", errors.New("this build has no CUDA whisper (D077): use vulkan, which NVIDIA cards run with the graphics driver capability, or cpu")
 	}
-	return "", fmt.Errorf("unknown speech mode %q: use auto, off, cpu or vulkan", s)
+	return "", fmt.Errorf("unknown speech mode %q: use auto, off, cpu, vulkan or cuda", s)
+}
+
+// SpeechCandidates are the backends a worker probes, best first, on this
+// machine (D131).
+func SpeechCandidates(mode SpeechMode, whisper string) []media.SpeechBackend {
+	return speechCandidates(mode, hasNVIDIA(), hasGPU(), hasCUDABackend(whisper), cpuCanTranscribe())
+}
+
+// speechCandidates: CUDA on an NVIDIA card when whisper-cli carries the CUDA
+// backend (the image does, an agent doesn't), Vulkan on any GPU, then the
+// CPU where the mode allows it.
+func speechCandidates(mode SpeechMode, nvidia, gpu, cudaBuilt, cpuOK bool) []media.SpeechBackend {
+	var out []media.SpeechBackend
+	if (mode == SpeechAuto || mode == SpeechCUDA) && nvidia && cudaBuilt {
+		out = append(out, media.SpeechCUDA)
+	}
+	if (mode == SpeechAuto || mode == SpeechVulkan) && gpu {
+		out = append(out, media.SpeechVulkan)
+	}
+	if mode == SpeechCPU || (mode == SpeechAuto && cpuOK) {
+		out = append(out, media.SpeechCPU)
+	}
+	return out
 }
 
 // SetupSpeech decides how this worker transcribes: it uses the models baked
@@ -108,16 +131,11 @@ func SetupSpeech(ctx context.Context, tools media.Tools, mode SpeechMode, bakedD
 		warn("speech: no whisper-cli, so this worker won't transcribe", "whisper", tools.Whisper)
 		return nil
 	}
-	var candidates []media.SpeechBackend
-	if mode != SpeechCPU && hasGPU() {
-		candidates = append(candidates, media.SpeechVulkan)
-	}
-	if mode == SpeechCPU || (mode == SpeechAuto && cpuCanTranscribe()) {
-		candidates = append(candidates, media.SpeechCPU)
-	}
+	candidates := SpeechCandidates(mode, tools.Whisper)
 	if len(candidates) == 0 {
-		warn("speech: no GPU, and the CPU is below what auto asks for; set --speech cpu to transcribe anyway",
-			"cpus", runtime.NumCPU(), "min_cpus", AutoMinCPUs, "min_memory_bytes", AutoMinMemory)
+		warn("speech: no backend this mode allows works here; set --speech cpu to transcribe on the CPU anyway",
+			"mode", mode, "cpus", runtime.NumCPU(), "min_cpus", AutoMinCPUs, "min_memory_bytes", AutoMinMemory,
+			"nvidia", hasNVIDIA(), "cuda_backend", hasCUDABackend(tools.Whisper))
 		return nil
 	}
 	_, baked := BakedModel(bakedDir, media.SpeechModel)
@@ -160,10 +178,30 @@ func SetupSpeech(ctx context.Context, tools media.Tools, mode SpeechMode, bakedD
 // speechThreads: on the CPU the speech slot gets half the machine, beside
 // the encoder; on a GPU whisper needs few.
 func speechThreads(b media.SpeechBackend) int {
-	if b == media.SpeechVulkan {
+	if b.GPU() {
 		return 4
 	}
 	return max(runtime.NumCPU()/2, 1)
+}
+
+// hasNVIDIA reports an NVIDIA card's device node.
+func hasNVIDIA() bool {
+	m, _ := filepath.Glob("/dev/nvidia[0-9]*") // the pattern is valid
+	return len(m) > 0
+}
+
+// hasCUDABackend reports whether whisper-cli carries ggml's CUDA backend,
+// which ggml loads from the executable's own directory (D077, D131).
+func hasCUDABackend(whisper string) bool {
+	path, err := exec.LookPath(whisper)
+	if err != nil {
+		return false
+	}
+	if real, err := filepath.EvalSymlinks(path); err == nil {
+		path = real
+	}
+	_, err = os.Stat(filepath.Join(filepath.Dir(path), "libggml-cuda.so"))
+	return err == nil
 }
 
 // hasGPU reports a device Vulkan could use: a DRM render node or an
@@ -300,7 +338,7 @@ func verifyModel(path string, m media.Model) error {
 
 // transcribe runs a transcription attempt: fetch the output's audio from
 // serve, run whisper, and turn its JSON into the canonical transcript.
-func (w *Worker) transcribe(ctx context.Context, job *workerapi.Job, dir string, report media.Progress) (*transcripts.Transcript, string, error) {
+func (w *Worker) transcribe(ctx context.Context, job *workerapi.Job, dir string, report media.Progress, ph *phases) (*transcripts.Transcript, string, error) {
 	sp := w.Speech.Get()
 	if sp == nil || job.Speech == nil {
 		return nil, codeModelUnavailable, errors.New("this worker doesn't transcribe")
@@ -315,13 +353,22 @@ func (w *Worker) transcribe(ctx context.Context, job *workerapi.Job, dir string,
 	}
 	report("download", 0)
 	audio := filepath.Join(dir, "audio.mp4")
+	start := time.Now()
 	if err := w.fetchAudio(ctx, job, audio); err != nil {
 		return nil, codeDownload, err
 	}
+	ph.since("audio_fetch", start)
 	report("transcribe", 0)
+	start = time.Now()
 	raw, err := w.Tools.Transcribe(ctx, dir, audio, *sp)
 	if err != nil {
 		return nil, codeTranscribe, err
+	}
+	took := time.Since(start)
+	ph.add("backend", sp.Backend, "threads", sp.Threads, "duration_s", job.Speech.DurationSeconds, "transcribe_ms", took.Milliseconds())
+	if job.Speech.DurationSeconds > 0 {
+		// Wall-clock seconds per second of audio: well under 0.1 on a GPU.
+		ph.add("realtime_factor", math.Round(took.Seconds()/job.Speech.DurationSeconds*1000)/1000)
 	}
 	durationMS, err := transcripts.Milliseconds(job.Speech.DurationSeconds)
 	if err != nil {

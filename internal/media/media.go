@@ -12,7 +12,9 @@ import (
 	"fmt"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
+	"time"
 )
 
 // OutputFormat is the version of the output layout below.
@@ -50,31 +52,120 @@ func (r Rung) Dimensions(srcW, srcH int) (w, h int) {
 	return r.Height, even(float64(srcH) * float64(r.Height) / float64(srcW))
 }
 
-// defaultLadder is 1080p, 720p, 480p and 360p, with clipmux-lms's
-// production bitrates.
+// defaultLadder is every rung a source may get, from 2160p down to 360p.
+// 1080p and below carry clipmux-lms's production bitrates; 1440p and 2160p
+// follow the same ratios (maxrate 1.2×, buffer 2× the target, D130).
 var defaultLadder = []Rung{
+	{2160, "14M", "16.8M", "28M"},
+	{1440, "8M", "9.6M", "16M"},
 	{1080, "5M", "6M", "10M"},
 	{720, "3M", "3.5M", "6M"},
 	{480, "1.5M", "1.8M", "3M"},
 	{360, "800k", "1M", "2M"},
 }
 
-// SelectLadder returns the default ladder capped at the source's short side.
-// A source smaller than the lowest rung gets one rendition at its own size.
-func SelectLadder(width, height int) []Rung {
+// maxSide is the longest side a rung may have: H.264 level 5.2's frame size
+// at 16:9, and NVENC's H.264 limit. A 21:9 source tops out at 1440p.
+const maxSide = 4096
+
+// LadderNames are the renditions an uploader may choose, largest first.
+func LadderNames() []string {
+	out := make([]string, len(defaultLadder))
+	for i, r := range defaultLadder {
+		out[i] = r.Label()
+	}
+	return out
+}
+
+// SelectLadder returns the rungs a source gets: every rung up to its short
+// side whose frame fits maxSide, kept to allowed when that names any, in
+// ladder order. When none of allowed fits, the largest rung that does is
+// encoded instead, so a source always gets a rendition. A source smaller
+// than the lowest rung gets one rendition at its own size.
+func SelectLadder(width, height int, allowed []string) []Rung {
 	short := min(width, height)
-	var out []Rung
+	var fits []Rung
 	for _, r := range defaultLadder {
-		if r.Height <= short {
+		if w, h := r.Dimensions(width, height); r.Height <= short && max(w, h) <= maxSide {
+			fits = append(fits, r)
+		}
+	}
+	if len(fits) == 0 {
+		low := defaultLadder[len(defaultLadder)-1]
+		low.Height = short &^ 1 // even
+		return []Rung{low}
+	}
+	if len(allowed) == 0 {
+		return fits
+	}
+	var out []Rung
+	for _, r := range fits {
+		if slices.Contains(allowed, r.Label()) {
 			out = append(out, r)
 		}
 	}
 	if len(out) == 0 {
-		low := defaultLadder[len(defaultLadder)-1]
-		low.Height = short &^ 1 // even
-		out = []Rung{low}
+		return fits[:1]
 	}
 	return out
+}
+
+// CheckLadder reports whether produced, an output's video renditions in
+// any order, is a ladder SelectLadder gives some source for allowed (nil:
+// every rung): the allowed rungs up to the largest one produced, the
+// largest rung that fits when none allowed does, or one rendition below the
+// ladder. The server never sees the source, so a worker could still stop
+// short of the rungs above the largest it made; it can't skip one below
+// it, or add one that wasn't asked for.
+func CheckLadder(produced, allowed []string) error {
+	if len(produced) == 0 {
+		return fmt.Errorf("no video rendition")
+	}
+	if len(allowed) == 0 {
+		allowed = LadderNames()
+	}
+	heights := make(map[string]int, len(defaultLadder))
+	for _, r := range defaultLadder {
+		heights[r.Label()] = r.Height
+	}
+	lowest := defaultLadder[len(defaultLadder)-1].Height
+	if _, rung := heights[produced[0]]; len(produced) == 1 && !rung {
+		h, err := strconv.Atoi(strings.TrimSuffix(produced[0], "p"))
+		if err == nil && strings.HasSuffix(produced[0], "p") && h > 0 && h < lowest {
+			return nil // a source below the ladder, at its own size
+		}
+	}
+	got := map[string]bool{}
+	top := 0
+	for _, p := range produced {
+		h, ok := heights[p]
+		switch {
+		case !ok:
+			return fmt.Errorf("%s isn't a rung of the ladder", p)
+		case got[p]:
+			return fmt.Errorf("%s appears twice", p)
+		}
+		got[p] = true
+		top = max(top, h)
+	}
+	var want []string
+	for _, r := range defaultLadder {
+		if r.Height <= top && slices.Contains(allowed, r.Label()) {
+			want = append(want, r.Label())
+		}
+	}
+	if len(want) == 0 && len(produced) == 1 {
+		return nil // none asked for fits: the largest rung that does
+	}
+	for _, w := range want {
+		if !got[w] {
+			return fmt.Errorf("renditions %v leave out %s, which was asked for and fits", produced, w)
+		}
+	}
+	if len(want) != len(got) {
+		return fmt.Errorf("renditions %v include some that weren't asked for (%v)", produced, allowed)
+	}
+	return nil
 }
 
 // Key is the content key an output is encrypted with.
@@ -102,12 +193,24 @@ type Manifest struct {
 	// Encoder is the stage that encoded the ladder, and the ones that failed
 	// before it.
 	Encoder *EncoderUsed `json:"encoder,omitempty"`
+	// Took is how long the transcode's parts ran, for the worker's log.
+	Took Timings `json:"-"`
+}
+
+// Timings are the wall-clock times of a transcode's parts. Video is the
+// whole ladder, failed stages included; Package covers packaging, the init
+// repair, the playlist checks and the poster.
+type Timings struct {
+	Video, Audio, Package time.Duration
 }
 
 // EncoderUsed records which backend encoded an output.
 type EncoderUsed struct {
 	Stage     string   `json:"stage"`
 	Fallbacks []string `json:"fallbacks,omitempty"`
+	// Failed is why each fallback stage failed (ffmpeg's stderr tail), for
+	// the worker's log only: stderr never goes into a manifest.
+	Failed map[string]string `json:"-"`
 }
 
 // Rendition is one video rendition in a manifest.

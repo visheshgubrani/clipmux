@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/visheshgubrani/clipmux/internal/apikeys"
+	"github.com/visheshgubrani/clipmux/internal/assets"
 	"github.com/visheshgubrani/clipmux/internal/db"
 	"github.com/visheshgubrani/clipmux/internal/httpjson"
 	"github.com/visheshgubrani/clipmux/internal/idempotency"
@@ -28,6 +29,9 @@ type JobView struct {
 type ReencodeRequest struct {
 	// Supersede cancels the asset's active job instead of refusing with 409.
 	Supersede bool `json:"supersede"`
+	// Renditions replaces the asset's choice of rungs for this output and
+	// the ones after it (D130); absent keeps the asset's choice.
+	Renditions []string `json:"renditions,omitempty"`
 }
 
 func errAssetDeleted() error {
@@ -39,6 +43,10 @@ func errAssetDeleted() error {
 // one commits; an errored one returns to processing. With another job
 // active it answers 409 job_active, unless req.Supersede cancels that job.
 func (s *Service) Reencode(ctx context.Context, key apikeys.Key, assetID string, req ReencodeRequest, idemKey string) (JobView, error) {
+	renditions, err := assets.Renditions(req.Renditions)
+	if err != nil {
+		return JobView{}, err
+	}
 	q := db.New(s.pool)
 	asset, err := q.GetAsset(ctx, db.GetAssetParams{ID: assetID, AppID: key.AppID})
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -104,6 +112,11 @@ func (s *Service) Reencode(ctx context.Context, key apikeys.Key, assetID string,
 			}
 			if asset.Status == "errored" {
 				if _, err := q.MarkAssetReprocessing(ctx, assetID); err != nil {
+					return err
+				}
+			}
+			if renditions != nil {
+				if err := q.SetAssetRenditions(ctx, db.SetAssetRenditionsParams{ID: assetID, Renditions: renditions}); err != nil {
 					return err
 				}
 			}

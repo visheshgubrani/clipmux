@@ -7282,6 +7282,14 @@
           "title": {
             "type": "string"
           },
+          "renditions": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Renditions"
+              }
+            ],
+            "description": "The renditions this asset's outputs are encoded at; absent means every rung up to the source."
+          },
           "error_code": {
             "type": "string"
           },
@@ -7386,6 +7394,9 @@
           },
           "generate": {
             "$ref": "#/components/schemas/Generate"
+          },
+          "renditions": {
+            "$ref": "#/components/schemas/Renditions"
           }
         },
         "required": [
@@ -7552,6 +7563,9 @@
               },
               "generate": {
                 "$ref": "#/components/schemas/Generate"
+              },
+              "renditions": {
+                "$ref": "#/components/schemas/Renditions"
               }
             },
             "required": [
@@ -7580,6 +7594,9 @@
               },
               "generate": {
                 "$ref": "#/components/schemas/Generate"
+              },
+              "renditions": {
+                "$ref": "#/components/schemas/Renditions"
               }
             },
             "required": [
@@ -7632,6 +7649,14 @@
         "properties": {
           "supersede": {
             "type": "boolean"
+          },
+          "renditions": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Renditions"
+              }
+            ],
+            "description": "Replaces the asset's choice for this output and the ones after it; leave it out to keep it."
           }
         }
       },
@@ -8250,6 +8275,24 @@
         "required": [
           "status"
         ]
+      },
+      "Renditions": {
+        "type": "array",
+        "description": "The ladder rungs to encode, e.g. [\"1080p\", \"480p\"]. Rungs above the source are skipped; if none chosen fits, the largest rung that fits is encoded. Leave it out for every rung up to the source. Shown largest first.",
+        "items": {
+          "type": "string",
+          "enum": [
+            "2160p",
+            "1440p",
+            "1080p",
+            "720p",
+            "480p",
+            "360p"
+          ]
+        },
+        "minItems": 1,
+        "maxItems": 6,
+        "uniqueItems": true
       }
     },
     "securitySchemes": {

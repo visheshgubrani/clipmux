@@ -57,7 +57,7 @@ func runWorker(args []string, getenv func(string) string, stderr io.Writer) int 
 	pair := fs.String("pair", "", "connect this PC with a code from the dashboard's Workers page")
 	name := fs.String("name", "", "what to call this PC on the Workers page (default: its hostname)")
 	encoder := fs.String("encoder", orEnv(getenv("CLIPMUX_ENCODER"), "auto"), "first encoder to try: auto, nvenc, vaapi, cuda-decode or cpu; the CPU always backs it up")
-	speechFlag := fs.String("speech", orEnv(getenv("CLIPMUX_SPEECH"), "auto"), "transcribe subtitles: auto (a GPU, or a CPU with 4+ cores and 6 GiB), off, cpu or vulkan")
+	speechFlag := fs.String("speech", orEnv(getenv("CLIPMUX_SPEECH"), "auto"), "transcribe subtitles: auto (a GPU, or a CPU with 4+ cores and 6 GiB), off, cpu, vulkan or cuda")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}

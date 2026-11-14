@@ -206,3 +206,25 @@ func TestAnExpiredPushStartsOver(t *testing.T) {
 		t.Fatal("an expired push should start a new upload and finish it")
 	}
 }
+
+// D130: a push may choose renditions, and a push of the same file with a
+// different choice is a different push, not a replay of the first.
+func TestAPushCarriesItsRenditions(t *testing.T) {
+	e := newEnv(t)
+	path, _ := file(t, 100)
+	c := e.client(http.DefaultClient)
+	first, err := c.File(context.Background(), path, push.Options{Renditions: []string{"720p", "360p"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := e.count(`SELECT count(*) FROM assets WHERE id = '` + first.ID + `' AND renditions = '{720p,360p}'`); n != 1 {
+		t.Fatalf("asset %s doesn't carry renditions 720p, 360p", first.ID)
+	}
+	second, err := c.File(context.Background(), path, push.Options{Renditions: []string{"360p"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.ID == first.ID || e.count(`SELECT count(*) FROM assets`) != 2 {
+		t.Fatalf("a push with other renditions replayed %s", first.ID)
+	}
+}

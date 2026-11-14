@@ -33,6 +33,8 @@ export const POST = clipmuxHandler({
   async upload(req, { file }) {
     const user = await requireInstructor(req)
     const lesson = new URL(req.url).searchParams.get('lesson')
+    // Add renditions: ['1080p', '480p'] to encode only those; left out,
+    // every size up to the video's own (up to 4K).
     return { passthrough: `lesson_${lesson}`, title: file.name, generate: { subtitles: true } }
   },
   // A student asks to watch: return who they are, or null to refuse.

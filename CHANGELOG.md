@@ -61,6 +61,18 @@ Fixed before release:
   `--scopes`.
 - `clipmux listen` reads `CLIPMUX_URL` when `CLIPMUX_SERVER` is unset.
 - The share page's `poster_url` carries a poster-only token.
+- The ladder goes up to the source: 2160p and 1440p join 1080p and below
+  (D130). Uploads, imports and re-encodes take `renditions` (e.g.
+  `["1080p", "480p"]`); the dashboard's upload and re-encode dialogs,
+  `clipmux push --renditions` and `npx @clipmux/node upload --renditions`
+  offer it. The worker contract is version 2: update PC agents.
+- Speech runs on the GPU it names (D131): the amd64 image carries whisper.cpp's
+  CUDA backend for NVIDIA serverless machines, the speech probe fails a GPU
+  backend whisper didn't use, and Vulkan whisper works under Landlock (it ran
+  on the CPU before). `--speech cuda` is a mode.
+- Faster encodes (D129): a hybrid GPU stage scales every rung on the GPU,
+  audio encodes beside the video, uploads run 8 at a time, and each commit
+  logs its phase timings, the GPU's name and why any GPU stage fell back.
 
 ### Server security (docs/security-review.md, findings 1–6)
 

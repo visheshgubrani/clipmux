@@ -73,6 +73,8 @@ export type Asset = {
   version: number
   passthrough?: string
   title?: string
+  /** The renditions this asset's outputs are encoded at; absent means every rung up to the source. */
+  renditions?: Renditions
   error_code?: string
   /** The media origin playback URLs start with. */
   base_url: string
@@ -101,6 +103,7 @@ export type CreateUpload = {
   passthrough?: string
   title?: string
   generate?: Generate
+  renditions?: Renditions
 }
 
 export type Upload = {
@@ -146,12 +149,14 @@ export type CreateAsset = {
   passthrough?: string
   title?: string
   generate?: Generate
+  renditions?: Renditions
 } | {
   agent_source_id: string
   playback_policy?: 'signed' | 'public'
   passthrough?: string
   title?: string
   generate?: Generate
+  renditions?: Renditions
 }
 
 export type UpdateAsset = {
@@ -166,6 +171,8 @@ export type Job = {
 
 export type Reencode = {
   supersede?: boolean
+  /** Replaces the asset's choice for this output and the ones after it; leave it out to keep it. */
+  renditions?: Renditions
 }
 
 export type CreateTrack = {
@@ -330,6 +337,9 @@ export type PairingStatus = {
   status: 'pending' | 'approved' | 'denied' | 'expired'
   credentials?: Credentials
 }
+
+/** The ladder rungs to encode, e.g. ["1080p", "480p"]. Rungs above the source are skipped; if none chosen fits, the largest rung that fits is encoded. Leave it out for every rung up to the source. Shown largest first. */
+export type Renditions = ('2160p' | '1440p' | '1080p' | '720p' | '480p' | '360p')[]
 
 /** Every webhook event type the spec lists. */
 export type WebhookEventType = 'video.asset.ready' | 'video.asset.updated' | 'video.asset.errored' | 'video.asset.reencode_failed' | 'video.asset.deleted' | 'video.asset.track.ready' | 'video.asset.track.errored' | 'video.asset.track.deleted'

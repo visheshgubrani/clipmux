@@ -34,6 +34,11 @@ const (
 // NVIDIA driver's /proc entries.
 var gpuRead = []string{"/sys", "/proc/driver"}
 
+// gpuList are directories a GPU tool may list but not read from: Mesa's
+// Vulkan drivers find their GPU by listing /dev/dri (D131). The nodes in it
+// still open only when given as devices.
+var gpuList = []string{"/dev/dri"}
+
 // memoryLimit is the resource the memory limit applies to. CUDA and Mesa
 // reserve tens of GiB of address space up front, so a GPU tool is limited
 // by its data segment instead, which still bounds what it can allocate.
@@ -109,7 +114,11 @@ func apply(p Policy, argv []string) (Status, error) {
 	if p.GPU {
 		writeFiles = append(writeFiles, self)
 	}
-	abi, err := landlock(reads, p.Write, p.Devices, writeFiles)
+	var lists []string
+	if p.GPU {
+		lists = gpuList
+	}
+	abi, err := landlock(reads, lists, p.Write, p.Devices, writeFiles)
 	if err != nil {
 		return st, fmt.Errorf("landlock: %w", err)
 	}
@@ -163,8 +172,8 @@ const (
 // beneath write, and on newer kernels TCP, abstract sockets and signals. It
 // returns the kernel's ABI version, 0 where Landlock is missing or disabled.
 // writeFiles may have their existing files read and written beneath them,
-// with nothing created or removed.
-func landlock(reads []string, write string, devices, writeFiles []string) (int, error) {
+// with nothing created or removed; lists may only be listed.
+func landlock(reads, lists []string, write string, devices, writeFiles []string) (int, error) {
 	v, _, errno := syscall.RawSyscall(sysLandlockCreateRuleset, 0, 0, 1 /* LANDLOCK_CREATE_RULESET_VERSION */)
 	if errno != 0 {
 		return 0, nil // no Landlock: reported, not required
@@ -199,6 +208,11 @@ func landlock(reads []string, write string, devices, writeFiles []string) (int, 
 	read := uint64(fsExecute | fsReadFile | fsReadDir)
 	for _, path := range reads {
 		if err := allow(int(fd), path, read&handled); err != nil {
+			return abi, err
+		}
+	}
+	for _, path := range lists {
+		if err := allow(int(fd), path, fsReadDir&handled); err != nil {
 			return abi, err
 		}
 	}

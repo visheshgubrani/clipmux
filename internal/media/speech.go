@@ -1,12 +1,15 @@
 package media
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -26,7 +29,21 @@ const (
 	// SpeechVulkan runs on a GPU through Vulkan: AMD and Intel with mesa,
 	// NVIDIA with its driver's ICD.
 	SpeechVulkan SpeechBackend = "vulkan"
+	// SpeechCUDA runs on an NVIDIA GPU through ggml's CUDA backend: what a
+	// serverless provider's card runs, since gVisor (Modal) offers CUDA but
+	// not always the Vulkan ICD (D131). The image carries it, agents don't.
+	SpeechCUDA SpeechBackend = "cuda"
 )
+
+// GPU reports whether a backend runs on a GPU.
+func (b SpeechBackend) GPU() bool { return b == SpeechVulkan || b == SpeechCUDA }
+
+// gpuLine is how whisper.cpp says which GPU it took, or that it found none
+// and runs on the CPU, e.g. "whisper_backend_init_gpu: using CUDA0 backend".
+var gpuLine = regexp.MustCompile(`whisper_backend_init_gpu: (using (\S+) backend|no GPU found)`)
+
+// devicePrefix is how ggml names a backend's devices: CUDA0, Vulkan0.
+var devicePrefix = map[SpeechBackend]string{SpeechCUDA: "CUDA", SpeechVulkan: "Vulkan"}
 
 // Speech is how a worker transcribes: the backend its probe proved, the
 // model files (absolute paths, verified by digest), and the threads it may
@@ -64,7 +81,7 @@ func WhisperArgs(sp Speech, wav, outBase string) []string {
 		// clipmux-lms's faster-whisper did by default: Whisper invents them.
 		"-sns",
 	}
-	if sp.Backend != SpeechVulkan {
+	if !sp.Backend.GPU() {
 		args = append(args, "-ng")
 	}
 	return args
@@ -82,8 +99,8 @@ func (t Tools) Transcribe(ctx context.Context, dir, audio string, sp Speech) ([]
 	if err := tools.run(ctx, t.FFmpeg, SpeechWAVArgs(audio, wav), dir, io.Discard); err != nil {
 		return nil, fmt.Errorf("transcribe: audio: %w", err)
 	}
-	if sp.Backend == SpeechVulkan {
-		tools = tools.forSpeechGPU()
+	if sp.Backend.GPU() {
+		tools = tools.forSpeechGPU(sp.Backend)
 	}
 	out := filepath.Join(dir, "speech")
 	if err := tools.run(ctx, t.Whisper, WhisperArgs(sp, wav, out), dir, io.Discard); err != nil {
@@ -105,9 +122,17 @@ func (t Tools) readList() []string {
 	return t.Sandbox.Read
 }
 
-// forSpeechGPU lets whisper open the GPUs Vulkan may pick: every DRM render
-// node (AMD, Intel) and NVIDIA's character devices.
-func (t Tools) forSpeechGPU() Tools {
+// forSpeechGPU runs whisper on backend b's GPU: the other GPU backend's
+// devices are hidden, since ggml takes the first GPU it finds (CUDA before
+// Vulkan), and the sandbox lets it open every DRM render node (AMD, Intel)
+// and NVIDIA's character devices.
+func (t Tools) forSpeechGPU(b SpeechBackend) Tools {
+	hide := "CUDA_VISIBLE_DEVICES"
+	if b == SpeechCUDA {
+		hide = "GGML_VK_VISIBLE_DEVICES"
+	}
+	env := slices.DeleteFunc(slices.Clone(t.Env), func(kv string) bool { return strings.HasPrefix(kv, hide+"=") })
+	t.Env = append(env, hide+"=") // empty: no devices
 	if t.Sandbox == nil {
 		return t
 	}
@@ -117,6 +142,23 @@ func (t Tools) forSpeechGPU() Tools {
 	sb.Devices = append(render, gpuDevices(NVENC, "")...)
 	t.Sandbox = &sb
 	return t
+}
+
+// deviceLines quotes what whisper and ggml said about devices and backends,
+// for a probe's error: why a GPU wasn't taken is usually there.
+func deviceLines(log string) string {
+	var out []string
+	for line := range strings.Lines(log) {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "whisper_backend_init_gpu:") || strings.HasPrefix(line, "ggml_vulkan:") ||
+			strings.HasPrefix(line, "ggml_cuda") || strings.HasPrefix(line, "load_backend:") {
+			out = append(out, line)
+		}
+	}
+	if len(out) == 0 {
+		return ""
+	}
+	return " (" + strings.Join(out[:min(len(out), 8)], "; ") + ")"
 }
 
 // Model is a file a speech tool needs, fetched by digest (versions.env).
@@ -148,16 +190,30 @@ func ProbeSpeech(ctx context.Context, t Tools, dir string, sp Speech) error {
 		"-ac", "1", "-c:a", "pcm_s16le", "-f", "wav", wav}, dir, io.Discard); err != nil {
 		return fmt.Errorf("probe audio: %w", err)
 	}
-	if sp.Backend == SpeechVulkan {
-		tools = tools.forSpeechGPU()
+	if sp.Backend.GPU() {
+		tools = tools.forSpeechGPU(sp.Backend)
 	}
 	out := filepath.Join(dir, "probe")
-	args := []string{"-m", sp.Model, "-f", wav, "-l", "en", "-t", strconv.Itoa(max(sp.Threads, 1)), "-ojf", "-of", out, "-np"}
-	if sp.Backend != SpeechVulkan {
+	// Without -np, so whisper says which GPU it took: it falls back to the
+	// CPU when it finds none and still succeeds, which proves nothing.
+	args := []string{"-m", sp.Model, "-f", wav, "-l", "en", "-t", strconv.Itoa(max(sp.Threads, 1)), "-ojf", "-of", out}
+	if !sp.Backend.GPU() {
 		args = append(args, "-ng")
 	}
-	if err := tools.run(ctx, t.Whisper, args, dir, io.Discard); err != nil {
+	var log bytes.Buffer
+	if err := tools.runLogged(ctx, t.Whisper, args, dir, io.Discard, &log); err != nil {
 		return fmt.Errorf("probe %s: %w", sp.Backend, err)
+	}
+	if sp.Backend.GPU() {
+		m := gpuLine.FindStringSubmatch(log.String())
+		switch {
+		case m == nil:
+			return fmt.Errorf("probe %s: whisper didn't say which GPU it used, so it may run on the CPU%s", sp.Backend, deviceLines(log.String()))
+		case m[2] == "":
+			return fmt.Errorf("probe %s: whisper found no %s GPU and would run on the CPU%s", sp.Backend, sp.Backend, deviceLines(log.String()))
+		case !strings.HasPrefix(m[2], devicePrefix[sp.Backend]):
+			return fmt.Errorf("probe %s: whisper took %s instead of a %s GPU%s", sp.Backend, m[2], sp.Backend, deviceLines(log.String()))
+		}
 	}
 	b, err := os.ReadFile(out + ".json")
 	if err != nil {

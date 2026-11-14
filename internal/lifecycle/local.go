@@ -50,6 +50,10 @@ func (s *Service) AttachLocal(ctx context.Context, key apikeys.Key, req ImportRe
 	if err != nil {
 		return assets.View{}, err
 	}
+	renditions, err := assets.Renditions(req.Renditions)
+	if err != nil {
+		return assets.View{}, err
+	}
 	body, _ := json.Marshal(req)
 	var out assets.View
 	err = pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
@@ -81,6 +85,7 @@ func (s *Service) AttachLocal(ctx context.Context, key apikeys.Key, req ImportRe
 			AgentSourceID: pgtype.Text{String: src.ID, Valid: true},
 			Passthrough:   pgtype.Text{String: req.Passthrough, Valid: req.Passthrough != ""},
 			Title:         title,
+			Renditions:    renditions,
 		})
 		if err != nil {
 			return err

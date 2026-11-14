@@ -209,6 +209,18 @@ if [ -n "$WHISPER_BIN" ]; then
   else
     fail "no libggml-vulkan.so beside $WHISPER_BIN: GPU transcription would silently run on the CPU"
   fi
+  # CUDA (D131): required where CLIPMUX_WHISPER_CUDA=1 (the amd64 image).
+  # Everything it loads must sit beside it but the driver's libcuda.so.1.
+  if [ -f "$whisper_dir/libggml-cuda.so" ]; then
+    missing="$(ldd "$whisper_dir/libggml-cuda.so" | awk '/not found/ && $1 !~ /^libcuda\.so/ { print $1 }' | paste -sd' ' -)"
+    if [ -n "$missing" ]; then
+      fail "the whisper.cpp CUDA backend can't load $missing"
+    else
+      ok "whisper.cpp CUDA backend present, cudart and cuBLAS beside it"
+    fi
+  elif [ "${CLIPMUX_WHISPER_CUDA:-0}" = 1 ]; then
+    fail "no libggml-cuda.so beside $WHISPER_BIN: NVIDIA serverless machines would transcribe on the CPU (D131)"
+  fi
   whisper_help="$("$WHISPER_BIN" --help 2>&1 || true)"
   for flag in -ojf --vad -vm -sns -ng -np; do
     if grep -qE -- "(^|[[:space:],])${flag}([[:space:],]|$)" <<<"$whisper_help"; then

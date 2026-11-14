@@ -206,6 +206,25 @@ func TestWhisperOnVulkan(t *testing.T) {
 	}
 }
 
+// On an NVIDIA machine whose whisper-cli carries the CUDA backend (the
+// image, D131), the transcription runs on CUDA under the GPU sandbox.
+func TestWhisperOnCUDA(t *testing.T) {
+	tools, sp := speechTools(t)
+	if nodes, _ := filepath.Glob("/dev/nvidia[0-9]*"); len(nodes) == 0 {
+		t.Skip("no NVIDIA card")
+	}
+	sp.Backend, sp.Threads = SpeechCUDA, 4
+	if err := ProbeSpeech(t.Context(), tools, t.TempDir(), sp); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	tr := transcribe(t, tools, sp, audioRendition(t, 3*time.Second))
+	if got := words(tr.Text()); !strings.Contains(got, "ask what you can do for your country") {
+		t.Fatalf("text %q", got)
+	}
+	t.Logf("CUDA transcription of 14 s took %s", time.Since(start).Round(time.Millisecond))
+}
+
 func TestSpeechArgs(t *testing.T) {
 	got := SpeechWAVArgs("in.mp4", "out.wav")
 	if !slices.Contains(got, "-format_whitelist") || strings.Join(got[len(got)-14:], " ") != "-i in.mp4 -map 0:a:0 -vn -ac 1 -ar 16000 -c:a pcm_s16le -f wav out.wav" {
@@ -215,9 +234,11 @@ func TestSpeechArgs(t *testing.T) {
 	if got := strings.Join(WhisperArgs(sp, "a.wav", "out"), " "); got != "-m /m/model.bin -f a.wav -l auto --vad -vm /m/vad.bin -t 3 -ojf -of out -np -sns -ng" {
 		t.Fatalf("cpu args %q", got)
 	}
-	sp.Backend = SpeechVulkan
-	if got := WhisperArgs(sp, "a.wav", "out"); slices.Contains(got, "-ng") {
-		t.Fatalf("vulkan args %q must use the GPU", got)
+	for _, b := range []SpeechBackend{SpeechVulkan, SpeechCUDA} {
+		sp.Backend = b
+		if got := WhisperArgs(sp, "a.wav", "out"); slices.Contains(got, "-ng") {
+			t.Fatalf("%s args %q must use the GPU", b, got)
+		}
 	}
 }
 
@@ -244,5 +265,51 @@ func TestDetectsTheOwnersLanguages(t *testing.T) {
 				t.Fatalf("language %q, text %q; want one of %v with text", tr.Language, tr.Text(), c.want)
 			}
 		})
+	}
+}
+
+// fakeWhisper logs line as whisper.cpp does when it picks (or finds no)
+// GPU, writes an empty transcription, and fails unless hidden, the other
+// GPU backend's device variable, is set and empty.
+func fakeWhisper(t *testing.T, line, hidden string) string {
+	t.Helper()
+	check := ""
+	if hidden != "" {
+		check = `[ "${` + hidden + `-unset}" = "" ] || { echo "` + hidden + ` isn't hidden" >&2; exit 1; }` + "\n"
+	}
+	return script(t, "whisper-cli", check+`out=""
+while [ $# -gt 0 ]; do [ "$1" = "-of" ] && out="$2"; shift; done
+echo "whisper_backend_init_gpu: device 0: CPU (type: 0)" >&2
+echo "`+line+`" >&2
+echo '{"transcription": []}' > "$out.json"
+`)
+}
+
+// The probe proves the backend it names: whisper.cpp falls back to the CPU
+// when it finds no GPU and still succeeds, which is how a Modal L4 once
+// "passed" Vulkan and then transcribed at CPU speed.
+func TestTheSpeechProbeProvesTheGPUItNames(t *testing.T) {
+	cases := []struct {
+		backend      SpeechBackend
+		line, hidden string
+		ok           bool
+	}{
+		{SpeechCUDA, "whisper_backend_init_gpu: using CUDA0 backend", "GGML_VK_VISIBLE_DEVICES", true},
+		{SpeechVulkan, "whisper_backend_init_gpu: using Vulkan0 backend", "CUDA_VISIBLE_DEVICES", true},
+		{SpeechVulkan, "whisper_backend_init_gpu: no GPU found", "", false},
+		{SpeechCUDA, "whisper_backend_init_gpu: no GPU found", "", false},
+		{SpeechCUDA, "whisper_backend_init_gpu: using Vulkan0 backend", "", false},
+		{SpeechCPU, "whisper_backend_init_gpu: no GPU found", "", true},
+	}
+	for _, c := range cases {
+		tools := Tools{FFmpeg: script(t, "ffmpeg", "exit 0\n"), Whisper: fakeWhisper(t, c.line, c.hidden)}
+		sp := Speech{Backend: c.backend, Model: "/m/model.bin", Threads: 4}
+		err := ProbeSpeech(context.Background(), tools, t.TempDir(), sp)
+		if (err == nil) != c.ok {
+			t.Errorf("%s probe logging %q: err = %v, want ok %v", c.backend, c.line, err, c.ok)
+		}
+		if strings.Contains(c.line, "no GPU") && c.backend.GPU() && err != nil && !strings.Contains(err.Error(), "CPU") {
+			t.Errorf("%s probe error %q should say whisper would run on the CPU", c.backend, err)
+		}
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"maps"
 	"net/http"
@@ -27,7 +28,7 @@ import (
 const workerKey = "builtin-test-key"
 
 var capable = map[string]any{
-	"contract_versions": []int{1},
+	"contract_versions": []int{2},
 	"ffmpeg_version":    "9.0.1",
 	"packager_version":  "v3.9.3",
 	"encoders":          []string{"libx264"},
@@ -291,7 +292,9 @@ func TestClaimRefusesWorkersThatCannotMeetTheContract(t *testing.T) {
 		body map[string]any
 		want string
 	}{
-		{"future contract only", with(map[string]any{"contract_versions": []int{2}}), "unsupported_contract"},
+		// Contract 1 knew no renditions: it would encode rungs the commit refuses.
+		{"contract 1 only", with(map[string]any{"contract_versions": []int{1}}), "unsupported_contract"},
+		{"future contract only", with(map[string]any{"contract_versions": []int{3}}), "unsupported_contract"},
 		{"packager before 3.9.1", with(map[string]any{"packager_version": "v3.9.0"}), "packager_too_old"},
 		{"no packager version", with(map[string]any{"packager_version": ""}), "packager_too_old"},
 	}
@@ -307,6 +310,15 @@ func TestClaimRefusesWorkersThatCannotMeetTheContract(t *testing.T) {
 	}
 }
 
+func TestClaimCarriesTheAssetsChosenRenditions(t *testing.T) {
+	e := newEnv(t)
+	e.enqueue()
+	e.exec(`UPDATE assets SET renditions = '{1080p,480p}' WHERE id = 'ast_1'`)
+	if got := fmt.Sprint(e.claim()["renditions"]); got != "[1080p 480p]" {
+		t.Fatalf("renditions = %s, want the asset's choice", got)
+	}
+}
+
 func TestClaimPayloadAndAttemptCalls(t *testing.T) {
 	e := newEnv(t)
 	e.enqueue()
@@ -316,8 +328,12 @@ func TestClaimPayloadAndAttemptCalls(t *testing.T) {
 		t.Fatalf("claim: %d %v", code, claim)
 	}
 	// Fields from the architecture's job payload.
-	if claim["contract_version"] != float64(1) || claim["lease_seconds"] != float64(90) || claim["output_format"] != float64(1) {
+	if claim["contract_version"] != float64(2) || claim["lease_seconds"] != float64(90) || claim["output_format"] != float64(1) {
 		t.Fatalf("payload = %v", claim)
+	}
+	// An asset that chose nothing gets the whole ladder, largest first.
+	if got := fmt.Sprint(claim["renditions"]); got != "[2160p 1440p 1080p 720p 480p 360p]" {
+		t.Fatalf("renditions = %s, want the whole ladder", got)
 	}
 	profile, _ := claim["profile"].(map[string]any)
 	if profile["id"] != "default" || profile["version"] != float64(1) {

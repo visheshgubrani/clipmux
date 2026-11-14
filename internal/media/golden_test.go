@@ -117,6 +117,12 @@ var testKey = Key{Version: 1, Key: [16]byte{0x10, 0x32, 0x54, 0x76, 0x98, 0xba, 
 // transcodeAndCheck encodes a generated clip on hw (the CPU for the zero
 // value), checks the output, and returns its manifest and directory.
 func transcodeAndCheck(t *testing.T, sandboxed bool, hw Hardware) (Manifest, string) {
+	return transcodeClip(t, sandboxed, hw, "yuv420p")
+}
+
+// transcodeClip is transcodeAndCheck on a clip in pixFmt: a 10-bit one
+// takes a GPU's hybrid stage, which decodes on the CPU.
+func transcodeClip(t *testing.T, sandboxed bool, hw Hardware, pixFmt string) (Manifest, string) {
 	tools := testTools(t)
 	tools.HW = hw
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
@@ -128,7 +134,7 @@ func transcodeAndCheck(t *testing.T, sandboxed bool, hw Hardware) (Manifest, str
 	}
 	source := filepath.Join(dir, "source.mp4")
 	ffmpeg(t, "-f", "lavfi", "-i", "testsrc2=size=854x480:rate=25", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100",
-		"-t", "13", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", source)
+		"-t", "13", "-c:v", "libx264", "-pix_fmt", pixFmt, "-c:a", "aac", "-shortest", source)
 
 	src, err := Probe(ctx, tools, source)
 	if err != nil {
@@ -141,7 +147,7 @@ func transcodeAndCheck(t *testing.T, sandboxed bool, hw Hardware) (Manifest, str
 	key := testKey
 	work, out := filepath.Join(dir, "work"), filepath.Join(dir, "out")
 	var phases []string
-	m, err := Transcode(ctx, tools, source, src, work, out, key, func(phase string, _ float64) {
+	m, err := Transcode(ctx, tools, source, src, nil, work, out, key, func(phase string, _ float64) {
 		if len(phases) == 0 || phases[len(phases)-1] != phase {
 			phases = append(phases, phase)
 		}
@@ -265,7 +271,7 @@ func TestCorruptFixturePassesTheProbeButFailsTheEncode(t *testing.T) {
 		t.Fatalf("Probe = %+v, want 320x240 with audio", src)
 	}
 	dir := t.TempDir()
-	_, err = Transcode(ctx, tools, source, src, filepath.Join(dir, "work"), filepath.Join(dir, "out"), Key{Version: 1}, nil)
+	_, err = Transcode(ctx, tools, source, src, nil, filepath.Join(dir, "work"), filepath.Join(dir, "out"), Key{Version: 1}, nil)
 	if err == nil {
 		t.Fatal("Transcode encoded the corrupt fixture")
 	}

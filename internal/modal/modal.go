@@ -115,8 +115,10 @@ func (e *Executor) Wake(ctx context.Context, w dispatch.Wake) (string, error) {
 		return found[0].ID, nil
 	}
 	env := map[string]string{
-		// NVENC needs the video capability of the injected driver.
-		"NVIDIA_DRIVER_CAPABILITIES": "compute,video,utility",
+		// NVENC needs the video capability of the injected driver, CUDA
+		// whisper compute, and Vulkan whisper graphics (the Vulkan ICD),
+		// where gVisor's operator allows it (D131).
+		"NVIDIA_DRIVER_CAPABILITIES": "compute,video,utility,graphics",
 	}
 	maps.Copy(env, w.Env)
 	var gpus []string

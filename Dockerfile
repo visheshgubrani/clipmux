@@ -26,9 +26,16 @@ RUN --mount=type=cache,target=/var/tmp/ffmpeg-build,sharing=locked \
 # Its own layer: a failed download (GitHub releases can 504) keeps FFmpeg cached.
 RUN bash /tmp/clipmux-toolchain/install_packager.sh /usr/local/bin
 # whisper.cpp with its CPU variants and Vulkan, in its own directory
-# (toolchain/build_whisper.sh). The models come from the models stage.
+# (toolchain/build_whisper.sh). On amd64 it also has CUDA (D131), for NVIDIA
+# serverless machines without the Vulkan ICD: the toolkit is installed, built
+# against and purged in this one step, so only cudart and cuBLAS remain,
+# beside whisper-cli. The models come from the models stage.
 RUN --mount=type=cache,target=/var/tmp/whisper-build,sharing=locked \
-    CLIPMUX_BUILD_DIR=/var/tmp/whisper-build bash /tmp/clipmux-toolchain/build_whisper.sh /usr/local
+    set -eux; \
+    cuda=0; \
+    if [ "$(dpkg --print-architecture)" = amd64 ]; then cuda=1; bash /tmp/clipmux-toolchain/install_cuda.sh; fi; \
+    CLIPMUX_WHISPER_CUDA=$cuda CLIPMUX_BUILD_DIR=/var/tmp/whisper-build bash /tmp/clipmux-toolchain/build_whisper.sh /usr/local; \
+    if [ "$cuda" = 1 ]; then bash /tmp/clipmux-toolchain/install_cuda.sh --remove; fi
 
 # ── The speech models (D118) ────────────────────────────────────────────────
 # Baked in, so a serverless machine (a new one for every job) never downloads
@@ -107,7 +114,9 @@ RUN set -eux; \
     rm -rf /var/lib/apt/lists/*
 COPY --from=toolchain /usr/local/ /usr/local/
 # The toolchain must still do what the engine asks of it on the final image.
-RUN ldconfig && bash /tmp/clipmux-toolchain/verify_toolchain.sh /usr/local/bin/ffmpeg /usr/local/bin/ffprobe /usr/local/bin/whisper-cli \
+RUN ldconfig \
+    && if [ "$(dpkg --print-architecture)" = amd64 ]; then export CLIPMUX_WHISPER_CUDA=1; fi \
+    && bash /tmp/clipmux-toolchain/verify_toolchain.sh /usr/local/bin/ffmpeg /usr/local/bin/ffprobe /usr/local/bin/whisper-cli \
     && packager --version \
     && bash /tmp/clipmux-toolchain/licenses.sh /usr/share/doc/clipmux/licenses /tmp/clipmux-toolchain/versions.env /tmp/clipmux-toolchain/LICENSE \
     && rm -rf /tmp/clipmux-toolchain
@@ -121,9 +130,9 @@ LABEL org.opencontainers.image.source=https://github.com/visheshgubrani/clipmux 
       org.opencontainers.image.description="ClipMux: self-hosted video infrastructure" \
       org.opencontainers.image.licenses="AGPL-3.0-only AND GPL-2.0-or-later"
 USER 10001
-# NVENC needs the driver's video capability and whisper's Vulkan backend its
-# graphics one (the Vulkan ICD), which NVIDIA's container runtime injects
-# only when asked (Modal, RunPod, docker --gpus).
+# NVENC needs the driver's video capability, whisper's CUDA backend compute
+# and its Vulkan backend graphics (the Vulkan ICD), which NVIDIA's container
+# runtime injects only when asked (Modal, RunPod, docker --gpus).
 ENV CLIPMUX_DATA_DIR=/var/lib/clipmux/data \
     CLIPMUX_LISTEN=:8080 \
     CLIPMUX_MODELS_DIR=/var/lib/clipmux-agent/models \

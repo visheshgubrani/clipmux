@@ -40,20 +40,81 @@ func TestLadderIsCappedAtTheSourcesShortSide(t *testing.T) {
 		return out
 	}
 	cases := []struct {
-		w, h int
-		want []string
+		w, h    int
+		allowed []string
+		want    []string
 	}{
-		{1920, 1080, []string{"1080p", "720p", "480p", "360p"}},
-		{3840, 2160, []string{"1080p", "720p", "480p", "360p"}},
-		{1280, 720, []string{"720p", "480p", "360p"}},
-		{1080, 1920, []string{"1080p", "720p", "480p", "360p"}}, // vertical: rungs follow the short side
-		{854, 480, []string{"480p", "360p"}},
-		{426, 240, []string{"240p"}}, // below the ladder: one rung at the source size
-		{641, 361, []string{"360p"}},
+		// Every rung up to the source, by its short side.
+		{3840, 2160, nil, []string{"2160p", "1440p", "1080p", "720p", "480p", "360p"}},
+		{2560, 1440, nil, []string{"1440p", "1080p", "720p", "480p", "360p"}},
+		{1920, 1080, nil, []string{"1080p", "720p", "480p", "360p"}},
+		{1280, 720, nil, []string{"720p", "480p", "360p"}},
+		{1080, 1920, nil, []string{"1080p", "720p", "480p", "360p"}}, // vertical: rungs follow the short side
+		{2160, 3840, nil, []string{"2160p", "1440p", "1080p", "720p", "480p", "360p"}},
+		{854, 480, nil, []string{"480p", "360p"}},
+		{426, 240, nil, []string{"240p"}}, // below the ladder: one rung at the source size
+		{641, 361, nil, []string{"360p"}},
+		// 21:9 at 2160 would be 5120 wide, past H.264's and NVENC's 4096.
+		{5120, 2160, nil, []string{"1440p", "1080p", "720p", "480p", "360p"}},
+		// The uploader's choice, within what the source has.
+		{3840, 2160, []string{"1080p", "480p"}, []string{"1080p", "480p"}},
+		{3840, 2160, []string{"360p", "2160p"}, []string{"2160p", "360p"}}, // ladder order, not the request's
+		// Nothing chosen fits: the largest rung that does.
+		{1280, 720, []string{"2160p", "1080p"}, []string{"720p"}},
+		{426, 240, []string{"1080p"}, []string{"240p"}},
 	}
 	for _, c := range cases {
-		if got := labels(SelectLadder(c.w, c.h)); !slices.Equal(got, c.want) {
-			t.Errorf("SelectLadder(%d, %d) = %v, want %v", c.w, c.h, got, c.want)
+		if got := labels(SelectLadder(c.w, c.h, c.allowed)); !slices.Equal(got, c.want) {
+			t.Errorf("SelectLadder(%d, %d, %v) = %v, want %v", c.w, c.h, c.allowed, got, c.want)
+		}
+	}
+	for _, r := range SelectLadder(3840, 2160, nil)[:2] {
+		if r.Bitrate == "" || r.Maxrate == "" || r.Bufsize == "" {
+			t.Errorf("%s has no rates: %+v", r.Label(), r)
+		}
+	}
+	if got := LadderNames(); !slices.Equal(got, []string{"2160p", "1440p", "1080p", "720p", "480p", "360p"}) {
+		t.Errorf("LadderNames() = %v", got)
+	}
+}
+
+func TestCheckLadderAcceptsOnlyWhatSomeSourceWouldGet(t *testing.T) {
+	cases := []struct {
+		produced, allowed []string
+		ok                bool
+	}{
+		{[]string{"1080p", "720p", "480p", "360p"}, nil, true},
+		{[]string{"720p", "480p", "360p"}, nil, true},   // a 720p source
+		{[]string{"1080p", "480p", "360p"}, nil, false}, // 720p skipped
+		{[]string{"2160p", "1440p", "1080p", "720p", "480p", "360p"}, nil, true},
+		{[]string{"240p"}, nil, true}, // below the ladder: one rendition at the source size
+		{[]string{"240p", "360p"}, nil, false},
+		{[]string{"1080p", "480p"}, []string{"1080p", "480p"}, true},
+		{[]string{"480p"}, []string{"1080p", "480p"}, true},                   // a 720p source
+		{[]string{"1080p"}, []string{"1080p", "480p"}, false},                 // 480p skipped
+		{[]string{"1080p", "720p", "480p"}, []string{"1080p", "480p"}, false}, // 720p wasn't asked for
+		{[]string{"720p"}, []string{"2160p", "1080p"}, true},                  // nothing asked for fits: the largest that does
+		{[]string{"720p", "480p"}, []string{"2160p", "1080p"}, false},
+		{[]string{"720p"}, []string{"2160p", "480p"}, false}, // 480p fits, so it is what's encoded
+		{[]string{"240p"}, []string{"1080p"}, true},
+		{nil, nil, false},
+		{[]string{"9999p"}, nil, false},
+	}
+	for _, c := range cases {
+		if err := CheckLadder(c.produced, c.allowed); (err == nil) != c.ok {
+			t.Errorf("CheckLadder(%v, %v) = %v, want ok %v", c.produced, c.allowed, err, c.ok)
+		}
+	}
+	// Whatever SelectLadder picks passes.
+	for _, size := range [][2]int{{3840, 2160}, {5120, 2160}, {1280, 720}, {426, 240}, {1080, 1920}} {
+		for _, allowed := range [][]string{nil, {"1080p", "360p"}, {"2160p"}, {"480p"}} {
+			var names []string
+			for _, r := range SelectLadder(size[0], size[1], allowed) {
+				names = append(names, r.Label())
+			}
+			if err := CheckLadder(names, allowed); err != nil {
+				t.Errorf("%v with %v: SelectLadder gave %v, which CheckLadder refuses: %v", size, allowed, names, err)
+			}
 		}
 	}
 }
@@ -78,7 +139,7 @@ func TestRungDimensionsKeepAspectAndStayEven(t *testing.T) {
 
 func TestEncodeArgsAlignKeyframesToSegments(t *testing.T) {
 	src := Source{Width: 1280, Height: 720, FrameRate: "30000/1001", FPS: 29.97, HasAudio: true, Duration: 60}
-	args := strings.Join(EncodeArgs(Stage{Backend: CPU}, "", src, "/w/source", "/w/enc", SelectLadder(src.Width, src.Height)), " ")
+	args := strings.Join(EncodeArgs(Stage{Backend: CPU}, "", src, "/w/source", "/w/enc", SelectLadder(src.Width, src.Height, nil)), " ")
 	for _, want := range []string{
 		"-format_whitelist " + allowedDemuxers, "-protocol_whitelist file", "-i /w/source",
 		"split=3", "scale=1280:720", "scale=854:480", "scale=640:360",
@@ -117,6 +178,36 @@ func TestPackageFlagsKeepTheKeyOutOfArgv(t *testing.T) {
 	} {
 		if !strings.Contains(flagfile, want) {
 			t.Errorf("flagfile missing %q:\n%s", want, flagfile)
+		}
+	}
+}
+
+func TestTheMasterStartsAtTheLargestRungUpTo1080p(t *testing.T) {
+	// Shaka lists variants in stream order and Safari starts on the first:
+	// a 4K output still starts at 1080p, as every output did before 4K.
+	order := func(rungs []Rung) []string {
+		argv, _ := PackageArgs("/w/enc", rungs, false, Key{Version: 1})
+		var out []string
+		for _, a := range argv {
+			if in, ok := strings.CutPrefix(a, "in=/w/enc/v_"); ok {
+				out = append(out, in[:strings.Index(in, ".mp4")])
+			}
+		}
+		return out
+	}
+	cases := []struct {
+		rungs []Rung
+		want  []string
+	}{
+		{SelectLadder(3840, 2160, nil), []string{"1080p", "2160p", "1440p", "720p", "480p", "360p"}},
+		{SelectLadder(2560, 1440, nil), []string{"1080p", "1440p", "720p", "480p", "360p"}},
+		{SelectLadder(1920, 1080, nil), []string{"1080p", "720p", "480p", "360p"}},
+		{SelectLadder(3840, 2160, []string{"2160p", "1440p"}), []string{"2160p", "1440p"}}, // nothing at or below 1080p
+		{SelectLadder(3840, 2160, []string{"2160p", "480p"}), []string{"480p", "2160p"}},
+	}
+	for _, c := range cases {
+		if got := order(c.rungs); !slices.Equal(got, c.want) {
+			t.Errorf("streams = %v, want %v", got, c.want)
 		}
 	}
 }

@@ -103,12 +103,29 @@ when you introduce or discover it; remove it when it is closed.
   GET or a part PUT finishing.
 - Real providers pass the Phase 4 exit (D097), but only as a local run with
   keys in `.env`: `exit-providers.yml` needs the repository secrets and
-  `REAL_PROVIDERS` before it runs in CI. Whisper on a provider runs on
-  Vulkan, at about 3–4 times slower than real time per 11 s clip (measured
-  with the model fetch, before the image carried it, D118); CUDA speech stays refused (D077). Modal's GPU type isn't
-  recorded per attempt, so a measurement can't name the card it ran on. A
-  failed real run can leave a RunPod registry credential behind when the
-  test's disconnect is refused (409); it was deleted by hand.
+  `REAL_PROVIDERS` before it runs in CI. A failed real run can leave a
+  RunPod registry credential behind when the test's disconnect is refused
+  (409); it was deleted by hand.
+- Speech on NVIDIA (D131): the amd64 image transcribes with CUDA, proven
+  only by `deploy/modal/gpu_test.py`, not yet by a production
+  transcription. Modal's gVisor offers no Vulkan device even with
+  `graphics` asked for (measured on an L4 and a T4); that is Modal's
+  choice, not ClipMux's.
+- NVENC on Modal took about 45–50 s of video work for 2 s of 4K on an L4
+  and a T4 (D131), against 2.3 s on VAAPI locally. Whether that is a fixed
+  cost per encode under gVisor or a per-frame one is not yet measured. The agent
+  tarball and arm64 images carry no CUDA backend, so an agent's NVIDIA card
+  uses Vulkan, and an NVIDIA card without the Vulkan ICD uses the CPU.
+- Renditions (D130): the commit can't tell a worker that stopped short of
+  rungs above the largest it made from a smaller source, since the server
+  never sees the source. There is no project-wide default or cap, and rung
+  bitrates don't follow the source's own bitrate. A 4K ladder on a CPU-only
+  worker is slow, and its 8 GiB memory limit with six encoders is
+  unmeasured. `SignBudget`'s 20,000 files cover about 4 h 45 min of 4K.
+- A full-GPU stage on a card that can't decode the source's codec (a T4 and
+  AV1) fails and hands the ladder to the hybrid stage, which now scales on
+  the GPU but still decodes on the CPU (D129). The GPU's codecs aren't
+  probed ahead of time.
 - A captioned video wakes one serverless machine only when the provider is
   the transcription's route at the encode's commit: the primary, or a setup
   test's executor (D128). With a provider reached only as the fallback
