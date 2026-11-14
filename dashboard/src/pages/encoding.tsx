@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import * as React from 'react'
 import { del, type Provider, put, type Routing } from '@/api'
+import { Choice } from '@/components/choice'
 import { useConfirm } from '@/components/confirm'
 import { ConnectProviderDialog } from '@/components/connect-provider'
 import { PageBody, PageHeader, Section } from '@/components/page'
@@ -10,9 +11,8 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Field, FieldLabel } from '@/components/ui/field'
-import { Label } from '@/components/ui/label'
 import { Progress } from '@/components/ui/progress'
-import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
+import { RadioGroup } from '@/components/ui/radio-group'
 import { Skeleton } from '@/components/ui/skeleton'
 import { dollars } from '@/lib/format'
 import { notify } from '@/lib/notify'
@@ -124,7 +124,8 @@ function Choices({
         onValueChange={(v) => choose(String(v))}
         aria-label="Where videos are encoded"
       >
-        <Option
+        <Choice
+          group="encode"
           value="server"
           title="This server"
           body="Uses this machine’s GPU when ClipMux can see one (NVIDIA, AMD or Intel), otherwise its CPU. Nothing to set up."
@@ -143,10 +144,11 @@ function Choices({
               ? latest.checks.find((c) => !c.ok)
               : undefined
           return (
-            <Option
+            <Choice
+              group="encode"
               key={kind}
               value={kind}
-              provider={kind}
+              data-provider={kind}
               title={names[kind]}
               body={blurbs[kind]}
               disabled={!p?.verified || save.isPending}
@@ -200,7 +202,7 @@ function Choices({
                   </Button>
                 )}
               </div>
-            </Option>
+            </Choice>
           )
         })}
       </RadioGroup>
@@ -220,45 +222,6 @@ function Choices({
         </Field>
       )}
       <ConnectProviderDialog kind={connecting} onClose={() => setConnecting(null)} />
-    </div>
-  )
-}
-
-/** One choice: a radio, its title and blurb, a status on the right, and whatever else it needs below. */
-function Option({
-  value,
-  title,
-  body,
-  status,
-  disabled,
-  provider,
-  children,
-}: {
-  value: string
-  title: string
-  body: string
-  status?: React.ReactNode
-  disabled?: boolean
-  provider?: Cloud
-  children?: React.ReactNode
-}) {
-  const id = `encode-${value}`
-  return (
-    <div
-      data-provider={provider}
-      className="flex flex-col gap-3 rounded-lg border bg-card p-4 has-data-checked:border-primary has-data-checked:bg-primary/5"
-    >
-      <div className="flex flex-wrap items-start gap-x-3 gap-y-2">
-        <RadioGroupItem value={value} id={id} disabled={disabled} className="mt-0.5" />
-        <div className="flex min-w-0 flex-[1_1_16rem] flex-col gap-1">
-          <Label htmlFor={id} className="font-medium">
-            {title}
-          </Label>
-          <p className="text-sm text-muted-foreground">{body}</p>
-        </div>
-        {status}
-      </div>
-      {children && <div className="flex flex-col gap-3 pl-7">{children}</div>}
     </div>
   )
 }

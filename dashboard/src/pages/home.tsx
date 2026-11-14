@@ -19,6 +19,7 @@ import {
 } from '@/components/ui/item'
 import { Skeleton } from '@/components/ui/skeleton'
 import { useUpload } from '@/components/upload'
+import { cloudNames, encodedOn } from '@/lib/encoding'
 import { ago, greeting, videoName, videoPath } from '@/lib/format'
 import { q } from '@/queries'
 
@@ -237,8 +238,6 @@ function Checklist() {
   )
 }
 
-const cloudNames: Record<string, string> = { modal: 'Modal', runpod: 'RunPod' }
-
 /** One quiet line at the bottom: where things run and play from. */
 function StatusLine() {
   const routing = useQuery(q.routing())
@@ -277,7 +276,7 @@ function StatusLine() {
     {
       to: '/captions',
       label: 'Captions',
-      value: `${speech.data?.mode === 'api' ? 'speech API' : 'on your machines'}, chapters ${chapters.data?.connection ? 'on' : 'off'}`,
+      value: `${speech.data?.mode === 'api' ? 'speech API' : r ? `on ${encodedOn(r)}` : '…'}, chapters ${chapters.data?.connection ? 'on' : 'off'}`,
     },
   ]
   return (

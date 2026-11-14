@@ -21,6 +21,8 @@ interface Config {
   ops_password: string
   llm_url: string
   llm_key: string
+  speech_url: string
+  speech_key: string
 }
 
 const config = async (page: Page) => (await (await page.request.get('/config')).json()) as Config
@@ -220,19 +222,35 @@ test('the owner connects an LLM and sees which PCs can transcribe', async ({ pag
   const cfg = await config(page)
   await signIn(page, cfg)
   await go(page, 'Captions & AI')
-  await expect(page.getByLabel('Transcribe')).toHaveValue('api')
+  await expect(page.getByRole('radio', { name: 'A speech API' })).toBeChecked()
   await expect(page.locator('[data-connected="chapters"]')).toContainText('gpt-test')
+
+  // The speech form lists the API's models once its URL and key are in,
+  // and fills in the one transcriptions usually use (D127).
+  await page.getByRole('button', { name: 'Connect a different speech API' }).click()
+  const speech = page.getByRole('form', { name: 'Connect a speech API' })
+  await speech.getByLabel('Speech API URL').fill(cfg.speech_url)
+  await speech.getByLabel('Speech API key').fill(cfg.speech_key)
+  await expect(speech.getByText(/^1 model from /)).toBeVisible()
+  await expect(speech.getByLabel('Speech model')).toHaveValue('whisper-1')
+  await speech.getByLabel('Speech model').click()
+  await expect(page.getByRole('option', { name: 'whisper-1' })).toBeVisible()
+  await page.keyboard.press('Escape')
+
   await page.getByText('Connect an LLM', { exact: true }).click()
   const form = page.getByRole('form', { name: 'Connect an LLM' })
   await form.getByLabel('LLM provider').selectOption('openai_compatible')
   await form.getByLabel('LLM API URL').fill(cfg.llm_url)
-  await form.getByLabel('LLM model').fill('gpt-test')
   await form.getByLabel('LLM API key').fill(cfg.llm_key)
+  // One chat model listed: it is filled in.
+  await expect(form.getByText(/^1 model from /)).toBeVisible()
+  await expect(form.getByLabel('LLM model')).toHaveValue('gpt-test')
   await form.getByRole('button', { name: 'Connect' }).click()
   for (const step of ['Credentials', 'Sample chapters', 'Saved']) {
     await expect(page.getByText(`✓ ${step}`)).toBeVisible()
   }
   await expect(page.locator('body')).not.toContainText(cfg.llm_key)
+  await expect(page.locator('body')).not.toContainText(cfg.speech_key)
 
   await page.getByRole('button', { name: 'Upload', exact: true }).first().click()
   const upload = page.getByRole('dialog', { name: 'Upload videos' })

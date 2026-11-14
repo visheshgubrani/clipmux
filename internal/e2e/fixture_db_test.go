@@ -120,6 +120,7 @@ func TestPlayerFixture(t *testing.T) {
 			"base_url": in.url, "playback_id": pid, "api": in.url,
 			"asset_id": asset, "app_id": appID, "subtitles_track": trks["subtitles"].ID, "chapters_track": trks["chapters"].ID,
 			"cue_text": cueText, "cue_start": cueStart, "llm_url": ai.llm.URL + "/v1", "llm_key": llmKey,
+			"speech_url": ai.speech.URL + "/v1", "speech_key": speechKey,
 			"dashboard": fresh.url, "setup_token": setupToken[1], "totp": totp.url,
 			"ops": in.url, "ops_email": "owner@example.test", "ops_password": "a long test password",
 			"runpod_key": runpodtest.Key, "registry_username": registrytest.Username, "registry_password": registrytest.Password,

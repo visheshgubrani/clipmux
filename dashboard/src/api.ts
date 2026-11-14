@@ -307,6 +307,11 @@ export interface SpeechStatus {
   mode: 'local' | 'api' | 'local_then_api'
   connection: { base_url: string; model: string; has_key: boolean; verified_at: string } | null
 }
+/** What a speech API or LLM lists for a Connect form (D127); listed is false when it has no list. */
+export interface ModelList {
+  listed: boolean
+  data: { id: string; name?: string }[]
+}
 export interface ChaptersStatus {
   connection: {
     provider: 'openai_compatible' | 'anthropic'

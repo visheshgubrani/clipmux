@@ -147,6 +147,70 @@ func (s *Service) Connect(ctx context.Context, req ConnectRequest) (dispatch.Res
 	return steps.Result, nil
 }
 
+// Model IDs longer than Connect accepts are dropped, and a list is cut at
+// maxModels: OpenAI's own is about a hundred.
+const (
+	maxModelLen = 200
+	maxModels   = 1000
+)
+
+// ModelInfo is one model an API lists; Name is Claude's display name and
+// empty for an OpenAI-compatible API.
+type ModelInfo struct {
+	ID   string `json:"id"`
+	Name string `json:"name,omitempty"`
+}
+
+// ModelList is what an API lists. Listed is false when it has no list to
+// read, and the owner types the model's name.
+type ModelList struct {
+	Listed bool        `json:"listed"`
+	Data   []ModelInfo `json:"data"`
+}
+
+// ModelsRequest is the provider, URL and key the owner has typed so far.
+type ModelsRequest struct {
+	Provider string `json:"provider"`
+	BaseURL  string `json:"base_url"`
+	APIKey   string `json:"api_key"`
+}
+
+// Models lists an LLM's models for the Connect form, before anything is
+// saved; the key is used for the one call and kept nowhere.
+func (s *Service) Models(ctx context.Context, req ModelsRequest) (ModelList, error) {
+	req.BaseURL, req.APIKey = strings.TrimSpace(req.BaseURL), strings.TrimSpace(req.APIKey)
+	var lister interface {
+		Models(context.Context) ([]ModelInfo, bool, error)
+	}
+	switch req.Provider {
+	case ProviderOpenAI:
+		if err := checkBaseURL(req.BaseURL); err != nil {
+			return ModelList{}, err
+		}
+		lister = &OpenAI{BaseURL: req.BaseURL, Key: req.APIKey, HTTP: s.HTTP}
+	case ProviderAnthropic:
+		if req.APIKey == "" {
+			return ModelList{}, fmt.Errorf("%w: api_key is required for anthropic", ErrInvalid)
+		}
+		if req.BaseURL != "" {
+			if err := checkBaseURL(req.BaseURL); err != nil {
+				return ModelList{}, err
+			}
+		}
+		lister = NewClaude(req.APIKey, "", req.BaseURL, s.HTTP)
+	default:
+		return ModelList{}, fmt.Errorf(`%w: provider must be "openai_compatible" or "anthropic"`, ErrInvalid)
+	}
+	models, listed, err := lister.Models(ctx)
+	if err != nil {
+		return ModelList{}, err
+	}
+	if models == nil {
+		models = []ModelInfo{}
+	}
+	return ModelList{Listed: listed, Data: models}, nil
+}
+
 type checker interface {
 	CheckCredentials(ctx context.Context) error
 }

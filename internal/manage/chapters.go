@@ -31,6 +31,16 @@ func (m *API) connectChapters(w http.ResponseWriter, r *http.Request, o accounts
 	return connectWith(m.Chapters.Connect, chapters.ErrInvalid)(w, r, o)
 }
 
+func (m *API) chaptersModels(w http.ResponseWriter, r *http.Request, o accounts.Owner) error {
+	if m.Chapters == nil {
+		return errNotFound
+	}
+	return modelsWith(m.Chapters.Models, chapters.ErrInvalid, func(err error) bool {
+		var e *chapters.Error
+		return errors.As(err, &e) && keyStatus(e.Status)
+	})(w, r, o)
+}
+
 func (m *API) disconnectChapters(w http.ResponseWriter, r *http.Request, o accounts.Owner) error {
 	if m.Chapters == nil {
 		return errNotFound

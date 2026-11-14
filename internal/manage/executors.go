@@ -46,6 +46,35 @@ func connectWith[R any](connect func(context.Context, R) (dispatch.Result, error
 	}
 }
 
+// modelsWith lists an API's models with the URL and key the owner has typed
+// so far, for a Connect form's model field. Nothing is kept. refused says
+// whether the API turned the key away (401 or 403), which the form names as
+// such; any other failure carries the API's own message.
+func modelsWith[R, L any](list func(context.Context, R) (L, error), invalid error, refused func(error) bool) func(http.ResponseWriter, *http.Request, accounts.Owner) error {
+	return func(w http.ResponseWriter, r *http.Request, _ accounts.Owner) error {
+		var req R
+		if err := decode(w, r, &req); err != nil {
+			return err
+		}
+		res, err := list(r.Context(), req)
+		switch {
+		case errors.Is(err, invalid):
+			return httpjson.Fail(http.StatusBadRequest, "invalid_request", strings.TrimPrefix(err.Error(), invalid.Error()+": "))
+		case refused(err):
+			return httpjson.Fail(http.StatusBadRequest, "key_rejected", "the API refused the key")
+		case err != nil:
+			return httpjson.Fail(http.StatusBadGateway, "models_unavailable", "couldn't list the models: "+err.Error())
+		}
+		httpjson.Write(w, http.StatusOK, res)
+		return nil
+	}
+}
+
+// keyStatus is an API's answer that refuses a key.
+func keyStatus(status int) bool {
+	return status == http.StatusUnauthorized || status == http.StatusForbidden
+}
+
 func (m *API) connectRunPod(w http.ResponseWriter, r *http.Request, o accounts.Owner) error {
 	if m.RunPod == nil {
 		return errNotFound

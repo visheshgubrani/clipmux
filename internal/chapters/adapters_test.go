@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -253,5 +254,69 @@ func TestClaudeCredentialsReadTheModel(t *testing.T) {
 	}
 	if req := rec.requests()[0]; req.method != "GET" || req.path != "/v1/models/claude-opus-5-5" || req.header.Get("Authorization") != "Bearer "+llmKey {
 		t.Fatalf("request %s %s", req.method, req.path)
+	}
+}
+
+// An OpenAI-compatible API's models come back trimmed, deduplicated and
+// sorted, from GET {base}/models with the key; one without the route lists
+// nothing and isn't an error.
+func TestOpenAIListsModels(t *testing.T) {
+	rec := newRecorder(t, reply{200, `{"object":"list","data":[{"id":"gpt-5-mini"},{"id":"text-embedding-3-small"},{"id":"gpt-5-mini"},{"id":" o4 "},{"id":""}]}`})
+	got, listed, err := (&OpenAI{BaseURL: rec.srv.URL + "/v1/", Key: llmKey}).Models(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []ModelInfo{{ID: "gpt-5-mini"}, {ID: "o4"}, {ID: "text-embedding-3-small"}}
+	if !listed || !slices.Equal(got, want) {
+		t.Fatalf("Models = %v, listed %v; want %v", got, listed, want)
+	}
+	if req := rec.requests()[0]; req.method != "GET" || req.path != "/v1/models" || req.header.Get("Authorization") != "Bearer "+llmKey {
+		t.Fatalf("request %s %s", req.method, req.path)
+	}
+	got, listed, err = (&OpenAI{BaseURL: newRecorder(t, reply{404, ``}).srv.URL}).Models(context.Background())
+	if err != nil || listed || len(got) != 0 {
+		t.Fatalf("404: Models = %v, listed %v, %v", got, listed, err)
+	}
+}
+
+// Claude's models come in the API's order, newest first, with their names;
+// deprecated ones are left out, since they're closed to new adopters.
+func TestClaudeListsModels(t *testing.T) {
+	rec := newRecorder(t, reply{200, `{"data":[` +
+		`{"type":"model","id":"claude-opus-5-5","display_name":"Claude Opus 5.5","created_at":"2026-09-01T00:00:00Z","lifecycle":"active"},` +
+		`{"type":"model","id":"claude-sonnet-5-5","display_name":"Claude Sonnet 5.5","created_at":"2026-08-01T00:00:00Z","lifecycle":"active"},` +
+		`{"type":"model","id":"claude-sonnet-4-5","display_name":"Claude Sonnet 4.5","created_at":"2025-09-29T00:00:00Z","lifecycle":"deprecated"}` +
+		`],"has_more":false,"first_id":"claude-opus-5-5","last_id":"claude-sonnet-4-5"}`})
+	got, listed, err := NewClaude(llmKey, "", rec.srv.URL, nil).Models(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []ModelInfo{{ID: "claude-opus-5-5", Name: "Claude Opus 5.5"}, {ID: "claude-sonnet-5-5", Name: "Claude Sonnet 5.5"}}
+	if !listed || !slices.Equal(got, want) {
+		t.Fatalf("Models = %v, listed %v; want %v", got, listed, want)
+	}
+	if req := rec.requests()[0]; req.method != "GET" || req.path != "/v1/models" || req.header.Get("Authorization") != "Bearer "+llmKey {
+		t.Fatalf("request %s %s", req.method, req.path)
+	}
+	_, _, err = NewClaude(llmKey, "", newRecorder(t, reply{401, `{"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}`}).srv.URL, nil).Models(context.Background())
+	var e *Error
+	if !errors.As(err, &e) || e.Status != 401 || e.Transient || strings.Contains(err.Error(), llmKey) {
+		t.Fatalf("401: %#v", err)
+	}
+}
+
+// The service checks a request as Connect does before calling anything.
+func TestServiceModelsChecksTheRequest(t *testing.T) {
+	s := NewService(nil, nil, "prj_test")
+	for _, req := range []ModelsRequest{
+		{Provider: "", BaseURL: "https://api.openai.com/v1"},
+		{Provider: ProviderOpenAI, BaseURL: ""},
+		{Provider: ProviderOpenAI, BaseURL: "https://user:pw@api.openai.com/v1"},
+		{Provider: ProviderAnthropic, APIKey: ""},
+		{Provider: ProviderAnthropic, APIKey: llmKey, BaseURL: "ftp://example.com"},
+	} {
+		if _, err := s.Models(context.Background(), req); !errors.Is(err, ErrInvalid) {
+			t.Errorf("Models(%+v) = %v; want ErrInvalid", req, err)
+		}
 	}
 }
