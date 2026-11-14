@@ -95,7 +95,14 @@ func (f *Failures) recent(ts []time.Time) []time.Time {
 
 // Allow reports whether key may try again, and if not how long until it
 // may.
-func (f *Failures) Allow(key string) (bool, time.Duration) {
+func (f *Failures) Allow(key string) (bool, time.Duration) { return f.allow(key, true) }
+
+// AllowKey is Allow with only key's own limit: for a caller already known
+// some other way (the owner's device), whom failures elsewhere mustn't
+// lock out.
+func (f *Failures) AllowKey(key string) (bool, time.Duration) { return f.allow(key, false) }
+
+func (f *Failures) allow(key string, global bool) (bool, time.Duration) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.all = f.recent(f.all)
@@ -109,7 +116,7 @@ func (f *Failures) Allow(key string) (bool, time.Duration) {
 	switch {
 	case len(mine) >= f.perKey:
 		oldest = mine[len(mine)-f.perKey]
-	case f.global > 0 && len(f.all) >= f.global:
+	case global && f.global > 0 && len(f.all) >= f.global:
 		oldest = f.all[len(f.all)-f.global]
 	default:
 		return true, 0

@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"fmt"
 	"os/exec"
 	"syscall"
 )
@@ -17,4 +18,17 @@ func DieWithParent(cmd *exec.Cmd) {
 		cmd.SysProcAttr = &syscall.SysProcAttr{}
 	}
 	cmd.SysProcAttr.Pdeathsig = syscall.SIGKILL
+}
+
+// Undumpable marks this process not dumpable (PR_SET_DUMPABLE 0): another
+// process of the same user, such as an exploited media tool on a host
+// without Landlock, can then neither read its /proc/<pid>/environ, which
+// holds the secrets key and the database password, nor ptrace it. Children
+// start dumpable again after exec, so this protects only the caller.
+func Undumpable() error {
+	const prSetDumpable = 4
+	if _, _, errno := syscall.RawSyscall(syscall.SYS_PRCTL, prSetDumpable, 0, 0); errno != 0 {
+		return fmt.Errorf("prctl PR_SET_DUMPABLE: %w", errno)
+	}
+	return nil
 }

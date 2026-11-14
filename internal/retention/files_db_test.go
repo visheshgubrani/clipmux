@@ -186,3 +186,60 @@ func TestRetiredTracksGoWithTheOutputWindow(t *testing.T) {
 		t.Errorf("route refreshes = %d (%v), want 1", refreshes, err)
 	}
 }
+
+// A worker's PUT URLs outlive its commit by up to 15 minutes, so files can
+// be added to an output after it was verified. Once nothing can write
+// there, anything its manifest doesn't list goes (finding 4, D124).
+func TestFilesAddedAfterCommitGo(t *testing.T) {
+	pool := dbtest.New(t)
+	ctx := context.Background()
+	fs, err := storage.OpenFilesystem(t.TempDir(), storage.FilesystemOptions{BaseURL: "http://unused"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fs.Close()
+	exec := func(sql string, args ...any) {
+		t.Helper()
+		if _, err := pool.Exec(ctx, sql, args...); err != nil {
+			t.Fatalf("%s: %v", sql, err)
+		}
+	}
+	exec(`INSERT INTO assets (id, project_id, app_id, status, storage_id) VALUES ('ast_1', 'prj_default', 'app_dashboard', 'processing', 'sto_default')`)
+	manifest := `{"files": [{"path": "master.m3u8", "size": 1}, {"path": "360p/seg_00001.m4s", "size": 1}]}`
+	// Committed 17 and 15 minutes ago: only the first is past the URLs.
+	for id, ago := range map[string]string{"out_old": "17 minutes", "out_new": "15 minutes"} {
+		exec(`INSERT INTO outputs (id, project_id, asset_id, key_version, status, manifest, committed_at) VALUES ($1, 'prj_default', 'ast_1', 1, 'committed', $2, now() - $3::interval)`, id, manifest, ago)
+		for _, name := range []string{"manifest.json", "master.m3u8", "360p/seg_00001.m4s", "360p/seg_00002.m4s"} {
+			if err := fs.Put(ctx, "media/ast_1/"+id+"/"+name, strings.NewReader("x")); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	files := retention.NewFiles(pool, stores.Fixed(fs), fs)
+	n, err := files.SweepUnlisted(ctx)
+	if err != nil || n != 1 {
+		t.Fatalf("SweepUnlisted = %d, %v; want 1 file deleted", n, err)
+	}
+	left := func(prefix string) string {
+		t.Helper()
+		objs, _, err := fs.List(ctx, prefix, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var names []string
+		for _, o := range objs {
+			names = append(names, strings.TrimPrefix(o.Key, prefix))
+		}
+		return strings.Join(names, " ")
+	}
+	if got := left("media/ast_1/out_old/"); got != "360p/seg_00001.m4s manifest.json master.m3u8" {
+		t.Fatalf("out_old keeps %q, want its manifest's files and manifest.json", got)
+	}
+	if got := left("media/ast_1/out_new/"); !strings.Contains(got, "seg_00002") {
+		t.Fatalf("out_new keeps %q: its PUT URLs may still be valid, so nothing goes yet", got)
+	}
+	// Each output is swept once.
+	if n, err := files.SweepUnlisted(ctx); err != nil || n != 0 {
+		t.Fatalf("second SweepUnlisted = %d, %v; want nothing", n, err)
+	}
+}

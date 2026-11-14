@@ -200,7 +200,7 @@ Sources are kept by default so assets can be re-encoded. A project can delete th
 
 `_keys.json` holds public token-signing keys. No content key is ever written to storage, so outputs there are ciphertext only. Sources stay as uploaded.
 
-Files from a failed or lost attempt are deleted 30 minutes after a newer attempt replaces it or the job ends. That outlasts the attempt's 15-minute PUT URLs, so a stale worker can't recreate files after cleanup. A daily sweep also deletes any output prefix with no `committed` or `writing` Output.
+Files from a failed or lost attempt are deleted 30 minutes after a newer attempt replaces it or the job ends. That outlasts the attempt's 15-minute PUT URLs, so a stale worker can't recreate files after cleanup. A daily sweep also deletes any output prefix with no `committed` or `writing` Output. Built-in delivery serves only the files a committed manifest lists, and 16 minutes after a commit, once its PUT URLs have expired, the retention loop deletes anything else under that output (D124).
 
 ### Accounts and tenancy
 
@@ -685,7 +685,7 @@ The built-in worker is a separate process that holds only an attempt token. It h
 | Threat | Control |
 | --- | --- |
 | Hostile media exploits ffmpeg or the packager | Worker sandbox, plus no credentials in the worker |
-| Unsandboxed agent processes public uploads | Docker, WSL2 or a VM off Linux; unsandboxed agents get local and owner jobs only |
+| Unsandboxed agent processes public uploads | Docker, WSL2 or a VM off Linux; unsandboxed agents get local and owner jobs only; the Dashboard app takes no API keys and owner jobs exclude URL imports (D123) |
 | Worker writes outside its output, or uploads hostile files | Path grammar on sign, worker-side filter and the playlist check at commit |
 | Hostile file served from the media domain | Extension allowlist, `Content-Type` from the extension, `nosniff` and a separate domain |
 | Worker or agent key leaked | One key per agent, owner approval, one-click revocation and an optional local scope; attempts record the agent, so its outputs can be found and re-encoded |

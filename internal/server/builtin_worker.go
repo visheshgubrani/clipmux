@@ -30,6 +30,11 @@ type builtinWorker struct {
 	logger    *slog.Logger
 	// unsandboxed runs the tools unconfined (CLIPMUX_UNSANDBOXED_WORKER).
 	unsandboxed bool
+	// sandboxHolds is set when the probe found limits, no_new_privs and
+	// seccomp: an owner who opted out only for want of Landlock keeps them.
+	sandboxHolds bool
+	// probe reports what the sandbox enforces; sandbox.ProbeExec when nil.
+	probe func(ctx context.Context, self string) (sandbox.Status, error)
 }
 
 // loopbackURL is how the child reaches serve: the listener's own address, or
@@ -84,10 +89,10 @@ func (b *builtinWorker) childEnv() []string {
 
 // args are the child's arguments. It reaches storage through serve over
 // loopback, never back through the public URL, and confines its tools
-// unless the owner opted out.
+// unless the owner opted out on a host where the sandbox doesn't hold.
 func (b *builtinWorker) args() []string {
 	args := []string{"worker", "--work-dir", b.workDir, "--storage-via-server"}
-	if !b.unsandboxed {
+	if !b.unsandboxed || b.sandboxHolds {
 		args = append(args, "--sandbox")
 	}
 	return args
@@ -105,17 +110,8 @@ func (b *builtinWorker) run(ctx context.Context) {
 		b.logger.Error("built-in worker not started", "err", err)
 		return
 	}
-	// The tools parse hostile uploads: without the sandbox the worker stays
-	// off, unless the owner said the host isolates it another way.
-	if st, err := sandbox.ProbeExec(ctx, self); err != nil {
-		if !b.unsandboxed {
-			b.logger.Error("built-in worker not started: the media tool sandbox doesn't hold on this host; uploads will wait in processing",
-				"err", err, "hint", "run on Linux (or in Docker), or set CLIPMUX_UNSANDBOXED_WORKER=true if the host isolates the worker another way")
-			return
-		}
-		b.logger.Warn("built-in worker runs its media tools unconfined (CLIPMUX_UNSANDBOXED_WORKER)", "err", err)
-	} else {
-		b.logger.Info("built-in worker sandbox", "enforced", st.String())
+	if !b.sandboxAllows(ctx, self) {
+		return
 	}
 	backoff := time.Second
 	for ctx.Err() == nil {
@@ -147,6 +143,38 @@ func (b *builtinWorker) run(ctx context.Context) {
 		}
 		backoff = min(backoff*2, time.Minute)
 	}
+}
+
+// sandboxAllows reports whether the worker may start: the tools parse
+// hostile uploads, so they need the sandbox and Landlock, unless the owner
+// said the host isolates the worker another way. Without Landlock a tool
+// could read any file serve's user can, the data directory's keys included
+// (D120).
+func (b *builtinWorker) sandboxAllows(ctx context.Context, self string) bool {
+	probe := b.probe
+	if probe == nil {
+		probe = sandbox.ProbeExec
+	}
+	const hint = "set CLIPMUX_UNSANDBOXED_WORKER=true if the host isolates the worker another way, or run an agent or a provider instead"
+	st, err := probe(ctx, self)
+	b.sandboxHolds = err == nil
+	switch {
+	case err != nil && b.unsandboxed:
+		b.logger.Warn("built-in worker runs its media tools unconfined (CLIPMUX_UNSANDBOXED_WORKER)", "err", err)
+	case err != nil:
+		b.logger.Error("built-in worker not started: the media tool sandbox doesn't hold on this host; uploads will wait in processing",
+			"err", err, "hint", "run on Linux (or in Docker), or "+hint)
+		return false
+	case st.LandlockABI == 0 && b.unsandboxed:
+		b.logger.Warn("built-in worker runs without Landlock (CLIPMUX_UNSANDBOXED_WORKER): its tools can read every file serve can", "enforced", st.String())
+	case st.LandlockABI == 0:
+		b.logger.Error("built-in worker not started: this kernel has no Landlock, so its media tools could read serve's keys; uploads will wait in processing",
+			"enforced", st.String(), "hint", "use a kernel with Landlock (5.13+, enabled in the LSM list), or "+hint)
+		return false
+	default:
+		b.logger.Info("built-in worker sandbox", "enforced", st.String())
+	}
+	return true
 }
 
 func workerDir(dataDir string) string { return filepath.Join(dataDir, "worker") }

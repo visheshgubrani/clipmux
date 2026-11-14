@@ -60,7 +60,13 @@ func (h *harness) do(method, rawURL string, body []byte, header map[string]strin
 
 func (h *harness) putPart(key, uploadID string, n int, body string) *http.Response {
 	h.t.Helper()
-	u, err := h.fs.PresignPart(context.Background(), key, uploadID, n, 15*time.Minute)
+	// Sign for the part's own length; the tests send other lengths to it.
+	m, err := h.fs.loadUpload(key, uploadID)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	_, length, _ := m.partRange(n)
+	u, err := h.fs.PresignPart(context.Background(), key, uploadID, n, length, 15*time.Minute)
 	if err != nil {
 		h.t.Fatal(err)
 	}
@@ -261,8 +267,11 @@ func TestPartsMustHaveExactSizesAndNeverSpillIntoTheNextPart(t *testing.T) {
 	if res := h.putPart(key, mp.UploadID, 3, "CCC"); res.StatusCode != http.StatusBadRequest {
 		t.Fatalf("final part of the wrong size: %d, want 400", res.StatusCode)
 	}
-	if _, err := h.fs.PresignPart(ctx, key, mp.UploadID, 4, time.Minute); !errors.Is(err, ErrInvalidParts) {
+	if _, err := h.fs.PresignPart(ctx, key, mp.UploadID, 4, 4, time.Minute); !errors.Is(err, ErrInvalidParts) {
 		t.Fatalf("part beyond the declared size: err = %v", err)
+	}
+	if _, err := h.fs.PresignPart(ctx, key, mp.UploadID, 3, 5, time.Minute); !errors.Is(err, ErrInvalidParts) {
+		t.Fatalf("signing the last part for a length other than its own: err = %v, want ErrInvalidParts", err)
 	}
 	parts, _ := h.fs.ListParts(ctx, key, mp.UploadID)
 	if len(parts) != 1 || parts[0].Number != 2 {
@@ -298,14 +307,14 @@ func TestAbortDiscardsTheUpload(t *testing.T) {
 	ctx := context.Background()
 	mp, _ := h.fs.CreateMultipart(ctx, "uploads/a/source", 8)
 	h.putPart("uploads/a/source", mp.UploadID, 1, "AAAAAAAA")
-	signedBefore, _ := h.fs.PresignPart(ctx, "uploads/a/source", mp.UploadID, 1, time.Minute)
+	signedBefore, _ := h.fs.PresignPart(ctx, "uploads/a/source", mp.UploadID, 1, 8, time.Minute)
 	if err := h.fs.AbortMultipart(ctx, "uploads/a/source", mp.UploadID); err != nil {
 		t.Fatal(err)
 	}
 	if res := h.do(http.MethodPut, signedBefore, []byte("AAAAAAAA"), nil); res.StatusCode != http.StatusNotFound {
 		t.Fatalf("URL signed before the abort: %d, want 404", res.StatusCode)
 	}
-	if _, err := h.fs.PresignPart(ctx, "uploads/a/source", mp.UploadID, 1, time.Minute); !errors.Is(err, ErrNotFound) {
+	if _, err := h.fs.PresignPart(ctx, "uploads/a/source", mp.UploadID, 1, 8, time.Minute); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("signing after abort: err = %v, want ErrNotFound", err)
 	}
 	if _, err := h.fs.Head(ctx, "uploads/a/source"); !errors.Is(err, ErrNotFound) {
@@ -373,7 +382,7 @@ func TestPresignedPutWritesAnObject(t *testing.T) {
 func TestBrowserPreflightExposesETag(t *testing.T) {
 	h := newHarness(t)
 	mp, _ := h.fs.CreateMultipart(context.Background(), "uploads/a/source", 8)
-	u, _ := h.fs.PresignPart(context.Background(), "uploads/a/source", mp.UploadID, 1, time.Minute)
+	u, _ := h.fs.PresignPart(context.Background(), "uploads/a/source", mp.UploadID, 1, 8, time.Minute)
 	res := h.do(http.MethodOptions, u, nil, map[string]string{
 		"Origin": "https://lms.example", "Access-Control-Request-Method": "PUT",
 	})

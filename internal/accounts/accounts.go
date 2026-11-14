@@ -60,10 +60,15 @@ type Service struct {
 	setupToken  string
 	setupIssued time.Time
 	publicURL   func() string
-	// limiter counts failed sign-ins and setup counts wrong setup tokens:
-	// five per address and twenty overall in 15 minutes, checked before
-	// anything is hashed or compared.
+	// limiter counts failed sign-ins, five per address and twenty overall
+	// in 15 minutes; the owner's known device skips the overall limit
+	// (D121). setup counts wrong setup tokens, five per address: the token
+	// is 130 bits, so an overall limit would only let others lock the
+	// installer out. Both are checked before anything is hashed or compared.
 	limiter, setup *ratelimit.Failures
+	// deviceMu guards the device key, read once from Postgres.
+	deviceMu       sync.Mutex
+	deviceKeyBytes []byte
 	cop            http.CrossOriginProtection
 	check          func(hash, password string) (ok, rehash bool)
 
@@ -82,7 +87,7 @@ type Service struct {
 func New(pool *pgxpool.Pool, projectID string, publicURL func() string) *Service {
 	return &Service{
 		pool: pool, projectID: projectID, setupToken: rand.Text(), setupIssued: time.Now(), publicURL: publicURL,
-		limiter: ratelimit.NewFailures(limitWindow, limitPerIP, limitAll), setup: ratelimit.NewFailures(limitWindow, limitPerIP, limitAll), check: checkPassword, Logger: slog.New(slog.DiscardHandler),
+		limiter: ratelimit.NewFailures(limitWindow, limitPerIP, limitAll), setup: ratelimit.NewFailures(limitWindow, limitPerIP, 0), check: checkPassword, Logger: slog.New(slog.DiscardHandler),
 	}
 }
 
@@ -158,10 +163,15 @@ func (s *Service) CreateOwner(ctx context.Context, setupToken, email, password s
 
 // Login checks the owner's email and password, and once TOTP is on a code
 // or a recovery code, and returns a new session token. Attempts are limited
-// per address before anything is hashed.
-func (s *Service) Login(ctx context.Context, ip netip.Addr, email, password, code, recovery string) (Owner, string, error) {
+// per address and overall before anything is hashed; device, the owner's
+// known-device cookie, skips the overall limit (D121).
+func (s *Service) Login(ctx context.Context, ip netip.Addr, device, email, password, code, recovery string) (Owner, string, error) {
 	key := ratelimit.AddrKey(ip)
-	if ok, wait := s.limiter.Allow(key); !ok {
+	allow := s.limiter.Allow
+	if device != "" && s.knownDevice(ctx, device) {
+		allow = s.limiter.AllowKey
+	}
+	if ok, wait := allow(key); !ok {
 		p := httpjson.Fail(http.StatusTooManyRequests, "too_many_attempts", "too many failed sign-ins; try again later")
 		p.Details = map[string]string{"retry_after": ratelimit.RetryAfter(wait)}
 		return Owner{}, "", p
@@ -367,6 +377,7 @@ func (s *Service) handleCreateOwner(w http.ResponseWriter, r *http.Request) {
 	}
 	s.Logger.Info("owner account created; registration is closed", "owner", owner.ID)
 	s.setCookie(w, token, int(sessionLifetime.Seconds()))
+	s.setDeviceCookie(r.Context(), w, owner.ID)
 	httpjson.Write(w, http.StatusCreated, map[string]string{"email": owner.Email})
 }
 
@@ -375,12 +386,13 @@ func (s *Service) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if s.crossOrigin(w, r) || !httpjson.Decode(w, r, &c) {
 		return
 	}
-	owner, token, err := s.Login(r.Context(), s.clientIP(r), c.Email, c.Password, c.Code, c.RecoveryCode)
+	owner, token, err := s.Login(r.Context(), s.clientIP(r), deviceValue(r), c.Email, c.Password, c.Code, c.RecoveryCode)
 	if err != nil {
 		s.fail(w, "login", err)
 		return
 	}
 	s.setCookie(w, token, int(sessionLifetime.Seconds()))
+	s.setDeviceCookie(r.Context(), w, owner.ID)
 	httpjson.Write(w, http.StatusOK, map[string]string{"email": owner.Email})
 }
 
@@ -445,5 +457,7 @@ func (s *Service) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.Logger.InfoContext(r.Context(), "password changed; other sessions ended", "owner", owner.ID)
+	// Every device cookie issued before now is retired; this one isn't.
+	s.setDeviceCookie(r.Context(), w, owner.ID)
 	w.WriteHeader(http.StatusNoContent)
 }

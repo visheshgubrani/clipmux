@@ -7,8 +7,9 @@
 //     core dumps;
 //   - nice 19 and SCHED_IDLE, so encoding gets only the CPU the API leaves;
 //   - no_new_privs, so nothing it runs can gain privileges;
-//   - a seccomp filter: socket() fails with EACCES (no network), and
-//     ptrace, bpf, io_uring, userfaultfd, perf and keyring calls with EPERM;
+//   - a seccomp filter: socket() fails with EACCES (no network); ptrace,
+//     bpf, io_uring, userfaultfd, perf, keyring and namespace calls (unshare,
+//     setns, clone with CLONE_NEW* flags) with EPERM; clone3 with ENOSYS;
 //   - Landlock, where the kernel has it: read-only system paths and the
 //     tool's own directory, write access to one directory only, and on ABI 4+
 //     no TCP; on ABI 6+ no signals or abstract sockets outside.

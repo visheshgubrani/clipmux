@@ -259,6 +259,7 @@ func TestApprovalNeedsOneAppAndARealOne(t *testing.T) {
 		{map[string]any{}, http.StatusBadRequest, "invalid_request"},
 		{map[string]any{"app_id": "app_lms", "new_app_name": "Both"}, http.StatusBadRequest, "invalid_request"},
 		{map[string]any{"app_id": "app_nope"}, http.StatusNotFound, "not_found"},
+		{map[string]any{"app_id": "app_dashboard"}, http.StatusConflict, "builtin_app"},
 		{map[string]any{"new_app_name": "LMS"}, http.StatusConflict, "name_taken"},
 		{map[string]any{"app_id": "app_lms", "webhook_url": "ftp://lms.example.test"}, http.StatusBadRequest, "invalid_request"},
 	} {
@@ -417,6 +418,9 @@ func TestCredentialsRouteIssuesTheBundleInOneTransaction(t *testing.T) {
 	}
 	if status, _ := r.owner("POST", "/v1/apps/app_nope/credentials", map[string]any{}); status != http.StatusNotFound {
 		t.Fatalf("unknown app: %d", status)
+	}
+	if status, out := r.owner("POST", "/v1/apps/app_dashboard/credentials", map[string]any{}); status != http.StatusConflict || out["error"].(map[string]any)["code"] != "builtin_app" {
+		t.Fatalf("the Dashboard app's credentials: %d %v, want 409 builtin_app", status, out)
 	}
 
 	status, c := r.owner("POST", "/v1/apps/app_lms/credentials", map[string]any{"webhook_url": "https://lms.example.test/hooks"})

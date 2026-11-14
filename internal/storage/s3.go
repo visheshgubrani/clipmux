@@ -261,15 +261,18 @@ func (s *S3) CreateMultipart(ctx context.Context, key string, size int64) (Multi
 	return Multipart{UploadID: aws.ToString(out.UploadId), PartSize: PartSize}, nil
 }
 
-func (s *S3) PresignPart(ctx context.Context, key, uploadID string, part int, ttl time.Duration) (string, error) {
+// PresignPart signs ContentLength into the URL (X-Amz-SignedHeaders), so
+// the store refuses a body of any other length. S3 doesn't keep the
+// declared size, so the caller computes the part's length.
+func (s *S3) PresignPart(ctx context.Context, key, uploadID string, part int, size int64, ttl time.Duration) (string, error) {
 	if !ValidKey(key) {
 		return "", ErrInvalidKey
 	}
-	if part < 1 || part > MaxParts {
+	if part < 1 || part > MaxParts || size <= 0 || size > PartSize {
 		return "", ErrInvalidParts
 	}
 	req, err := s.presign.PresignUploadPart(ctx, &s3.UploadPartInput{
-		Bucket: &s.bucket, Key: &key, UploadId: &uploadID, PartNumber: aws.Int32(int32(part)),
+		Bucket: &s.bucket, Key: &key, UploadId: &uploadID, PartNumber: aws.Int32(int32(part)), ContentLength: aws.Int64(size),
 	}, s3.WithPresignExpires(ttl))
 	if err != nil {
 		return "", fmt.Errorf("presign part %d: %w", part, err)

@@ -2,6 +2,7 @@ package delivery
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sync"
 	"time"
@@ -27,7 +28,7 @@ type cache struct {
 	gen     uint64
 	routes  map[string]cached[db.GetRouteRow]
 	keys    map[string]cached[db.SigningKey]
-	outputs map[string]cached[db.Output]
+	outputs map[string]cached[servedOutput]
 	// tracks are each asset's servable tracks, by asset ID.
 	tracks map[string]cached[[]db.ListServableTracksRow]
 	// onLookup, when set, is told each lookup's table and whether it hit
@@ -57,7 +58,7 @@ func newCache(now func() time.Time) *cache {
 func (c *cache) clear() {
 	c.routes = map[string]cached[db.GetRouteRow]{}
 	c.keys = map[string]cached[db.SigningKey]{}
-	c.outputs = map[string]cached[db.Output]{}
+	c.outputs = map[string]cached[servedOutput]{}
 	c.tracks = map[string]cached[[]db.ListServableTracksRow]{}
 }
 
@@ -110,9 +111,37 @@ func (c *cache) signingKey(ctx context.Context, q *db.Queries, kid string) (db.S
 		func() (db.SigningKey, error) { return q.GetSigningKey(ctx, kid) })
 }
 
-func (c *cache) output(ctx context.Context, q *db.Queries, id string) (db.Output, error) {
-	return lookup(c, "output", func() map[string]cached[db.Output] { return c.outputs }, id,
-		func() (db.Output, error) { return q.GetOutput(ctx, id) })
+// servedOutput is an output and the files its manifest lists, which are
+// all delivery serves of it (D124).
+type servedOutput struct {
+	db.Output
+	files map[string]bool
+}
+
+// lists reports whether the output's manifest lists rel.
+func (o servedOutput) lists(rel string) bool { return o.files[rel] }
+
+func (c *cache) output(ctx context.Context, q *db.Queries, id string) (servedOutput, error) {
+	return lookup(c, "output", func() map[string]cached[servedOutput] { return c.outputs }, id,
+		func() (servedOutput, error) {
+			out, err := q.GetOutput(ctx, id)
+			if err != nil {
+				return servedOutput{}, err
+			}
+			// A writing output's manifest is empty, and a committed one was
+			// verified; one that doesn't parse lists nothing.
+			var m struct {
+				Files []struct {
+					Path string `json:"path"`
+				} `json:"files"`
+			}
+			_ = json.Unmarshal(out.Manifest, &m)
+			files := make(map[string]bool, len(m.Files))
+			for _, f := range m.Files {
+				files[f.Path] = true
+			}
+			return servedOutput{Output: out, files: files}, nil
+		})
 }
 
 // tracksOf returns an asset's servable tracks, in ID order. An asset with
@@ -133,7 +162,7 @@ func (h *Handler) Invalidate(pids ...string) {
 	for _, p := range pids {
 		delete(c.routes, p)
 	}
-	c.outputs = map[string]cached[db.Output]{}
+	c.outputs = map[string]cached[servedOutput]{}
 	c.tracks = map[string]cached[[]db.ListServableTracksRow]{}
 }
 

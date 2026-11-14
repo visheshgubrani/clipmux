@@ -14,6 +14,7 @@ import (
 const (
 	eacces = uint32(syscall.EACCES)
 	eperm  = uint32(syscall.EPERM)
+	enosys = uint32(syscall.ENOSYS)
 
 	prSetNoNewPrivs = 38
 	prSetSeccomp    = 22
@@ -274,6 +275,12 @@ const (
 	bpfJgeK   = 0x35 // BPF_JMP | BPF_JGE | BPF_K
 	bpfRetK   = 0x06 // BPF_RET | BPF_K
 	bpfAndK   = 0x54 // BPF_ALU | BPF_AND | BPF_K
+	bpfJsetK  = 0x45 // BPF_JMP | BPF_JSET | BPF_K
+
+	// cloneNewFlags are every CLONE_NEW* flag: NEWTIME, NEWNS, NEWCGROUP,
+	// NEWUTS, NEWIPC, NEWUSER, NEWPID and NEWNET. All sit in clone's first
+	// argument's low word on both architectures.
+	cloneNewFlags = 0x7e020080
 
 	afUnix        = 1
 	sockSeqpacket = 5
@@ -285,7 +292,8 @@ const (
 )
 
 // filter is the seccomp program: kill on a foreign architecture (and x32 on
-// x86-64), return an errno for each denied syscall, allow the rest.
+// x86-64), return an errno for each denied syscall, refuse clone with any
+// CLONE_NEW* flag (EPERM), allow the rest.
 //
 // A GPU tool may also open AF_UNIX SOCK_SEQPACKET sockets: the CUDA driver
 // makes them for its own IPC during cuInit, which fails without them. No
@@ -316,7 +324,13 @@ func filter(gpu bool) []sockFilter {
 	for nr, errno := range denied {
 		prog = append(prog, sockFilter{code: bpfJeqK, jt: 0, jf: 1, k: nr}, sockFilter{code: bpfRetK, k: retErrno | errno})
 	}
-	return append(prog, sockFilter{code: bpfRetK, k: retAllow})
+	return append(prog,
+		sockFilter{code: bpfJeqK, jt: 0, jf: 3, k: sysClone},
+		sockFilter{code: bpfLdWAbs, k: 16}, // seccomp_data.args[0], low word: flags
+		sockFilter{code: bpfJsetK, jt: 0, jf: 1, k: cloneNewFlags},
+		sockFilter{code: bpfRetK, k: retErrno | eperm},
+		sockFilter{code: bpfRetK, k: retAllow},
+	)
 }
 
 func seccomp(gpu bool) error {

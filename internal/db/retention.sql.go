@@ -242,6 +242,53 @@ func (q *Queries) ListStuckOutbox(ctx context.Context, before pgtype.Timestamptz
 	return items, nil
 }
 
+const listUnsweptOutputs = `-- name: ListUnsweptOutputs :many
+SELECT id, asset_id, prefix, manifest FROM outputs
+WHERE status IN ('committed', 'retired') AND purged_at IS NULL AND unlisted_swept_at IS NULL
+  AND committed_at < $1
+ORDER BY committed_at, id
+LIMIT $2
+`
+
+type ListUnsweptOutputsParams struct {
+	Before  pgtype.Timestamptz
+	MaxRows int32
+}
+
+type ListUnsweptOutputsRow struct {
+	ID       string
+	AssetID  string
+	Prefix   pgtype.Text
+	Manifest []byte
+}
+
+// Committed outputs past their PUT URLs (committed before before) whose
+// files haven't been checked against their manifest yet.
+func (q *Queries) ListUnsweptOutputs(ctx context.Context, arg ListUnsweptOutputsParams) ([]ListUnsweptOutputsRow, error) {
+	rows, err := q.db.Query(ctx, listUnsweptOutputs, arg.Before, arg.MaxRows)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListUnsweptOutputsRow{}
+	for rows.Next() {
+		var i ListUnsweptOutputsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.AssetID,
+			&i.Prefix,
+			&i.Manifest,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const markOutputPurged = `-- name: MarkOutputPurged :execrows
 UPDATE outputs SET purged_at = now() WHERE id = $1 AND purged_at IS NULL
 `
@@ -252,6 +299,15 @@ func (q *Queries) MarkOutputPurged(ctx context.Context, id string) (int64, error
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const markOutputSwept = `-- name: MarkOutputSwept :exec
+UPDATE outputs SET unlisted_swept_at = now() WHERE id = $1
+`
+
+func (q *Queries) MarkOutputSwept(ctx context.Context, id string) error {
+	_, err := q.db.Exec(ctx, markOutputSwept, id)
+	return err
 }
 
 const pruneAgentPairings = `-- name: PruneAgentPairings :execrows

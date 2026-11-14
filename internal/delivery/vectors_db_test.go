@@ -309,7 +309,15 @@ func TestVectors(t *testing.T) {
 	for _, o := range v.Outputs {
 		manifest := any(nil)
 		if o.Status != "writing" {
-			manifest = fmt.Sprintf(`{"audio": %t}`, !o.NoAudio)
+			// A committed manifest lists its files, all but manifest.json;
+			// delivery serves nothing else (D124).
+			var files []string
+			for name := range v.Files {
+				if name != "manifest.json" {
+					files = append(files, fmt.Sprintf(`{"path": %q, "size": %d}`, name, len(v.Files[name])))
+				}
+			}
+			manifest = fmt.Sprintf(`{"audio": %t, "files": [%s]}`, !o.NoAudio, strings.Join(files, ", "))
 		}
 		exec(`INSERT INTO outputs (id, project_id, asset_id, key_version, status, manifest) VALUES ($1, 'prj_default', $2, $3, $4, $5)`, o.ID, o.AssetID, o.KeyVersion, o.Status, manifest)
 		for name, body := range v.Files {
@@ -448,6 +456,19 @@ func TestVectors(t *testing.T) {
 			}
 		})
 	}
+
+	// A file added under a committed output after its commit, while the
+	// worker's PUT URLs were still valid, isn't in the manifest: built-in
+	// delivery doesn't serve it (finding 4, D124).
+	t.Run("a file the manifest doesn't list is not served", func(t *testing.T) {
+		if err := store.Put(ctx, "media/ast_p/out_p/360p/seg_00002.m4s", strings.NewReader("late")); err != nil {
+			t.Fatal(err)
+		}
+		req, _ := http.NewRequest(http.MethodGet, srv.URL+"/p/pid_public/out_p/360p/seg_00002.m4s", nil)
+		if res, _, _ := do(t, req); res.StatusCode != http.StatusNotFound {
+			t.Fatalf("status = %d, want 404", res.StatusCode)
+		}
+	})
 
 	// A fetch the Worker forwards to origin is counted at the edge, not here.
 	t.Run("a fetch forwarded by the Worker is not counted again", func(t *testing.T) {

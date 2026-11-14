@@ -598,6 +598,9 @@ func (m *API) createAPIKey(w http.ResponseWriter, r *http.Request, o accounts.Ow
 	if err != nil {
 		return err
 	}
+	if app.IsBuiltin {
+		return apikeys.ErrBuiltinApp
+	}
 	var body struct {
 		Name   string   `json:"name"`
 		Scopes []string `json:"scopes"`

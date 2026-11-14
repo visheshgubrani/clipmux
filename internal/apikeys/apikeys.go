@@ -53,6 +53,12 @@ type Key struct {
 // AllScopes are every scope an integration key can carry.
 func AllScopes() []string { return slices.Clone(allScopes) }
 
+// ErrBuiltinApp refuses a key for the built-in (Dashboard) app: its
+// uploads are the owner's own, which an unsandboxed agent may encode, so
+// only the owner's browser creates them (D123). The routes that issue keys
+// check it; Create itself doesn't, so tests may still act as that app.
+var ErrBuiltinApp = httpjson.Fail(http.StatusConflict, "builtin_app", "the Dashboard app takes no API keys; create an app for your integration")
+
 // DefaultScopes are what a new key gets unless it asks: everything an app
 // needs to upload and play, not analytics.
 func DefaultScopes() []string { return []string{UploadsWrite, AssetsRead, AssetsWrite} }
