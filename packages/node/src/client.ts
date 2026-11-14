@@ -3,8 +3,9 @@
 // operationIds), offline playback tokens and webhook verification.
 
 import { ClipMuxConfigError, ClipMuxError } from './errors.ts'
+import { EventWindow } from './events.ts'
 import type * as api from './schema.gen.ts'
-import { type Audience, importSigningKey, seconds, signToken } from './tokens.ts'
+import { type Audience, importSigningKey, seconds, signToken, type TokenClaims } from './tokens.ts'
 import { Transport } from './transport.ts'
 import { type HeadersLike, type RawBody, type VerifyOptions, verifyWebhook } from './webhooks.ts'
 
@@ -38,6 +39,12 @@ export interface ClipMuxOptions {
   timeoutMs?: number
 }
 
+/**
+ * What uploads.create returns: the upload with its token and `endpoint`,
+ * the object `new ClipMuxUpload(file, { upload })` takes as it is.
+ */
+export type CreatedUpload = api.Upload & { upload_token: string; endpoint: string }
+
 /** What a player needs to play one playback ID: the session-url answer. */
 export interface PlaybackSession {
   playback_id: string
@@ -59,6 +66,15 @@ export interface TokenOptions {
   audience?: Audience | undefined
   /** A stable ID for this viewer, for unique-viewer analytics (D103). */
   viewerId?: string | undefined
+  /**
+   * The player plays HLS itself and can't refresh (getToken's `native`):
+   * the token lasts the larger of twice `durationSeconds` and 4 hours (12
+   * hours without a duration), within the server's maximum. Overrides
+   * `expiresIn`.
+   */
+  native?: boolean | undefined
+  /** The video's duration, for a native token. */
+  durationSeconds?: number | null | undefined
 }
 
 export interface SessionOptions {
@@ -134,9 +150,19 @@ export class ClipMux {
        * `@clipmux/uploader`; it carries `endpoint`, so the browser needs no
        * other configuration, and its token reaches only this upload.
        */
-      create: async (body: api.CreateUpload, o: { idempotencyKey?: string } = {}) => {
+      create: async (body: api.CreateUpload, o: { idempotencyKey?: string } = {}): Promise<CreatedUpload> => {
         const r = await h.request<api.Upload>({ method: 'POST', path: '/v1/uploads', body, ...o })
-        return { ...r.body, endpoint: h.baseUrl.replace(/\/+$/, '') }
+        // A replay of an idempotency key whose upload has since completed,
+        // been cancelled or expired carries no token: nothing can be sent.
+        if (!r.body.upload_token) {
+          throw new ClipMuxError(
+            r.status,
+            'upload_not_active',
+            'this idempotency key made an upload that is no longer active, so it has no upload_token',
+            'POST /v1/uploads',
+          )
+        }
+        return { ...r.body, upload_token: r.body.upload_token, endpoint: h.baseUrl.replace(/\/+$/, '') }
       },
       /** Cancels an upload; its asset becomes `errored` / `upload_cancelled`. */
       cancel: async (uploadId: string) =>
@@ -189,8 +215,7 @@ export class ClipMux {
        */
       waitUntilReady: async (assetId: string, o: { timeoutMs?: number; signal?: AbortSignal } = {}) => {
         const deadline = Date.now() + (o.timeoutMs ?? 30 * 60_000)
-        const since = new Date(Date.now() - 5000).toISOString()
-        let after: string | undefined
+        const win = new EventWindow(new Date(Date.now() - 5000))
         for (;;) {
           const a = await this.assets.get(assetId)
           if (a.status === 'ready') return a
@@ -202,8 +227,8 @@ export class ClipMux {
           const wait = Math.min(25, Math.ceil((deadline - Date.now()) / 1000))
           if (wait <= 0)
             throw new ClipMuxError(0, 'timeout', 'the asset did not become ready in time', `wait ${assetId}`)
-          const page = await this.events.poll({ since, after, wait, signal: o.signal })
-          after = page.data.at(-1)?.id ?? after
+          const page = await this.events.poll({ since: win.since, after: win.after, wait, signal: o.signal })
+          win.advance(page.data)
         }
       },
     }
@@ -353,23 +378,47 @@ export class ClipMux {
     return v
   }
 
-  async #token(playbackId: string, o: TokenOptions): Promise<string> {
-    const ttl = seconds(o.expiresIn ?? DEFAULT_TTL)
-    const max = (await this.#app?.catch(() => undefined))?.max_token_lifetime_seconds ?? FALLBACK_MAX_TTL
-    if (ttl > max) throw new RangeError(`expiresIn ${ttl} s is longer than the server allows (${max} s)`)
-    const kid = this.#require('signingKid')
-    this.#key ??= importSigningKey(this.#require('signingKey'))
-    this.#key.catch(() => {
-      this.#key = undefined
+  // The server's longest token, read from /v1/app once. Signing stays
+  // offline in spirit: if the API is slow or down, it waits at most 3 s and
+  // uses the default maximum (delivery has the last word either way).
+  async #maxTtl(): Promise<number> {
+    let timer: Parameters<typeof clearTimeout>[0]
+    const late = new Promise<undefined>((resolve) => {
+      timer = setTimeout(resolve, 3000)
     })
+    try {
+      const app = await Promise.race([this.app.get().catch(() => undefined), late])
+      return app?.max_token_lifetime_seconds ?? FALLBACK_MAX_TTL
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+
+  async #token(playbackId: string, o: TokenOptions): Promise<string> {
+    const max = await this.#maxTtl()
+    // Without a duration, 12 hours covers any lesson-length video.
+    const d = o.durationSeconds
+    const ttl = o.native
+      ? Math.min(max, Math.max(4 * 3600, d ? Math.ceil(2 * d) : 12 * 3600))
+      : seconds(o.expiresIn ?? DEFAULT_TTL)
+    if (ttl > max) throw new RangeError(`expiresIn ${ttl} s is longer than the server allows (${max} s)`)
     const iat = Math.floor(Date.now() / 1000)
-    return signToken(await this.#key, kid, {
+    return this.#sign({
       sub: playbackId,
       aud: o.audience === 'poster' ? 't' : 'v',
       iat,
       exp: iat + ttl,
       vid: o.viewerId,
     })
+  }
+
+  async #sign(claims: TokenClaims): Promise<string> {
+    const kid = this.#require('signingKid')
+    this.#key ??= importSigningKey(this.#require('signingKey'))
+    this.#key.catch(() => {
+      this.#key = undefined
+    })
+    return signToken(await this.#key, kid, claims)
   }
 
   async #session(target: Target, o: SessionOptions): Promise<PlaybackSession> {
@@ -380,30 +429,41 @@ export class ClipMux {
     const base = (asset?.base_url ?? (await this.app.get()).base_url).replace(/\/+$/, '')
     const duration = asset?.duration_seconds ?? null
     let token = ''
+    let posterToken = ''
     let expiresAt: string | null = null
     if (pick.policy === 'signed') {
-      let ttl = seconds(o.expiresIn ?? DEFAULT_TTL)
-      if (o.native) {
-        const max =
-          (await this.app.get().catch(() => undefined))?.max_token_lifetime_seconds ?? FALLBACK_MAX_TTL
-        // Without a duration, 12 hours covers any lesson-length video.
-        ttl = Math.min(max, Math.max(4 * 3600, duration ? Math.ceil(2 * duration) : 12 * 3600))
-      }
-      token = await this.#token(pick.id, { expiresIn: ttl, viewerId: o.viewerId })
-      expiresAt = new Date((Math.floor(Date.now() / 1000) + ttl) * 1000).toISOString()
+      token = await this.#token(pick.id, {
+        expiresIn: o.expiresIn,
+        viewerId: o.viewerId,
+        native: o.native,
+        durationSeconds: duration,
+      })
+      const c = claimsOf(token)
+      expiresAt = new Date(c.exp * 1000).toISOString()
+      // The poster gets a token that fetches only the poster, so a poster
+      // URL that leaks (an og:image, a log) can't play the video.
+      posterToken = await this.#sign({ sub: pick.id, aud: 't', iat: c.iat, exp: c.exp })
     }
     const s: PlaybackSession = {
       playback_id: pick.id,
       base_url: base,
       token,
       expires_at: expiresAt,
-      poster_url: token ? `${base}/v/${token}/${pick.id}/poster.jpg` : `${base}/p/${pick.id}/poster.jpg`,
+      poster_url: posterToken
+        ? `${base}/v/${posterToken}/${pick.id}/poster.jpg`
+        : `${base}/p/${pick.id}/poster.jpg`,
       duration_seconds: duration,
       tracks: (asset?.tracks ?? []).filter((t) => t.status === 'ready'),
     }
     if (asset?.title) s.title = asset.title
     return s
   }
+}
+
+// claimsOf reads the claims back from a token this client just signed.
+function claimsOf(token: string): TokenClaims {
+  const body = token.split('.')[1] ?? ''
+  return JSON.parse(atob(body.replace(/-/g, '+').replace(/_/g, '/'))) as TokenClaims
 }
 
 // choose is the playback ID a session plays: an active signed one of the

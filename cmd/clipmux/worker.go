@@ -99,6 +99,10 @@ func runWorker(args []string, getenv func(string) string, stderr io.Writer) int 
 		logger.Error("invalid configuration", "err", err)
 		return 1
 	}
+	// The worker's key is in its environment; its tools run as its user.
+	if err := sandbox.Undumpable(); err != nil {
+		logger.Warn("the worker stays dumpable", "err", err)
+	}
 	// Each tool runs from its attempt's directory with paths beneath it, so
 	// a relative work dir (serve's default ./data) would name the wrong file.
 	if *workDir, err = filepath.Abs(*workDir); err != nil {

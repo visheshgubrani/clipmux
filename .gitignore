@@ -21,3 +21,6 @@ deploy/modal/media.test
 
 # Local Archify diagrams and their finalize receipts.
 /.archify/
+
+# The binary go build ./cmd/clipmux writes at the root.
+/clipmux

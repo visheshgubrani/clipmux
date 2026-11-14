@@ -331,7 +331,7 @@ func (s *Service) Stream(ctx context.Context, key apikeys.Key, linkID string) (S
 	if err != nil {
 		return StreamURL{}, err
 	}
-	tok, exp, err := s.sign(ctx, l.ProjectID, l.PlaybackID, "", now, time.Duration(maxLife)*time.Second, l.ExpiresAt, maxLife)
+	tok, exp, err := s.sign(ctx, l.ProjectID, tokens.AudiencePlayback, l.PlaybackID, "", now, time.Duration(maxLife)*time.Second, l.ExpiresAt, maxLife)
 	if err != nil {
 		return StreamURL{}, err
 	}
@@ -346,10 +346,10 @@ func errNotReady() error {
 	return httpjson.Fail(http.StatusConflict, "asset_not_ready", "the video is still processing")
 }
 
-// sign signs a playback token for pid with the internal key that lasts
-// life, but never past the link's expiry or the project's longest token
-// lifetime (maxLife seconds, which delivery enforces).
-func (s *Service) sign(ctx context.Context, projectID, pid, vid string, now time.Time, life time.Duration, expires pgtype.Timestamptz, maxLife int32) (string, time.Time, error) {
+// sign signs a token of audience aud for pid with the internal key that
+// lasts life, but never past the link's expiry or the project's longest
+// token lifetime (maxLife seconds, which delivery enforces).
+func (s *Service) sign(ctx context.Context, projectID, aud, pid, vid string, now time.Time, life time.Duration, expires pgtype.Timestamptz, maxLife int32) (string, time.Time, error) {
 	iat := now.Unix()
 	exp := now.Add(life).Unix()
 	if expires.Valid && expires.Time.Unix() < exp {
@@ -360,7 +360,7 @@ func (s *Service) sign(ctx context.Context, projectID, pid, vid string, now time
 	if err != nil {
 		return "", time.Time{}, err
 	}
-	tok, err := signer.Sign(tokens.Claims{Sub: pid, Aud: tokens.AudiencePlayback, Iat: iat, Exp: exp, Vid: vid})
+	tok, err := signer.Sign(tokens.Claims{Sub: pid, Aud: aud, Iat: iat, Exp: exp, Vid: vid})
 	return tok, time.Unix(exp, 0).UTC(), err
 }
 
@@ -432,14 +432,19 @@ func (s *Service) Play(ctx context.Context, secret string, req PlaybackRequest, 
 		vid = req.ViewerID
 	}
 	life := max(time.Duration(2*asset.DurationSeconds.Float64*float64(time.Second)), minPlayLifetime)
-	tok, exp, err := s.sign(ctx, l.ProjectID, l.PlaybackID, vid, now, life, l.ExpiresAt, maxLife)
+	tok, exp, err := s.sign(ctx, l.ProjectID, tokens.AudiencePlayback, l.PlaybackID, vid, now, life, l.ExpiresAt, maxLife)
+	if err != nil {
+		return Playback{}, err
+	}
+	// The poster gets a token that fetches only the poster (docs/api.md).
+	posterTok, _, err := s.sign(ctx, l.ProjectID, tokens.AudienceThumbnail, l.PlaybackID, "", now, life, l.ExpiresAt, maxLife)
 	if err != nil {
 		return Playback{}, err
 	}
 	out := Playback{
 		Title: v.Title, DurationSeconds: asset.DurationSeconds.Float64, BaseURL: v.BaseURL,
 		PlaybackID: l.PlaybackID, Token: tok, ExpiresAt: exp,
-		PosterURL: v.BaseURL + "/v/" + tok + "/" + l.PlaybackID + "/poster.jpg",
+		PosterURL: v.BaseURL + "/v/" + posterTok + "/" + l.PlaybackID + "/poster.jpg",
 		Tracks:    []assets.Track{},
 	}
 	for _, t := range v.Tracks {

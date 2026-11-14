@@ -130,6 +130,44 @@ test('browser routes take only JSON, POST and a valid body', async () => {
   assert.equal((await h(post('/x/other', {}))).status, 404)
 })
 
+test("ClipMux's refusals reach the browser as what they are, so it retries only what can pass", async () => {
+  const err =
+    (status: number, code: string, headers: Record<string, string> = {}) =>
+    () =>
+      Response.json({ error: { code, message: 'x', retry_after: '7' } }, { status, headers })
+  const cases: [Response | (() => Response) | 'network', number, string][] = [
+    // The caller's request: the same answer, not retryable.
+    [err(400, 'invalid_request')(), 400, 'invalid_request'],
+    [err(409, 'idempotency_key_reused')(), 409, 'idempotency_key_reused'],
+    [err(413, 'too_large')(), 413, 'too_large'],
+    [err(422, 'unprocessable')(), 422, 'unprocessable'],
+    // Throttled: the browser waits and retries.
+    [err(429, 'rate_limited', { 'Retry-After': '7' })(), 429, 'rate_limited'],
+    // This server's key or app is wrong: its own fault, not ClipMux being down.
+    [err(401, 'unauthorized')(), 500, 'clipmux_misconfigured'],
+    [err(403, 'insufficient_scope')(), 500, 'clipmux_misconfigured'],
+    // ClipMux down or unreachable: a gateway error, retryable.
+    [err(503, 'unavailable')(), 502, 'clipmux_unavailable'],
+    ['network', 502, 'clipmux_unavailable'],
+  ]
+  for (const [answer, status, code] of cases) {
+    const fetch = (async () => {
+      if (answer === 'network') throw new TypeError('fetch failed')
+      return typeof answer === 'function' ? answer() : answer
+    }) as typeof globalThis.fetch
+    const handle = clipmuxHandler({
+      clipmux: new ClipMux({ env, fetch, maxRetries: 0 }),
+      upload: () => ({ passthrough: 'lesson_42' }),
+      onError: () => {},
+    })
+    const res = await handle(post('/api/clipmux/upload', { size: 10 }))
+    const body = (await res.json()) as { error: { code: string } }
+    assert.equal(res.status, status, code)
+    assert.equal(body.error.code, code)
+    if (status === 429) assert.equal(res.headers.get('Retry-After'), '7')
+  }
+})
+
 test('playback signs the asked ID for the viewer the callback names', async () => {
   const h = clipmuxHandler({
     clipmux: api({}).clipmux,

@@ -162,6 +162,8 @@ export class ClipMuxUpload {
   #use(upload: CreatedUpload): void {
     const endpoint = this.#opts.endpoint ?? upload.endpoint
     if (!endpoint) throw new TypeError('ClipMuxUpload needs endpoint, as an option or on the upload')
+    if (typeof upload.upload_token !== 'string' || upload.upload_token === '')
+      throw new TypeError('ClipMuxUpload needs the upload_token POST /v1/uploads returned')
     this.#created = upload
     this.#api = `${endpoint.replace(/\/+$/, '')}/v1/uploads/${encodeURIComponent(upload.upload_id)}`
   }

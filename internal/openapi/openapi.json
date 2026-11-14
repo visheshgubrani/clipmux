@@ -4704,9 +4704,10 @@
             "in": "query",
             "required": false,
             "schema": {
-              "type": "string"
+              "type": "string",
+              "format": "date-time"
             },
-            "description": "The newest event ID you have."
+            "description": "The created_at (RFC 3339) of the newest event you have; the poll waits for a newer one."
           },
           {
             "name": "wait",
@@ -7909,6 +7910,13 @@
           "max_token_lifetime_seconds": {
             "type": "integer"
           },
+          "upload_origins": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Where a browser sends upload parts: this server (filesystem storage) and each bucket's public endpoint. With base_url, what a page with the uploader and player must allow in its Content-Security-Policy."
+          },
           "signing_keys": {
             "type": "array",
             "items": {
@@ -7944,6 +7952,7 @@
           "public_url",
           "base_url",
           "max_token_lifetime_seconds",
+          "upload_origins",
           "signing_keys"
         ]
       },

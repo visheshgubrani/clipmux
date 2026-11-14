@@ -325,8 +325,7 @@ func (m uploadMeta) partRange(n int) (offset, length int64, err error) {
 	if n < 1 || n > m.parts() {
 		return 0, 0, ErrInvalidParts
 	}
-	offset = int64(n-1) * m.PartSize
-	return offset, min(m.PartSize, m.Size-offset), nil
+	return int64(n-1) * m.PartSize, PartLength(m.Size, m.PartSize, n), nil
 }
 
 func uploadDir(id string) string { return "multipart/" + id }
@@ -388,14 +387,19 @@ func (f *Filesystem) loadUpload(key, id string) (uploadMeta, error) {
 	return m, nil
 }
 
-// PresignPart signs a PUT for one part within the declared size.
-func (f *Filesystem) PresignPart(_ context.Context, key, uploadID string, part int, ttl time.Duration) (string, error) {
+// PresignPart signs a PUT for one part within the declared size. size must
+// be the part's own length; writePart refuses a body of any other.
+func (f *Filesystem) PresignPart(_ context.Context, key, uploadID string, part int, size int64, ttl time.Duration) (string, error) {
 	m, err := f.loadUpload(key, uploadID)
 	if err != nil {
 		return "", err
 	}
-	if _, _, err := m.partRange(part); err != nil {
+	_, length, err := m.partRange(part)
+	if err != nil {
 		return "", err
+	}
+	if size != length {
+		return "", fmt.Errorf("%w: part %d is %d bytes, not %d", ErrInvalidParts, part, length, size)
 	}
 	return f.sign(http.MethodPut, partResource(uploadID, part), ttl), nil
 }

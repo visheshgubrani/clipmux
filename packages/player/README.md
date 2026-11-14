@@ -19,12 +19,15 @@ viewer and answers with the playback session, the same shape as ClipMux's
   "base_url": "https://media.example.net",
   "token": "eyJ…",
   "expires_at": "…",
-  "poster_url": "https://media.example.net/v/eyJ…/pid_…/poster.jpg",
+  "poster_url": "https://media.example.net/v/eyJ…(poster-only token)/pid_…/poster.jpg",
+  "title": "Lesson 42",
+  "duration_seconds": 612.4,
   "tracks": [{ "id": "trk_…", "kind": "chapters", "status": "ready" }]
 }
 ```
 
-The `@clipmux/node` handler's `/playback` route answers exactly this. The
+The `@clipmux/node` handler's `/playback` route answers exactly this, and its
+`PlaybackSession` type is assignable to this package's. The
 element plays from `base_url` with `token`, shows `poster_url` unless you set
 `poster`, marks the first ready chapters track unless you set
 `chapters-track`, and asks the same URL again whenever the token expires. A
@@ -34,14 +37,18 @@ play HLS itself (no MediaSource), where tokens can't be refreshed, so the
 backend signs one that outlives the session. A `getToken` you set as well wins
 for refreshes; `player.session` holds the answer in use.
 
-Or bring your own token, as before:
+Or bring your own token. The element asks `getToken` for the first token and
+for every refresh, saying which playback ID and whether the browser plays HLS
+natively:
 
 ```ts
 import '@clipmux/player/element'
 
 const player = document.querySelector('clipmux-player')!
-player.getToken = async () => (await fetch('/api/playback-token')).text() // or null to deny
-player.token = await player.getToken()
+player.getToken = async ({ playbackId, native }) => {
+  const res = await fetch(`/api/playback-token?playback_id=${playbackId}&native=${native}`)
+  return res.ok ? res.text() : null // null denies
+}
 ```
 
 ```html
@@ -49,14 +56,16 @@ player.token = await player.getToken()
 ```
 
 How refresh works: tokens ride in the URL path, so on a `401 token_expired` the
-player calls `getToken()` once, puts the new token into that request and every
+player calls `getToken({ playbackId, native })` once, puts the new token into that request and every
 later one, and retries; hls.js never sees the error. `null` (or a `403` from
 delivery) stops playback and fires `clipmux-denied`.
 
 **Native HLS can't refresh.** Where the browser plays HLS itself (iOS before
 17.1, AirPlay, Chromecast), the token must outlive the session: sign it for the
-larger of 2 × the video's duration or 4 hours. iOS 17.1+ plays through hls.js
-(ManagedMediaSource) and refreshes.
+larger of 2 × the video's duration or 4 hours. The element tells your backend
+(`native` in the `session-url` POST, or `getToken`'s argument), and
+`@clipmux/node` signs for it: `playback.token(id, { native, durationSeconds })`.
+iOS 17.1+ plays through hls.js (ManagedMediaSource) and refreshes.
 
 For another player, `rewriteTokenUrl`, `TokenSession` and `createRefreshLoader`
 (an hls.js `loader`) are exported without the UI.
@@ -72,7 +81,7 @@ For another player, `rewriteTokenUrl`, `TokenSession` and `createRefreshLoader`
 
 They bubble and are typed on `HTMLElementEventMap`, so
 `player.addEventListener('clipmux-chapters', (e) => e.detail.chapters)` needs
-no cast. For React 19, import the JSX types once; they type the attributes,
+no cast. For React (18 or 19), import the JSX types once; they type the attributes,
 the `token`/`getToken`/`hls` properties and `onclipmux-*` handlers, and add no
 React dependency:
 
@@ -94,7 +103,9 @@ VTT with the playback token and marks the chapters on the time slider.
 <clipmux-player base-url="…" playback-id="pid_…" chapters-track="trk_…"></clipmux-player>
 ```
 
-`player.chapters` holds them in seconds once `clipmux-chapters` fires. For
+`player.chapters` holds them in seconds (`PlayerChapter`) once
+`clipmux-chapters` fires. (`@clipmux/node`'s `Chapter` is the API's, in
+milliseconds.) For
 another player, `trackUrl` gives a track's sidecar VTT URL, `fetchTrack` loads
 it with a `TokenSession`, and `parseChapters` reads a chapters VTT.
 
@@ -102,8 +113,13 @@ it with a `TokenSession`, and `parseChapters` reads a chapters VTT.
 
 The player never sees a key. Your backend signs a short-lived ES256 JWT with
 the app's signing key (Dashboard → Apps, or `clipmux admin create-signing-key`)
-for each viewer it allows, and `getToken()` fetches it. With
-[`jose`](https://github.com/panva/jose) in Node:
+for each viewer it allows, and `getToken` fetches it. With `@clipmux/node`:
+
+```ts
+const token = await clipmux.playback.token(playbackId, { native, viewerId: user.id })
+```
+
+Or with [`jose`](https://github.com/panva/jose), in any JavaScript runtime:
 
 ```ts
 import { SignJWT, importPKCS8 } from 'jose'
@@ -126,6 +142,23 @@ export async function playbackToken(playbackId: string): Promise<string> {
 A public playback ID needs no token: set `playback-id` and leave `getToken`
 unset. The full contract, including posters and the maximum lifetime, is the
 Delivery section of [docs/api.md](https://github.com/visheshgubrani/clipmux/blob/main/docs/api.md#delivery).
+
+## TypeScript
+
+The element's types come with the package. Video.js 10.2's own declaration
+files don't all type-check, so keep `"skipLibCheck": true` (the default in
+most templates) in a project that imports the element.
+
+## Content-Security-Policy
+
+A page with the player must allow, besides its own origin:
+- `connect-src` and `media-src`: the media origin (`base_url`), and `blob:`
+  in `media-src` for Media Source playback;
+- `img-src`: the media origin, for the poster;
+- `style-src 'unsafe-inline'`: Video.js injects its skin's styles.
+
+`npx @clipmux/node doctor` prints the exact origins. hls.js runs on the main
+thread, so no `worker-src` is needed.
 
 ## Licence
 

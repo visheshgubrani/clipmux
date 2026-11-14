@@ -8,6 +8,7 @@ export {
   type LoaderClass,
   rewriteTokenUrl,
   type SessionOptions,
+  type TokenRequest,
   TokenSession,
 } from './refresh.ts'
 export {
@@ -24,4 +25,4 @@ export {
   playsNatively,
   type SourceOptions,
 } from './source.ts'
-export { type Chapter, fetchTrack, parseChapters, trackUrl } from './tracks.ts'
+export { type Chapter, fetchTrack, type PlayerChapter, parseChapters, trackUrl } from './tracks.ts'

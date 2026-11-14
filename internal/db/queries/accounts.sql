@@ -66,3 +66,10 @@ UPDATE owner_recovery_codes SET used_at = now() WHERE owner_id = $1 AND code_has
 
 -- name: DeleteOtherOwnerSessions :exec
 DELETE FROM owner_sessions WHERE owner_id = $1 AND token_hash <> $2;
+
+-- name: GetDeviceKey :one
+SELECT device_key_sealed FROM projects WHERE id = $1;
+
+-- name: SetDeviceKeyIfUnset :exec
+-- Another serve may have set one first; the caller reads back what won.
+UPDATE projects SET device_key_sealed = sqlc.arg(sealed) WHERE id = sqlc.arg(id) AND device_key_sealed IS NULL;

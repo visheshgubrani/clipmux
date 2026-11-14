@@ -56,14 +56,21 @@ when you introduce or discover it; remove it when it is closed.
   R2/S3 (a failed abort) are left to a bucket lifecycle rule, which Connect
   doesn't set.
 - The media tool sandbox (D027) gives the CPU a priority, not a quota:
-  `SCHED_IDLE` yields to the API, and only compose `cpus:` caps it. Landlock
-  is best effort: on kernels before 5.13 (or with it disabled) the tools can
-  read any file the worker's user can. Agents off Linux have no sandbox.
+  `SCHED_IDLE` yields to the API, and only compose `cpus:` caps it. The
+  built-in worker needs Landlock (D120); with `CLIPMUX_UNSANDBOXED_WORKER`
+  on a kernel without it, its tools can read any file serve's user can,
+  the data directory's keys included. On an agent or a provider (Modal's
+  gVisor reports no Landlock) Landlock stays best effort. Agents off Linux
+  have no sandbox.
 - Imports have no known source size, so the claim's free-disk check passes
   them; a full disk fails the attempt (transient).
 - Agent pairing codes are 8 characters (about 39 bits); wrong codes are
   limited per address and overall (D067), and a code lasts 15 minutes and
-  works once.
+  works once. So failures from many addresses can keep pairing refused for
+  15 minutes; `clipmux admin create-pairing` on the host still works (D121).
+- An owner signing in from a device they never used before still waits out
+  the global sign-in limit during an attack; only a known-device cookie
+  skips it (D121).
 - Content key secrets live in Postgres sealed with the secrets key (D022).
   Back up Postgres and the secrets key together: losing either makes every
   output unplayable (docs/operations.md). Rotating the content key secret
@@ -102,20 +109,14 @@ when you introduce or discover it; remove it when it is closed.
   recorded per attempt, so a measurement can't name the card it ran on. A
   failed real run can leave a RunPod registry credential behind when the
   test's disconnect is refused (409); it was deleted by hand.
-- Security review findings (docs/security-review.md, D091), open until
-  fixed:
-  - Without Landlock, the built-in worker's tools can read serve's
-    `/proc/<pid>/environ`, which holds the secrets key and the database
-    password (medium).
-  - The global sign-in failure limit (20 per 15 minutes) refuses every
-    address, so anyone can lock the owner out. The setup-token and pairing
-    limits work the same way (medium).
-  - An unsandboxed agent's "owner jobs" are the Dashboard app's, which API
-    keys and URL imports can also create.
-  - Files can be added to an output after its commit; delivery serves any
-    grammar-valid name, not only the manifest's.
-  - S3/R2 part URLs don't bind the part length.
-  - Seccomp allows namespace creation.
+- The security review's six findings are fixed (D120 to D124). What they
+  leave:
+  - The Cloudflare Worker serves any grammar-valid name under a committed
+    output; a file added after commit goes only when the hourly retention
+    loop sweeps it, 16 to about 76 minutes after the commit (D124).
+  - The Worker sends no `Strict-Transport-Security` header. The zone's
+    HSTS setting (SSL/TLS, Edge Certificates) covers it; serve sends its
+    own on https.
 - Contributions are signed off with a DCO (D091), but nothing enforces the
   sign-off yet.
 - One serve replica is the supported shape (D063). One replica runs the
@@ -329,3 +330,14 @@ when you introduce or discover it; remove it when it is closed.
   sealed copy is dropped, so they can't be recovered. The owner revokes
   them on the app's page (the API key is named after the pairing). Revoking
   them automatically at expiry needs a sweep that doesn't exist yet (D113).
+- The npm packages publish without provenance while the repository is
+  private (D125); their `repository` and `homepage` links 404 for outsiders
+  until launch. Trusted publishing and `--provenance` come with P6-T20.
+- `@clipmux/player`'s element types import Video.js 10.2's declaration
+  files, which don't all type-check; an app needs `skipLibCheck: true`.
+- The packages are ESM only. A CommonJS app needs Node ≥ 20.19 (or 22.12)
+  to `require()` them, and TypeScript's `moduleResolution: node` (node10)
+  can't resolve their subpath exports.
+- Safari's native HLS with `getToken({ native })` (D126) is checked by
+  reading the code and in Chrome with `native: false`; the Safari suite
+  runs on the owner's Mac, not in this release's CI.

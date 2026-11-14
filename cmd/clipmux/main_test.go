@@ -59,3 +59,21 @@ func TestHealthcheckAsksTheLocalServe(t *testing.T) {
 		t.Fatalf("no serve: exit %d, want 1", code)
 	}
 }
+
+func TestListenTakesTheServerFromTheAppsEnvFile(t *testing.T) {
+	// The same CLIPMUX_URL the SDK's env file has; the server refuses the
+	// key, so listen reaches it and stops with 1 rather than asking for --server.
+	var asked string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		asked = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = io.WriteString(w, `{"error":{"code":"unauthorized","message":"bad key"}}`)
+	}))
+	defer srv.Close()
+	env := map[string]string{"CLIPMUX_URL": srv.URL, "CLIPMUX_API_KEY": "cmx_x", "CLIPMUX_LISTEN_SECRET": "whsec_x"}
+	code := runListen([]string{"--forward-to", "localhost:1/hook"}, func(k string) string { return env[k] }, io.Discard, io.Discard)
+	if code != 1 || asked != "/v1/events" {
+		t.Fatalf("exit %d after asking %q; want 1 after /v1/events", code, asked)
+	}
+}

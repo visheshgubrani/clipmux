@@ -90,6 +90,10 @@ test('the Video.js player refreshes an expiring token and keeps its place', asyn
     'the 8 s token must have expired mid-playback',
   ).toBe(true)
   expect(state.getTokenCalls).toBeGreaterThanOrEqual(2)
+  // getToken is told what to sign: MSE playback refreshes, so not native.
+  const config = await (await page.request.get('/config')).json()
+  for (const arg of state.getTokenArgs as unknown as unknown[])
+    expect(arg).toEqual({ playbackId: config.playback_id, native: false })
   expect(state.tokenEvents).toBeGreaterThanOrEqual(1)
   expect(state.errors).toBe(0)
   const played = await page.evaluate(() => {

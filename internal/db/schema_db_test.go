@@ -284,3 +284,27 @@ func TestTheTrackMigrationRollsBackWithJobsActive(t *testing.T) {
 		t.Fatalf("re-apply: %v", err)
 	}
 }
+
+// The built-in app takes no API keys (D123): the migration revokes any it
+// had, and leaves other apps' keys alone.
+func TestTheBuiltinAppMigrationRevokesItsKeys(t *testing.T) {
+	pool := dbtest.New(t)
+	ctx := context.Background()
+	if err := db.MigrateDownTo(ctx, pool, 34); err != nil {
+		t.Fatalf("down to 34: %v", err)
+	}
+	seed(t, pool)
+	mustExec(t, pool, `INSERT INTO api_keys (id, project_id, app_id, name, key_hash, scopes) VALUES
+		('key_dash', 'prj_default', 'app_dashboard', 'backend', '\x01', '{assets:read}'),
+		('key_lms', 'prj_default', 'app_lms', 'backend', '\x02', '{assets:read}')`)
+	if err := db.Migrate(ctx, pool); err != nil {
+		t.Fatalf("up: %v", err)
+	}
+	var revoked string
+	if err := pool.QueryRow(ctx, `SELECT coalesce(string_agg(id, ',' ORDER BY id), '') FROM api_keys WHERE revoked_at IS NOT NULL`).Scan(&revoked); err != nil {
+		t.Fatal(err)
+	}
+	if revoked != "key_dash" {
+		t.Fatalf("revoked keys = %q, want only the built-in app's", revoked)
+	}
+}

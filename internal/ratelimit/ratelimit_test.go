@@ -56,6 +56,12 @@ func TestFailuresPerKeyAndOverall(t *testing.T) {
 	if ok, _ := f.Allow("192.0.2.9"); ok {
 		t.Fatal("past the global limit, a fresh address must wait too")
 	}
+	if ok, _ := f.AllowKey("192.0.2.9"); !ok {
+		t.Fatal("AllowKey: past the global limit, a fresh address's own limit still allows it")
+	}
+	if ok, _ := f.AllowKey("203.0.113.1"); ok {
+		t.Fatal("AllowKey: an address at its own limit must wait")
+	}
 	c.t = c.t.Add(15*time.Minute + time.Second)
 	if ok, _ := f.Allow("203.0.113.1"); !ok {
 		t.Fatal("failures outside the window still count")

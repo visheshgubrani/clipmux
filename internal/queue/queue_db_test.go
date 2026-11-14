@@ -550,6 +550,22 @@ func TestUnsandboxedAgentsTakeOnlyTheirOwnAndTheOwnersJobs(t *testing.T) {
 	}
 }
 
+// A URL import in the Dashboard app is still a file from anywhere: an
+// unsandboxed agent doesn't take it (finding 3, D123).
+func TestUnsandboxedAgentsDontTakeTheOwnersURLImports(t *testing.T) {
+	f := newFixture(t)
+	f.exec(`INSERT INTO agents (id, project_id, name, key_hash, status) VALUES ('agt_pc', 'prj_default', 'pc', 'h', 'approved')`)
+	imported := f.asset("ast_imported", false)
+	f.exec(`INSERT INTO jobs (id, project_id, asset_id, kind, status, import_url) VALUES ('job_import', 'prj_default', $1, 'import', 'succeeded', 'https://example.com/a.mp4')`, imported)
+	j := f.enqueue(imported, "transcode")
+	if c := f.claim(queue.Worker{Executor: "agent", AgentID: "agt_pc", Untrusted: true}); c != nil {
+		t.Fatalf("an unsandboxed agent claimed URL import %s", c.Job.ID)
+	}
+	if c := f.claim(queue.Worker{Executor: "agent", AgentID: "agt_pc"}); c == nil || c.Job.ID != j.ID {
+		t.Fatalf("sandboxed agent claim = %+v, want the import's transcode", c)
+	}
+}
+
 func TestFencingARevokedAgentStopsItAndRequeuesFree(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()

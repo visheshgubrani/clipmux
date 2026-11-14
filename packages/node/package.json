@@ -24,7 +24,7 @@
   },
   "type": "module",
   "engines": {
-    "node": ">=20"
+    "node": ">=20.19"
   },
   "exports": {
     ".": {
@@ -48,14 +48,13 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.scripts.json",
     "test": "node scripts/generate.ts --check && node --test src/*.test.ts",
     "generate": "node scripts/generate.ts",
     "generate:check": "node scripts/generate.ts --check"
   },
   "publishConfig": {
-    "access": "public",
-    "provenance": true
+    "access": "public"
   },
   "bin": {
     "clipmux-node": "./dist/bin.js"

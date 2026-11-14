@@ -6,10 +6,12 @@ const (
 	auditArch            = 0xc000003e
 	x32Bit               = 0x40000000
 	sysSchedSetscheduler = 144
+	sysClone             = 56
 )
 
 // denied are the syscalls a media tool never needs: sockets (no network),
-// and kernel interfaces that widen the attack surface.
+// kernel interfaces that widen the attack surface, and namespaces (clone
+// with CLONE_NEW* flags is refused in filter).
 var denied = map[uint32]uint32{
 	41:  eacces, // socket
 	101: eperm,  // ptrace
@@ -26,4 +28,7 @@ var denied = map[uint32]uint32{
 	425: eperm,  // io_uring_setup
 	426: eperm,  // io_uring_enter
 	427: eperm,  // io_uring_register
+	272: eperm,  // unshare
+	308: eperm,  // setns
+	435: enosys, // clone3: its flags are in memory, out of seccomp's reach; glibc falls back to clone
 }

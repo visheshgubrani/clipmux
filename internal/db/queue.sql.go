@@ -204,7 +204,7 @@ func (q *Queries) CreateJob(ctx context.Context, arg CreateJobParams) (Job, erro
 const createOutput = `-- name: CreateOutput :one
 INSERT INTO outputs (id, project_id, asset_id, key_version)
 VALUES ($1, $2, $3, $4)
-RETURNING id, project_id, asset_id, prefix, status, manifest, output_format, key_version, created_at, committed_at, retired_at, purged_at
+RETURNING id, project_id, asset_id, prefix, status, manifest, output_format, key_version, created_at, committed_at, retired_at, purged_at, unlisted_swept_at
 `
 
 type CreateOutputParams struct {
@@ -235,6 +235,7 @@ func (q *Queries) CreateOutput(ctx context.Context, arg CreateOutputParams) (Out
 		&i.CommittedAt,
 		&i.RetiredAt,
 		&i.PurgedAt,
+		&i.UnlistedSweptAt,
 	)
 	return i, err
 }

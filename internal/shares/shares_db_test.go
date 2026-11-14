@@ -259,8 +259,21 @@ func TestAShareLinkPlaysWithoutASessionAndCounts(t *testing.T) {
 	}
 	if got.body["title"] != "Board meeting" || got.body["duration_seconds"] != 30.0 || got.body["base_url"] != r.url ||
 		got.body["playback_id"] != pid || got.body["expires_at"] != t0.Add(4*time.Hour).Format(time.RFC3339) ||
-		got.body["poster_url"] != r.url+"/v/"+tok+"/"+pid+"/poster.jpg" || len(got.body["tracks"].([]any)) != 0 {
+		len(got.body["tracks"].([]any)) != 0 {
 		t.Fatalf("playback body = %s", got.raw)
+	}
+	// The poster has its own token, good for the poster only (docs/api.md).
+	poster, _ := got.body["poster_url"].(string)
+	prefix, suffix := r.url+"/v/", "/"+pid+"/poster.jpg"
+	if !strings.HasPrefix(poster, prefix) || !strings.HasSuffix(poster, suffix) {
+		t.Fatalf("poster_url = %q", poster)
+	}
+	posterTok, err := tokens.Parse(strings.TrimSuffix(strings.TrimPrefix(poster, prefix), suffix))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wantPoster := (tokens.Claims{Sub: pid, Aud: "t", Iat: want.Iat, Exp: want.Exp}); posterTok.Kid != internal || posterTok.Claims != wantPoster {
+		t.Fatalf("poster token kid %s claims %+v, want %+v", posterTok.Kid, posterTok.Claims, wantPoster)
 	}
 
 	// It plays through delivery, and the play counts though the internal key

@@ -193,6 +193,14 @@ func (h *Handler) respond(w http.ResponseWriter, r *http.Request, token string, 
 		h.master(w, r, store, route.AssetID, current, trks)
 	case p == "poster.jpg":
 		// Unpinned: it follows the current output, so it can't be immutable.
+		if out, err := h.cache.output(ctx, q, current); err != nil || !out.lists("poster.jpg") {
+			if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+				h.fail(w, "output", err)
+				return
+			}
+			notFound(w)
+			return
+		}
 		h.object(w, r, store, route.AssetID, current, "poster.jpg", route.Policy, "max-age=300")
 	case strings.HasPrefix(p, "tracks/"):
 		// Before the output lookup, which would take "tracks" for an
@@ -220,11 +228,17 @@ func (h *Handler) respond(w http.ResponseWriter, r *http.Request, token string, 
 			return
 		}
 		if v, isKey := strings.CutPrefix(rest, "key/"); isKey {
-			h.key(w, route.AssetID, out, v)
+			h.key(w, route.AssetID, out.Output, v)
 			return
 		}
 		if audience != tokens.AudiencePlayback && rest != "poster.jpg" {
 			denied(w)
+			return
+		}
+		// Only what the committed manifest lists: a worker's PUT URLs
+		// outlive its commit (D124).
+		if !out.lists(rest) {
+			notFound(w)
 			return
 		}
 		h.object(w, r, store, route.AssetID, outputID, rest, route.Policy, "max-age=31536000, immutable")

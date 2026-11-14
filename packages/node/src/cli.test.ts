@@ -159,10 +159,22 @@ const goodEnv = {
 test('doctor passes a matching setup and prints no secret', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'cmx-'))
   await writeFile(join(dir, '.env'), mergeEnv('', goodEnv, '# test'))
-  const h = harness(dir, { 'GET /v1/app': app() })
+  const h = harness(dir, {
+    'GET /v1/app': app({
+      upload_origins: ['https://video.example.com', 'https://acct.r2.cloudflarestorage.com'],
+    }),
+  })
   assert.equal(await main(['doctor'], h.io), 0, h.out.join('\n'))
   const printed = h.out.join('\n')
   assert.match(printed, /CLIPMUX_SIGNING_KEY matches kid_app_a/)
+  // What a page with the uploader and player must allow, from /v1/app.
+  assert.match(
+    printed,
+    /connect-src https:\/\/video\.example\.com https:\/\/acct\.r2\.cloudflarestorage\.com https:\/\/media\.example\.net\n/,
+  )
+  assert.match(printed, /media-src blob: https:\/\/media\.example\.net\n/)
+  assert.match(printed, /img-src https:\/\/media\.example\.net\n/)
+  assert.match(printed, /style-src 'unsafe-inline'/)
   assert.ok(
     !printed.includes('cmx_SECRETAPIKEY') && !printed.includes('whsec_REAL') && !printed.includes('PRIVATE'),
   )
@@ -191,22 +203,50 @@ test('doctor names what is wrong', async () => {
   assert.match(h.out.join('\n'), /unauthorized.*CLIPMUX_API_KEY/)
 })
 
-test('listen forwards each event once, signed so the app verifies it', async () => {
+// eventsRoute answers GET /v1/events as internal/assets/events.go does:
+// since and after must be RFC 3339 times, and the page is every event from
+// since, oldest first, at most 100.
+const rfc3339 = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d+)?(Z|[+-]\d\d:\d\d)$/
+function eventsRoute(visible: () => { id: string; created_at: string; body: unknown }[], afters: string[]) {
+  return (_b: unknown, url: URL) => {
+    for (const name of ['since', 'after']) {
+      const v = url.searchParams.get(name)
+      if (v !== null && !rfc3339.test(v))
+        return Response.json(
+          { error: { code: 'invalid_request', message: `${name} must be an RFC 3339 time` } },
+          { status: 400 },
+        )
+    }
+    afters.push(url.searchParams.get('after') ?? '')
+    const since = Date.parse(url.searchParams.get('since') ?? '1970-01-01T00:00:00Z')
+    return Response.json({
+      data: visible()
+        .filter((e) => Date.parse(e.created_at) >= since)
+        .slice(0, 100),
+    })
+  }
+}
+
+test('listen forwards each event once, signed so the app verifies it, across polls', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'cmx-'))
-  const event = { id: 'evt_1', type: 'video.asset.ready', created_at: '', data: { id: 'ast_1' } }
+  const at = (msAgo: number) => new Date(Date.now() - msAgo).toISOString()
+  const e1 = { id: 'evt_1', type: 'video.asset.ready', created_at: at(120_000), data: { id: 'ast_1' } }
+  const e2 = { id: 'evt_2', type: 'video.asset.updated', created_at: at(60_000), data: { id: 'ast_1' } }
   const forwarded: { headers: Headers; body: string }[] = []
+  const afters: string[] = []
   let polls = 0
+  const route = eventsRoute(() => {
+    polls++
+    if (polls === 4) h.ac.abort()
+    // evt_2 commits after the first poll; the overlap re-reads evt_1.
+    const all = polls === 1 ? [e1] : [e1, e2]
+    return all.map((e) => ({ id: e.id, created_at: e.created_at, body: e }))
+  }, afters)
   const h = harness(
     dir,
     {
       'GET /v1/app': app(),
-      'GET /v1/events': (_b, url) => {
-        polls++
-        if (polls === 3) h.ac.abort()
-        // The overlap re-reads evt_1: it is forwarded once.
-        assert.ok(!url.searchParams.get('after') || url.searchParams.get('after') === 'evt_1')
-        return Response.json({ data: polls < 3 ? [{ id: 'evt_1', created_at: '', body: event }] : [] })
-      },
+      'GET /v1/events': route,
       'POST http://app.local/api/clipmux/webhook': (_b, _u, init) => {
         forwarded.push({ headers: new Headers(init.headers), body: init.body as string })
         return new Response(null, { status: 200 })
@@ -214,11 +254,18 @@ test('listen forwards each event once, signed so the app verifies it', async () 
     },
     goodEnv,
   )
-  assert.equal(await main(['listen', '--forward-to', 'app.local/api/clipmux/webhook'], h.io), 0)
-  assert.equal(forwarded.length, 1)
-  const f = forwarded[0] as { headers: Headers; body: string }
-  assert.equal(f.headers.get('X-Webhook-Id'), 'evt_1')
-  assert.deepEqual(await verifyWebhook('whsec_REAL', f.body, f.headers), event)
+  assert.equal(
+    await main(['listen', '--forward-to', 'app.local/api/clipmux/webhook', '--since', '5m'], h.io),
+    0,
+    h.out.join('\n'),
+  )
+  assert.deepEqual(
+    forwarded.map((f) => f.headers.get('X-Webhook-Id')),
+    ['evt_1', 'evt_2'],
+  )
+  assert.deepEqual(afters.slice(0, 3), ['', e1.created_at, e2.created_at])
+  const f = forwarded[1] as { headers: Headers; body: string }
+  assert.deepEqual(await verifyWebhook('whsec_REAL', f.body, f.headers), e2)
 })
 
 test('env files: quoted values, comments, export, and merging keeps other lines', () => {

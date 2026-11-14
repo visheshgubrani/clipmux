@@ -19,12 +19,12 @@ func TestALoadThatRacesAnInvalidationIsntKept(t *testing.T) {
 	h.OnCacheLookup(func(table string, hit bool) { seen = append(seen, fmt.Sprintf("%s:%v", table, hit)) })
 	loads := 0
 	get := func(during func()) {
-		_, _ = lookup(h.cache, "output", func() map[string]cached[db.Output] { return h.cache.outputs }, "out_1", func() (db.Output, error) {
+		_, _ = lookup(h.cache, "output", func() map[string]cached[servedOutput] { return h.cache.outputs }, "out_1", func() (servedOutput, error) {
 			loads++
 			if during != nil {
 				during()
 			}
-			return db.Output{ID: "out_1", Status: "writing"}, nil
+			return servedOutput{Output: db.Output{ID: "out_1", Status: "writing"}}, nil
 		})
 	}
 	get(func() { h.Invalidate("pid_1") }) // the output commits while it loads

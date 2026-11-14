@@ -193,6 +193,16 @@ func TestSetupReportsWhatTheWizardStillNeeds(t *testing.T) {
 	}
 }
 
+// The Dashboard app's uploads are what an unsandboxed agent may encode, so
+// nothing but the owner's own browser may create them (finding 3, D123).
+func TestTheDashboardAppTakesNoAPIKeys(t *testing.T) {
+	r := newRig(t, config.Config{})
+	r.setPublicURL()
+	if got := r.call("POST", "/v1/apps/app_dashboard/api-keys", map[string]any{"name": "backend"}, ""); got.status != http.StatusConflict || code(got) != "builtin_app" {
+		t.Fatalf("key for the Dashboard app = %d %v, want 409 builtin_app", got.status, got.body)
+	}
+}
+
 func TestAPIKeysWaitForAPublicURLAndAreShownOnce(t *testing.T) {
 	r := newRig(t, config.Config{})
 	app := r.call("POST", "/v1/apps", map[string]string{"name": "LMS"}, "")

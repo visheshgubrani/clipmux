@@ -242,6 +242,8 @@ export type App = {
   public_url: string
   base_url: string
   max_token_lifetime_seconds: number
+  /** Where a browser sends upload parts: this server (filesystem storage) and each bucket's public endpoint. With base_url, what a page with the uploader and player must allow in its Content-Security-Policy. */
+  upload_origins: string[]
   signing_keys: {
     kid: string
     public_key_pem: string

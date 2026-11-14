@@ -280,18 +280,19 @@ type Outbox struct {
 }
 
 type Output struct {
-	ID           string
-	ProjectID    string
-	AssetID      string
-	Prefix       pgtype.Text
-	Status       string
-	Manifest     []byte
-	OutputFormat int32
-	KeyVersion   int32
-	CreatedAt    pgtype.Timestamptz
-	CommittedAt  pgtype.Timestamptz
-	RetiredAt    pgtype.Timestamptz
-	PurgedAt     pgtype.Timestamptz
+	ID              string
+	ProjectID       string
+	AssetID         string
+	Prefix          pgtype.Text
+	Status          string
+	Manifest        []byte
+	OutputFormat    int32
+	KeyVersion      int32
+	CreatedAt       pgtype.Timestamptz
+	CommittedAt     pgtype.Timestamptz
+	RetiredAt       pgtype.Timestamptz
+	PurgedAt        pgtype.Timestamptz
+	UnlistedSweptAt pgtype.Timestamptz
 }
 
 type Owner struct {
@@ -391,6 +392,7 @@ type Project struct {
 	BuiltinSpeech           bool
 	SpeechMode              string
 	AnalyticsKeySealed      []byte
+	DeviceKeySealed         []byte
 }
 
 type RetentionCursor struct {

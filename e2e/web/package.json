@@ -5,9 +5,11 @@
   "type": "module",
   "scripts": {
     "build": "vite build",
-    "test:browser": "playwright test"
+    "test:browser": "playwright test",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@clipmux/node": "workspace:*",
     "@clipmux/player": "workspace:*",
     "@clipmux/uploader": "workspace:*",
     "hls.js": "1.6.19"

@@ -1007,7 +1007,7 @@ P6-T06, carrying out D086 and answering P6 open question 1:
   - `image.yml` and `toolchain/check_agent.sh` fail if either form is missing them.
 - **A DCO, not a CLA** (open question 1). `CONTRIBUTING.md` asks for `git commit -s`. This follows the plan's recommendation: with no CLA, dual licensing later needs every contributor's consent, so the owner should confirm it (or switch to a CLA) before the first outside contribution. Enforcing the sign-off (a DCO app or check) is left for when outside contributions start.
 - **`CODE_OF_CONDUCT.md`** is Contributor Covenant 2.1, from `vod`, reporting through a private GitHub report. **`SECURITY.md`** points at GitHub private vulnerability reporting, with a 3-day acknowledgement and a 90-day window.
-- **The history is clean.** gitleaks v8.28.0 and trufflehog 3.90.8 scanned all 99 commits on every ref, and neither found a live secret ([security-review.md](security-review.md), "History scan"). Every hit is a test vector or the dev SeaweedFS credential; trufflehog verified none. Nothing needed rotating or scrubbing. `.gitleaks.toml` allows exactly those files, and `ci.yml`'s checks job now scans the full history on every pull request.
+- **The history is clean.** gitleaks v8.28.0 and trufflehog 3.90.8 scanned all 99 commits on every ref, and neither found a live secret ([security-review.md](security-review.md), "History scan"). Every hit is a test vector or the dev SeaweedFS credential; trufflehog verified none. Nothing needed rotating or scrubbing. `.gitleaks.toml` allows exactly those files. (Amended 2026-11-14: the scan was meant to run in `ci.yml` on every pull request, but the lean CI job (74634dc) dropped it; gitleaks runs locally before merging, per `.github/README.md`.)
 - **The threat table was reviewed against the code** ([security-review.md](security-review.md)). Of 31 rows, 22 hold and 9 hold in part; none is missing. Six findings go beyond the table, two of them medium:
   - without Landlock, the built-in worker's tools can read serve's environment;
   - the global sign-in failure limit lets anyone lock the owner out.
@@ -1479,3 +1479,66 @@ Decision:
 - **An upgrade re-pins the default image.** A provider's config records `image_chosen` when the owner entered the image. Otherwise, at boot and every 15 minutes, `dispatch.Repin` resolves this build's `CLIPMUX_WORKER_IMAGE` and, for the same repository, moves the pin (`SetExecutorImage`: the config only, so the provider stays verified and keeps its routing); Modal then starts converting the new image. RunPod keeps a private image's credentials itself, so it re-pins only a public image. A config from before `image_chosen` re-pins when its image is this build's repository.
 - **Modal's bill replaces the estimate where Modal has one.** Every 15 minutes `dispatch.RefreshBills` asks each executor that is a `dispatch.Biller`; Modal's reads its billing report for the `clipmux-{tag}` app (daily rows for the month's whole days and hourly rows for today's whole hours, since hourly reports span at most seven days), summing the cost in cents rounded up. `executor_configs` keeps `billed_month_cents` and `billed_through` (migration 00033). The month's spend, for the limit and the dashboard, is that bill plus the estimate only for the time since `billed_through`; without a bill this month (a plan without billing reports, RunPod, or a new month) it is the estimate, as before.
 Consequence: D055's limit counts Modal's real charges, egress included and before credits, and shows "from Modal's bill up to …". D058's "pinned at Connect" now moves with upgrades for the default image.
+
+## D120 The built-in worker requires Landlock; serve and workers are undumpable; seccomp denies namespaces — accepted (2026-11-14)
+Context: the security review's findings 1 and 6. Without Landlock, a media tool exploited by a hostile upload runs as serve's user with no file confinement: it can read `/proc/<serve>/environ` (the secrets key, the database password), the image's PID 1 (`tini`, same uid, dumpable, the same environment), and `secrets.key`, `content.key` and `storage/signing.key` in the data directory. `PR_SET_DUMPABLE` alone covers only the first.
+Decision:
+- **serve's built-in worker refuses to start when the probe reports Landlock ABI 0**, with one error saying why and what to do. `CLIPMUX_UNSANDBOXED_WORKER=true` stays the explicit opt-out; where only Landlock is missing the opted-out worker still passes `--sandbox`, so its tools keep the limits, `no_new_privs` and seccomp.
+- **serve and `clipmux worker` mark themselves undumpable** (`sandbox.Undumpable`, `PR_SET_DUMPABLE=0`) first thing; a failure is a warning. Another process of the same user then can't read their environment or ptrace them.
+- **Agents and serverless providers are unchanged.** Modal's gVisor reports Landlock ABI 0 by design (D051), and a provider machine holds only one attempt's token; an agent's tools run on the owner's own PC.
+- **Seccomp denies namespaces (finding 6)**, on amd64 and arm64: `unshare` and `setns` fail with EPERM, `clone` with any `CLONE_NEW*` flag (`BPF_JSET 0x7e020080` on its first argument) with EPERM, and `clone3` with ENOSYS, since its flags are in memory where seccomp can't read them; glibc then falls back to `clone`, as under Docker's default profile. A native agent's tools no longer reach user-namespace kernel surface.
+Consequence: amends D027's "Landlock is reported, not required" for the built-in worker, and its seccomp list. An install whose kernel lacks Landlock either encodes on a provider or an agent, or opts out knowing its tools can read serve's files.
+
+## D121 The owner's known device skips the global sign-in limit — accepted (2026-11-14)
+Context: the security review's finding 2. The global limit of 20 failed sign-ins per 15 minutes refused every address, so 20 wrong passwords from four addresses every 15 minutes kept the owner out. The setup-token limiter worked the same way.
+Decision:
+- **A successful sign-in, registration or password change sets `__Host-clipmux_device`** (`clipmux_device` on plain http): HttpOnly, Secure, SameSite=Strict, Path=/, one year. Its value is the owner ID, the issue time in microseconds, and an HMAC-SHA256 over both and the project. The key is 32 random bytes made on first use and sealed in `projects.device_key_sealed` (migration 00034, `secrets.Columns` as `projects_device`), like the analytics key.
+- **The cookie is worth one thing: a sign-in that skips the global limit.** The 5-per-address limit, the password and the second factor still apply. It is believed only if its MAC holds, it is under a year old, it names the project's owner, and it was issued no earlier than `owners.password_changed_at`, so a password change or `admin reset-password` retires every cookie issued before it. Only a cookie whose MAC holds costs a database read, and nothing is hashed before the limiter.
+- **Re-entering the password for an account change** (`passwordOK`: password, TOTP) uses the per-address limit only: the request already carries the owner's session.
+- **Wrong setup tokens are limited per address only.** The token is 130 bits, so the global limit only let others lock the installer out.
+- **Pairing keeps its global 100 per 15 minutes**: its code is about 39 bits, and an owner locked out of pairing for 15 minutes can still run `clipmux admin create-pairing`.
+Consequence: amends D024's "20 overall" and D067's setup-token limit. An owner on a new device during an attack still waits out the window; they can sign in from a device they used before, or reset the password on the host.
+
+## D122 A part URL binds the part's length — accepted (2026-11-14)
+Context: the security review's finding 5. On R2 and S3, a part URL didn't bind the part's length, so a holder of an upload token could PUT up to 5 GiB per part; complete then failed, but the bytes stayed until the upload was aborted.
+Decision:
+- **`Storage.PresignPart` takes the part's `size`.** The S3 adapter sets `ContentLength`, which the SDK's signer adds to `X-Amz-SignedHeaders`, so the store refuses a body of any other length (403). It refuses a size outside 1 byte to `PartSize`, since S3 doesn't keep the declared size. The filesystem adapter refuses a size other than the part's own and, as before, a body of any other length.
+- **Callers compute it** with `storage.PartLength`: the part size, except the last part, which holds the rest. `POST /v1/uploads/{id}/parts` and the worker API's source parts both do.
+- Browsers and Go's client send `Content-Length` themselves, so no client changes; CORS needs nothing, since `Content-Length` isn't an author header.
+Consequence: amends D034's "the declared size is ignored" for signing: parts are still 32 MiB, and each URL now carries its length.
+
+## D123 The Dashboard app takes no API keys; unsandboxed agents take no URL imports — accepted (2026-11-14)
+Context: the security review's finding 3. An unsandboxed agent claims pinned jobs and "owner jobs", which `job_claimable_by` (00024) defined as the Dashboard app's. But an API key for the Dashboard app, or an import from any URL, could create those, so a file from anywhere could reach ffmpeg on the owner's unconfined PC.
+Decision:
+- **The routes that issue keys refuse the built-in app with `409 builtin_app`:** `POST /v1/apps/{id}/api-keys`, `POST /v1/apps/{id}/credentials`, and approving an app pairing for it (`apppairings.Issue`). `apikeys.Create` itself doesn't check, so tests can still act as that app.
+- **Migration 00035 revokes the keys the built-in app already has**, and redefines `job_claimable_by` so an untrusted worker's owner jobs exclude any asset with an `import` job. Its Down restores the old function and leaves the keys revoked.
+- So the owner's jobs are what the owner uploaded in the dashboard or pinned to the agent. The owner's session acting as an app (D025) still works.
+Consequence: amends D043's "owner jobs" and D025: an integration needs its own app. The deploy checks production's built-in-app keys before migrating, since 00035 revokes them.
+
+## D124 Only the committed manifest's files are served, and the rest are swept — accepted (2026-11-14)
+Context: the security review's finding 4. Commit verifies storage against the manifest, but the worker's PUT URLs last 15 minutes, so a file could be added under an output after its verification, and delivery served any grammar-valid name under a committed output.
+Decision:
+- **Built-in delivery serves only the names `out.Manifest` lists**, pinned paths and the unpinned poster alike. The delivery cache keeps each output's listed files with the output (D072), so a segment still costs no query.
+- **The `file_retention` loop sweeps each committed output once** (`SweepUnlisted`): 16 minutes after its commit (`CommitGrace`), when no URL can write there, it deletes every object under the output's prefix that the manifest doesn't list, `manifest.json` aside, and records `outputs.unlisted_swept_at` (migration 00036). Outputs committed earlier are swept on the first passes, 100 a pass. A manifest that lists nothing is left alone. This covers the Cloudflare Worker, which reads the bucket, without changing the shared delivery vectors.
+Consequence: on the Worker a file added after commit can be served until the hourly loop sweeps it, at most about 76 minutes after the commit (known gap); giving the Worker the manifest check would change the shared delivery vectors and the route records, and is left for later.
+
+## D125 npm publishes from the private repository with a token, without provenance — accepted (2026-11-14)
+Context: Edural integrates through the packages, so they ship before launch. The repository is still private, and npm attests provenance only for public sources, so `npm publish --provenance` from it is refused.
+Decision:
+- **`release.yml` publishes with the `NPM_TOKEN` secret**: a granular token with read and write on the `@clipmux` scope. There is no `--provenance` and no `publishConfig.provenance` until launch (P6-T20), when the repository goes public and trusted publishing replaces the token.
+- **This release is dispatched by hand** (`gh workflow run release.yml -f dry_run=false` on main), not tagged: a `v*` tag would also run the image, agent, exit and Safari workflows, and `v1.0.0` stays the launch tag. Safari runs on the owner's Mac.
+- **Versions:** `@clipmux/node` 0.1.0 (its first release), `@clipmux/player` 0.6.0, `@clipmux/uploader` 0.5.0. `CHANGELOG.md` records each.
+Consequence: amends D092's provenance and its trusted publishing. The `repository` links 404 for outsiders until launch.
+
+## D126 The SDKs fit together as documented — accepted (2026-11-14)
+Context: planning Edural's move found the documented hand-offs between the three packages didn't compile or didn't work: `listen` failed on its first event, a ClipMux 413 became a retried 502, `getToken` never said `native`, and the poster URL carried the playback token.
+Decision:
+- **The events poll is by time.** `after` is the newest event's `created_at`, as the server always required, and the window moves as `internal/listen` does.
+- **`uploads.create` returns the token as required**, so its answer goes into `ClipMuxUpload` as it is; a replay without one throws `upload_not_active`.
+- **The handlers keep ClipMux's refusals:** 400, 409, 413 and 422 pass through, 429 with `Retry-After`; a wrong key or app is 500 `clipmux_misconfigured`; unreachable is 502 `clipmux_unavailable`.
+- **`getToken({ playbackId, native })`**, and `playback.token()` signs native tokens with the session's rule.
+- **A session's `poster_url` has a poster-only token** (audience `t`), in node and on the share page, as docs/api.md said.
+- **`GET /v1/app` lists `upload_origins`**, and `doctor` prints the CSP sources a page needs. The e2e suite enforces that CSP on the player and uploader pages.
+- **One `listen` story:** `npx @clipmux/node listen` for an app built on the SDK (it signs with the app's own secret); `clipmux listen` for other stacks, now also reading `CLIPMUX_URL`.
+- **`e2e/web/sdk-types.ts`** checks the hand-offs at compile time, and `packages/node/scripts/live-check.ts` is the release gate against a live instance.
+Consequence: the player's `GetToken` and `PlaybackSession` types and node's `WebhookEvent` changed shape; pre-1.0, that is a minor version.

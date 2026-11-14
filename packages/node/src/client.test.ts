@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
-import { ClipMux } from './client.ts'
+import { ClipMux, VERSION } from './client.ts'
 import { ClipMuxConfigError, ClipMuxError } from './errors.ts'
 import type { Asset } from './schema.gen.ts'
 import { signWebhook } from './webhooks.ts'
@@ -77,7 +77,14 @@ const claims = (token: string) =>
 
 test('uploads.create sends the key and an idempotency key, and adds endpoint for the browser', async () => {
   const f = fake(
-    json(201, { upload_id: 'upl_1', asset_id: 'ast_1', part_size: 1, part_count: 1, playback_ids: [] }),
+    json(201, {
+      upload_id: 'upl_1',
+      asset_id: 'ast_1',
+      upload_token: 'upt_1',
+      part_size: 1,
+      part_count: 1,
+      playback_ids: [],
+    }),
   )
   const cm = new ClipMux({ env, fetch: f.fetch })
   const up = await cm.uploads.create({ size: 10, passthrough: 'lesson_42' })
@@ -87,6 +94,29 @@ test('uploads.create sends the key and an idempotency key, and adds endpoint for
   assert.equal(c.headers.get('Authorization'), 'Bearer cmx_test')
   assert.match(c.headers.get('Idempotency-Key') ?? '', /^[0-9a-f-]{36}$/)
   assert.deepEqual(c.body, { size: 10, passthrough: 'lesson_42' })
+})
+
+test('uploads.create returns the upload token, or refuses a replay that has none', async () => {
+  const f = fake(
+    json(201, {
+      upload_id: 'upl_1',
+      asset_id: 'ast_1',
+      upload_token: 'upt_1',
+      part_size: 1,
+      part_count: 1,
+      playback_ids: [],
+    }),
+    // An idempotent replay of an upload that has since completed (D034).
+    json(200, { upload_id: 'upl_1', asset_id: 'ast_1', part_size: 1, part_count: 1, playback_ids: [] }),
+  )
+  const cm = new ClipMux({ env, fetch: f.fetch })
+  const up = await cm.uploads.create({ size: 10 }, { idempotencyKey: 'k1' })
+  const token: string = up.upload_token
+  assert.equal(token, 'upt_1')
+  await assert.rejects(
+    cm.uploads.create({ size: 10 }, { idempotencyKey: 'k1' }),
+    (e: unknown) => e instanceof ClipMuxError && e.code === 'upload_not_active' && e.status === 200,
+  )
 })
 
 test('a retry reuses the idempotency key and honours Retry-After', async () => {
@@ -131,8 +161,10 @@ test('a missing setting fails only the call that needs it, naming the variable',
   assert.throws(() => new ClipMux({ env: { CLIPMUX_URL: 'video.example.com' } }), /must be an http\(s\) URL/)
 })
 
+const appInfo = () => json(200, { max_token_lifetime_seconds: 604800, base_url: 'https://media.example.net' })
+
 test('playback.token signs sub, aud, a 15-minute default and the viewer', async () => {
-  const cm = new ClipMux({ env, fetch: fake().fetch })
+  const cm = new ClipMux({ env, fetch: fake(appInfo()).fetch })
   const c = claims(await cm.playback.token('pid_signed', { viewerId: 'stu_1' }))
   assert.equal(c.sub, 'pid_signed')
   assert.equal(c.aud, 'v')
@@ -145,13 +177,50 @@ test('playback.token signs sub, aud, a 15-minute default and the viewer', async 
   await assert.rejects(cm.playback.token('pid_signed', { expiresIn: '8d' }), /longer than the server allows/)
 })
 
+test("playback.token for a native player lasts the session, within the server's maximum", async () => {
+  // The first token reads the server's maximum from /v1/app, once.
+  const f = fake(json(200, { max_token_lifetime_seconds: 8 * 3600, base_url: 'https://media.example.net' }))
+  const cm = new ClipMux({ env, fetch: f.fetch })
+  const ttl = async (o: Parameters<typeof cm.playback.token>[1]) => {
+    const c = claims(await cm.playback.token('pid_signed', o))
+    return c.exp - c.iat
+  }
+  assert.equal(await ttl({ native: true, durationSeconds: 3 * 3600 }), 6 * 3600)
+  assert.equal(await ttl({ native: true, durationSeconds: 600 }), 4 * 3600)
+  assert.equal(await ttl({ native: true }), 8 * 3600, '12 h without a duration, capped at the maximum')
+  assert.equal(await ttl({ native: false }), 900)
+  await assert.rejects(
+    cm.playback.token('pid_signed', { expiresIn: '9h' }),
+    /longer than the server allows \(28800 s\)/,
+  )
+  assert.equal(f.calls.length, 1)
+  assert.equal(f.calls[0]?.url.pathname, '/v1/app')
+})
+
+test('playback.token waits at most 3 s for /v1/app, then signs with the default maximum', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const never = (() => new Promise<Response>(() => {})) as typeof globalThis.fetch
+  const cm = new ClipMux({ env, fetch: never })
+  const signing = cm.playback.token('pid_signed', { expiresIn: '6d' })
+  await Promise.resolve()
+  t.mock.timers.tick(3000)
+  const c = claims(await signing)
+  assert.equal(c.exp - c.iat, 6 * 86400)
+})
+
 test("playback.session picks the asset's own signed ID, signs it, and lists ready tracks", async () => {
-  const cm = new ClipMux({ env, fetch: fake().fetch })
+  const cm = new ClipMux({ env, fetch: fake(appInfo()).fetch })
   const s = await cm.playback.session(asset({ title: 'Lesson 42' }), { viewerId: 'stu_1' })
   assert.equal(s.playback_id, 'pid_signed')
   assert.equal(s.base_url, 'https://media.example.net')
   assert.equal(claims(s.token).exp - claims(s.token).iat, 900)
-  assert.equal(s.poster_url, `https://media.example.net/v/${s.token}/pid_signed/poster.jpg`)
+  // The poster has its own token that fetches only the poster (docs/api.md).
+  const m = /^https:\/\/media\.example\.net\/v\/([^/]+)\/pid_signed\/poster\.jpg$/.exec(s.poster_url)
+  assert.ok(m, s.poster_url)
+  const poster = claims(m[1] as string)
+  assert.equal(poster.aud, 't')
+  assert.equal(poster.sub, 'pid_signed')
+  assert.equal(poster.exp, claims(s.token).exp)
   assert.deepEqual(
     s.tracks.map((t) => t.id),
     ['trk_ready'],
@@ -213,12 +282,18 @@ test('assets.changes pages until next_cursor runs out', async () => {
 test('waitUntilReady long-polls events until the asset is ready, and fails on errored', async () => {
   const f = fake(
     json(200, asset({ status: 'processing' })),
-    json(200, { data: [{ id: 'evt_1', created_at: '', body: {} }] }),
+    json(200, { data: [{ id: 'evt_1', created_at: '2027-01-01T00:00:00.123456Z', body: {} }] }),
+    json(200, asset({ status: 'processing' })),
+    json(200, { data: [] }),
     json(200, asset()),
   )
   const cm = new ClipMux({ env, fetch: f.fetch })
   assert.equal((await cm.assets.waitUntilReady('ast_1')).status, 'ready')
   assert.equal(f.calls[1]?.url.pathname, '/v1/events')
+  // The server takes times only (internal/assets/events.go): after is the
+  // newest event's created_at, as sent.
+  assert.equal(f.calls[1]?.url.searchParams.get('after'), null)
+  assert.equal(f.calls[3]?.url.searchParams.get('after'), '2027-01-01T00:00:00.123456Z')
   const g = fake(json(200, asset({ status: 'errored', error_code: 'transcode_failed' })))
   await assert.rejects(new ClipMux({ env, fetch: g.fetch }).assets.waitUntilReady('ast_1'), (e: unknown) => {
     return (
@@ -237,4 +312,9 @@ test('webhooks.verify uses CLIPMUX_WEBHOOK_SECRET', async () => {
     'x-webhook-signature': sig,
   })
   assert.equal(ev.type, 'video.asset.ready')
+})
+
+test('VERSION, sent in the User-Agent, is the package version', () => {
+  const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
+  assert.equal(VERSION, pkg.version)
 })

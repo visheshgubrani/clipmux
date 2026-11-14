@@ -6,7 +6,14 @@ const params = new URLSearchParams(location.search)
 const ttl = Number(params.get('ttl') ?? 3600)
 const deny = params.get('deny') === '1'
 const cfg = await config()
-const state = { getTokenCalls: 0, tokenEvents: 0, denied: false, errors: 0, chapters: [] as unknown[] }
+const state = {
+  getTokenCalls: 0,
+  getTokenArgs: [] as unknown[],
+  tokenEvents: 0,
+  denied: false,
+  errors: 0,
+  chapters: [] as unknown[],
+}
 expose(state)
 
 const el = document.createElement('clipmux-player')
@@ -35,8 +42,9 @@ if (params.get('chapters') === 'late') {
 el.addEventListener('clipmux-chapters', (e) => {
   state.chapters = (e as CustomEvent<{ chapters: unknown[] }>).detail.chapters
 })
-el.getToken = async () => {
+el.getToken = async (request) => {
   state.getTokenCalls++
+  state.getTokenArgs.push(request)
   if (deny && state.getTokenCalls > 1) return null
   return token(ttl)
 }

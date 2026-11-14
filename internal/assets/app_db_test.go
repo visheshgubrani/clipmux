@@ -36,7 +36,11 @@ func TestAppDescribesTheKeysOwnApp(t *testing.T) {
 		t.Fatal(err)
 	}
 	mux := http.NewServeMux()
-	assets.New(pool).Register(mux)
+	api := assets.New(pool)
+	api.UploadOrigins = func(context.Context, string) ([]string, error) {
+		return []string{"https://acct.r2.cloudflarestorage.com"}, nil
+	}
+	api.Register(mux)
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
@@ -61,6 +65,10 @@ func TestAppDescribesTheKeysOwnApp(t *testing.T) {
 		"id": "app_lms", "name": "LMS", "scopes": []any{"uploads:write"},
 		"public_url": "https://video.example.test", "base_url": "https://media.example.test",
 		"max_token_lifetime_seconds": float64(86400),
+		// Where a browser sends upload parts: the server (filesystem
+		// storage, /_storage) and the buckets' public endpoints. With
+		// base_url, these are what an app's CSP must allow.
+		"upload_origins": []any{"https://video.example.test", "https://acct.r2.cloudflarestorage.com"},
 		"signing_keys": []any{
 			map[string]any{"kid": "kid_new", "public_key_pem": "PEM-NEW", "created_at": "2026-11-12T10:00:00Z"},
 			map[string]any{"kid": "kid_retiring", "public_key_pem": "PEM-OLD", "created_at": "2026-11-01T10:00:00Z", "retired_at": "2099-01-01T00:00:00Z"},

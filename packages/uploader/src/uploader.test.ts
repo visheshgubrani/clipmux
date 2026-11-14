@@ -192,6 +192,15 @@ test('a file that does not match the upload is refused before any byte is sent',
   assert.deepEqual(f.calls, [])
 })
 
+test('an upload without a token is refused at once, not sent as Bearer undefined', () => {
+  const upload = { upload_id: 'upl_1', part_size: 4, part_count: 3 } as unknown as CreatedUpload
+  assert.throws(
+    () =>
+      new ClipMuxUpload(new Blob([new Uint8Array(10)]), { upload, endpoint: 'https://video.example.com' }),
+    /upload_token/,
+  )
+})
+
 test('250 parts are signed in windows of 100', async () => {
   const f = fakeClipMux({ partSize: 1, size: 250 })
   await f.upload({ concurrency: 4 }).start()

@@ -53,6 +53,9 @@ type Credentials struct {
 // transaction, so a refused webhook URL leaves no key behind. box seals the
 // webhook secret and may be nil without a webhook URL.
 func Issue(ctx context.Context, conn db.DBTX, box *secrets.Box, app db.App, o Options) (Credentials, error) {
+	if app.IsBuiltin {
+		return Credentials{}, apikeys.ErrBuiltinApp
+	}
 	if !o.Local && !settings.KeysAllowed(o.PublicURL) {
 		return Credentials{}, ErrPublicURLRequired
 	}
