@@ -58,7 +58,9 @@ player.getToken = async ({ playbackId, native }) => {
 How refresh works: tokens ride in the URL path, so on a `401 token_expired` the
 player calls `getToken({ playbackId, native })` once, puts the new token into that request and every
 later one, and retries; hls.js never sees the error. `null` (or a `403` from
-delivery) stops playback and fires `clipmux-denied`.
+delivery) stops playback and fires `clipmux-denied`. A playback ID that was
+revoked or never existed is a `404` from delivery: `clipmux-error` with
+`status: 404`, which an app shows as "this video was removed".
 
 **Native HLS can't refresh.** Where the browser plays HLS itself (iOS before
 17.1, AirPlay, Chromecast), the token must outlive the session: sign it for the
