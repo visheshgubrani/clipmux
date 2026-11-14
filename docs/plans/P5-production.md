@@ -675,7 +675,8 @@ Each answer becomes a decision record before the task that needs it.
 9. **Two wakes per captioned video on a serverless primary?** (T14)
    Recommendation: accept for now; a `--once` machine could later claim its
    asset's follow-up transcription. `local_then_api` or `api` avoids the
-   second wake (D075).
+   second wake (D075). Answered by D128: the encode's machine is handed
+   its asset's transcription when the provider is the primary.
 10. **The LMS library at cutover:** regenerate with whisper, or import its
     existing VTTs as `uploaded` tracks in a follow-up? (after the phase)
 11. **Refusals from Claude?** (T17) Recommendation: `model_refused`, with no

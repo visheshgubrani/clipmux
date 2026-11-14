@@ -47,8 +47,13 @@ type pods struct {
 	// cold start the test controls.
 	gate chan struct{}
 	// speech, if set, lets each pod transcribe on the CPU with this
-	// machine's whisper.cpp and the models in CLIPMUX_TEST_MODELS_DIR.
+	// machine's whisper.cpp and the models in CLIPMUX_TEST_MODELS_DIR. A
+	// pod woken for an encode proves it only if handed the transcription
+	// (D128).
 	speech bool
+	// brokenFollowOn, with speech, makes that proof fail on encode pods, as
+	// on a machine that can't transcribe.
+	brokenFollowOn bool
 }
 
 func newPods(t *testing.T, rp *runpodtest.Fake) *pods {
@@ -122,11 +127,22 @@ func (ps *pods) run(ctx context.Context, p runpodtest.Pod) {
 	for k, v := range p.Env {
 		env = append(env, k+"="+v)
 	}
-	if ps.speech { // after the pod's own: the last value wins
+	// After the pod's own: the last value wins.
+	_, encodePod := p.Env["CLIPMUX_FOLLOW_ON_SPEECH"]
+	switch {
+	case !ps.speech:
+		// Never handed a transcription: it would fetch the models.
+		env = append(env, "CLIPMUX_FOLLOW_ON_SPEECH=off")
+	case encodePod:
+		env = append(env, "CLIPMUX_FOLLOW_ON_SPEECH=cpu", "CLIPMUX_MODELS_DIR="+os.Getenv("CLIPMUX_TEST_MODELS_DIR"))
+	default:
 		env = append(env, "CLIPMUX_SPEECH=cpu", "CLIPMUX_MODELS_DIR="+os.Getenv("CLIPMUX_TEST_MODELS_DIR"))
-		if v := os.Getenv("CLIPMUX_WHISPER"); v != "" {
-			env = append(env, "CLIPMUX_WHISPER="+v)
-		}
+	}
+	if v := os.Getenv("CLIPMUX_WHISPER"); ps.speech && v != "" {
+		env = append(env, "CLIPMUX_WHISPER="+v)
+	}
+	if ps.speech && encodePod && ps.brokenFollowOn {
+		env = append(env, "CLIPMUX_WHISPER="+filepath.Join(home, "no-whisper"))
 	}
 	cmd := exec.Command(bin, p.DockerStartCmd...)
 	cmd.Env = env
@@ -192,8 +208,9 @@ type connectOpts struct {
 	maxConcurrent    int
 	monthlyLimit     int64
 	rateCentsPerHour int
-	// speech lets the pods transcribe (pods.speech).
-	speech bool
+	// speech lets the pods transcribe (pods.speech), brokenFollowOn not
+	// after an encode (pods.brokenFollowOn).
+	speech, brokenFollowOn bool
 }
 
 func newCloud(t *testing.T, opts connectOpts) *cloud {
@@ -207,7 +224,7 @@ func newCloud(t *testing.T, opts connectOpts) *cloud {
 	}
 	rp := runpodtest.New(t)
 	ps := newPods(t, rp)
-	ps.speech = opts.speech
+	ps.speech, ps.brokenFollowOn = opts.speech, opts.brokenFollowOn
 	reg := registrytest.New(t)
 	certFile := filepath.Join(t.TempDir(), "registry.pem")
 	if err := os.WriteFile(certFile, reg.CertPEM, 0o600); err != nil {

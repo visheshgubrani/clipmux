@@ -35,7 +35,7 @@ func (f *fixture) subtitles(assetID string, chapters bool) db.Job {
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	if err := tracks.QueueTranscriptions(ctx, qs, asset, true); err != nil {
+	if _, err := tracks.QueueTranscriptions(ctx, qs, asset, true); err != nil {
 		f.t.Fatal(err)
 	}
 	jobs := f.jobsOf(assetID)
@@ -255,7 +255,7 @@ func TestATranscriptionIsQueuedOnlyWithAudio(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := tracks.QueueTranscriptions(ctx, qs, asset, false); err != nil {
+	if _, err := tracks.QueueTranscriptions(ctx, qs, asset, false); err != nil {
 		t.Fatal(err)
 	}
 	if jobs := f.jobsOf(silent); len(jobs) != 0 {

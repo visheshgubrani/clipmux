@@ -126,7 +126,7 @@ func TestReportRetriesServerErrorsButNotRefusals(t *testing.T) {
 		t.Fatalf("fail after two 500s: %v, %d calls", err, calls.Load())
 	}
 	calls.Store(10)
-	if _, err := w.report(context.Background(), job, "complete", map[string]any{}); err == nil || calls.Load() != 11 {
+	if _, err := w.report(context.Background(), job, "complete", map[string]any{}, nil); err == nil || calls.Load() != 11 {
 		t.Fatalf("a 401 must fail at once: %v, %d calls", err, calls.Load()-10)
 	}
 }

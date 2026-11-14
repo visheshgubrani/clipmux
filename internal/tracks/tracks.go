@@ -122,27 +122,27 @@ func Create(ctx context.Context, qs *db.Queries, projectID, assetID string, g Ge
 // each subtitles track still being made, with no transcription queued,
 // gets one, reading that output; or, when the output has no audio, ends
 // with no_audio and no job. A track job already active on the asset (a
-// chapters regeneration) leaves them to be queued when it ends.
-func QueueTranscriptions(ctx context.Context, qs *db.Queries, asset db.Asset, hasAudio bool) error {
+// chapters regeneration) leaves them to be queued when it ends. It returns
+// the transcription it queued, if any.
+func QueueTranscriptions(ctx context.Context, qs *db.Queries, asset db.Asset, hasAudio bool) (db.Job, error) {
 	todo, err := qs.ListTracksToTranscribe(ctx, asset.ID)
 	if err != nil || len(todo) == 0 {
-		return err
+		return db.Job{}, err
 	}
 	if !hasAudio {
 		for _, t := range todo {
 			if err := fail(ctx, qs, t.ID, CodeNoAudio, nil); err != nil {
-				return err
+				return db.Job{}, err
 			}
 		}
-		return nil
+		return db.Job{}, nil
 	}
 	active, err := qs.GetActiveJobForAsset(ctx, db.GetActiveJobForAssetParams{AssetID: asset.ID, Kinds: TrackJobs})
 	if err != nil || len(active) > 0 {
-		return err
+		return db.Job{}, err
 	}
 	// At most one subtitles track is preparing per asset (tracks_one_preparing).
-	_, err = QueueJob(ctx, qs, asset, JobTranscribe, todo[0].ID)
-	return err
+	return QueueJob(ctx, qs, asset, JobTranscribe, todo[0].ID)
 }
 
 // QueueJob queues the job that makes a track: a transcription (routed like
@@ -252,5 +252,6 @@ func QueueNext(ctx context.Context, qs *db.Queries, assetID string) error {
 	if err := json.Unmarshal(out.Manifest, &m); err != nil {
 		return fmt.Errorf("output %s manifest: %w", out.ID, err)
 	}
-	return QueueTranscriptions(ctx, qs, asset, m.Audio)
+	_, err = QueueTranscriptions(ctx, qs, asset, m.Audio)
+	return err
 }

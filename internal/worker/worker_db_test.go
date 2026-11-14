@@ -219,7 +219,7 @@ func TestACancelledJobStopsTheWorkerWithoutReportingAFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	start := time.Now()
-	if err := r.worker.handle(ctx, job); err != nil {
+	if _, err := r.worker.handle(ctx, job); err != nil {
 		t.Fatalf("handle: %v", err)
 	}
 	if time.Since(start) > 20*time.Second {
@@ -252,7 +252,7 @@ func TestAWorkerShuttingDownHandsItsAttemptBack(t *testing.T) {
 		t.Fatalf("claim: %v, %v", job, err)
 	}
 	time.AfterFunc(300*time.Millisecond, cancel) // SIGINT mid-encode
-	if err := r.worker.handle(ctx, job); !errors.Is(err, context.Canceled) {
+	if _, err := r.worker.handle(ctx, job); !errors.Is(err, context.Canceled) {
 		t.Fatalf("handle: %v, want context.Canceled", err)
 	}
 	var status, code, jobStatus string

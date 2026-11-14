@@ -153,3 +153,39 @@ WHERE id = sqlc.arg(id) AND config->>'image' = sqlc.arg(old_image)::text;
 -- The provider's own bill for this month, up to through (00033).
 UPDATE executor_configs SET billed_month_cents = sqlc.arg(cents), billed_through = sqlc.arg(through), billed_checked_at = now()
 WHERE id = sqlc.arg(id);
+
+-- Hand-offs (D128): a machine woken for an encode goes on to the asset's
+-- transcription under a new dispatch instead of stopping.
+
+-- name: ProviderHasRoomForHandOff :one
+-- Called after LockExecutorConfigByKind, like ProviderHasRoom. The machine
+-- from_id already counts moves to the new dispatch, so it isn't counted
+-- twice; no wake happens, so a wake backoff doesn't apply. The monthly
+-- limit does (D055).
+SELECT ((SELECT count(*) FROM dispatches d
+         WHERE d.executor_config_id = c.id AND d.id <> sqlc.arg(from_id)::text
+           AND (d.status <> 'ended' OR (d.instance_id IS NOT NULL AND d.stopped_at IS NULL))) < c.max_concurrent
+        AND provider_month_cents(c.id) + c.rate_cents_per_hour * job_estimated_seconds(sqlc.arg(asset_id)::text) / 3600
+            <= c.monthly_limit_cents)::boolean
+FROM executor_configs c WHERE c.id = sqlc.arg(id)::text;
+
+-- name: HandOffDispatch :one
+-- The dispatch ends with its machine still running for the next one: it is
+-- marked stopped (its time ends where the next dispatch's starts) and no
+-- stop is queued.
+UPDATE dispatches SET status = 'ended', end_reason = 'handed_off', ended_at = now(), stopped_at = now()
+WHERE id = sqlc.arg(id) AND status = 'claimed' AND attempt_id = sqlc.arg(attempt_id)::text AND instance_id IS NOT NULL
+RETURNING *;
+
+-- name: CreateHandOffDispatch :one
+-- The next job's dispatch, already woken on the same machine: it must
+-- claim within the hand-off window, or it ends as a wake timeout and its
+-- job is routed afresh.
+INSERT INTO dispatches (id, project_id, job_id, executor_config_id, kind, key_hash, key_sealed, rate_cents_per_hour,
+                        claim_deadline, reserved_seconds, instance_id, woken_at)
+SELECT sqlc.arg(id), c.project_id, sqlc.arg(job_id), c.id, c.kind, sqlc.arg(key_hash), sqlc.arg(key_sealed),
+       c.rate_cents_per_hour, now() + make_interval(secs => sqlc.arg(claim_window_seconds)::double precision),
+       job_estimated_seconds(sqlc.arg(asset_id)), sqlc.arg(instance_id), now()
+FROM executor_configs c
+WHERE c.id = sqlc.arg(executor_config_id)
+RETURNING *;

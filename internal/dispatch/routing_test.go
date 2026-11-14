@@ -39,13 +39,15 @@ func TestRoutingWithoutAProvider(t *testing.T) {
 	}
 }
 
+// Speech stays off before any job but a transcription (D118), and such a
+// machine proves it only if handed the asset's transcription next (D128).
 func TestWakeEnvTurnsSpeechOffForAnythingButTranscription(t *testing.T) {
 	for _, tc := range []struct {
-		kind, speech string
+		kind, speech, followOn string
 	}{
-		{"transcode", "off"},
-		{"reencode", "off"},
-		{"transcribe", ""},
+		{"transcode", "off", "auto"},
+		{"reencode", "off", "auto"},
+		{"transcribe", "", ""},
 	} {
 		env := WakeEnv("https://video.example.com", "cmxd_secret", tc.kind)
 		if env["CLIPMUX_SERVER"] != "https://video.example.com" || env["CLIPMUX_WORKER_KEY"] != "cmxd_secret" {
@@ -53,6 +55,9 @@ func TestWakeEnvTurnsSpeechOffForAnythingButTranscription(t *testing.T) {
 		}
 		if got, set := env["CLIPMUX_SPEECH"]; got != tc.speech || set != (tc.speech != "") {
 			t.Errorf("%s: CLIPMUX_SPEECH = %q (set %v), want %q", tc.kind, got, set, tc.speech)
+		}
+		if got, set := env["CLIPMUX_FOLLOW_ON_SPEECH"]; got != tc.followOn || set != (tc.followOn != "") {
+			t.Errorf("%s: CLIPMUX_FOLLOW_ON_SPEECH = %q (set %v), want %q", tc.kind, got, set, tc.followOn)
 		}
 	}
 }

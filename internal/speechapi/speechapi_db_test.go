@@ -241,7 +241,7 @@ func (r *rig) subtitles() db.Job {
 	if err != nil {
 		r.t.Fatal(err)
 	}
-	if err := tracks.QueueTranscriptions(ctx, qs, asset, true); err != nil {
+	if _, err := tracks.QueueTranscriptions(ctx, qs, asset, true); err != nil {
 		r.t.Fatal(err)
 	}
 	return r.transcription()
