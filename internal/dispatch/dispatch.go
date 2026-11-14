@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -197,7 +198,80 @@ const (
 	EndAttemptEnded = "attempt_ended"
 	// EndMaxLifetime: the dispatch outlived MaxLifetime.
 	EndMaxLifetime = "max_lifetime"
+	// EndHandedOff: the machine's job committed and the machine went on to
+	// the asset's next job under a new dispatch (HandOff), so nothing was
+	// stopped.
+	EndHandedOff = "handed_off"
 )
+
+// HandOffWindow is how long a machine handed its next job has to claim it.
+// It claims at once, with the key the commit's answer carried; if that
+// answer was lost, the dispatch ends as a wake timeout after this, the
+// machine is stopped, and the job is routed like any other.
+const HandOffWindow = 2 * time.Minute
+
+// HandOff is outputs.Committer.HandOff: in the commit of attempt a, it hands
+// a's machine the job just queued for the same asset, rather than stop that
+// machine and wake another for the job (D128). That happens only when the
+// worker said at its claim that it can take a job of that kind next, the
+// job is routed to the machine's own provider, and the provider is still
+// connected with room under its limits. a's dispatch ends handed off, with
+// no stop, and a new dispatch for the job, already woken on the same
+// machine, takes its place. HandOff returns the new dispatch's one-time key
+// for the commit to answer with, or "" when there is no hand-off.
+func (s *Service) HandOff(ctx context.Context, qs *db.Queries, a db.Attempt, job db.Job) (string, error) {
+	if !a.DispatchID.Valid || job.Status != "queued" || !followsOn(a.WorkerInfo, job.Kind) {
+		return "", nil
+	}
+	d, err := qs.LockDispatch(ctx, a.DispatchID.String)
+	if err != nil {
+		return "", fmt.Errorf("lock dispatch: %w", err)
+	}
+	if d.Status != "claimed" || d.AttemptID.String != a.ID || !d.InstanceID.Valid || job.RoutedTo.String != d.Kind {
+		return "", nil
+	}
+	// The provider's lock serialises this with routers, as in Route.
+	p, err := qs.LockExecutorConfigByKind(ctx, db.LockExecutorConfigByKindParams{ProjectID: job.ProjectID, Kind: d.Kind})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("lock provider: %w", err)
+	}
+	if p.ID != d.ExecutorConfigID || p.SecretsEncrypted == nil {
+		return "", nil // disconnected, or connected again as another row
+	}
+	room, err := qs.ProviderHasRoomForHandOff(ctx, db.ProviderHasRoomForHandOffParams{ID: p.ID, FromID: d.ID, AssetID: job.AssetID})
+	if err != nil {
+		return "", fmt.Errorf("provider room: %w", err)
+	}
+	if !room {
+		return "", nil
+	}
+	if _, err := qs.HandOffDispatch(ctx, db.HandOffDispatchParams{ID: d.ID, AttemptID: a.ID}); err != nil {
+		return "", fmt.Errorf("hand off dispatch: %w", err)
+	}
+	id := ids.New(ids.Dispatch)
+	key := KeyPrefix + rand.Text()
+	if _, err := qs.CreateHandOffDispatch(ctx, db.CreateHandOffDispatchParams{
+		ID: id, JobID: job.ID, ExecutorConfigID: p.ID, AssetID: job.AssetID, InstanceID: d.InstanceID,
+		KeyHash: hash(key), KeySealed: s.box.Seal("dispatches", id, []byte(key)),
+		ClaimWindowSeconds: HandOffWindow.Seconds(),
+	}); err != nil {
+		return "", fmt.Errorf("create hand-off dispatch: %w", err)
+	}
+	s.Logger.Info("handed a machine on to the next job", "from", d.ID, "dispatch", id, "job", job.ID, "kind", job.Kind, "provider", d.Kind)
+	return key, nil
+}
+
+// followsOn reports whether the worker's claim said it can take a job of
+// kind after its own (workerapi's follow_on).
+func followsOn(workerInfo []byte, kind string) bool {
+	var w struct {
+		FollowOn []string `json:"follow_on"`
+	}
+	return json.Unmarshal(workerInfo, &w) == nil && slices.Contains(w.FollowOn, kind)
+}
 
 // Publish wakes and stops machines for pending outbox rows, up to limit,
 // and returns how many it handled. Like the route publisher, it calls the
@@ -251,13 +325,17 @@ func (s *Service) Publish(ctx context.Context, limit int) (int, error) {
 }
 
 // WakeEnv is what a woken machine is told: where serve is, its one-time
-// key, and, for any job but a transcription, to skip speech. A machine runs
-// the one job it was woken for, so proving speech (loading the 0.9 GB
-// model) would only delay an encode.
+// key, and, for any job but a transcription, to skip speech before it,
+// since proving speech (loading the 0.9 GB model) would only delay an
+// encode (D118). Such a machine may still be handed the asset's
+// transcription after its encode (HandOff, D128):
+// CLIPMUX_FOLLOW_ON_SPEECH tells it to prove speech then. A worker from
+// before hand-offs ignores it and keeps speech off.
 func WakeEnv(server, key, jobKind string) map[string]string {
 	env := map[string]string{"CLIPMUX_SERVER": server, "CLIPMUX_WORKER_KEY": key}
 	if jobKind != "transcribe" {
 		env["CLIPMUX_SPEECH"] = "off"
+		env["CLIPMUX_FOLLOW_ON_SPEECH"] = "auto"
 	}
 	return env
 }

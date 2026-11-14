@@ -67,6 +67,67 @@ func (q *Queries) CreateDispatch(ctx context.Context, arg CreateDispatchParams) 
 	return i, err
 }
 
+const createHandOffDispatch = `-- name: CreateHandOffDispatch :one
+INSERT INTO dispatches (id, project_id, job_id, executor_config_id, kind, key_hash, key_sealed, rate_cents_per_hour,
+                        claim_deadline, reserved_seconds, instance_id, woken_at)
+SELECT $1, c.project_id, $2, c.id, c.kind, $3, $4,
+       c.rate_cents_per_hour, now() + make_interval(secs => $5::double precision),
+       job_estimated_seconds($6), $7, now()
+FROM executor_configs c
+WHERE c.id = $8
+RETURNING id, project_id, job_id, executor_config_id, kind, status, end_reason, key_hash, key_sealed, instance_id, rate_cents_per_hour, claim_deadline, attempt_id, created_at, woken_at, claimed_at, ended_at, stopped_at, reserved_seconds
+`
+
+type CreateHandOffDispatchParams struct {
+	ID                 string
+	JobID              string
+	KeyHash            []byte
+	KeySealed          []byte
+	ClaimWindowSeconds float64
+	AssetID            string
+	InstanceID         pgtype.Text
+	ExecutorConfigID   string
+}
+
+// The next job's dispatch, already woken on the same machine: it must
+// claim within the hand-off window, or it ends as a wake timeout and its
+// job is routed afresh.
+func (q *Queries) CreateHandOffDispatch(ctx context.Context, arg CreateHandOffDispatchParams) (Dispatch, error) {
+	row := q.db.QueryRow(ctx, createHandOffDispatch,
+		arg.ID,
+		arg.JobID,
+		arg.KeyHash,
+		arg.KeySealed,
+		arg.ClaimWindowSeconds,
+		arg.AssetID,
+		arg.InstanceID,
+		arg.ExecutorConfigID,
+	)
+	var i Dispatch
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.JobID,
+		&i.ExecutorConfigID,
+		&i.Kind,
+		&i.Status,
+		&i.EndReason,
+		&i.KeyHash,
+		&i.KeySealed,
+		&i.InstanceID,
+		&i.RateCentsPerHour,
+		&i.ClaimDeadline,
+		&i.AttemptID,
+		&i.CreatedAt,
+		&i.WokenAt,
+		&i.ClaimedAt,
+		&i.EndedAt,
+		&i.StoppedAt,
+		&i.ReservedSeconds,
+	)
+	return i, err
+}
+
 const disconnectExecutor = `-- name: DisconnectExecutor :exec
 UPDATE executor_configs SET secrets_encrypted = NULL, verified_at = NULL, updated_at = now() WHERE id = $1
 `
@@ -330,6 +391,47 @@ func (q *Queries) GetExecutorConfigByKind(ctx context.Context, arg GetExecutorCo
 	return i, err
 }
 
+const handOffDispatch = `-- name: HandOffDispatch :one
+UPDATE dispatches SET status = 'ended', end_reason = 'handed_off', ended_at = now(), stopped_at = now()
+WHERE id = $1 AND status = 'claimed' AND attempt_id = $2::text AND instance_id IS NOT NULL
+RETURNING id, project_id, job_id, executor_config_id, kind, status, end_reason, key_hash, key_sealed, instance_id, rate_cents_per_hour, claim_deadline, attempt_id, created_at, woken_at, claimed_at, ended_at, stopped_at, reserved_seconds
+`
+
+type HandOffDispatchParams struct {
+	ID        string
+	AttemptID string
+}
+
+// The dispatch ends with its machine still running for the next one: it is
+// marked stopped (its time ends where the next dispatch's starts) and no
+// stop is queued.
+func (q *Queries) HandOffDispatch(ctx context.Context, arg HandOffDispatchParams) (Dispatch, error) {
+	row := q.db.QueryRow(ctx, handOffDispatch, arg.ID, arg.AttemptID)
+	var i Dispatch
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.JobID,
+		&i.ExecutorConfigID,
+		&i.Kind,
+		&i.Status,
+		&i.EndReason,
+		&i.KeyHash,
+		&i.KeySealed,
+		&i.InstanceID,
+		&i.RateCentsPerHour,
+		&i.ClaimDeadline,
+		&i.AttemptID,
+		&i.CreatedAt,
+		&i.WokenAt,
+		&i.ClaimedAt,
+		&i.EndedAt,
+		&i.StoppedAt,
+		&i.ReservedSeconds,
+	)
+	return i, err
+}
+
 const listDispatchesToEnd = `-- name: ListDispatchesToEnd :many
 SELECT d.id FROM dispatches d
 JOIN jobs j ON j.id = d.job_id
@@ -572,6 +674,35 @@ type ProviderHasRoomParams struct {
 // dispatches the previous lock holder just committed (D058).
 func (q *Queries) ProviderHasRoom(ctx context.Context, arg ProviderHasRoomParams) (bool, error) {
 	row := q.db.QueryRow(ctx, providerHasRoom, arg.ID, arg.AssetID)
+	var column_1 bool
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const providerHasRoomForHandOff = `-- name: ProviderHasRoomForHandOff :one
+
+SELECT ((SELECT count(*) FROM dispatches d
+         WHERE d.executor_config_id = c.id AND d.id <> $1::text
+           AND (d.status <> 'ended' OR (d.instance_id IS NOT NULL AND d.stopped_at IS NULL))) < c.max_concurrent
+        AND provider_month_cents(c.id) + c.rate_cents_per_hour * job_estimated_seconds($2::text) / 3600
+            <= c.monthly_limit_cents)::boolean
+FROM executor_configs c WHERE c.id = $3::text
+`
+
+type ProviderHasRoomForHandOffParams struct {
+	FromID  string
+	AssetID string
+	ID      string
+}
+
+// Hand-offs (D128): a machine woken for an encode goes on to the asset's
+// transcription under a new dispatch instead of stopping.
+// Called after LockExecutorConfigByKind, like ProviderHasRoom. The machine
+// from_id already counts moves to the new dispatch, so it isn't counted
+// twice; no wake happens, so a wake backoff doesn't apply. The monthly
+// limit does (D055).
+func (q *Queries) ProviderHasRoomForHandOff(ctx context.Context, arg ProviderHasRoomForHandOffParams) (bool, error) {
+	row := q.db.QueryRow(ctx, providerHasRoomForHandOff, arg.FromID, arg.AssetID, arg.ID)
 	var column_1 bool
 	err := row.Scan(&column_1)
 	return column_1, err

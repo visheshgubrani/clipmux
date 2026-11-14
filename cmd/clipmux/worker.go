@@ -204,6 +204,26 @@ func runWorker(args []string, getenv func(string) string, stderr io.Writer) int 
 			w.Kinds = append(append([]string{}, queue.MediaKinds...), "transcribe")
 		}
 	}
+	// Woken for an encode with speech off (D118), a machine may still be
+	// handed the asset's transcription next (D128): it proves speech then,
+	// in the mode CLIPMUX_FOLLOW_ON_SPEECH names.
+	if v := getenv("CLIPMUX_FOLLOW_ON_SPEECH"); dispatched && v != "" {
+		mode, err := worker.ParseSpeechMode(v)
+		if err != nil {
+			logger.Warn("CLIPMUX_FOLLOW_ON_SPEECH", "err", err)
+		}
+		if err == nil && mode != worker.SpeechOff {
+			w.FollowOn = []string{"transcribe"}
+			w.FollowOnSpeech = func(ctx context.Context) *media.Speech {
+				if sp := speech.Get(); sp != nil {
+					return sp
+				}
+				sp := worker.SetupSpeech(ctx, w.Tools, mode, bakedModels, modelsDir, *workDir, w.HTTP, logger)
+				speech.Set(sp)
+				return sp
+			}
+		}
+	}
 	logger.Info("clipmux worker started", "server", *server, "once", *once)
 	if agent {
 		// push --local hands this agent files over a socket only this user

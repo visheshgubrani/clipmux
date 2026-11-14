@@ -109,6 +109,13 @@ when you introduce or discover it; remove it when it is closed.
   recorded per attempt, so a measurement can't name the card it ran on. A
   failed real run can leave a RunPod registry credential behind when the
   test's disconnect is refused (409); it was deleted by hand.
+- A captioned video wakes one serverless machine only when the provider is
+  the transcription's route at the encode's commit: the primary, or a setup
+  test's executor (D128). With a provider reached only as the fallback
+  ("my PCs, else RunPod"), the transcription still wakes a second machine.
+  The hand-off is proven with the fake RunPod's local pods; it hasn't run
+  on real Modal or RunPod yet. The transcription follows the encode on the
+  machine rather than running beside it.
 - The security review's six findings are fixed (D120 to D124). What they
   leave:
   - The Cloudflare Worker serves any grammar-valid name under a committed

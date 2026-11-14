@@ -351,6 +351,9 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 	disp := dispatch.New(pool, box, b.urls.PublicURL)
 	disp.Logger = logger
 	q.Dispatch = disp.Route
+	// A machine woken for an encode goes on to its asset's transcription
+	// rather than stop and wake another (D128).
+	committer.HandOff = disp.HandOff
 	worker := workerapi.New(q, workerapi.Auths{workerapi.BuiltinKey(workerKey), agentSvc, disp}, set, keys, committer)
 	worker.Agents = agentSvc
 	worker.Logger = logger

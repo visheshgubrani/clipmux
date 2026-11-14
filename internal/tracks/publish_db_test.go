@@ -69,7 +69,7 @@ func (r *rig) transcribe(text string) string {
 		r.t.Fatal(err)
 	}
 	asset, _ := qs.GetAssetByID(ctx, "ast_1")
-	if err := tracks.QueueTranscriptions(ctx, qs, asset, true); err != nil {
+	if _, err := tracks.QueueTranscriptions(ctx, qs, asset, true); err != nil {
 		r.t.Fatal(err)
 	}
 	c, err := r.q.Claim(ctx, queue.Worker{Executor: "builtin", Kinds: []string{"transcribe"}, Speech: true})

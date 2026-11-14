@@ -206,7 +206,8 @@ func TestARoutedJobWakesOneMachineWhoseKeyClaimsThatJobOnce(t *testing.T) {
 	}
 	key := w.Env["CLIPMUX_WORKER_KEY"]
 	if w.Name != "clipmux-"+ds[0].ID || w.Env["CLIPMUX_SERVER"] != "https://video.example.com" ||
-		!strings.HasPrefix(key, "cmxd_") || w.Env["CLIPMUX_SPEECH"] != "off" || len(w.Env) != 3 || string(w.Config) != `{"gpu": "L4"}` {
+		!strings.HasPrefix(key, "cmxd_") || w.Env["CLIPMUX_SPEECH"] != "off" || w.Env["CLIPMUX_FOLLOW_ON_SPEECH"] != "auto" ||
+		len(w.Env) != 4 || string(w.Config) != `{"gpu": "L4"}` {
 		t.Fatalf("wake = %+v", w)
 	}
 	if d := r.dispatches(job.ID)[0]; d.InstanceID.String != "pod-"+ds[0].ID || !d.WokenAt.Valid {

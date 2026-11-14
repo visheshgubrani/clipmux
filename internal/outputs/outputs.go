@@ -63,6 +63,11 @@ type Committer struct {
 	// confirmed, so built-in delivery drops what it cached (D072).
 	OnPublished func(pids ...string)
 	OnKeys      func()
+	// HandOff, in the commit's transaction, may hand the committing
+	// attempt's serverless machine the transcription the commit queued
+	// (dispatch.Service.HandOff, D128). It returns the one-time key that
+	// machine claims it with, or "".
+	HandOff func(ctx context.Context, qs *db.Queries, a db.Attempt, next db.Job) (string, error)
 
 	// publishInline publishes routes right after the commit; tests turn it
 	// off to stand in for a crash between the two steps.
@@ -74,24 +79,38 @@ func New(pool *pgxpool.Pool, q *queue.Queue, set *stores.Set) *Committer {
 	return &Committer{pool: pool, queue: q, stores: set, Logger: slog.Default(), publishInline: true}
 }
 
+// Committed is a commit's answer: the queue's verdict and, when the
+// attempt's machine was handed the asset's next job, the key it claims it
+// with.
+type Committed struct {
+	queue.Verdict
+	NextKey string
+}
+
 // Commit verifies and commits the output of the attempt holding token.
-func (c *Committer) Commit(ctx context.Context, token string, m media.Manifest) (queue.Verdict, error) {
+func (c *Committer) Commit(ctx context.Context, token string, m media.Manifest) (Committed, error) {
 	att, err := c.queue.Authenticate(ctx, token)
 	if err != nil {
-		return queue.Verdict{}, err
+		return Committed{}, err
 	}
 	if err := c.verify(ctx, att, m); err != nil {
-		return queue.Verdict{}, err
+		return Committed{}, err
 	}
 	raw, err := json.Marshal(m)
 	if err != nil {
-		return queue.Verdict{}, err
+		return Committed{}, err
 	}
+	var key string
 	v, err := c.queue.CommitAttempt(ctx, token, func(qs *db.Queries, a db.Attempt, _ db.Job) error {
-		return commit(ctx, qs, a, raw)
+		next, err := commit(ctx, qs, a, raw)
+		if err != nil || next.ID == "" || c.HandOff == nil {
+			return err
+		}
+		key, err = c.HandOff(ctx, qs, a, next)
+		return err
 	})
 	if err != nil || v.Stop {
-		return v, err
+		return Committed{Verdict: v}, err
 	}
 	if c.publishInline {
 		if _, err := c.SyncRoutes(ctx, 1000); err != nil {
@@ -99,7 +118,7 @@ func (c *Committer) Commit(ctx context.Context, token string, m media.Manifest) 
 			c.Logger.Warn("route publication deferred", "asset", att.AssetID, "err", err)
 		}
 	}
-	return v, nil
+	return Committed{Verdict: v, NextKey: key}, nil
 }
 
 // verify checks the stored output against the manifest and the rules above.
@@ -269,29 +288,30 @@ func QueueUnpublish(ctx context.Context, qs *db.Queries, asset db.Asset, playbac
 	return queueRouteSync(ctx, qs, asset, route{V: 1, Op: opUnpublish, PlaybackID: playbackID, AppID: asset.AppID, AssetID: asset.ID})
 }
 
-// commit is step 2, inside the liveness transaction.
-func commit(ctx context.Context, qs *db.Queries, a db.Attempt, manifest []byte) error {
+// commit is step 2, inside the liveness transaction. It returns the
+// transcription it queued for the asset's subtitles, if any.
+func commit(ctx context.Context, qs *db.Queries, a db.Attempt, manifest []byte) (db.Job, error) {
 	asset, err := qs.LockAsset(ctx, a.AssetID)
 	if err != nil {
-		return err
+		return db.Job{}, err
 	}
 	if asset.Status == "deleted" {
-		return invalid("the asset was deleted")
+		return db.Job{}, invalid("the asset was deleted")
 	}
 	n, err := qs.CommitOutput(ctx, db.CommitOutputParams{ID: a.OutputID.String, Manifest: manifest})
 	if err != nil {
-		return err
+		return db.Job{}, err
 	}
 	if n != 1 {
-		return invalid("output %s is not being written", a.OutputID.String)
+		return db.Job{}, invalid("output %s is not being written", a.OutputID.String)
 	}
 	previous := asset.CurrentOutputID
 	if asset, err = qs.MoveCurrentOutput(ctx, db.MoveCurrentOutputParams{ID: asset.ID, CurrentOutputID: pgtype.Text{String: a.OutputID.String, Valid: true}}); err != nil {
-		return err
+		return db.Job{}, err
 	}
 	if previous.Valid {
 		if err := qs.RetireOutput(ctx, previous.String); err != nil {
-			return err
+			return db.Job{}, err
 		}
 	}
 	// Subtitles asked for at upload start now, reading this output's audio;
@@ -301,27 +321,28 @@ func commit(ctx context.Context, qs *db.Queries, a db.Attempt, manifest []byte) 
 		Duration float64 `json:"duration_seconds"`
 	}
 	if err := json.Unmarshal(manifest, &m); err != nil {
-		return invalid("manifest: %v", err)
+		return db.Job{}, invalid("manifest: %v", err)
 	}
 	if err := qs.SetAssetDuration(ctx, db.SetAssetDurationParams{ID: asset.ID, DurationSeconds: pgtype.Float8{Float64: m.Duration, Valid: m.Duration > 0}}); err != nil {
-		return err
+		return db.Job{}, err
 	}
-	if err := tracks.QueueTranscriptions(ctx, qs, asset, m.Audio); err != nil {
-		return err
+	next, err := tracks.QueueTranscriptions(ctx, qs, asset, m.Audio)
+	if err != nil {
+		return db.Job{}, err
 	}
 	pids, err := activePlaybackIDs(ctx, qs, asset.ID)
 	if err != nil {
-		return err
+		return db.Job{}, err
 	}
 	for _, p := range pids {
 		if err := QueueRoute(ctx, qs, asset, p, a.OutputID.String); err != nil {
-			return err
+			return db.Job{}, err
 		}
 	}
 	if len(pids) == 0 {
-		return finishPublication(ctx, qs, asset.ID, a.OutputID.String)
+		return next, finishPublication(ctx, qs, asset.ID, a.OutputID.String)
 	}
-	return nil
+	return next, nil
 }
 
 func activePlaybackIDs(ctx context.Context, qs *db.Queries, assetID string) ([]db.PlaybackID, error) {
