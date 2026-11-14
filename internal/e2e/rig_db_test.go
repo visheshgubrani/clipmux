@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -82,6 +83,9 @@ func start(t *testing.T, extraEnv ...string) *instance { return boot(t, true, ex
 // whose owner picks the URLs at first boot.
 func startUnpinned(t *testing.T) *instance { return boot(t, false) }
 
+// servePortTaken is set once a pinned install has CLIPMUX_E2E_SERVE_PORT.
+var servePortTaken atomic.Bool
+
 func boot(t *testing.T, pinned bool, extraEnv ...string) *instance {
 	t.Helper()
 	pool := dbtest.New(t)
@@ -95,8 +99,10 @@ func boot(t *testing.T, pinned bool, extraEnv ...string) *instance {
 		sep = "&"
 	}
 	port := freePort(t)
-	// A device behind `adb reverse` needs to know the port in advance.
-	if p, err := strconv.Atoi(os.Getenv("CLIPMUX_E2E_SERVE_PORT")); err == nil && pinned {
+	// A device behind `adb reverse` needs to know the port in advance. Only
+	// the first pinned install takes it: a second (the fixture's TOTP
+	// install) would fail to bind while /readyz answered from the first.
+	if p, err := strconv.Atoi(os.Getenv("CLIPMUX_E2E_SERVE_PORT")); err == nil && pinned && servePortTaken.CompareAndSwap(false, true) {
 		port = p
 	}
 	in := &instance{t: t, pool: pool, url: fmt.Sprintf("http://127.0.0.1:%d", port), dataDir: t.TempDir()}
