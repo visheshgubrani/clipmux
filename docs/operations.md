@@ -80,6 +80,48 @@ docker compose -f deploy/compose.yml up -d --build --wait
 - With Cloudflare delivery, the dashboard's Delivery page says when the
   Worker needs redeploying; Reconnect Cloudflare with a token does it.
 
+### A release image behind your own proxy
+
+A host installed from the release compose file and `compose.proxy.yml`
+(D114) upgrades by moving `CLIPMUX_VERSION` to a newer image:
+
+```bash
+gh workflow run image.yml --ref main          # builds and pushes sha-{commit}
+cd /opt/clipmux                               # where compose.yml and .env are
+cp .env .env.bak-$(date +%Y%m%d%H%M)
+sed -i 's/^CLIPMUX_VERSION=.*/CLIPMUX_VERSION=sha-<commit>/' .env
+docker compose -f compose.yml -f compose.proxy.yml pull app
+docker compose -f compose.yml -f compose.proxy.yml up -d --wait
+docker compose exec app clipmux version        # the new commit
+curl -fsS https://<public host>/readyz
+```
+
+- While the image package is private, the host needs `docker login ghcr.io`
+  with a `read:packages` token, and so do Modal and RunPod.
+- With `CLIPMUX_WORKER_IMAGE` unset, serve re-pins Modal and RunPod to its
+  own image at boot (D119), so cloud encoding follows the upgrade.
+- To roll back past a migration: with the new image still running,
+  `docker compose exec app clipmux admin migrate down-to VERSION --yes`
+  (the old image's newest migration, from `migrate status` before the
+  upgrade), then restore `.env.bak-…` and `up -d --wait`.
+
+## Release gate
+
+Before a release reaches npm, the SDKs run against a live instance with a
+dedicated app (on app.clipmux.com, "SDK release check"):
+
+```bash
+docker compose exec app clipmux admin create-integration --app "SDK release check" > live.env  # once; keep it private
+node packages/node/scripts/live-check.ts --env-file live.env clip.mp4
+```
+
+The script uploads through `ClipMuxUpload`, checks a wrong-length part is
+refused, waits for the asset, plays it through delivery (playlist, segment,
+key, poster), checks the poster-only and native tokens, waits for subtitles
+and the transcript, relays webhooks through `listen` into a receiver that
+verifies them, and deletes what it made. It prints no secret. Revoke the
+key afterwards with `clipmux admin revoke-key`.
+
 ## Backups
 
 Three things, backed up together. Losing the secrets key makes every stored

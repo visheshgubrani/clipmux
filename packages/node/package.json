@@ -48,7 +48,7 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.scripts.json",
     "test": "node scripts/generate.ts --check && node --test src/*.test.ts",
     "generate": "node scripts/generate.ts",
     "generate:check": "node scripts/generate.ts --check"
