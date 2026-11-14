@@ -61,3 +61,17 @@ Fixed before release:
   `--scopes`.
 - `clipmux listen` reads `CLIPMUX_URL` when `CLIPMUX_SERVER` is unset.
 - The share page's `poster_url` carries a poster-only token.
+
+### Server security (docs/security-review.md, findings 1–6)
+
+- The built-in worker refuses to run without Landlock, and serve and the
+  workers are undumpable, so a hostile file can't read serve's secrets
+  (D120). Set `CLIPMUX_UNSANDBOXED_WORKER` to run it anyway.
+- Seccomp denies new namespaces to the media tools (D120).
+- A device the owner signed in from skips the global sign-in limit, so
+  strangers can't lock the owner out (D121).
+- An upload part URL binds the part's length (D122).
+- The Dashboard app takes no API keys, and its existing keys are revoked;
+  an unsandboxed agent takes no URL imports (D123, migration 00035).
+- Delivery serves only the files a committed output's manifest lists, and
+  sweeps the rest (D124, migration 00036).

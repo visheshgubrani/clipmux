@@ -1521,3 +1521,24 @@ Decision:
 - **Built-in delivery serves only the names `out.Manifest` lists**, pinned paths and the unpinned poster alike. The delivery cache keeps each output's listed files with the output (D072), so a segment still costs no query.
 - **The `file_retention` loop sweeps each committed output once** (`SweepUnlisted`): 16 minutes after its commit (`CommitGrace`), when no URL can write there, it deletes every object under the output's prefix that the manifest doesn't list, `manifest.json` aside, and records `outputs.unlisted_swept_at` (migration 00036). Outputs committed earlier are swept on the first passes, 100 a pass. A manifest that lists nothing is left alone. This covers the Cloudflare Worker, which reads the bucket, without changing the shared delivery vectors.
 Consequence: on the Worker a file added after commit can be served until the hourly loop sweeps it, at most about 76 minutes after the commit (known gap); giving the Worker the manifest check would change the shared delivery vectors and the route records, and is left for later.
+
+## D125 npm publishes from the private repository with a token, without provenance — accepted (2026-11-14)
+Context: Edural integrates through the packages, so they ship before launch. The repository is still private, and npm attests provenance only for public sources, so `npm publish --provenance` from it is refused.
+Decision:
+- **`release.yml` publishes with the `NPM_TOKEN` secret**: a granular token with read and write on the `@clipmux` scope. There is no `--provenance` and no `publishConfig.provenance` until launch (P6-T20), when the repository goes public and trusted publishing replaces the token.
+- **This release is dispatched by hand** (`gh workflow run release.yml -f dry_run=false` on main), not tagged: a `v*` tag would also run the image, agent, exit and Safari workflows, and `v1.0.0` stays the launch tag. Safari runs on the owner's Mac.
+- **Versions:** `@clipmux/node` 0.1.0 (its first release), `@clipmux/player` 0.6.0, `@clipmux/uploader` 0.5.0. `CHANGELOG.md` records each.
+Consequence: amends D092's provenance and its trusted publishing. The `repository` links 404 for outsiders until launch.
+
+## D126 The SDKs fit together as documented — accepted (2026-11-14)
+Context: planning Edural's move found the documented hand-offs between the three packages didn't compile or didn't work: `listen` failed on its first event, a ClipMux 413 became a retried 502, `getToken` never said `native`, and the poster URL carried the playback token.
+Decision:
+- **The events poll is by time.** `after` is the newest event's `created_at`, as the server always required, and the window moves as `internal/listen` does.
+- **`uploads.create` returns the token as required**, so its answer goes into `ClipMuxUpload` as it is; a replay without one throws `upload_not_active`.
+- **The handlers keep ClipMux's refusals:** 400, 409, 413 and 422 pass through, 429 with `Retry-After`; a wrong key or app is 500 `clipmux_misconfigured`; unreachable is 502 `clipmux_unavailable`.
+- **`getToken({ playbackId, native })`**, and `playback.token()` signs native tokens with the session's rule.
+- **A session's `poster_url` has a poster-only token** (audience `t`), in node and on the share page, as docs/api.md said.
+- **`GET /v1/app` lists `upload_origins`**, and `doctor` prints the CSP sources a page needs. The e2e suite enforces that CSP on the player and uploader pages.
+- **One `listen` story:** `npx @clipmux/node listen` for an app built on the SDK (it signs with the app's own secret); `clipmux listen` for other stacks, now also reading `CLIPMUX_URL`.
+- **`e2e/web/sdk-types.ts`** checks the hand-offs at compile time, and `packages/node/scripts/live-check.ts` is the release gate against a live instance.
+Consequence: the player's `GetToken` and `PlaybackSession` types and node's `WebhookEvent` changed shape; pre-1.0, that is a minor version.

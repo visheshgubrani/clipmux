@@ -330,3 +330,14 @@ when you introduce or discover it; remove it when it is closed.
   sealed copy is dropped, so they can't be recovered. The owner revokes
   them on the app's page (the API key is named after the pairing). Revoking
   them automatically at expiry needs a sweep that doesn't exist yet (D113).
+- The npm packages publish without provenance while the repository is
+  private (D125); their `repository` and `homepage` links 404 for outsiders
+  until launch. Trusted publishing and `--provenance` come with P6-T20.
+- `@clipmux/player`'s element types import Video.js 10.2's declaration
+  files, which don't all type-check; an app needs `skipLibCheck: true`.
+- The packages are ESM only. A CommonJS app needs Node ≥ 20.19 (or 22.12)
+  to `require()` them, and TypeScript's `moduleResolution: node` (node10)
+  can't resolve their subpath exports.
+- Safari's native HLS with `getToken({ native })` (D126) is checked by
+  reading the code and in Chrome with `native: false`; the Safari suite
+  runs on the owner's Mac, not in this release's CI.
