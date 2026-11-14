@@ -103,7 +103,17 @@ func TestPlayerFixture(t *testing.T) {
 	if pages == "" {
 		pages = "../../e2e/web/dist"
 	}
-	mux.Handle("GET /", http.FileServer(http.Dir(pages)))
+	files := http.FileServer(http.Dir(pages))
+	mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
+		// ?csp=app serves the page under the Content-Security-Policy the SDK
+		// READMEs tell an app to send: its own origin, plus ClipMux's URL,
+		// storage and media origins (all in.url here).
+		if r.URL.Query().Get("csp") == "app" {
+			w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "+
+				"connect-src 'self' "+in.url+"; media-src blob: "+in.url+"; img-src 'self' "+in.url+"; object-src 'none'; base-uri 'none'")
+		}
+		files.ServeHTTP(w, r)
+	})
 	mux.HandleFunc("GET /config", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
@@ -188,11 +198,17 @@ func TestPlayerFixture(t *testing.T) {
 			http.Error(w, err.Error(), 500)
 			return
 		}
+		// The poster's own token, as @clipmux/node's session() signs it.
+		posterTok, err := tokens.Sign(signer, kid, tokens.Claims{Sub: pid, Aud: tokens.AudienceThumbnail, Iat: now.Unix(), Exp: exp.Unix()})
+		if err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "no-store")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"playback_id": pid, "base_url": in.url, "token": tok, "expires_at": exp.UTC().Format(time.RFC3339),
-			"poster_url": in.url + "/v/" + tok + "/" + pid + "/poster.jpg",
+			"poster_url": in.url + "/v/" + posterTok + "/" + pid + "/poster.jpg",
 			"tracks":     []trackView{trks["subtitles"], trks["chapters"]},
 		})
 	})
