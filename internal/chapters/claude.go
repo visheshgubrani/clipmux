@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/anthropics/anthropic-sdk-go/v2"
 	"github.com/anthropics/anthropic-sdk-go/v2/option"
@@ -89,6 +90,28 @@ func (c *Claude) CheckCredentials(ctx context.Context) error {
 		return claudeError(err)
 	}
 	return nil
+}
+
+// Models lists the Claude models the key can use, newest first as the API
+// gives them, leaving out deprecated ones, which are closed to new
+// adopters.
+func (c *Claude) Models(ctx context.Context) (models []ModelInfo, listed bool, err error) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	pages := c.client.Models.ListAutoPaging(ctx, anthropic.ModelListParams{Limit: anthropic.Int(1000)})
+	for pages.Next() && len(models) < maxModels {
+		m := pages.Current()
+		if m.Lifecycle == anthropic.ModelInfoLifecycleDeprecated || m.Lifecycle == anthropic.ModelInfoLifecycleRetired {
+			continue
+		}
+		if m.ID != "" && len(m.ID) <= maxModelLen {
+			models = append(models, ModelInfo{ID: m.ID, Name: m.DisplayName})
+		}
+	}
+	if err := pages.Err(); err != nil {
+		return nil, false, claudeError(err)
+	}
+	return models, true, nil
 }
 
 // claudeError classifies an SDK error: rate limits, overloads, server

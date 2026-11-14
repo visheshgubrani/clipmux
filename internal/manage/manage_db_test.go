@@ -568,6 +568,82 @@ func TestChaptersSettingsAreTheOwners(t *testing.T) {
 	}
 }
 
+// The Connect forms list an API's models with the URL and key typed so far
+// (D127): a list, none for an API without the route, a refused key, the
+// API's own failure, and a bad request. Nothing is saved, the key never
+// comes back, and only the owner reaches them.
+func TestConnectFormsListTheAPIsModels(t *testing.T) {
+	r := newRig(t, config.Config{})
+	const modelsKey = "sk-MODELS_KEY_must_never_show"
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasPrefix(req.URL.Path, "/down/"):
+			w.WriteHeader(http.StatusServiceUnavailable)
+		case strings.HasPrefix(req.URL.Path, "/none/"):
+			http.NotFound(w, req)
+		case req.Header.Get("Authorization") != "Bearer "+modelsKey:
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = io.WriteString(w, `{"error":{"message":"bad key"}}`)
+		case req.URL.Path == "/claude/v1/models":
+			_, _ = io.WriteString(w, `{"data":[{"type":"model","id":"claude-opus-5-5","display_name":"Claude Opus 5.5",`+
+				`"created_at":"2026-09-01T00:00:00Z","lifecycle":"active"}],"has_more":false}`)
+		case req.URL.Path == "/v1/models":
+			_, _ = io.WriteString(w, `{"object":"list","data":[{"id":"whisper-1"},{"id":"gpt-test"}]}`)
+		default:
+			http.NotFound(w, req)
+		}
+	}))
+	defer api.Close()
+	listed := `{"data":[{"id":"gpt-test"},{"id":"whisper-1"}],"listed":true}`
+	for _, c := range []struct {
+		path   string
+		body   map[string]any
+		status int
+		want   string // the answer, or the error code
+	}{
+		{"/v1/settings/speech/models", map[string]any{"base_url": api.URL + "/v1", "api_key": modelsKey}, 200, listed},
+		{"/v1/settings/speech/models", map[string]any{"base_url": api.URL + "/none/v1", "api_key": modelsKey}, 200, `{"data":[],"listed":false}`},
+		{"/v1/settings/speech/models", map[string]any{"base_url": api.URL + "/v1", "api_key": "wrong"}, 400, "key_rejected"},
+		{"/v1/settings/speech/models", map[string]any{"base_url": api.URL + "/down/v1", "api_key": modelsKey}, 502, "models_unavailable"},
+		{"/v1/settings/speech/models", map[string]any{"base_url": "ftp://x"}, 400, "invalid_request"},
+		{"/v1/settings/chapters/models", map[string]any{"provider": "openai_compatible", "base_url": api.URL + "/v1", "api_key": modelsKey}, 200, listed},
+		{"/v1/settings/chapters/models", map[string]any{"provider": "openai_compatible", "base_url": api.URL + "/v1"}, 400, "key_rejected"},
+		{"/v1/settings/chapters/models", map[string]any{"provider": "anthropic", "base_url": api.URL + "/claude/", "api_key": modelsKey}, 200,
+			`{"data":[{"id":"claude-opus-5-5","name":"Claude Opus 5.5"}],"listed":true}`},
+		{"/v1/settings/chapters/models", map[string]any{"provider": "anthropic"}, 400, "invalid_request"},
+		{"/v1/settings/chapters/models", map[string]any{"provider": "gemini", "base_url": api.URL + "/v1"}, 400, "invalid_request"},
+	} {
+		got := r.call("POST", c.path, c.body, "")
+		raw, _ := json.Marshal(got.body)
+		if strings.Contains(string(raw), modelsKey) {
+			t.Errorf("POST %s %v: the answer holds the key", c.path, c.body)
+		}
+		if c.status == 200 {
+			if got.status != 200 || string(raw) != c.want {
+				t.Errorf("POST %s %v = %d %s, want 200 %s", c.path, c.body, got.status, raw, c.want)
+			}
+			continue
+		}
+		if errBody, _ := got.body["error"].(map[string]any); got.status != c.status || errBody["code"] != c.want {
+			t.Errorf("POST %s %v = %d %s, want %d %s", c.path, c.body, got.status, raw, c.status, c.want)
+		}
+	}
+	var saved int
+	if err := r.pool.QueryRow(context.Background(), `SELECT count(*) FROM ai_connections`).Scan(&saved); err != nil || saved != 0 {
+		t.Fatalf("listing models saved %d connections (%v)", saved, err)
+	}
+	key, _, err := apikeys.Create(context.Background(), r.pool, "prj_default", "app_dashboard", "k", apikeys.AllScopes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"/v1/settings/speech/models", "/v1/settings/chapters/models"} {
+		if got := r.call("POST", path, map[string]any{"provider": "openai_compatible", "base_url": api.URL + "/v1", "api_key": modelsKey}, key); got.status != http.StatusUnauthorized {
+			t.Errorf("an API key listed models at %s: %d", path, got.status)
+		}
+	}
+}
+
 // D099: the library searches titles and passthroughs, leaves deleted assets
 // out on the server, and gives each item a poster URL.
 func TestLibrarySearchesTitlesAndHidesDeletedAssets(t *testing.T) {

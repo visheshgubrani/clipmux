@@ -69,9 +69,8 @@ type ConnectRequest struct {
 // webhooks (D018).
 func (s *Service) Connect(ctx context.Context, req ConnectRequest) (dispatch.Result, error) {
 	req.BaseURL, req.Model = strings.TrimSpace(req.BaseURL), strings.TrimSpace(req.Model)
-	u, err := url.Parse(req.BaseURL)
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil || u.RawQuery != "" {
-		return dispatch.Result{}, fmt.Errorf("%w: base_url must be an http or https URL with no user or query, e.g. https://api.groq.com/openai/v1", ErrInvalid)
+	if err := checkBaseURL(req.BaseURL); err != nil {
+		return dispatch.Result{}, err
 	}
 	if req.Model == "" || len(req.Model) > 200 {
 		return dispatch.Result{}, fmt.Errorf("%w: model is required, e.g. whisper-large-v3-turbo", ErrInvalid)
@@ -102,6 +101,52 @@ func (s *Service) Connect(ctx context.Context, req ConnectRequest) (dispatch.Res
 		return "", s.save(ctx, req)
 	})
 	return steps.Result, nil
+}
+
+// checkBaseURL accepts an http or https API root with no user or query.
+func checkBaseURL(base string) error {
+	u, err := url.Parse(base)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil || u.RawQuery != "" {
+		return fmt.Errorf("%w: base_url must be an http or https URL with no user or query, e.g. https://api.groq.com/openai/v1", ErrInvalid)
+	}
+	return nil
+}
+
+// ModelsRequest is the URL and key the owner has typed so far.
+type ModelsRequest struct {
+	BaseURL string `json:"base_url"`
+	APIKey  string `json:"api_key"`
+}
+
+// Model is one model an API lists.
+type Model struct {
+	ID string `json:"id"`
+}
+
+// ModelList is what an API lists. Listed is false when it has no list to
+// read, and the owner types the model's name.
+type ModelList struct {
+	Listed bool    `json:"listed"`
+	Data   []Model `json:"data"`
+}
+
+// Models lists a speech API's models for the Connect form, before anything
+// is saved; the key is used for the one call and kept nowhere.
+func (s *Service) Models(ctx context.Context, req ModelsRequest) (ModelList, error) {
+	base := strings.TrimSpace(req.BaseURL)
+	if err := checkBaseURL(base); err != nil {
+		return ModelList{}, err
+	}
+	c := &Client{BaseURL: base, Key: strings.TrimSpace(req.APIKey), HTTP: s.HTTP}
+	got, listed, err := c.Models(ctx)
+	if err != nil {
+		return ModelList{}, err
+	}
+	list := ModelList{Listed: listed, Data: make([]Model, 0, len(got))}
+	for _, id := range got {
+		list.Data = append(list.Data, Model{ID: id})
+	}
+	return list, nil
 }
 
 // save stores the verified connection, its key sealed for the row it will

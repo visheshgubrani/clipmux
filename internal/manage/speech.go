@@ -54,6 +54,16 @@ func (m *API) connectSpeech(w http.ResponseWriter, r *http.Request, o accounts.O
 	return connectWith(m.Speech.Connect, speechapi.ErrInvalid)(w, r, o)
 }
 
+func (m *API) speechModels(w http.ResponseWriter, r *http.Request, o accounts.Owner) error {
+	if m.Speech == nil {
+		return errNotFound
+	}
+	return modelsWith(m.Speech.Models, speechapi.ErrInvalid, func(err error) bool {
+		var e *speechapi.Error
+		return errors.As(err, &e) && keyStatus(e.Status)
+	})(w, r, o)
+}
+
 func (m *API) disconnectSpeech(w http.ResponseWriter, r *http.Request, o accounts.Owner) error {
 	if m.Speech == nil {
 		return errNotFound

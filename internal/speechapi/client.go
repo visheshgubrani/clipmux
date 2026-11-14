@@ -20,6 +20,7 @@ import (
 	"net/http"
 	"net/textproto"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -115,24 +116,77 @@ func (c *Client) Transcribe(ctx context.Context, r Request) (transcripts.OpenAIR
 // server answers and which costs nothing. A server without the route (404)
 // passes: the transcription step proves the rest.
 func (c *Client) CheckCredentials(ctx context.Context) error {
+	_, _, err := c.Models(ctx)
+	return err
+}
+
+// Model IDs longer than Connect accepts are dropped, and a list is cut at
+// maxModels: OpenAI's own is about a hundred.
+const (
+	maxModelLen = 200
+	maxModels   = 1000
+)
+
+// Models lists the API's models from GET {base}/models, OpenAI's
+// {"data": [{"id": …}]}, trimmed, deduplicated and sorted. listed is false
+// for a server without the route (404) or whose answer isn't that list:
+// the owner types the model's name instead.
+func (c *Client) Models(ctx context.Context) (ids []string, listed bool, err error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.endpoint("/models"), nil)
 	if err != nil {
-		return err
+		return nil, false, err
 	}
-	err = c.do(req, nil)
+	body, err := c.send(req)
 	var apiErr *Error
 	if errors.As(err, &apiErr) && apiErr.Status == http.StatusNotFound {
-		return nil
+		return nil, false, nil
 	}
-	return err
+	if err != nil {
+		return nil, false, err
+	}
+	var list struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if json.Unmarshal(body, &list) != nil || list.Data == nil {
+		return nil, false, nil
+	}
+	ids = make([]string, 0, len(list.Data))
+	for _, m := range list.Data {
+		if id := strings.TrimSpace(m.ID); id != "" && len(id) <= maxModelLen {
+			ids = append(ids, id)
+		}
+	}
+	slices.Sort(ids)
+	ids = slices.Compact(ids)
+	if len(ids) > maxModels {
+		ids = ids[:maxModels]
+	}
+	return ids, true, nil
 }
 
 func (c *Client) endpoint(path string) string { return strings.TrimSuffix(c.BaseURL, "/") + path }
 
 // do sends a request with the key and decodes a JSON answer into out.
 func (c *Client) do(req *http.Request, out any) error {
+	body, err := c.send(req)
+	if err != nil {
+		return err
+	}
+	if out == nil {
+		return nil
+	}
+	if err := json.Unmarshal(body, out); err != nil {
+		return &Error{Status: http.StatusOK, msg: "speech API: the answer isn't JSON: " + err.Error()}
+	}
+	return nil
+}
+
+// send sends a request with the key and returns a 2xx answer's body.
+func (c *Client) send(req *http.Request) ([]byte, error) {
 	if c.Key != "" {
 		req.Header.Set("Authorization", "Bearer "+c.Key)
 	}
@@ -142,23 +196,17 @@ func (c *Client) do(req *http.Request, out any) error {
 	}
 	res, err := client.Do(req)
 	if err != nil {
-		return &Error{Transient: true, msg: "speech API: " + logging.RedactError(err).Error()}
+		return nil, &Error{Transient: true, msg: "speech API: " + logging.RedactError(err).Error()}
 	}
 	defer res.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(res.Body, 64<<20))
 	if err != nil {
-		return &Error{Transient: true, msg: "speech API: reading the answer: " + err.Error()}
+		return nil, &Error{Transient: true, msg: "speech API: reading the answer: " + err.Error()}
 	}
 	if res.StatusCode/100 != 2 {
-		return apiError(res, body)
+		return nil, apiError(res, body)
 	}
-	if out == nil {
-		return nil
-	}
-	if err := json.Unmarshal(body, out); err != nil {
-		return &Error{Status: res.StatusCode, msg: "speech API: the answer isn't JSON: " + err.Error()}
-	}
-	return nil
+	return body, nil
 }
 
 // apiError classifies a refusal, keeping only the API's own message (never
