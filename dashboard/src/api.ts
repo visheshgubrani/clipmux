@@ -117,6 +117,9 @@ export interface Track {
   name?: string
   error_code?: string
 }
+/** The encoding ladder, largest first (D130). */
+export const LADDER = ['2160p', '1440p', '1080p', '720p', '480p', '360p'] as const
+export type Rung = (typeof LADDER)[number]
 export type AssetStatus = 'waiting_upload' | 'processing' | 'ready' | 'errored' | 'deleted'
 export interface Asset {
   id: string
@@ -124,6 +127,8 @@ export interface Asset {
   status: AssetStatus
   version: number
   title?: string
+  /** The renditions its outputs are encoded at; absent is every rung up to the source (D130). */
+  renditions?: Rung[]
   passthrough?: string
   error_code?: string
   base_url: string

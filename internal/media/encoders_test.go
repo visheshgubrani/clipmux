@@ -2,11 +2,13 @@ package media
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 var hd = Source{Width: 1280, Height: 720, FrameRate: "30", FPS: 30, Duration: 60, Codec: "h264", PixFmt: "yuv420p"}
@@ -59,13 +61,20 @@ func TestEveryBackendKeepsTheLaddersRatesAndKeyframes(t *testing.T) {
 			"-hwaccel cuda -hwaccel_output_format cuda", "scale_cuda=1280:720:format=yuv420p",
 			"-c:v h264_nvenc -preset p4 -tune hq", "-rc vbr -forced-idr 1 -no-scenecut 1 -strict_gop 1",
 		}},
-		"nvenc-hybrid": {Stage{NVENC, false}, []string{"[s0]scale=1280:720,format=yuv420p[v0]", "-c:v h264_nvenc"}},
+		// A hybrid decodes on the CPU, uploads each frame once and scales
+		// every rung on the GPU: four CPU scales of a 4K frame cost more
+		// than its decode.
+		"nvenc-hybrid": {Stage{NVENC, false}, []string{
+			"-init_hw_device cuda=cu -filter_hw_device cu", "[0:v:0]setpts=PTS-STARTPTS,format=yuv420p,hwupload,split=1[s0]",
+			"[s0]scale_cuda=1280:720:format=yuv420p[v0]", "-c:v h264_nvenc",
+		}},
 		"vaapi": {Stage{VAAPI, true}, []string{
 			"-hwaccel vaapi -hwaccel_device /dev/dri/renderD128 -hwaccel_output_format vaapi",
 			"scale_vaapi=w=1280:h=720:format=nv12", "-c:v h264_vaapi -profile:v high -rc_mode VBR",
 		}},
 		"vaapi-hybrid": {Stage{VAAPI, false}, []string{
-			"-init_hw_device vaapi=va:/dev/dri/renderD128 -filter_hw_device va", "scale=1280:720,format=nv12,hwupload", "-c:v h264_vaapi",
+			"-init_hw_device vaapi=va:/dev/dri/renderD128 -filter_hw_device va", "[0:v:0]setpts=PTS-STARTPTS,format=nv12,hwupload,split=1[s0]",
+			"[s0]scale_vaapi=w=1280:h=720:format=nv12[v0]", "-c:v h264_vaapi",
 		}},
 		"cuda-decode": {Stage{CUDADecode, true}, []string{"-hwaccel cuda -format_whitelist", "scale=1280:720,format=yuv420p", "-c:v libx264 -preset veryfast", "-keyint_min 180 -sc_threshold 0"}},
 		"cpu":         {Stage{CPU, false}, []string{"-c:v libx264 -preset veryfast", "-keyint_min 180 -sc_threshold 0"}},
@@ -79,6 +88,9 @@ func TestEveryBackendKeepsTheLaddersRatesAndKeyframes(t *testing.T) {
 		}
 		if name != "cpu" && name != "cuda-decode" && strings.Contains(args, "libx264") {
 			t.Errorf("%s encodes with libx264", name)
+		}
+		if strings.HasSuffix(name, "-hybrid") && strings.Contains(args, "[s0]scale=") {
+			t.Errorf("%s scales on the CPU:\n%s", name, args)
 		}
 	}
 }
@@ -100,16 +112,28 @@ func fakeFFmpeg(t *testing.T, failing ...string) string {
 func TestAFailingGPUHandsTheWholeLadderToTheNextStage(t *testing.T) {
 	dir := t.TempDir()
 	tools := Tools{FFmpeg: fakeFFmpeg(t, "h264_nvenc"), HW: Hardware{NVENC: true, CUDA: true}}
-	used, err := encodeLadder(context.Background(), tools, hd, "/src", dir, dir, SelectLadder(1280, 720), func(string, float64) {})
+	used, err := encodeLadder(context.Background(), tools, hd, "/src", dir, dir, SelectLadder(1280, 720, nil), func(string, float64) {})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := (EncoderUsed{Stage: "cpu", Fallbacks: []string{"nvenc", "nvenc-hybrid"}}); !reflect.DeepEqual(used, want) {
-		t.Fatalf("used = %+v, want %+v", used, want)
+	if used.Stage != "cpu" || !reflect.DeepEqual(used.Fallbacks, []string{"nvenc", "nvenc-hybrid"}) {
+		t.Fatalf("used = %+v, want cpu after nvenc and nvenc-hybrid", used)
+	}
+	// Why each stage failed is kept for the worker's log, so a GPU that
+	// keeps handing its ladder to a slower stage can be seen and fixed.
+	want := map[string]string{
+		"nvenc":        "ffmpeg: exit status 1: Cannot load h264_nvenc",
+		"nvenc-hybrid": "ffmpeg: exit status 1: Cannot load h264_nvenc",
+	}
+	if !reflect.DeepEqual(used.Failed, want) {
+		t.Fatalf("failed = %v, want %v", used.Failed, want)
+	}
+	if raw, _ := json.Marshal(used); strings.Contains(string(raw), "Cannot load") {
+		t.Fatalf("the manifest carries ffmpeg's stderr: %s", raw)
 	}
 
 	tools.FFmpeg = fakeFFmpeg(t)
-	used, err = encodeLadder(context.Background(), tools, hd, "/src", dir, dir, SelectLadder(1280, 720), func(string, float64) {})
+	used, err = encodeLadder(context.Background(), tools, hd, "/src", dir, dir, SelectLadder(1280, 720, nil), func(string, float64) {})
 	if err != nil || used.Stage != "nvenc" || used.Fallbacks != nil {
 		t.Fatalf("a working GPU: used = %+v, %v", used, err)
 	}
@@ -118,7 +142,7 @@ func TestAFailingGPUHandsTheWholeLadderToTheNextStage(t *testing.T) {
 func TestTheCPUsFailureIsFinal(t *testing.T) {
 	dir := t.TempDir()
 	tools := Tools{FFmpeg: fakeFFmpeg(t, "h264_vaapi", "libx264"), HW: Hardware{VAAPIDevice: "/dev/dri/renderD128"}}
-	_, err := encodeLadder(context.Background(), tools, hd, "/src", dir, dir, SelectLadder(1280, 720), func(string, float64) {})
+	_, err := encodeLadder(context.Background(), tools, hd, "/src", dir, dir, SelectLadder(1280, 720, nil), func(string, float64) {})
 	if err == nil || !strings.Contains(err.Error(), "(cpu)") {
 		t.Fatalf("err = %v, want the CPU stage's failure", err)
 	}
@@ -129,7 +153,7 @@ func TestACancelledEncodeDoesntFallBack(t *testing.T) {
 	cancel()
 	dir := t.TempDir()
 	tools := Tools{FFmpeg: fakeFFmpeg(t), HW: Hardware{NVENC: true}}
-	used, err := encodeLadder(ctx, tools, hd, "/src", dir, dir, SelectLadder(1280, 720), func(string, float64) {})
+	used, err := encodeLadder(ctx, tools, hd, "/src", dir, dir, SelectLadder(1280, 720, nil), func(string, float64) {})
 	if err == nil || len(used.Fallbacks) != 0 {
 		t.Fatalf("cancelled: used = %+v, err = %v; want a stop with no fallback", used, err)
 	}
@@ -158,5 +182,77 @@ func TestDetectionTrustsOnlyARealEncode(t *testing.T) {
 	ok := Tools{FFmpeg: fakeFFmpeg(t, "h264_nvenc", "cuda=cu")}
 	if h := DetectHardware(context.Background(), ok, t.TempDir(), "/dev/dri/renderD128", ""); h.VAAPIDevice != "/dev/dri/renderD128" {
 		t.Fatalf("a working VAAPI encode wasn't detected: %+v", h)
+	}
+}
+
+func TestDetectionNamesTheNVIDIACards(t *testing.T) {
+	proc := t.TempDir()
+	for bus, model := range map[string]string{"0000:00:04.0": "NVIDIA L4", "0000:00:05.0": "NVIDIA A10G"} {
+		d := filepath.Join(proc, bus)
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		// The driver's own layout: tab-aligned "Key: \t value" lines.
+		info := "Model: \t\t " + model + "\nIRQ:   \t\t 142\nGPU UUID: \t GPU-8a0c\nBus Type: \t PCIe\n"
+		if err := os.WriteFile(filepath.Join(d, "information"), []byte(info), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	defer func(glob, smi string) { nvidiaInformation, nvidiaSMI = glob, smi }(nvidiaInformation, nvidiaSMI)
+	nvidiaInformation, nvidiaSMI = filepath.Join(proc, "*", "information"), ""
+
+	h := DetectHardware(context.Background(), Tools{FFmpeg: fakeFFmpeg(t)}, t.TempDir(), "/dev/null", "")
+	if h.GPU != "NVIDIA L4, NVIDIA A10G" {
+		t.Fatalf("gpu = %q, want both cards in bus order", h.GPU)
+	}
+	if got := h.Describe(); got != "nvenc (NVIDIA L4, NVIDIA A10G), vaapi (/dev/null), cpu" {
+		t.Fatalf("describe = %q", got)
+	}
+	if raw, _ := json.Marshal(h); !strings.Contains(string(raw), `"gpu":"NVIDIA L4, NVIDIA A10G"`) {
+		t.Fatalf("the claim's hardware doesn't name the card: %s", raw)
+	}
+
+	// Where /proc has no driver directory (gVisor), nvidia-smi names it.
+	smi := filepath.Join(t.TempDir(), "nvidia-smi")
+	if err := os.WriteFile(smi, []byte("#!/bin/sh\necho 'NVIDIA L4'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	nvidiaInformation, nvidiaSMI = filepath.Join(t.TempDir(), "*", "information"), smi
+	if h := DetectHardware(context.Background(), Tools{FFmpeg: fakeFFmpeg(t)}, t.TempDir(), "/dev/null", ""); h.GPU != "NVIDIA L4" {
+		t.Fatalf("gpu from nvidia-smi = %q", h.GPU)
+	}
+	// No NVIDIA card proved itself: nothing is asked of nvidia-smi.
+	none := Tools{FFmpeg: fakeFFmpeg(t, "h264_nvenc", "cuda=cu")}
+	if h := DetectHardware(context.Background(), none, t.TempDir(), "/dev/null", ""); h.GPU != "" {
+		t.Fatalf("gpu without CUDA = %q", h.GPU)
+	}
+}
+
+func script(t *testing.T, name, body string) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), name)
+	if err := os.WriteFile(p, []byte("#!/bin/sh\n"+body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func TestAudioEncodesBesideTheVideoAndItsFailureStopsIt(t *testing.T) {
+	// The video encode would take a minute; the audio fails at once.
+	tools := Tools{
+		FFmpeg: script(t, "ffmpeg", "case \"$*\" in *loudnorm*) echo 'audio broke' >&2; exit 1;; *filter_complex*) exec sleep 60;; esac\nexit 0\n"),
+		// Versions is all Transcode asks of the packager before the encode.
+		Packager: script(t, "packager", "echo 'packager version v3.9.3-0a8ba4f-release'\n"),
+	}
+	src := hd
+	src.HasAudio = true
+	dir := t.TempDir()
+	start := time.Now()
+	_, err := Transcode(context.Background(), tools, "/src", src, nil, filepath.Join(dir, "work"), filepath.Join(dir, "out"), testKey, nil)
+	if err == nil || !strings.Contains(err.Error(), "encode audio") || !strings.Contains(err.Error(), "audio broke") {
+		t.Fatalf("err = %v, want the audio encode's failure", err)
+	}
+	if took := time.Since(start); took > 10*time.Second {
+		t.Fatalf("Transcode took %s: the video kept encoding after the audio failed", took)
 	}
 }

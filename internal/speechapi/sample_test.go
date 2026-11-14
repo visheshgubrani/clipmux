@@ -63,7 +63,7 @@ func regenerateSample(t *testing.T) {
 	}
 	key := media.Key{Version: 1, Key: [16]byte{1}, KeyID: [16]byte{2}}
 	out := filepath.Join(dir, "out")
-	if _, err := media.Transcode(ctx, tools, src, probe, filepath.Join(dir, "work"), out, key, func(string, float64) {}); err != nil {
+	if _, err := media.Transcode(ctx, tools, src, probe, nil, filepath.Join(dir, "work"), out, key, func(string, float64) {}); err != nil {
 		t.Fatal(err)
 	}
 	playlist, err := os.ReadFile(filepath.Join(out, "audio", "index.m3u8"))

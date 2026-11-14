@@ -9,7 +9,9 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -23,6 +25,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/apikeys"
 	"github.com/visheshgubrani/clipmux/internal/db"
 	"github.com/visheshgubrani/clipmux/internal/httpjson"
+	"github.com/visheshgubrani/clipmux/internal/media"
 )
 
 // PlaybackID is a public or signed handle for an asset.
@@ -52,8 +55,11 @@ type View struct {
 	Version     int64  `json:"version"`
 	Passthrough string `json:"passthrough,omitempty"`
 	// Title is a name for people (D099), absent until one is given.
-	Title     string `json:"title,omitempty"`
-	ErrorCode string `json:"error_code,omitempty"`
+	Title string `json:"title,omitempty"`
+	// Renditions are the ones the asset's outputs are encoded at (D130),
+	// largest first; absent means every rung up to the source.
+	Renditions []string `json:"renditions,omitempty"`
+	ErrorCode  string   `json:"error_code,omitempty"`
 	// BaseURL is the media origin; playback URLs are
 	// {base_url}/v/{token}/{playback_id}/master.m3u8 (signed) and
 	// {base_url}/p/{playback_id}/master.m3u8 (public).
@@ -109,6 +115,32 @@ func Title(raw string) (pgtype.Text, error) {
 	return pgtype.Text{String: t, Valid: t != ""}, nil
 }
 
+// Renditions checks the renditions an upload, an import or a re-encode
+// asks for (D130): ladder names, each once, returned in ladder order. Absent
+// (nil) means every rung up to the source; an empty list is refused.
+func Renditions(names []string) ([]string, error) {
+	if names == nil {
+		return nil, nil
+	}
+	ladder := media.LadderNames()
+	refuse := func(why string) error {
+		return httpjson.Fail(http.StatusBadRequest, "invalid_request",
+			"renditions "+why+"; choose from "+strings.Join(ladder, ", ")+", or leave it out for every rung up to the source")
+	}
+	if len(names) == 0 {
+		return nil, refuse("must name at least one")
+	}
+	for i, n := range names {
+		switch {
+		case !slices.Contains(ladder, n):
+			return nil, refuse(fmt.Sprintf("can't include %q", n))
+		case slices.Contains(names[:i], n):
+			return nil, refuse(fmt.Sprintf("names %s twice", n))
+		}
+	}
+	return slices.DeleteFunc(ladder, func(n string) bool { return !slices.Contains(names, n) }), nil
+}
+
 // Load builds the view of an asset. base_url is the project's media URL,
 // read in the same transaction as the asset.
 func Load(ctx context.Context, q *db.Queries, a db.Asset) (View, error) {
@@ -162,7 +194,7 @@ func view(a db.Asset, baseURL string, pids []db.ListPlaybackIDsForAssetsRow, trk
 	playable := a.CurrentOutputID.Valid && a.Status != "deleted"
 	v := View{
 		ID: a.ID, AppID: a.AppID, Status: a.Status, Version: a.Version, BaseURL: baseURL,
-		Passthrough: a.Passthrough.String, Title: a.Title.String, ErrorCode: a.ErrorCode.String,
+		Passthrough: a.Passthrough.String, Title: a.Title.String, Renditions: a.Renditions, ErrorCode: a.ErrorCode.String,
 		PlaybackIDs: make([]PlaybackID, 0, len(pids)),
 		CreatedAt:   a.CreatedAt.Time.UTC(), UpdatedAt: a.UpdatedAt.Time.UTC(),
 	}

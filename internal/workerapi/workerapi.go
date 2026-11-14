@@ -30,7 +30,9 @@ import (
 )
 
 // ContractVersion is the job payload / output contract this server speaks.
-const ContractVersion = 1
+// Version 2 added renditions (D130): a worker that ignored them would
+// encode rungs the commit refuses, so older workers are turned away.
+const ContractVersion = 2
 
 // MinPackager is the oldest Shaka Packager that encrypts CMAF correctly.
 var MinPackager = [3]int{3, 9, 1}
@@ -129,19 +131,23 @@ type Profile struct {
 // Job is the claim payload (docs/architecture.md, "Job payload"). It holds
 // no storage credentials.
 type Job struct {
-	ContractVersion  int        `json:"contract_version"`
-	AttemptID        string     `json:"attempt_id"`
-	AttemptToken     string     `json:"attempt_token"`
-	LeaseSeconds     int        `json:"lease_seconds"`
-	HeartbeatSeconds int        `json:"heartbeat_seconds"`
-	JobID            string     `json:"job_id"`
-	Kind             string     `json:"kind"`
-	AssetID          string     `json:"asset_id"`
-	OutputID         string     `json:"output_id"`
-	Source           Source     `json:"source"`
-	Profile          Profile    `json:"profile"`
-	OutputFormat     int32      `json:"output_format"`
-	Encryption       Encryption `json:"encryption"`
+	ContractVersion  int     `json:"contract_version"`
+	AttemptID        string  `json:"attempt_id"`
+	AttemptToken     string  `json:"attempt_token"`
+	LeaseSeconds     int     `json:"lease_seconds"`
+	HeartbeatSeconds int     `json:"heartbeat_seconds"`
+	JobID            string  `json:"job_id"`
+	Kind             string  `json:"kind"`
+	AssetID          string  `json:"asset_id"`
+	OutputID         string  `json:"output_id"`
+	Source           Source  `json:"source"`
+	Profile          Profile `json:"profile"`
+	// Renditions are the ladder rungs to encode, largest first, always
+	// given for a transcode or re-encode (D130); the worker encodes those
+	// that fit the source (media.SelectLadder).
+	Renditions   []string   `json:"renditions,omitempty"`
+	OutputFormat int32      `json:"output_format"`
+	Encryption   Encryption `json:"encryption"`
 	// Speech is a transcription's input, and nothing else is set for one:
 	// no source, output or content key.
 	Speech *JobSpeech `json:"speech,omitempty"`
@@ -226,6 +232,16 @@ func (a *API) source(ctx context.Context, assetID string) (Source, error) {
 	return Source{URL: url, Size: obj.Size}, err
 }
 
+// renditions are the rungs an asset's output encodes: its own choice, or
+// the whole ladder (D130).
+func (a *API) renditions(ctx context.Context, assetID string) ([]string, error) {
+	r, err := db.New(a.Queue.Pool()).GetAssetRenditions(ctx, assetID)
+	if err != nil || r != nil {
+		return r, err
+	}
+	return media.LadderNames(), nil
+}
+
 type claimRequest struct {
 	ContractVersions []int    `json:"contract_versions"`
 	FFmpegVersion    string   `json:"ffmpeg_version"`
@@ -253,7 +269,7 @@ type claimRequest struct {
 
 // Speech is a worker's transcription capability.
 type Speech struct {
-	// Backends whisper ran on in the probe: "cpu", "vulkan".
+	// Backends whisper ran on in the probe: "cpu", "vulkan", "cuda".
 	Backends []string `json:"backends"`
 	// Model is the speech model it holds, "{name}@sha256:{hex}".
 	Model string `json:"model"`
@@ -357,8 +373,12 @@ func (a *API) claim(w http.ResponseWriter, r *http.Request) {
 	}
 	// A transcription reads an output, never the source.
 	var src Source
+	var renditions []string
 	if c.Job.Kind != tracks.JobTranscribe {
 		src, err = a.source(r.Context(), c.Job.AssetID)
+	}
+	if err == nil && c.Output.ID != "" {
+		renditions, err = a.renditions(r.Context(), c.Job.AssetID)
 	}
 	if errors.Is(err, storage.ErrNotFound) {
 		// The source is gone; no executor can ever run this job.
@@ -409,6 +429,7 @@ func (a *API) claim(w http.ResponseWriter, r *http.Request) {
 		OutputID:         c.Output.ID,
 		Source:           src,
 		Profile:          Profile{ID: c.Job.ProfileID, Version: c.Job.ProfileVersion},
+		Renditions:       renditions,
 		OutputFormat:     c.Output.OutputFormat,
 		Encryption:       enc,
 		Speech:           speechJob,

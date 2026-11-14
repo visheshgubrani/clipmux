@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -526,5 +527,24 @@ func TestAnUploadCarriesItsTitle(t *testing.T) {
 	c := e.create(10, map[string]any{"title": "Welcome to the course"}, nil)
 	if code, out, _ := e.call("GET", "/v1/assets/"+c.AssetID, e.key, nil, nil); code != http.StatusOK || out["title"] != "Welcome to the course" {
 		t.Fatalf("the asset = %d %v, want its title", code, out)
+	}
+}
+
+// D130: an upload may choose its renditions; they come back in ladder order.
+func TestAnUploadCarriesTheRenditionsItChose(t *testing.T) {
+	e := newEnv(t)
+	c := e.create(10, map[string]any{"renditions": []string{"480p", "1080p"}}, nil)
+	if code, out, _ := e.call("GET", "/v1/assets/"+c.AssetID, e.key, nil, nil); code != http.StatusOK || fmt.Sprint(out["renditions"]) != "[1080p 480p]" {
+		t.Fatalf("the asset = %d %v, want renditions [1080p 480p]", code, out)
+	}
+	plain := e.create(10, nil, nil)
+	if _, out, _ := e.call("GET", "/v1/assets/"+plain.AssetID, e.key, nil, nil); out["renditions"] != nil {
+		t.Fatalf("an asset that chose nothing shows renditions %v, want none: every rung up to the source", out["renditions"])
+	}
+	for _, bad := range []any{[]string{}, []string{"4320p"}, []string{"720p", "720p"}} {
+		code, out, _ := e.call("POST", "/v1/uploads", e.key, map[string]any{"size": 10, "renditions": bad}, nil)
+		if code != http.StatusBadRequest || errCode(out) != "invalid_request" {
+			t.Errorf("renditions %v: %d %v, want 400 invalid_request", bad, code, out)
+		}
 	}
 }

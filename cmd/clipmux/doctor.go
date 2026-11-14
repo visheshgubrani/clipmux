@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 
@@ -121,9 +122,10 @@ func doctorSpeech(ctx context.Context, tools media.Tools, getenv func(string) st
 			return
 		}
 	}
-	backends := []media.SpeechBackend{media.SpeechCPU}
-	if nodes, _ := filepath.Glob("/dev/dri/renderD*"); len(nodes) > 0 {
-		backends = append([]media.SpeechBackend{media.SpeechVulkan}, backends...)
+	// What the worker would probe, and the CPU last even below auto's floor.
+	backends := worker.SpeechCandidates(worker.SpeechAuto, tools.Whisper)
+	if !slices.Contains(backends, media.SpeechCPU) {
+		backends = append(backends, media.SpeechCPU)
 	}
 	var failures []string
 	for _, b := range backends {

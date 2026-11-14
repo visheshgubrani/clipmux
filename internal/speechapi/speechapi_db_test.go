@@ -189,7 +189,7 @@ func (r *rig) encoded(tools media.Tools, secret contentkey.Secret) db.Output {
 	}
 	key := media.Key{Version: 1, Key: secret.Derive("ast_1", "out_1"), KeyID: contentkey.KeyID("out_1")}
 	out := filepath.Join(dir, "out")
-	m, err := media.Transcode(ctx, tools, src, probe, filepath.Join(dir, "work"), out, key, func(string, float64) {})
+	m, err := media.Transcode(ctx, tools, src, probe, nil, filepath.Join(dir, "work"), out, key, func(string, float64) {})
 	if err != nil {
 		r.t.Fatal(err)
 	}

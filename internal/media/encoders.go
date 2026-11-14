@@ -6,10 +6,12 @@ import (
 	"io"
 	"math"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Hardware encoding (P3-T03, D046). A PC agent is mostly worth having for a
@@ -60,6 +62,9 @@ type Hardware struct {
 	// Failed says why each backend that failed its test encode did, such
 	// as an NVIDIA driver too old for this FFmpeg's NVENC API.
 	Failed map[Backend]string `json:"failed,omitempty"`
+	// GPU names the NVIDIA cards, e.g. "NVIDIA L4": a serverless provider
+	// picks one of several types, and their speeds differ.
+	GPU string `json:"gpu,omitempty"`
 }
 
 // Backends lists what this hardware offers, best first, always ending with
@@ -162,6 +167,8 @@ func EncodeArgs(stage Stage, dev string, src Source, input, encDir string, rungs
 		args = append(args, "-hwaccel", "vaapi", "-hwaccel_device", dev, "-hwaccel_output_format", "vaapi")
 	case stage.Backend == VAAPI:
 		args = append(args, "-init_hw_device", "vaapi=va:"+dev, "-filter_hw_device", "va")
+	case stage.Backend == NVENC:
+		args = append(args, "-init_hw_device", "cuda=cu", "-filter_hw_device", "cu")
 	case stage.Backend == CUDADecode:
 		// Decoded frames come back to system memory; if the GPU can't
 		// decode this source, ffmpeg decodes it on the CPU instead.
@@ -169,20 +176,28 @@ func EncodeArgs(stage Stage, dev string, src Source, input, encDir string, rungs
 	}
 	args = append(args, inputGuard()...)
 	args = append(args, "-i", input)
-	graph := fmt.Sprintf("[0:v:0]setpts=PTS-STARTPTS,split=%d", len(rungs))
+	// A hybrid stage decodes on the CPU, converts and uploads each frame
+	// once, and scales every rung on the GPU; scaling a 4K frame four times
+	// on the CPU costs more than decoding it.
+	upload := ""
+	switch {
+	case stage.Backend == NVENC && !stage.HWDecode:
+		upload = "format=yuv420p,hwupload,"
+	case stage.Backend == VAAPI && !stage.HWDecode:
+		upload = "format=nv12,hwupload,"
+	}
+	graph := fmt.Sprintf("[0:v:0]setpts=PTS-STARTPTS,%ssplit=%d", upload, len(rungs))
 	for i := range rungs {
 		graph += fmt.Sprintf("[s%d]", i)
 	}
 	for i, r := range rungs {
 		w, h := r.Dimensions(src.Width, src.Height)
 		var scale string
-		switch {
-		case stage.Backend == NVENC && stage.HWDecode:
+		switch stage.Backend {
+		case NVENC:
 			scale = fmt.Sprintf("scale_cuda=%d:%d:format=yuv420p", w, h)
-		case stage.Backend == VAAPI && stage.HWDecode:
+		case VAAPI:
 			scale = fmt.Sprintf("scale_vaapi=w=%d:h=%d:format=nv12", w, h)
-		case stage.Backend == VAAPI:
-			scale = fmt.Sprintf("scale=%d:%d,format=nv12,hwupload", w, h)
 		default:
 			scale = fmt.Sprintf("scale=%d:%d,format=yuv420p", w, h)
 		}
@@ -310,18 +325,66 @@ func DetectHardware(ctx context.Context, t Tools, dir, vaapiDev string, prefer B
 	if len(h.Failed) == 0 {
 		h.Failed = nil
 	}
+	h.GPU = nvidiaModels(ctx, h.CUDA)
 	return h
 }
 
-// Describe is a one-line summary for logs, e.g. "vaapi (/dev/dri/renderD128), cpu".
+// Where the NVIDIA driver names its cards, and its tool for when /proc has
+// no driver directory (gVisor). Variables so tests can point elsewhere.
+var (
+	nvidiaInformation = "/proc/driver/nvidia/gpus/*/information"
+	nvidiaSMI         = "nvidia-smi"
+)
+
+// nvidiaModels names the NVIDIA cards, in bus order, from the driver's
+// /proc files, or from nvidia-smi when CUDA works but /proc says nothing.
+// It is for logs and the claim; a card it can't name is just unnamed.
+func nvidiaModels(ctx context.Context, cuda bool) string {
+	files, _ := filepath.Glob(nvidiaInformation) // the pattern is valid
+	var models []string
+	for _, f := range files {
+		raw, err := os.ReadFile(f)
+		if err != nil {
+			continue
+		}
+		for line := range strings.Lines(string(raw)) {
+			if v, ok := strings.CutPrefix(line, "Model:"); ok {
+				models = append(models, strings.TrimSpace(v))
+				break
+			}
+		}
+	}
+	if len(models) == 0 && cuda && nvidiaSMI != "" {
+		ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		// The driver's own tool, reading nothing a job supplies, with no
+		// inherited environment: the worker's holds its key.
+		cmd := exec.CommandContext(ctx, nvidiaSMI, "--query-gpu=name", "--format=csv,noheader")
+		cmd.Env = []string{}
+		if out, err := cmd.Output(); err == nil {
+			for line := range strings.Lines(string(out)) {
+				if line = strings.TrimSpace(line); line != "" {
+					models = append(models, line)
+				}
+			}
+		}
+	}
+	return strings.Join(models, ", ")
+}
+
+// Describe is a one-line summary for logs, e.g. "vaapi (/dev/dri/renderD128),
+// cpu" or "nvenc (NVIDIA L4), cpu".
 func (h Hardware) Describe() string {
 	var parts []string
 	for _, b := range h.Backends() {
-		if b == VAAPI {
+		switch {
+		case b == VAAPI:
 			parts = append(parts, fmt.Sprintf("vaapi (%s)", h.VAAPIDevice))
-			continue
+		case (b == NVENC || b == CUDADecode) && h.GPU != "":
+			parts = append(parts, fmt.Sprintf("%s (%s)", b, h.GPU))
+		default:
+			parts = append(parts, string(b))
 		}
-		parts = append(parts, string(b))
 	}
 	return strings.Join(parts, ", ")
 }

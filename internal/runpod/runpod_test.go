@@ -44,7 +44,7 @@ func TestWakeCreatesOnePodWithTheDispatchsEnvironment(t *testing.T) {
 		ComputeType: "GPU", CloudType: "SECURE", GPUTypeIDs: []string{"NVIDIA L4"}, GPUTypePriority: "availability", GPUCount: 1,
 		Env: map[string]string{
 			"CLIPMUX_SERVER": "https://video.example.com", "CLIPMUX_WORKER_KEY": "cmxd_secret",
-			"NVIDIA_DRIVER_CAPABILITIES": "compute,video,utility",
+			"NVIDIA_DRIVER_CAPABILITIES": "compute,video,utility,graphics",
 		},
 		DockerStartCmd: []string{"worker", "--once"}, ContainerDiskInGb: 50, VolumeInGb: 0, Ports: []string{},
 		ContainerRegistryAuthID: "cra1",

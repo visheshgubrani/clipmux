@@ -16,16 +16,44 @@ import (
 )
 
 func TestParseSpeechMode(t *testing.T) {
-	for in, want := range map[string]SpeechMode{"": SpeechAuto, "auto": SpeechAuto, "off": SpeechOff, "cpu": SpeechCPU, "vulkan": SpeechVulkan} {
+	for in, want := range map[string]SpeechMode{"": SpeechAuto, "auto": SpeechAuto, "off": SpeechOff, "cpu": SpeechCPU, "vulkan": SpeechVulkan, "cuda": SpeechCUDA} {
 		if got, err := ParseSpeechMode(in); err != nil || got != want {
 			t.Errorf("%q = %q, %v", in, got, err)
 		}
 	}
-	if _, err := ParseSpeechMode("cuda"); err == nil || !strings.Contains(err.Error(), "D077") {
-		t.Errorf("cuda: %v, want the reason there is none", err)
-	}
 	if _, err := ParseSpeechMode("gpu"); err == nil {
 		t.Error("an unknown mode must be refused")
+	}
+}
+
+// A worker probes CUDA first on an NVIDIA card whose whisper-cli carries the
+// CUDA backend (the image), then Vulkan on any GPU, then the CPU.
+func TestSpeechCandidatesPutTheBestBackendFirst(t *testing.T) {
+	type machine struct{ nvidia, gpu, cudaBuilt, cpuOK bool }
+	l4 := machine{nvidia: true, gpu: true, cudaBuilt: true, cpuOK: true}
+	cases := []struct {
+		mode SpeechMode
+		m    machine
+		want string
+	}{
+		{SpeechAuto, l4, "cuda,vulkan,cpu"},
+		{SpeechAuto, machine{nvidia: true, gpu: true, cpuOK: true}, "vulkan,cpu"},    // an agent: no CUDA backend
+		{SpeechAuto, machine{gpu: true, cudaBuilt: true, cpuOK: true}, "vulkan,cpu"}, // AMD
+		{SpeechAuto, machine{cpuOK: true}, "cpu"},
+		{SpeechAuto, machine{}, ""},
+		{SpeechCUDA, l4, "cuda"},
+		{SpeechVulkan, l4, "vulkan"},
+		{SpeechCPU, l4, "cpu"},
+		{SpeechCUDA, machine{gpu: true, cpuOK: true}, ""},
+	}
+	for _, c := range cases {
+		var got []string
+		for _, b := range speechCandidates(c.mode, c.m.nvidia, c.m.gpu, c.m.cudaBuilt, c.m.cpuOK) {
+			got = append(got, string(b))
+		}
+		if strings.Join(got, ",") != c.want {
+			t.Errorf("%s on %+v = %v, want %s", c.mode, c.m, got, c.want)
+		}
 	}
 }
 

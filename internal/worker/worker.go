@@ -315,6 +315,8 @@ func (w *Worker) handle(ctx context.Context, job *workerapi.Job) (string, error)
 	jobCtx, cancel := context.WithTimeout(ctx, maxJob)
 	defer cancel()
 	hb := w.startHeartbeat(jobCtx, cancel, job)
+	start := time.Now()
+	ph := &phases{}
 	// complete carries the output's manifest, or an uploaded source's parts.
 	var done map[string]any
 	var code string
@@ -326,11 +328,11 @@ func (w *Worker) handle(ctx context.Context, job *workerapi.Job) (string, error)
 		done = map[string]any{"source_parts": parts}
 	case "transcribe":
 		var tr *transcripts.Transcript
-		tr, code, err = w.transcribe(jobCtx, job, dir, hb.report)
+		tr, code, err = w.transcribe(jobCtx, job, dir, hb.report, ph)
 		done = map[string]any{"transcript": tr}
 	default:
 		var m media.Manifest
-		m, code, err = w.process(jobCtx, job, dir, hb.report)
+		m, code, err = w.process(jobCtx, job, dir, hb.report, ph)
 		done = map[string]any{"manifest": m}
 	}
 	hb.stop()
@@ -375,6 +377,7 @@ func (w *Worker) handle(ctx context.Context, job *workerapi.Job) (string, error)
 		}
 		return "", w.fail(ctx, job, false, code, err)
 	}
+	log.Info("attempt committed", append(ph.attrs, "total_ms", time.Since(start).Milliseconds())...)
 	if len(w.FollowOn) == 0 {
 		return "", nil // it offered nothing, so it takes nothing
 	}
@@ -416,9 +419,21 @@ func (w *Worker) report(ctx context.Context, job *workerapi.Job, call string, bo
 	return status, err
 }
 
-// process downloads, transcodes and uploads. It returns a failure code with
-// any error.
-func (w *Worker) process(ctx context.Context, job *workerapi.Job, dir string, report media.Progress) (media.Manifest, string, error) {
+// phases records how long an attempt's steps took, as log attributes, for
+// the line its commit writes: where a slow attempt spent its time is then
+// in every machine's log (D129).
+type phases struct{ attrs []any }
+
+// since records the step's time from start, as name_ms.
+func (p *phases) since(name string, start time.Time) {
+	p.attrs = append(p.attrs, name+"_ms", time.Since(start).Milliseconds())
+}
+
+func (p *phases) add(kv ...any) { p.attrs = append(p.attrs, kv...) }
+
+// process downloads, transcodes and uploads, recording each step in ph. It
+// returns a failure code with any error.
+func (w *Worker) process(ctx context.Context, job *workerapi.Job, dir string, report media.Progress, ph *phases) (media.Manifest, string, error) {
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return media.Manifest{}, codeScratchFull, err
 	}
@@ -442,12 +457,16 @@ func (w *Worker) process(ctx context.Context, job *workerapi.Job, dir string, re
 	} else {
 		report("download", 0)
 		source = filepath.Join(dir, "source")
+		start := time.Now()
 		if err := w.download(ctx, job, source); err != nil {
 			return media.Manifest{}, codeDownload, err
 		}
+		ph.since("download", start)
 		tools = w.Tools.In(dir) // confined to this attempt's directory
 	}
+	start := time.Now()
 	src, err := media.Probe(ctx, tools, source)
+	ph.since("probe", start)
 	if errors.Is(err, media.ErrUnsupportedSource) {
 		return media.Manifest{}, codeUnsupportedSource, err
 	}
@@ -455,9 +474,23 @@ func (w *Worker) process(ctx context.Context, job *workerapi.Job, dir string, re
 		return media.Manifest{}, codeTranscode, err
 	}
 	out := filepath.Join(dir, "out")
-	m, err := media.Transcode(ctx, tools, source, src, filepath.Join(dir, "work"), out, key, report)
+	m, err := media.Transcode(ctx, tools, source, src, job.Renditions, filepath.Join(dir, "work"), out, key, report)
 	if err != nil {
 		return media.Manifest{}, codeTranscode, err
+	}
+	names := make([]string, 0, len(m.Renditions))
+	for _, r := range m.Renditions {
+		names = append(names, r.Name)
+	}
+	ph.add("source_bytes", job.Source.Size, "duration_s", src.Duration,
+		"source", fmt.Sprintf("%s %dx%d@%s", src.Codec, src.Width, src.Height, src.FrameRate),
+		"renditions", strings.Join(names, ","), "encoder", m.Encoder.Stage)
+	ph.add("video_ms", m.Took.Video.Milliseconds(), "audio_ms", m.Took.Audio.Milliseconds(), "package_ms", m.Took.Package.Milliseconds())
+	for _, stage := range m.Encoder.Fallbacks {
+		// A GPU that keeps handing its ladder to a slower stage shows
+		// here, with ffmpeg's reason.
+		w.Logger.Warn("an encoder stage failed; the next one encoded the ladder", "job", job.JobID, "attempt", job.AttemptID,
+			"stage", stage, "err", m.Encoder.Failed[stage])
 	}
 	if id := job.Source.AgentSourceID; id != "" {
 		// A file edited while it encoded would commit a mix of two files.
@@ -466,9 +499,16 @@ func (w *Worker) process(ctx context.Context, job *workerapi.Job, dir string, re
 		}
 	}
 	report("upload", 0)
+	start = time.Now()
 	if err := w.upload(ctx, job, out, m, report); err != nil {
 		return media.Manifest{}, codeUpload, err
 	}
+	ph.since("upload", start)
+	var size int64
+	for _, f := range m.Files {
+		size += f.Size
+	}
+	ph.add("files", len(m.Files)+1, "bytes", size)
 	return m, "", nil
 }
 
@@ -557,8 +597,12 @@ func (w *Worker) download(ctx context.Context, job *workerapi.Job, dst string) e
 	return fmt.Errorf("download: %w", lastErr)
 }
 
+// uploadConcurrency is how many PUTs run at once: an hour of 4K is
+// thousands of segments, each a short request to object storage.
+const uploadConcurrency = 8
+
 // upload PUTs every inventoried file, then manifest.json last, through
-// signed URLs, four at a time, retrying each a few times.
+// signed URLs, uploadConcurrency at a time, retrying each a few times.
 func (w *Worker) upload(ctx context.Context, job *workerapi.Job, outDir string, m media.Manifest, report media.Progress) error {
 	paths := make([]string, 0, len(m.Files)+1)
 	for _, f := range m.Files {
@@ -597,7 +641,7 @@ func (w *Worker) upload(ctx context.Context, job *workerapi.Job, outDir string, 
 		if err != nil {
 			return err
 		}
-		sem := make(chan struct{}, 4)
+		sem := make(chan struct{}, uploadConcurrency)
 		var wg sync.WaitGroup
 		var firstErr error
 		var errMu sync.Mutex

@@ -3,7 +3,8 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { CheckIcon, PauseIcon, PlayIcon, UploadIcon, XIcon } from 'lucide-react'
 import * as React from 'react'
 import { Link } from 'react-router'
-import { post } from '@/api'
+import { LADDER, post, type Rung } from '@/api'
+import { RenditionPicker, renditionsBody, renditionsNote, videoShortSide } from '@/components/renditions'
 import { Button } from '@/components/ui/button'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import {
@@ -49,6 +50,8 @@ interface Item {
   assetId?: string
   appId?: string
   upload?: ClipMuxUpload
+  /** The video's short side, when the browser could read it. */
+  shortSide?: number
 }
 
 interface Options {
@@ -57,6 +60,7 @@ interface Options {
   chapters: boolean
   app: string
   passthrough: string
+  renditions: Rung[]
 }
 
 const remembered = rememberUpload(
@@ -102,6 +106,7 @@ export function UploadProvider({ children }: { children: React.ReactNode }) {
     chapters: false,
     app: '',
     passthrough: '',
+    renditions: [...LADDER],
   })
   const qc = useQueryClient()
   const apps = useQuery({ ...q.apps(), enabled: open })
@@ -127,6 +132,12 @@ export function UploadProvider({ children }: { children: React.ReactNode }) {
           })),
       ]
     })
+    // Each video's size, so the renditions above it show as skipped.
+    for (const f of videos)
+      void videoShortSide(f).then(
+        (side) =>
+          side && setItems((cur) => cur.map((i) => (i.key === fileKey(f) ? { ...i, shortSide: side } : i))),
+      )
   }, [])
 
   const api = React.useMemo<UploadAPI>(
@@ -159,6 +170,7 @@ export function UploadProvider({ children }: { children: React.ReactNode }) {
             ...(opts.subtitles || opts.chapters
               ? { generate: { subtitles: opts.subtitles || opts.chapters, chapters: opts.chapters && llm } }
               : {}),
+            ...renditionsBody(opts.renditions),
           },
           app,
         )
@@ -201,6 +213,11 @@ export function UploadProvider({ children }: { children: React.ReactNode }) {
   }
 
   const active = items.some((i) => i.state === 'uploading' || i.state === 'paused')
+  // The largest video's short side, known only when every one was read.
+  const maxHeight =
+    items.length > 0 && items.every((i) => i.shortSide)
+      ? Math.max(...items.map((i) => i.shortSide ?? 0))
+      : undefined
   const pending = items.filter((i) => i.state === 'ready' || i.state === 'failed').length
   const doneItems = items.filter((i) => i.state === 'done')
 
@@ -227,7 +244,9 @@ export function UploadProvider({ children }: { children: React.ReactNode }) {
               Uploads keep going if you close this, and resume if you reload.
             </DialogDescription>
           </DialogHeader>
-          <div className="flex max-h-[60vh] flex-col gap-5 overflow-y-auto">
+          {/* Room on the right for the switches' wider hit areas, which would
+              otherwise overflow and let focus scroll the form sideways. */}
+          <div className="-mr-3 flex max-h-[60vh] flex-col gap-5 overflow-y-auto pr-3">
             <Dropzone onFiles={add} compact={items.length > 0} />
             {items.length > 0 && (
               <ul className="flex flex-col gap-2" aria-label="Files">
@@ -277,6 +296,16 @@ export function UploadProvider({ children }: { children: React.ReactNode }) {
                       ? 'Plays only with a token your app signs.'
                       : 'Anyone with the link or the embed can watch.'}
                   </FieldDescription>
+                </Field>
+                <Field>
+                  <FieldLabel id="renditions-label">Resolutions</FieldLabel>
+                  <RenditionPicker
+                    labelledBy="renditions-label"
+                    value={opts.renditions}
+                    maxHeight={maxHeight}
+                    onChange={(renditions) => setOpts({ ...opts, renditions })}
+                  />
+                  <FieldDescription>{renditionsNote(opts.renditions, maxHeight)}</FieldDescription>
                 </Field>
                 <Field orientation="horizontal">
                   <FieldContent>

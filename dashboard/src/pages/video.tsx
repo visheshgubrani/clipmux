@@ -8,10 +8,12 @@ import {
   del,
   describe,
   type Job,
+  LADDER,
   type PlaybackID,
   patch,
   post,
   type Range,
+  type Rung,
   type Track,
   type TrackDetail,
   type Transcript,
@@ -23,6 +25,7 @@ import { PageBody, Section } from '@/components/page'
 import { isPublic } from '@/components/poster'
 import { Preview } from '@/components/preview'
 import { QueryState } from '@/components/query-state'
+import { RenditionPicker, renditionsNote } from '@/components/renditions'
 import { ShareLinks } from '@/components/share-links'
 import { AssetStatusBadge, TrackStatusBadge } from '@/components/status'
 import { Alert, AlertAction, AlertDescription } from '@/components/ui/alert'
@@ -212,15 +215,8 @@ function Header({ asset: a, app, job }: { asset: Asset; app?: string | undefined
   const qc = useQueryClient()
   const confirm = useConfirm()
   const [renaming, setRenaming] = React.useState(false)
+  const [reencoding, setReencoding] = React.useState(false)
   const refresh = () => qc.invalidateQueries({ queryKey: ['asset', a.id] })
-  const reencode = useMutation({
-    mutationFn: () => post(`/v1/assets/${a.id}/reencode`, {}, app),
-    onSuccess: () => {
-      notify.done('Re-encode queued', 'The current version keeps playing until the new one is ready.')
-      void refresh()
-    },
-    onError: (err) => notify.failed("Couldn't queue the re-encode", err),
-  })
   const remove = useMutation({
     mutationFn: () => del(`/v1/assets/${a.id}`, app),
     onSuccess: () => {
@@ -243,16 +239,8 @@ function Header({ asset: a, app, job }: { asset: Asset; app?: string | undefined
         )}
         <div className="ml-auto flex items-center gap-2">
           {!deleted && (
-            <Button
-              variant="outline"
-              onClick={() => reencode.mutate()}
-              disabled={reencode.isPending || a.status !== 'ready'}
-            >
-              {reencode.isPending ? (
-                <Spinner data-icon="inline-start" />
-              ) : (
-                <RotateCwIcon data-icon="inline-start" />
-              )}
+            <Button variant="outline" onClick={() => setReencoding(true)} disabled={a.status !== 'ready'}>
+              <RotateCwIcon data-icon="inline-start" />
               Re-encode
             </Button>
           )}
@@ -300,7 +288,79 @@ function Header({ asset: a, app, job }: { asset: Asset; app?: string | undefined
         {job && a.status === 'processing' && <span data-job-progress>{jobLine(job)}</span>}
       </div>
       <RenameDialog asset={a} app={app} open={renaming} onOpenChange={setRenaming} />
+      <ReencodeDialog
+        asset={a}
+        app={app}
+        open={reencoding}
+        onOpenChange={setReencoding}
+        onQueued={() => void refresh()}
+      />
     </div>
+  )
+}
+
+function ReencodeDialog({
+  asset: a,
+  app,
+  open,
+  onOpenChange,
+  onQueued,
+}: {
+  asset: Asset
+  app?: string | undefined
+  open: boolean
+  onOpenChange: (o: boolean) => void
+  onQueued: () => void
+}) {
+  const current: readonly Rung[] = a.renditions ?? LADDER
+  const [renditions, setRenditions] = React.useState<Rung[]>([...current])
+  React.useEffect(() => {
+    if (open) setRenditions([...(a.renditions ?? LADDER)])
+  }, [open, a.renditions])
+  const same = renditions.length === current.length && renditions.every((r) => current.includes(r))
+  const reencode = useMutation({
+    // An unchanged choice is left out, so the asset keeps the one it has.
+    mutationFn: () => post(`/v1/assets/${a.id}/reencode`, same ? {} : { renditions }, app),
+    onSuccess: () => {
+      notify.done('Re-encode queued', 'The current version keeps playing until the new one is ready.')
+      onOpenChange(false)
+      onQueued()
+    },
+  })
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Re-encode video</DialogTitle>
+        </DialogHeader>
+        <form
+          onSubmit={(e) => {
+            e.preventDefault()
+            reencode.mutate()
+          }}
+        >
+          <FieldGroup>
+            <Field data-invalid={reencode.isError || undefined}>
+              <FieldLabel id="reencode-renditions">Resolutions</FieldLabel>
+              <RenditionPicker labelledBy="reencode-renditions" value={renditions} onChange={setRenditions} />
+              <FieldDescription>
+                {renditionsNote(renditions)} The current version keeps playing until the new one is ready.
+              </FieldDescription>
+              {reencode.isError && <FieldError>{describe(reencode.error)}</FieldError>}
+            </Field>
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+                Cancel
+              </Button>
+              <Button type="submit" disabled={reencode.isPending}>
+                {reencode.isPending && <Spinner data-icon="inline-start" />}
+                Re-encode
+              </Button>
+            </DialogFooter>
+          </FieldGroup>
+        </form>
+      </DialogContent>
+    </Dialog>
   )
 }
 

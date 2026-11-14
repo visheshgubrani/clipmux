@@ -187,6 +187,32 @@ func TestGPUToolsMayWriteTheirOwnProcEntries(t *testing.T) {
 	}
 }
 
+// Mesa's Vulkan drivers find a GPU by listing /dev/dri, so a GPU tool may
+// list it; without that, whisper.cpp saw no Vulkan device under the sandbox
+// and ran on the CPU (D131). Listing is all: a node it wasn't given still
+// won't open, and a CPU tool can't list it.
+func TestGPUToolsMayListDevDriButOpenOnlyTheirNodes(t *testing.T) {
+	need(t, "bash")
+	if st := probe(t); st.LandlockABI == 0 {
+		t.Skip("Landlock is not available on this kernel")
+	}
+	nodes, _ := filepath.Glob("/dev/dri/renderD*")
+	if len(nodes) == 0 {
+		t.Skip("no render node")
+	}
+	list := "ls /dev/dri"
+	if code, out, stderr := sandboxed(t, Policy{Write: t.TempDir(), GPU: true}, "bash", "-c", list); code != 0 || !strings.Contains(out, filepath.Base(nodes[0])) {
+		t.Fatalf("a GPU tool listing /dev/dri: exit %d, %q, %q", code, out, stderr)
+	}
+	if code, _, _ := sandboxed(t, Policy{Write: t.TempDir()}, "bash", "-c", list); code == 0 {
+		t.Fatal("a CPU tool listed /dev/dri")
+	}
+	open := "exec 3< " + nodes[0]
+	if code, _, _ := sandboxed(t, Policy{Write: t.TempDir(), GPU: true}, "bash", "-c", open); code == 0 {
+		t.Fatalf("a GPU tool opened %s without being given it", nodes[0])
+	}
+}
+
 // A media tool can't make namespaces: unshare and setns are refused, and so
 // is clone with a CLONE_NEW* flag, which would expose user-namespace kernel
 // surface on a native agent (finding 6, D125). Ordinary threads and

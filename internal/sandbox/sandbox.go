@@ -12,7 +12,9 @@
 //     setns, clone with CLONE_NEW* flags) with EPERM; clone3 with ENOSYS;
 //   - Landlock, where the kernel has it: read-only system paths and the
 //     tool's own directory, write access to one directory only, and on ABI 4+
-//     no TCP; on ABI 6+ no signals or abstract sockets outside.
+//     no TCP; on ABI 6+ no signals or abstract sockets outside. A GPU tool
+//     may also open the device nodes it is given and list /dev/dri, where
+//     Mesa's Vulkan drivers find their GPU.
 //
 // It works inside Docker's default runtime, where new namespaces and cgroups
 // aren't available to an unprivileged process. Limits, no_new_privs and

@@ -43,6 +43,9 @@ type ImportRequest struct {
 	// Generate asks for subtitles and chapters (P5-T16); chapters imply
 	// subtitles. They are made after the video is ready.
 	Generate tracks.Generate `json:"generate,omitzero"`
+	// Renditions are the ladder rungs to encode, e.g. ["1080p", "480p"]
+	// (D130); absent is every rung up to the source.
+	Renditions []string `json:"renditions,omitempty"`
 }
 
 // Import failure codes on the asset.
@@ -79,6 +82,10 @@ func (s *Service) Import(ctx context.Context, key apikeys.Key, req ImportRequest
 	if err != nil {
 		return assets.View{}, err
 	}
+	renditions, err := assets.Renditions(req.Renditions)
+	if err != nil {
+		return assets.View{}, err
+	}
 	body, _ := json.Marshal(req)
 	var out assets.View
 	err = pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
@@ -97,6 +104,7 @@ func (s *Service) Import(ctx context.Context, key apikeys.Key, req ImportRequest
 		asset, err := q.CreateImportedAsset(ctx, db.CreateImportedAssetParams{
 			ID: ids.New(ids.Asset), ProjectID: key.ProjectID, AppID: key.AppID, StorageID: st.ID,
 			Passthrough: pgtype.Text{String: req.Passthrough, Valid: req.Passthrough != ""}, Title: title,
+			Renditions: renditions,
 		})
 		if err != nil {
 			return err

@@ -760,7 +760,7 @@ Decisions within D063, made in P5-T12 (`internal/transcripts`, pure Go):
 - **WebVTT keeps clipmux-lms's cue rules** (84 characters, 4 s, an 800 ms pause; ordered, at least 1 ms, clipped, numbered, one line, `&`, `<` and `>` escaped, so a `-->` in speech can't start a cue). Every file starts `WEBVTT` then `X-TIMESTAMP-MAP=MPEGTS:0,LOCAL:00:00:00.000`, the default RFC 8216 assumes anyway, made explicit for HLS clients; browsers ignore it. So the empty transcript is exactly that header and a blank line, where the plan said `WEBVTT\n\n`: one file serves both the HLS playlist and the sidecar URL.
 - clipmux-lms's audio-offset trim is not ported (alignment by construction, P5 "Transcription on workers").
 
-## D077 whisper.cpp, its models and their measurements — accepted (2026-11-07)
+## D077 whisper.cpp, its models and their measurements — accepted (2026-11-07), amended by D131
 Decisions within D063 and D075, made in P5-T11 (answering P5 open question 6 in part):
 - **whisper.cpp v1.9.5** (commit `d1be6fd`, the codeload tarball pinned by sha256 in `toolchain/versions.env`), built by `toolchain/build_whisper.sh` with every x86-64 CPU variant ggml ships (chosen at run time from what the CPU supports) and the Vulkan backend, as loadable modules in one directory, `libexec/clipmux-whisper/`, beside `whisper-cli` with `$ORIGIN` rpaths: ggml loads backends from the executable's directory, and the sandbox lets a tool read its own. No libcurl, SDL or OpenMP. The image, the agent tarball (`libexec/whisper/`, with `CLIPMUX_WHISPER` in the launcher) and CI use the same build; CI caches it with the models.
 - **One patch** (`toolchain/whisper-vad-token-times.patch`): with `--vad`, whisper-cli's JSON mapped segment times back to the audio but left token times on the speech-only timeline VAD builds, so every word after a removed silence came early (3 s of leading silence put "Americans" at 1.2 s instead of 4.8 s). The library already maps token times (`whisper_full_get_token_t0/t1`); the patch makes the CLI's JSON use them. It is hashed into the build's recipe and goes once upstream's CLI does the same.
@@ -1568,3 +1568,85 @@ Decision:
   - Two real-binary drills: a captioned upload on a RunPod primary creates one pod for the video, and the transcription runs on the same instance under its own dispatch. A pod that can't transcribe fails the handed job `model_unavailable`, and a second pod makes the subtitles.
   - The e2e pods now keep speech off on encode pods unless they are handed a transcription, as real machines do.
 Consequence: D118's "a machine woken for anything but a transcription skips speech" now holds only until its encode commits, and P5 open question 9 is answered for a provider that is the primary. A provider reached only as the fallback still wakes a second machine (known gaps). Running the transcription in parallel with the encode on one machine is not done: it would give up the committed-audio timing or need the audio rendition transcribed before the commit.
+
+## D129 Where an encode's time goes, and less of it on the CPU — accepted (2026-11-14)
+Context: on production's Modal primary, two 12-minute YouTube WebMs (AV1, about 110 MB each) took 7 m 07 s and 7 m 27 s to encode. The first was 1080p60 (45,780 frames) on the full-GPU `nvenc` stage. The second was 4K30: its full-GPU stage failed and `nvenc-hybrid` encoded it. The hybrid decoded 4K AV1 on four CPU cores and then scaled every rung from 4K on the CPU too. Nothing recorded why the GPU stage failed, how long each phase took, or which GPU Modal had placed the sandbox on, and a successful attempt logged nothing after `claimed job`.
+Decision:
+- **Why a stage failed is logged.** `media.EncoderUsed.Failed` keeps each fallback stage's ffmpeg stderr tail (`json:"-"`, never in a manifest). The worker logs `an encoder stage failed; the next one encoded the ladder` for each.
+- **Every commit says where the time went.** The worker logs one `attempt committed` line with the attempt's phases.
+  - A transcode: `download_ms`, `probe_ms`, `video_ms`, `audio_ms`, `package_ms` (packaging, the init repair, the playlist checks and the poster) and `upload_ms`. It also logs the source (codec, size, frame rate), the renditions, the encoder stage, `files`, `bytes` and `total_ms`.
+  - A transcription: `audio_fetch_ms`, `transcribe_ms`, the backend, its threads and `realtime_factor`.
+  - `media.Manifest.Took` carries the transcode's own timings (`json:"-"`).
+- **The GPU is named.** `media.Hardware.GPU` comes from `/proc/driver/nvidia/gpus/*/information`, or from `nvidia-smi` (run with an empty environment) where gVisor has no driver directory and CUDA works. It is in the claim's `hardware`, so in `worker_info`, and in the `encoders` log line, e.g. `nvenc (NVIDIA L4), cpu`. This closes the known gap that Modal's GPU type wasn't recorded.
+- **A hybrid stage scales on the GPU.** It still decodes on the CPU, but it converts and uploads each frame once, and every rung is scaled on the GPU.
+  - `nvenc-hybrid` adds `-init_hw_device cuda=cu -filter_hw_device cu`, then `format=yuv420p,hwupload,split` and `scale_cuda` per rung.
+  - `vaapi-hybrid` uses `format=nv12,hwupload,split`, then `scale_vaapi`.
+  - On the RX 6600 XT, a 10-bit source on `vaapi-hybrid` scores an SSIM of 0.994 against the CPU encode. `TestGPUBackendsEncodeAtParity` now runs each GPU's hybrid stage on a 10-bit clip.
+- **Audio encodes beside the video**, from the same source into its own file. The first of the two to fail cancels the other and is the error returned.
+- **Uploads run 8 PUTs at a time**, up from 4 (`uploadConcurrency`). The plan assumed every PUT built a new HTTP client. That holds only for a `Worker` with no `HTTP` set (tests); `clipmux worker` already shares one.
+- `TestGPU4KLadderStaysOnTheGPU` encodes a 4K H.264 and a 4K AV1 source and requires the whole ladder on the first stage of the chain. It logs timings and any fallback reason. On the RX 6600 XT both stay on `vaapi`, at 2.3 s of video work for 2 s of 4K.
+Consequence: the next slow encode says why in Modal's log. Detecting which codecs a GPU decodes, so `Chain` skips a full-GPU stage that will fail (a T4 has no AV1 decoder), waits for what the real runs show.
+
+## D130 The ladder goes up to the source, and uploads choose their renditions — accepted (2026-11-14)
+Context: the ladder stopped at 1080p whatever the source. The owner asked for every standard rung up to the uploaded resolution (a 4K video gets 2160p, 1440p, 1080p and so on), and for uploaders to choose which renditions they want.
+Decision:
+- **The ladder** adds `2160p` (14M, maxrate 16.8M, buffer 28M) and `1440p` (8M, 9.6M, 16M), on the same ratios as the rungs below.
+  - `media.SelectLadder(w, h, allowed)` keeps the rungs up to the source's short side whose frame fits 4096 on its long side (H.264 level 5.2 at 16:9, and NVENC's limit). A 21:9 4K source tops out at 1440p.
+  - It keeps only the rungs in `allowed` (empty: all), in ladder order.
+  - When none of `allowed` fits, it encodes the largest rung that does. A source below 360p keeps its one rendition at its own size.
+  - No `-level` is forced. VAAPI writes 5.1 for 2160p30 and 5.0 for 1440p.
+- **The master starts at the largest rung up to 1080p.** Shaka lists variants in stream order and Safari starts on the first one, so `PackageArgs` lists that rung first. A 4K output starts where a 1080p one did.
+- **The API.**
+  - `renditions: ["1080p", "480p"]` is optional on `POST /v1/uploads`, on both shapes of `POST /v1/assets`, and on `POST /v1/assets/{id}/reencode`.
+  - Validation: ladder names only, each once, at least one (`invalid_request`). The list is stored in ladder order on `assets.renditions` (migration 00037), where NULL means every rung up to the source.
+  - A re-encode's choice replaces the asset's for this output and the ones after it. The asset's `version` moves only when the choice changes.
+  - The asset view shows `renditions` when there is a choice.
+  - The OpenAPI spec has a `Renditions` schema, and `@clipmux/node` is regenerated from it.
+- **Contract 2.** The claim always carries `renditions` for an output, filled with the whole ladder when the asset has no choice. A worker that knew no renditions would encode the full ladder, so a worker offering only contract 1 gets `unsupported_contract`. Modal and RunPod run the server's own image. PC agents need the new version.
+- **The commit checks the rungs.**
+  - `media.CheckLadder` accepts only a set `SelectLadder` could give some source for the asset's choice. Every chosen rung below the largest produced must be there, none that wasn't chosen may be, and the one-rung fallbacks are allowed.
+  - The manifest's renditions must equal the output's folders.
+  - The server never sees the source, so a worker could still stop short of rungs above the largest it made.
+- **Clients.**
+  - The dashboard's upload dialog has a Resolutions picker, all on by default (the field is then left out). It reads each file's size in the browser and strikes through rungs above it, saying they will be skipped.
+  - Re-encode opens a dialog with the same picker, set to the asset's choice.
+  - `clipmux push --renditions 1080p,480p`. The push identity includes the choice only when there is one, so earlier pushes resume.
+  - `npx @clipmux/node upload --renditions`.
+- **Cost.** A 4K source encodes about 4.3 times the pixels it did, and stores about 3 times the bytes (the ladder's bitrates sum to 38 Mbit/s with 4K, against 10.3). `SignBudget`'s 20,000 files now cover about 4 h 45 min of 4K.
+- Tests:
+  - the ladder for each size, choice and aspect ratio;
+  - `CheckLadder` against everything `SelectLadder` gives;
+  - the master order;
+  - on Postgres: the claim's renditions and contract, an upload, a re-encode, a push carrying them, and a commit refused for a skipped or unasked-for rung.
+  - On this machine, the same 4K clip pushed with `1080p,480p` encoded those two on VAAPI. With no choice it encoded all six. A dashboard re-encode adding 2160p and 1440p encoded 2160p, 1440p, 1080p and 480p.
+Consequence: a project-wide default or cap on renditions, and rung bitrates capped by the source's own bitrate (a 1.2 Mbit/s source became 10.3 Mbit/s of renditions), are left for later. The upload dialog no longer scrolls sideways: the switches' wider hit areas overflowed it, so its scroll area now reserves room for them.
+
+## D131 Speech runs on the GPU it names: CUDA whisper, an honest probe, Vulkan under Landlock — accepted (2026-11-14)
+Context: on production's Modal primary, each 12-minute video took 16 minutes to transcribe. The worker logged `backend=vulkan`, but whisper was running on four CPU threads, for three reasons:
+- The image asks NVIDIA's runtime for `graphics` (the Vulkan ICD), and the Modal and RunPod executors overrode it with `compute,video,utility`. Modal also runs gVisor, which passes `graphics` only where its operator allows it.
+- With no Vulkan GPU, whisper.cpp says `whisper_backend_init_gpu: no GPU found`, runs on the CPU and succeeds. `ProbeSpeech` passed `-np`, which silences that line, and took success as proof. D097's "11 s transcribed on Vulkan in 43.5 s" on Modal was this CPU fallback.
+- Under Landlock, Mesa's Vulkan driver couldn't list `/dev/dri`, so it found no device either. Every Linux agent and RunPod pod has transcribed on the CPU since D077: its sandboxed Vulkan test checked the words, not the device, and D077's Vulkan timings were taken outside the sandbox.
+Decision:
+- **whisper.cpp's CUDA backend, in the amd64 image.**
+  - `toolchain/install_cuda.sh` installs CUDA 12.8's compiler, cudart, CCCL, the driver stub and cuBLAS from NVIDIA's apt repository. The exact package versions are in `versions.env`, and the keyring is checked by sha256.
+  - `build_whisper.sh` with `CLIPMUX_WHISPER_CUDA=1` adds `-DGGML_CUDA=ON` for `75-real;86-real;89` (T4; A10G and RTX A4000/A5000; L4 and L40S; PTX for newer cards), with NCCL off.
+  - It copies cudart, cuBLAS and cuBLASLt beside `whisper-cli`, where the `$ORIGIN` rpath and the sandbox's own-directory read reach them, and puts NVIDIA's licence notices in `licenses/whisper/NVIDIA-CUDA`. The CMake line is part of the recipe hash.
+  - The Dockerfile installs the toolkit, builds and purges it in one step, so the toolkit never reaches a layer. `verify_toolchain.sh` requires the backend on amd64, with everything it loads beside it except the driver's `libcuda.so.1`.
+  - The agent tarball leaves the backend out (about 1 GB), so an agent's NVIDIA card uses Vulkan.
+  - arm64 images have no CUDA.
+- **Backends, best first:** `cuda` on an NVIDIA card whose `whisper-cli` has `libggml-cuda.so` beside it, then `vulkan` on any GPU, then `cpu` where the mode allows it (`worker.SpeechCandidates`, shared with `worker doctor`).
+  - `--speech cuda` is a mode now; D077's refusal is gone.
+  - Each GPU backend hides the other's devices: `GGML_VK_VISIBLE_DEVICES=` for CUDA and `CUDA_VISIBLE_DEVICES=` for Vulkan. ggml takes the first GPU it finds, so what runs is what the probe proved.
+- **The probe proves the device.** It runs without `-np` and requires whisper's `using CUDA…` or `using Vulkan…` line for that backend. A `no GPU found` run fails that backend and the next is tried. The error quotes ggml's device lines, e.g. `ggml_vulkan: No devices found`.
+- **A GPU tool may list `/dev/dri`.** This is Landlock's `READ_DIR` and nothing else: a node opens only when it is given as a device, and a CPU tool can't list it.
+  - On the RX 6600 XT under the sandbox, the Vulkan probe went from 11.4 s (CPU) to 1.5 s.
+  - The JFK transcription test went from 22.8 s to 2.7 s.
+- **The executors ask for `graphics` again** (`compute,video,utility,graphics`). Vulkan works wherever the runtime offers the ICD, and CUDA covers Modal where it doesn't.
+- **faster-whisper was weighed and not taken.** It is CTranslate2 on CUDA, and would need a Python runtime, cuDNN on top of cuBLAS (2–3 GB more), a second model format with its own pins, a second transcript converter, and an interpreter under the seccomp and Landlock sandbox. On an L4, either one transcribes 12 minutes in tens of seconds.
+- **Measured on Modal** (`deploy/modal/gpu_test.py --which l4,t4`, the same toolchain built there):
+  - Under the sandbox, CUDA whisper passed its probe on an L4 (driver 610.57) and a T4 (620.70), and transcribed the 14 s JFK clip in 5.2 s and 4.3 s, model load included.
+  - With `graphics` asked for, `nvidia_icd.json` is present but `ggml_vulkan: No devices found`. Modal's gVisor passes no Vulkan, so CUDA is the only GPU path there.
+  - NVENC passed its parity tests on both cards, and the GPU-scaled hybrid scored an SSIM of 0.996.
+  - The 4K ladder stayed on `nvenc` for H.264 and AV1 on the L4. On the T4 the AV1 source failed the full-GPU stage (no AV1 decoder) and fell back to `nvenc-hybrid`, now with the reason logged.
+  - On both cards, 2 s of 4K took about 45–50 s of video work, against 2.3 s on VAAPI here. That points to a large fixed cost per encode under gVisor, still to be measured with a longer clip.
+Consequence: `deploy/modal/gpu_test.py` now builds the same toolchain, CUDA included, and runs the GPU, 4K-ladder and speech tests on a chosen card (`--which l4,t4`). It also reports whether Modal's runtime exposes NVIDIA's Vulkan ICD when `graphics` is asked for.

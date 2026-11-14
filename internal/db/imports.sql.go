@@ -110,9 +110,9 @@ func (q *Queries) CreateImportJob(ctx context.Context, arg CreateImportJobParams
 
 const createImportedAsset = `-- name: CreateImportedAsset :one
 
-INSERT INTO assets (id, project_id, app_id, status, storage_id, media_storage_id, passthrough, title)
-VALUES ($1, $2, $3, 'processing', $4, coalesce(media_target($2), $4), $5, $6)
-RETURNING id, project_id, app_id, status, error_code, version, storage_id, source_uri, agent_source_id, source_kept, current_output_id, passthrough, duration_seconds, created_at, updated_at, deleted_at, title, media_storage_id
+INSERT INTO assets (id, project_id, app_id, status, storage_id, media_storage_id, passthrough, title, renditions)
+VALUES ($1, $2, $3, 'processing', $4, coalesce(media_target($2), $4), $5, $6, $7)
+RETURNING id, project_id, app_id, status, error_code, version, storage_id, source_uri, agent_source_id, source_kept, current_output_id, passthrough, duration_seconds, created_at, updated_at, deleted_at, title, media_storage_id, renditions
 `
 
 type CreateImportedAssetParams struct {
@@ -122,6 +122,7 @@ type CreateImportedAssetParams struct {
 	StorageID   string
 	Passthrough pgtype.Text
 	Title       pgtype.Text
+	Renditions  []string
 }
 
 // Import from URL (P2-T06).
@@ -133,6 +134,7 @@ func (q *Queries) CreateImportedAsset(ctx context.Context, arg CreateImportedAss
 		arg.StorageID,
 		arg.Passthrough,
 		arg.Title,
+		arg.Renditions,
 	)
 	var i Asset
 	err := row.Scan(
@@ -154,6 +156,7 @@ func (q *Queries) CreateImportedAsset(ctx context.Context, arg CreateImportedAss
 		&i.DeletedAt,
 		&i.Title,
 		&i.MediaStorageID,
+		&i.Renditions,
 	)
 	return i, err
 }

@@ -15,6 +15,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 )
 
 // AudioArgs encodes the audio rendition: loudness-normalised AAC, 48 kHz stereo.
@@ -48,7 +50,7 @@ func PackageArgs(encDir string, rungs []Rung, audio bool, key Key) (argv []strin
 		return fmt.Sprintf("in=%s,stream=%s,init_segment=%s/init.mp4,segment_template=%s/seg_$Number%%05d$.m4s,playlist_name=%s/index.m3u8,drm_label=%s",
 			in, kind, dir, dir, dir, drmLabel)
 	}
-	for _, r := range rungs {
+	for _, r := range masterOrder(rungs) {
 		argv = append(argv, stream(filepath.Join(encDir, "v_"+r.Label()+".mp4"), "video", r.Label()))
 	}
 	if audio {
@@ -64,13 +66,30 @@ func PackageArgs(encDir string, rungs []Rung, audio bool, key Key) (argv []strin
 	return argv, flagfile
 }
 
+// startHeight is the rung a player should start on: Shaka lists variants
+// in stream order, and Safari starts on the first one listed.
+const startHeight = 1080
+
+// masterOrder puts the largest rung up to startHeight first, then the rest
+// in ladder order, so a 4K output starts where a 1080p one does.
+func masterOrder(rungs []Rung) []Rung {
+	for i, r := range rungs {
+		if r.Height <= startHeight {
+			return append(append([]Rung{r}, rungs[:i]...), rungs[i+1:]...)
+		}
+	}
+	return rungs
+}
+
 // Progress reports pipeline progress: a phase and a fraction from 0 to 1.
 type Progress func(phase string, fraction float64)
 
 // Transcode encodes and packages src into outDir (which must be empty) and
-// writes manifest.json. workDir holds intermediates and must not be inside
-// outDir. Nothing in outDir falls outside the output grammar.
-func Transcode(ctx context.Context, t Tools, input string, src Source, workDir, outDir string, key Key, progress Progress) (Manifest, error) {
+// writes manifest.json. renditions are the rungs the uploader chose (nil:
+// every rung up to the source; see SelectLadder). workDir holds
+// intermediates and must not be inside outDir. Nothing in outDir falls
+// outside the output grammar.
+func Transcode(ctx context.Context, t Tools, input string, src Source, renditions []string, workDir, outDir string, key Key, progress Progress) (Manifest, error) {
 	if progress == nil {
 		progress = func(string, float64) {}
 	}
@@ -84,19 +103,15 @@ func Transcode(ctx context.Context, t Tools, input string, src Source, workDir, 
 			return Manifest{}, err
 		}
 	}
-	rungs := SelectLadder(src.Width, src.Height)
+	rungs := SelectLadder(src.Width, src.Height, renditions)
 
-	used, err := encodeLadder(ctx, t, src, input, workDir, encDir, rungs, progress)
+	took, used, err := encodeVideoAndAudio(ctx, t, src, input, workDir, encDir, rungs, progress)
 	if err != nil {
 		return Manifest{}, err
 	}
-	if src.HasAudio {
-		if err := t.run(ctx, t.FFmpeg, AudioArgs(input, encDir), workDir, io.Discard); err != nil {
-			return Manifest{}, fmt.Errorf("encode audio: %w", err)
-		}
-	}
 
 	progress("package", 0)
+	start := time.Now()
 	argv, flags := PackageArgs(encDir, rungs, src.HasAudio, key)
 	flagPath := filepath.Join(workDir, "encryption.flags")
 	if err := os.WriteFile(flagPath, []byte(flags), 0o600); err != nil {
@@ -131,9 +146,10 @@ func Transcode(ctx context.Context, t Tools, input string, src Source, workDir, 
 		return Manifest{}, fmt.Errorf("poster: %w", err)
 	}
 
+	took.Package = time.Since(start)
 	m := Manifest{
 		OutputFormat: OutputFormat, DurationSeconds: src.Duration, Encryption: "aes-128",
-		KeyVersion: key.Version, Audio: src.HasAudio, Tools: versions, Encoder: &used,
+		KeyVersion: key.Version, Audio: src.HasAudio, Tools: versions, Encoder: &used, Took: took,
 	}
 	for _, r := range rungs {
 		w, h := r.Dimensions(src.Width, src.Height)
@@ -148,6 +164,41 @@ func Transcode(ctx context.Context, t Tools, input string, src Source, workDir, 
 	}
 	progress("package", 1)
 	return m, nil
+}
+
+// encodeVideoAndAudio encodes the ladder and the audio rendition side by
+// side: they read the same source and write different files, and the audio's
+// loudness pass is CPU work a GPU encode leaves the machine free for. The
+// first failure stops the other and is the one returned.
+func encodeVideoAndAudio(ctx context.Context, t Tools, src Source, input, workDir, encDir string, rungs []Rung, progress Progress) (Timings, EncoderUsed, error) {
+	ctx, stop := context.WithCancel(ctx)
+	defer stop()
+	var (
+		once  sync.Once
+		first error
+		took  Timings
+	)
+	fail := func(err error) {
+		once.Do(func() { first = err; stop() })
+	}
+	var wg sync.WaitGroup
+	if src.HasAudio {
+		wg.Go(func() {
+			start := time.Now()
+			if err := t.run(ctx, t.FFmpeg, AudioArgs(input, encDir), workDir, io.Discard); err != nil {
+				fail(fmt.Errorf("encode audio: %w", err))
+			}
+			took.Audio = time.Since(start)
+		})
+	}
+	start := time.Now()
+	used, err := encodeLadder(ctx, t, src, input, workDir, encDir, rungs, progress)
+	took.Video = time.Since(start)
+	if err != nil {
+		fail(err)
+	}
+	wg.Wait()
+	return took, used, first
 }
 
 // encodeLadder runs the stages of the source's chain until one encodes the
@@ -177,6 +228,10 @@ func encodeLadder(ctx context.Context, t Tools, src Source, input, workDir, encD
 			return used, fmt.Errorf("encode video (%s): %w", stage.Name(), err)
 		}
 		used.Fallbacks = append(used.Fallbacks, stage.Name())
+		if used.Failed == nil {
+			used.Failed = map[string]string{}
+		}
+		used.Failed[stage.Name()] = err.Error()
 	}
 	return used, errors.New("encode video: no encoder")
 }

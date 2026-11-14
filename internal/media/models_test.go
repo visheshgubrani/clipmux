@@ -149,3 +149,15 @@ func TestProbeSpeechOnTheCPU(t *testing.T) {
 	}
 	_ = time.Second
 }
+
+// On a machine with a Vulkan GPU, the probe sees whisper take it.
+func TestProbeSpeechOnVulkan(t *testing.T) {
+	tools, sp := speechTools(t)
+	if nodes, _ := filepath.Glob("/dev/dri/renderD*"); len(nodes) == 0 {
+		t.Skip("no render node")
+	}
+	sp.Backend, sp.Threads = SpeechVulkan, 4
+	if err := ProbeSpeech(t.Context(), tools, t.TempDir(), sp); err != nil {
+		t.Fatal(err)
+	}
+}

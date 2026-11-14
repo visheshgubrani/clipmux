@@ -122,6 +122,7 @@ type Asset struct {
 	DeletedAt       pgtype.Timestamptz
 	Title           pgtype.Text
 	MediaStorageID  string
+	Renditions      []string
 }
 
 type Attempt struct {

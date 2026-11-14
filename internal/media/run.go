@@ -102,6 +102,12 @@ func (t Tools) Versions(ctx context.Context) (ToolVersions, error) {
 // when there is one. stderr is kept only as a short tail for the error, and
 // never contains a key because keys go through a flag file.
 func (t Tools) run(ctx context.Context, bin string, args []string, dir string, stdout io.Writer) error {
+	return t.runLogged(ctx, bin, args, dir, stdout, nil)
+}
+
+// runLogged is run that also copies the tool's stderr to log, for a probe
+// that reads what the tool says about itself.
+func (t Tools) runLogged(ctx context.Context, bin string, args []string, dir string, stdout, log io.Writer) error {
 	name := filepath.Base(bin)
 	if t.Sandbox != nil {
 		abs, err := exec.LookPath(bin)
@@ -121,6 +127,9 @@ func (t Tools) run(ctx context.Context, bin string, args []string, dir string, s
 	cmd.Stdout = stdout
 	var stderr tail
 	cmd.Stderr = &stderr
+	if log != nil {
+		cmd.Stderr = io.MultiWriter(&stderr, log)
+	}
 	cmd.WaitDelay = 5 * time.Second
 	sandbox.DieWithParent(cmd)
 	if err := cmd.Run(); err != nil {

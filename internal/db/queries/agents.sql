@@ -90,8 +90,8 @@ WHERE g.project_id = $1 AND g.id = $2
   AND NOT EXISTS (SELECT 1 FROM assets s WHERE s.agent_source_id = g.id);
 
 -- name: CreateLocalAsset :one
-INSERT INTO assets (id, project_id, app_id, status, storage_id, media_storage_id, source_uri, agent_source_id, passthrough, title)
-VALUES ($1, $2, $3, 'processing', $4, coalesce(media_target($2), $4), $5, $6, $7, $8)
+INSERT INTO assets (id, project_id, app_id, status, storage_id, media_storage_id, source_uri, agent_source_id, passthrough, title, renditions)
+VALUES ($1, $2, $3, 'processing', $4, coalesce(media_target($2), $4), $5, $6, $7, $8, $9)
 RETURNING *;
 
 -- name: GetAssetAgentSource :one

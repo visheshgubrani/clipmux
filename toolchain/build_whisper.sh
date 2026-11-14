@@ -30,6 +30,10 @@
 #     the container runtime injects with `graphics` in
 #     NVIDIA_DRIVER_CAPABILITIES). A machine without a Vulkan driver simply
 #     doesn't load it and runs on the CPU.
+#   * CUDA, with CLIPMUX_WHISPER_CUDA=1 (the amd64 image, D131): NVIDIA
+#     cards where the Vulkan ICD isn't offered, as under Modal's gVisor.
+#     Needs nvcc (install_cuda.sh); cudart and cuBLAS are copied beside the
+#     backend, and the driver's libcuda.so.1 is the container runtime's.
 #
 # Built without libcurl (WHISPER_CURL=OFF) and without SDL: the tool never
 # fetches a model or opens a device of its own; workers download models by
@@ -107,9 +111,24 @@ CMAKE_ARGS=(
   -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON
   '-DCMAKE_INSTALL_RPATH=$ORIGIN'
 )
+CUDA="${CLIPMUX_WHISPER_CUDA:-0}"
+CUDA_HOME=""
+if [ "$CUDA" = 1 ]; then
+  : "${WHISPER_CUDA_ARCHITECTURES:?versions.env must set WHISPER_CUDA_ARCHITECTURES}"
+  NVCC="${CUDACXX:-$(command -v nvcc || echo "/usr/local/cuda-${CUDA_VERSION:-}/bin/nvcc")}"
+  [ -x "$NVCC" ] || die "CLIPMUX_WHISPER_CUDA=1 needs nvcc (toolchain/install_cuda.sh)"
+  CUDA_HOME="$(dirname "$(dirname "$(readlink -f "$NVCC")")")"
+  CMAKE_ARGS+=(
+    -DGGML_CUDA=ON
+    "-DCMAKE_CUDA_COMPILER=$NVCC"
+    "-DCMAKE_CUDA_ARCHITECTURES=$WHISPER_CUDA_ARCHITECTURES"
+    -DGGML_CUDA_NCCL=OFF
+  )
+fi
 PATCH="$SCRIPT_DIR/whisper-vad-token-times.patch"
 [ -f "$PATCH" ] || die "missing $PATCH"
-RECIPE_SHA256="$(cat "${BASH_SOURCE[0]}" "$PATCH" | sha256sum | cut -d' ' -f1)"
+# The CMake line is part of the recipe: CUDA on or off, and its targets.
+RECIPE_SHA256="$( { cat "${BASH_SOURCE[0]}" "$PATCH"; printf '%s\n' "${CMAKE_ARGS[*]}"; } | sha256sum | cut -d' ' -f1)"
 
 if [ "$FORCE" -eq 0 ] && [ -f "$MANIFEST" ] && [ -x "$DEST/whisper-cli" ] \
   && grep -q "\"recipe_sha256\": \"$RECIPE_SHA256\"" "$MANIFEST" \
@@ -169,6 +188,26 @@ ls "$DEST"/libggml-cpu-*.so >/dev/null 2>&1 || die "no CPU backend variants were
 "$DEST/whisper-cli" --help >/dev/null 2>&1 || die "the built whisper-cli doesn't run"
 
 cp "$SRC/LICENSE" "$DOC_DIR/LICENSE"
+if [ "$CUDA" = 1 ]; then
+  [ -f "$DEST/libggml-cuda.so" ] || die "the CUDA backend wasn't built"
+  # cudart and cuBLAS go beside the backend, where its $ORIGIN rpath finds
+  # them and the sandbox lets the tool read; libcuda.so.1 stays the driver's.
+  LD_LIBRARY_PATH="$CUDA_HOME/lib64" ldd "$DEST/libggml-cuda.so" | awk '/libcudart|libcublas/ { print $3 }' | while read -r lib; do
+    [ -f "$lib" ] || die "the CUDA backend needs $lib, which isn't there"
+    cp -L "$lib" "$DEST/"
+  done
+  for want in libcudart.so libcublas.so libcublasLt.so; do
+    ls "$DEST/$want".* >/dev/null 2>&1 || die "no $want beside the CUDA backend"
+  done
+  # Redistributed under NVIDIA's CUDA EULA; its terms travel with them.
+  mkdir -p "$DOC_DIR/NVIDIA-CUDA"
+  for notice in "$CUDA_HOME/EULA.txt" /usr/share/doc/cuda-cudart-"${CUDA_VERSION/./-}"/copyright /usr/share/doc/libcublas-"${CUDA_VERSION/./-}"/copyright; do
+    if [ -f "$notice" ]; then
+      cp "$notice" "$DOC_DIR/NVIDIA-CUDA/$(basename "$(dirname "$notice")")-$(basename "$notice")"
+    fi
+  done
+  ls "$DOC_DIR/NVIDIA-CUDA"/* >/dev/null 2>&1 || die "found no NVIDIA licence text to ship with the CUDA libraries"
+fi
 cat > "$DOC_DIR/NOTICE" <<NOTICE
 whisper.cpp $WHISPER_CPP_VERSION (MIT), built by toolchain/build_whisper.sh.
 Source: $WHISPER_CPP_URL

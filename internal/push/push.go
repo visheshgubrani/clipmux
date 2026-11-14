@@ -56,6 +56,9 @@ type Client struct {
 type Options struct {
 	Policy      string // signed (default) or public
 	Passthrough string
+	// Renditions are the ladder rungs to encode (D130); nil is every rung
+	// up to the source.
+	Renditions []string
 	// Progress, when set, is told the bytes stored so far.
 	Progress func(done, total int64)
 }
@@ -187,10 +190,15 @@ func (c *Client) call(ctx context.Context, method, path, bearer string, header m
 // same options to the same server is the same push, so it resumes or
 // replays instead of creating a second asset.
 func (c *Client) identity(abs string, fi os.FileInfo, o Options) string {
-	sum := sha256.Sum256([]byte(strings.Join([]string{
+	parts := []string{
 		"clipmux-push-v1", strings.TrimSuffix(c.Server, "/"), abs, strconv.FormatInt(fi.Size(), 10),
 		strconv.FormatInt(fi.ModTime().UnixNano(), 10), o.Policy, o.Passthrough,
-	}, "\n")))
+	}
+	if len(o.Renditions) > 0 {
+		// Only when chosen, so a push begun before renditions keeps its name.
+		parts = append(parts, "renditions="+strings.Join(o.Renditions, ","))
+	}
+	sum := sha256.Sum256([]byte(strings.Join(parts, "\n")))
 	return hex.EncodeToString(sum[:16])
 }
 
@@ -256,8 +264,11 @@ func (c *Client) file(ctx context.Context, path string, o Options, restart strin
 		// A replay of an earlier create (same Idempotency-Key) returns the
 		// same upload with a fresh token, or no token once it finished.
 		var created upload
-		_, err := c.call(ctx, http.MethodPost, "/v1/uploads", c.Key, map[string]string{"Idempotency-Key": "push-" + id + restart},
-			map[string]any{"size": fi.Size(), "playback_policy": o.Policy, "passthrough": o.Passthrough}, &created)
+		body := map[string]any{"size": fi.Size(), "playback_policy": o.Policy, "passthrough": o.Passthrough}
+		if len(o.Renditions) > 0 {
+			body["renditions"] = o.Renditions
+		}
+		_, err := c.call(ctx, http.MethodPost, "/v1/uploads", c.Key, map[string]string{"Idempotency-Key": "push-" + id + restart}, body, &created)
 		if err != nil {
 			return Asset{}, err
 		}
@@ -519,8 +530,11 @@ func (c *Client) AttachLocal(ctx context.Context, sourceID string, o Options) (A
 		o.Policy = "signed"
 	}
 	var a Asset
-	_, err := c.call(ctx, http.MethodPost, "/v1/assets", c.Key, map[string]string{"Idempotency-Key": "push-local-" + sourceID},
-		map[string]any{"agent_source_id": sourceID, "playback_policy": o.Policy, "passthrough": o.Passthrough}, &a)
+	body := map[string]any{"agent_source_id": sourceID, "playback_policy": o.Policy, "passthrough": o.Passthrough}
+	if len(o.Renditions) > 0 {
+		body["renditions"] = o.Renditions
+	}
+	_, err := c.call(ctx, http.MethodPost, "/v1/assets", c.Key, map[string]string{"Idempotency-Key": "push-local-" + sourceID}, body, &a)
 	return a, err
 }
 

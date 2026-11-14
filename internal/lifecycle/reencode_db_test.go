@@ -185,3 +185,27 @@ func TestUnconfirmedRevocationAnswers202AndFinishesLater(t *testing.T) {
 		t.Fatalf("after publication = %v, want revoked", got)
 	}
 }
+
+// D130: a re-encode may choose new renditions; the asset keeps them for
+// the outputs after it, and a bad choice queues nothing.
+func TestAReencodeMayChooseNewRenditions(t *testing.T) {
+	r := newRig(t)
+	r.ready()
+	version := r.scalar(`SELECT version FROM assets WHERE id = 'ast_1'`).(int64)
+	if status, body := r.send("POST", "/v1/assets/ast_1/reencode", r.key, map[string]any{"renditions": []string{"360p", "720p"}}, ""); status != http.StatusAccepted {
+		t.Fatalf("reencode = %d %v", status, body)
+	}
+	if got := r.scalar(`SELECT array_to_string(renditions, ',') FROM assets WHERE id = 'ast_1'`); got != "720p,360p" {
+		t.Fatalf("renditions = %v, want 720p,360p", got)
+	}
+	if got := r.scalar(`SELECT version FROM assets WHERE id = 'ast_1'`).(int64); got != version+1 {
+		t.Fatalf("version = %d, want %d: a new choice is a change", got, version+1)
+	}
+	status, body := r.send("POST", "/v1/assets/ast_1/reencode", r.key, map[string]any{"supersede": true, "renditions": []string{"8k"}}, "")
+	if status != http.StatusBadRequest || errorOf(body)["code"] != "invalid_request" {
+		t.Fatalf("reencode with 8k = %d %v, want 400 invalid_request", status, body)
+	}
+	if n := r.scalar(`SELECT count(*) FROM jobs WHERE kind = 'reencode'`); n != int64(1) {
+		t.Fatalf("%v reencode jobs, want the refused one to queue nothing", n)
+	}
+}

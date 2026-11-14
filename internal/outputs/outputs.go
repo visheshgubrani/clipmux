@@ -194,6 +194,24 @@ func (c *Committer) verify(ctx context.Context, att db.Attempt, m media.Manifest
 	if got := renditionDirs(want); !slices.Equal(got, dirs) {
 		return invalid("master references %v, the output holds %v", dirs, got)
 	}
+	// The video renditions are the ones the asset asked for that fit some
+	// source (D130), and the manifest names exactly those.
+	video := slices.DeleteFunc(slices.Clone(dirs), func(d string) bool { return d == "audio" })
+	asked, err := db.New(c.pool).GetAssetRenditions(ctx, att.AssetID)
+	if err != nil {
+		return err
+	}
+	if err := media.CheckLadder(video, asked); err != nil {
+		return invalid("%v", err)
+	}
+	named := make([]string, 0, len(m.Renditions))
+	for _, r := range m.Renditions {
+		named = append(named, r.Name)
+	}
+	slices.Sort(named)
+	if !slices.Equal(named, video) {
+		return invalid("the manifest names renditions %v, the output holds %v", named, video)
+	}
 	for _, d := range dirs {
 		text, err := c.read(ctx, store, prefix+d+"/index.m3u8")
 		if err != nil {

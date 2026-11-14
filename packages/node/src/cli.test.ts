@@ -277,3 +277,22 @@ test('env files: quoted values, comments, export, and merging keeps other lines'
   })
   assert.equal(mergeEnv('A=1\nB=2\n', { B: '3', C: 'has space' }, '# h'), 'A=1\nB=3\n\n# h\nC="has space"\n')
 })
+
+test('upload asks for the renditions given, and none when --renditions is left out', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'cmx-'))
+  await writeFile(join(dir, '.env'), mergeEnv('', goodEnv, '# test'))
+  await writeFile(join(dir, 'clip.mp4'), 'video bytes')
+  const bodies: Record<string, unknown>[] = []
+  // The create is all this checks; refusing it ends the upload there.
+  const routes = {
+    'POST /v1/uploads': (body: unknown) => {
+      bodies.push(body as Record<string, unknown>)
+      return Response.json({ error: { code: 'invalid_request', message: 'stop here' } }, { status: 400 })
+    },
+  }
+  const h = harness(dir, routes)
+  assert.equal(await main(['upload', 'clip.mp4', '--renditions', '1080p, 480p'], h.io), 1, h.out.join('\n'))
+  assert.equal(await main(['upload', 'clip.mp4'], harness(dir, routes).io), 1)
+  assert.deepEqual(bodies[0].renditions, ['1080p', '480p'])
+  assert.equal('renditions' in bodies[1], false)
+})
