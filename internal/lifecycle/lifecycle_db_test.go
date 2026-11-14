@@ -276,7 +276,7 @@ func TestDeleteCancelsBothFamiliesAndFencesTheTranscription(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := tracks.QueueTranscriptions(ctx, qs, asset, true); err != nil {
+	if _, err := tracks.QueueTranscriptions(ctx, qs, asset, true); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := queue.Enqueue(ctx, r.pool, queue.Job{ProjectID: "prj_default", AssetID: "ast_1", Kind: "reencode"}); err != nil {

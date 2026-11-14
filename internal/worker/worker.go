@@ -69,6 +69,13 @@ type Worker struct {
 	// Speech is how this worker transcribes, once proven; shared by its
 	// claim loops, which report it. nil or empty: it doesn't.
 	Speech *SpeechSlot
+	// FollowOn are the job kinds a serverless machine says, at its claim,
+	// it can take after its own job; serve may then hand it the asset's
+	// transcription with a new key (D128). FollowOnSpeech proves speech
+	// for that transcription and returns nil if it can't; the job then
+	// fails model_unavailable and is routed on.
+	FollowOn       []string
+	FollowOnSpeech func(ctx context.Context) *media.Speech
 }
 
 func orNone(s string) string {
@@ -173,18 +180,36 @@ func (w *Worker) RunDispatched(ctx context.Context) error {
 	if err := ClearDir(w.WorkDir); err != nil {
 		w.Logger.Warn("clear the scratch directory", "dir", w.WorkDir, "err", err)
 	}
+	next, err := w.runDispatched(ctx)
+	if err != nil || next == "" {
+		return err
+	}
+	// Serve handed this machine the asset's transcription (D128): take it
+	// here with the new key instead of a second machine being woken.
+	w.Logger.Info("handed the asset's transcription; taking it on this machine")
+	if w.FollowOnSpeech != nil {
+		w.FollowOnSpeech(ctx)
+	}
+	w.Key, w.FollowOn, w.Kinds = next, nil, []string{"transcribe"}
+	_, err = w.runDispatched(ctx)
+	return err
+}
+
+// runDispatched claims the dispatch key's one job and runs it, retrying
+// failed claims, and returns the key of any job it was handed next.
+func (w *Worker) runDispatched(ctx context.Context) (string, error) {
 	backoff := time.Second
 	for {
-		got, err := w.RunOnce(ctx)
+		got, next, err := w.runOne(ctx)
 		switch {
 		case got || errors.Is(err, ErrKeyRefused):
-			return err
+			return next, err
 		case ctx.Err() != nil:
-			return ctx.Err()
+			return "", ctx.Err()
 		case err != nil:
 			w.Logger.Warn("claim failed; will retry", "err", err, "in", backoff)
 			if err := sleep(ctx, backoff); err != nil {
-				return err
+				return "", err
 			}
 			backoff = min(backoff*2, 30*time.Second)
 		default:
@@ -212,15 +237,20 @@ func ClearDir(dir string) error {
 
 // RunOnce claims at most one job and runs it. It reports whether it got one.
 func (w *Worker) RunOnce(ctx context.Context) (bool, error) {
+	got, _, err := w.runOne(ctx)
+	return got, err
+}
+
+// runOne is RunOnce, also returning the key of any job serve handed this
+// machine next.
+func (w *Worker) runOne(ctx context.Context) (bool, string, error) {
 	job, err := w.claim(ctx)
 	if err != nil || job == nil {
-		return false, err
+		return false, "", err
 	}
 	w.Logger.Info("claimed job", "job", job.JobID, "attempt", job.AttemptID, "kind", job.Kind)
-	if err := w.handle(ctx, job); err != nil {
-		return true, err
-	}
-	return true, nil
+	next, err := w.handle(ctx, job)
+	return true, next, err
 }
 
 func (w *Worker) claim(ctx context.Context) (*workerapi.Job, error) {
@@ -249,6 +279,9 @@ func (w *Worker) claim(ctx context.Context) (*workerapi.Job, error) {
 	if sp := w.Speech.Get(); sp != nil {
 		body["speech"] = workerapi.Speech{Backends: []string{string(sp.Backend)}, Model: sp.ModelName}
 	}
+	if len(w.FollowOn) > 0 {
+		body["follow_on"] = w.FollowOn
+	}
 	status, err := w.post(ctx, "/worker/v1/claim", w.Key, body, &job)
 	switch {
 	case err != nil:
@@ -268,8 +301,9 @@ func (w *Worker) claim(ctx context.Context) (*workerapi.Job, error) {
 
 var validID = regexp.MustCompile(`^att_[0-9a-z]{26}$`)
 
-// handle runs one attempt to its end and reports the outcome.
-func (w *Worker) handle(ctx context.Context, job *workerapi.Job) error {
+// handle runs one attempt to its end and reports the outcome. It returns
+// the key of the job serve handed this machine next, if any (D128).
+func (w *Worker) handle(ctx context.Context, job *workerapi.Job) (string, error) {
 	log := w.Logger.With("job", job.JobID, "attempt", job.AttemptID, "kind", job.Kind)
 	dir := filepath.Join(w.WorkDir, job.AttemptID)
 	defer os.RemoveAll(dir)
@@ -304,7 +338,7 @@ func (w *Worker) handle(ctx context.Context, job *workerapi.Job) error {
 	switch {
 	case hb.stopped() || errors.Is(err, errStopped):
 		log.Info("attempt stopped by the server", "reason", hb.reason())
-		return nil
+		return "", nil
 	case ctx.Err() != nil:
 		// Shutting down: hand the attempt back, on a context of its own
 		// since ctx is done. If that fails, the lease lapses as before.
@@ -315,16 +349,19 @@ func (w *Worker) handle(ctx context.Context, job *workerapi.Job) error {
 		} else {
 			log.Info("handed the attempt back: shutting down")
 		}
-		return ctx.Err()
+		return "", ctx.Err()
 	case errors.Is(jobCtx.Err(), context.DeadlineExceeded):
 		code, err = codeTimeout, fmt.Errorf("attempt exceeded %s", maxJob)
 		fallthrough
 	case err != nil:
 		log.Error("attempt failed", "code", code, "err", err)
-		return w.fail(ctx, job, permanent(code), code, err)
+		return "", w.fail(ctx, job, permanent(code), code, err)
 	}
 	// complete is safe to retry: after a commit the server answers "stop".
-	if status, err := w.report(ctx, job, "complete", done); err != nil {
+	var answer struct {
+		NextKey string `json:"next_key"`
+	}
+	if status, err := w.report(ctx, job, "complete", done, &answer); err != nil {
 		code := codeCommit
 		switch {
 		case status == http.StatusConflict && job.Kind == "upload_source":
@@ -332,19 +369,22 @@ func (w *Worker) handle(ctx context.Context, job *workerapi.Job) error {
 		case status == http.StatusConflict && job.Kind == "transcribe":
 			// The converter only makes valid transcripts: one serve refuses
 			// won't pass on a retry either.
-			return w.fail(ctx, job, true, codeTranscriptInvalid, err)
+			return "", w.fail(ctx, job, true, codeTranscriptInvalid, err)
 		case status == http.StatusConflict:
 			code = codeOutputInvalid
 		}
-		return w.fail(ctx, job, false, code, err)
+		return "", w.fail(ctx, job, false, code, err)
 	}
-	return nil
+	if len(w.FollowOn) == 0 {
+		return "", nil // it offered nothing, so it takes nothing
+	}
+	return answer.NextKey, nil
 }
 
 func (w *Worker) fail(ctx context.Context, job *workerapi.Job, permanent bool, code string, cause error) error {
 	_, err := w.report(ctx, job, "fail", map[string]any{
 		"permanent": permanent, "error_code": code, "message": truncate(cause.Error(), 500),
-	})
+	}, nil)
 	if err != nil {
 		return fmt.Errorf("report failure %s: %w (cause: %v)", code, err, cause)
 	}
@@ -352,8 +392,9 @@ func (w *Worker) fail(ctx context.Context, job *workerapi.Job, permanent bool, c
 }
 
 // report posts to an attempt endpoint, retrying transport errors and 5xx
-// a few times, and treats any other non-200 as an error.
-func (w *Worker) report(ctx context.Context, job *workerapi.Job, call string, body any) (int, error) {
+// a few times, and treats any other non-200 as an error. A 200's JSON
+// answer, if any, is decoded into out.
+func (w *Worker) report(ctx context.Context, job *workerapi.Job, call string, body, out any) (int, error) {
 	var status int
 	var err error
 	for try := 0; try < 4; try++ {
@@ -362,7 +403,7 @@ func (w *Worker) report(ctx context.Context, job *workerapi.Job, call string, bo
 				return 0, serr
 			}
 		}
-		status, err = w.post(ctx, "/worker/v1/attempts/"+job.AttemptID+"/"+call, job.AttemptToken, body, nil)
+		status, err = w.post(ctx, "/worker/v1/attempts/"+job.AttemptID+"/"+call, job.AttemptToken, body, out)
 		switch {
 		case err == nil && status == http.StatusOK:
 			return status, nil
@@ -704,7 +745,8 @@ func (w *Worker) send(ctx context.Context, path, bearer string, body, out any, c
 	}
 	defer res.Body.Close()
 	if out != nil && (res.StatusCode == http.StatusOK || (created && res.StatusCode == http.StatusCreated)) {
-		if err := json.NewDecoder(io.LimitReader(res.Body, 1<<20)).Decode(out); err != nil {
+		// An empty body leaves out as it was.
+		if err := json.NewDecoder(io.LimitReader(res.Body, 1<<20)).Decode(out); err != nil && !errors.Is(err, io.EOF) {
 			return res.StatusCode, fmt.Errorf("%s: %w", path, err)
 		}
 	}

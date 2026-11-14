@@ -246,6 +246,9 @@ type claimRequest struct {
 	// absent when it can't transcribe. Every claim of a worker that can
 	// sends it, whichever kinds it asks for.
 	Speech *Speech `json:"speech"`
+	// FollowOn are the job kinds a serverless machine can take after this
+	// one if serve hands it the asset's next job (D128): "transcribe".
+	FollowOn []string `json:"follow_on"`
 }
 
 // Speech is a worker's transcription capability.
@@ -291,7 +294,7 @@ func (a *API) claim(w http.ResponseWriter, r *http.Request) {
 	info, _ := json.Marshal(map[string]any{
 		"ffmpeg_version": req.FFmpegVersion, "packager_version": req.PackagerVersion,
 		"encoders": req.Encoders, "free_disk_bytes": req.FreeDiskBytes, "contract_versions": req.ContractVersions,
-		"sandbox": req.Sandbox, "hardware": req.Hardware, "speech": req.Speech,
+		"sandbox": req.Sandbox, "hardware": req.Hardware, "speech": req.Speech, "follow_on": req.FollowOn,
 	})
 	worker.Info = info
 	worker.FreeDiskBytes = max(req.FreeDiskBytes, 0)
@@ -466,9 +469,10 @@ func (a *API) complete(w http.ResponseWriter, r *http.Request) {
 	case err != nil:
 		a.internal(w, "complete", err)
 	case v.Stop:
-		a.verdict(w, v)
+		a.verdict(w, v.Verdict)
 	default:
-		httpjson.Write(w, http.StatusOK, verdictResponse{Action: "done"})
+		// NextKey hands this machine the asset's transcription (D128).
+		httpjson.Write(w, http.StatusOK, verdictResponse{Action: "done", NextKey: v.NextKey})
 	}
 }
 
@@ -635,6 +639,9 @@ type verdictResponse struct {
 	Action       string `json:"action"`
 	Reason       string `json:"reason,omitempty"`
 	LeaseSeconds int    `json:"lease_seconds,omitempty"`
+	// NextKey, on a commit's "done", is a one-time worker key for the job
+	// serve handed this machine next (D128).
+	NextKey string `json:"next_key,omitempty"`
 }
 
 func (a *API) verdict(w http.ResponseWriter, v queue.Verdict) {

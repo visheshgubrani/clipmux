@@ -401,3 +401,83 @@ func TestDrillTranscriptionOnRunPodWhenThePrimaryIsOffline(t *testing.T) {
 	}
 	c.waitNoPods()
 }
+
+// skipWithoutSpeech skips a drill that needs whisper.cpp and its models.
+func skipWithoutSpeech(t *testing.T) {
+	t.Helper()
+	if os.Getenv("CLIPMUX_SKIP_SPEECH") == "1" {
+		t.Skip("CLIPMUX_SKIP_SPEECH=1: no whisper.cpp here")
+	}
+	if os.Getenv("CLIPMUX_TEST_MODELS_DIR") == "" {
+		t.Skip("set CLIPMUX_TEST_MODELS_DIR to the speech models (toolchain/fetch_speech_models.sh)")
+	}
+}
+
+// primaryRunPod chooses RunPod as where videos are encoded, as connecting a
+// cloud GPU does from the dashboard (D116).
+func (c *cloud) primaryRunPod() {
+	c.t.Helper()
+	if s := ownerCall(c.t, c.owner, "PUT", c.url+"/v1/settings/routing",
+		map[string]any{"primary_executor": "runpod", "fallback_executor": nil}, nil); s != 200 {
+		c.t.Fatalf("set routing: %d", s)
+	}
+}
+
+// A captioned upload with RunPod as the primary wakes one pod (D128): it
+// encodes with speech off, is handed the asset's transcription in its
+// commit's answer, proves speech then, and transcribes the committed audio
+// under a dispatch of its own.
+func TestDrillACaptionedVideoWakesOnePod(t *testing.T) {
+	skipWithoutSpeech(t)
+	c := newCloud(t, connectOpts{maxConcurrent: 4, monthlyLimit: 100_000, rateCentsPerHour: 50, speech: true})
+	c.primaryRunPod()
+	asset, _ := c.uploadWith(c.key, speechFixture(t), map[string]any{"generate": map[string]bool{"subtitles": true}})
+	c.waitReady(c.key, asset, 5*time.Minute)
+	trk := c.waitTracks(c.key, asset, 20*time.Minute)["subtitles"]
+	if trk.Status != "ready" || trk.Language != "en" {
+		t.Fatalf("subtitles = %+v", trk)
+	}
+	enc, tr := c.ran(asset, "transcode"), c.ran(asset, "transcribe")
+	if len(enc) != 1 || enc[0].status != "committed" || enc[0].dispatchID == "" ||
+		len(tr) != 1 || tr[0].status != "committed" || tr[0].executor != "runpod" || tr[0].dispatchID == "" || tr[0].dispatchID == enc[0].dispatchID {
+		t.Fatalf("attempts: encode %+v, transcription %+v; want each committed on RunPod under its own dispatch", enc, tr)
+	}
+	if reason := c.scalar(`SELECT end_reason FROM dispatches WHERE id = $1`, enc[0].dispatchID); reason != "handed_off" {
+		t.Fatalf("the encode's dispatch ended %s, want handed_off", reason)
+	}
+	same := c.scalar(`SELECT (a.instance_id = b.instance_id)::text FROM dispatches a, dispatches b WHERE a.id = $1 AND b.id = $2`,
+		enc[0].dispatchID, tr[0].dispatchID)
+	if same != "true" {
+		t.Fatal("the transcription ran on another machine")
+	}
+	if n := c.rp.Created(); n != 2 {
+		t.Fatalf("%d pods created, want the setup test's and one for the captioned video", n)
+	}
+	c.waitNoPods()
+}
+
+// A pod handed the transcription that can't transcribe fails it as
+// model_unavailable, and the job is woken for like any other: the
+// subtitles are still made, on a second pod.
+func TestDrillAHandedTranscriptionThePodCantRunGoesOn(t *testing.T) {
+	skipWithoutSpeech(t)
+	c := newCloud(t, connectOpts{maxConcurrent: 4, monthlyLimit: 100_000, rateCentsPerHour: 50, speech: true, brokenFollowOn: true})
+	c.primaryRunPod()
+	asset, _ := c.uploadWith(c.key, speechFixture(t), map[string]any{"generate": map[string]bool{"subtitles": true}})
+	c.waitReady(c.key, asset, 5*time.Minute)
+	trk := c.waitTracks(c.key, asset, 20*time.Minute)["subtitles"]
+	if trk.Status != "ready" {
+		t.Fatalf("subtitles = %+v", trk)
+	}
+	tr := c.ran(asset, "transcribe")
+	if len(tr) != 2 || tr[0].status != "failed" || tr[1].status != "committed" || tr[0].dispatchID == tr[1].dispatchID {
+		t.Fatalf("transcription attempts %+v: want the handed one failed, then one committed on a new pod", tr)
+	}
+	if code := c.scalar(`SELECT coalesce(error_code, '') FROM attempts WHERE dispatch_id = $1`, tr[0].dispatchID); code != "model_unavailable" {
+		t.Fatalf("the handed attempt failed %q, want model_unavailable", code)
+	}
+	if n := c.rp.Created(); n != 3 {
+		t.Fatalf("%d pods created, want the setup test's, the encode's and the transcription's", n)
+	}
+	c.waitNoPods()
+}

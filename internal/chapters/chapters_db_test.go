@@ -74,7 +74,7 @@ func newDBRig(t *testing.T) *dbRig {
 	}
 	r.subs, r.chapters = made[0].ID, made[1].ID
 	asset, _ := qs.GetAssetByID(ctx, "ast_1")
-	if err := tracks.QueueTranscriptions(ctx, qs, asset, true); err != nil {
+	if _, err := tracks.QueueTranscriptions(ctx, qs, asset, true); err != nil {
 		t.Fatal(err)
 	}
 	q := queue.New(pool)
