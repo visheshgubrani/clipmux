@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"path"
+	"sync"
 
 	"github.com/visheshgubrani/clipmux/internal/contentkey"
 	"github.com/visheshgubrani/clipmux/internal/db"
@@ -86,8 +87,17 @@ func (a *Audio) Segment(ctx context.Context, i int) ([]byte, error) {
 	return media.DecryptSegment(a.key, s.IV, enc)
 }
 
+// audioFetchWindow is how many segments Stream reads ahead of the one it
+// is writing. Each read is a round trip to object storage (about 0.7 s
+// from the VPS to R2), and an hour of audio is 600 of them: one at a
+// time, a 76-minute transcription waited almost nine minutes for its
+// audio (D132). The window bounds memory to this many segments.
+const audioFetchWindow = 16
+
 // Stream writes the whole rendition as one fragmented MP4: the init
-// segment, then every segment decrypted. It returns the bytes written.
+// segment, then every segment decrypted, in playlist order. Up to
+// audioFetchWindow segments are read and decrypted at once. It returns the
+// bytes written; the first failure stops the rest.
 func (a *Audio) Stream(ctx context.Context, w io.Writer) (int64, error) {
 	init, err := a.Init(ctx)
 	if err != nil {
@@ -98,18 +108,50 @@ func (a *Audio) Stream(ctx context.Context, w io.Writer) (int64, error) {
 	if err != nil {
 		return total, err
 	}
-	for i := range a.Playlist.Segments {
-		seg, err := a.Segment(ctx, i)
-		if err != nil {
-			return total, fmt.Errorf("segment %d: %w", i+1, err)
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	type result struct {
+		seg []byte
+		err error
+	}
+	// Each segment has its own buffered channel, queued in order: the
+	// fetcher hands them out up to the window ahead, the writer drains
+	// them in turn.
+	pending := make(chan chan result, audioFetchWindow)
+	var wg sync.WaitGroup
+	defer wg.Wait()
+	wg.Go(func() {
+		defer close(pending)
+		for i := range a.Playlist.Segments {
+			ch := make(chan result, 1)
+			select {
+			case pending <- ch:
+			case <-ctx.Done():
+				return
+			}
+			wg.Go(func() {
+				seg, err := a.Segment(ctx, i)
+				if err != nil {
+					err = fmt.Errorf("segment %d: %w", i+1, err)
+				}
+				ch <- result{seg, err}
+			})
 		}
-		n, err := w.Write(seg)
+	})
+	for ch := range pending {
+		r := <-ch
+		if r.err != nil {
+			cancel()
+			return total, r.err
+		}
+		n, err := w.Write(r.seg)
 		total += int64(n)
 		if err != nil {
+			cancel()
 			return total, err
 		}
 	}
-	return total, nil
+	return total, ctx.Err()
 }
 
 // object is a playlist URI's storage key; the playlist checks at commit
