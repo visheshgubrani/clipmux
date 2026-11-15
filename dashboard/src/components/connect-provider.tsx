@@ -96,9 +96,13 @@ function GPUPicker({
   )
 }
 
-/** The first choices: the recommended GPU and the two cheapest after it, as fallbacks for capacity. */
+/**
+ * The first choices: the GPUs the server marks default (Modal, D132), or else
+ * the recommended GPU and the two cheapest after it, as fallbacks for capacity.
+ */
 function firstChoices(gpus: GPU[]) {
-  return gpus.slice(0, 3).map((g) => g.id)
+  const marked = gpus.filter((g) => g.default)
+  return (marked.length > 0 ? marked : gpus.slice(0, 3)).map((g) => g.id)
 }
 
 interface Limits {

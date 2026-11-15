@@ -47,9 +47,10 @@ type Secret struct {
 }
 
 // DefaultGPU are the GPU types a sandbox may take, in order: each encodes
-// with NVENC (D051), and the L4's queue can stall for minutes, so a wake
-// takes the next with capacity (D097).
-const DefaultGPU = "L4,A10G,T4"
+// with NVENC (D051) and decodes AV1 (D132), and the L4's queue can stall
+// for minutes, so a wake takes the next with capacity (D097). They are the
+// catalog's Default GPUs.
+const DefaultGPU = "L4,A10G"
 
 // errNoCapacity is a create Modal couldn't schedule on that GPU type in
 // time; the sandbox was terminated, and the next type may be tried.
