@@ -39,7 +39,8 @@ WHERE asset_id = $1 AND kind = $2 AND status = 'preparing'
 RETURNING *;
 
 -- name: MarkTracksDeleted :many
-UPDATE tracks SET status = 'deleted', deleted_at = now(), retired_at = NULL, version = version + 1, updated_at = now()
+-- error_code goes too: only an errored track keeps one (tracks_check).
+UPDATE tracks SET status = 'deleted', deleted_at = now(), retired_at = NULL, error_code = NULL, version = version + 1, updated_at = now()
 WHERE asset_id = $1 AND status <> 'deleted'
 RETURNING id;
 
@@ -155,7 +156,7 @@ SELECT * FROM tracks WHERE asset_id = ANY (sqlc.arg(asset_ids)::text[]) AND stat
 ORDER BY asset_id, created_at, id;
 
 -- name: DeleteTrack :one
-UPDATE tracks SET status = 'deleted', deleted_at = now(), retired_at = NULL, version = version + 1, updated_at = now()
+UPDATE tracks SET status = 'deleted', deleted_at = now(), retired_at = NULL, error_code = NULL, version = version + 1, updated_at = now()
 WHERE id = $1 AND status <> 'deleted'
 RETURNING *;
 

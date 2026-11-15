@@ -106,7 +106,7 @@ func (q *Queries) DeleteAIConnection(ctx context.Context, arg DeleteAIConnection
 }
 
 const deleteTrack = `-- name: DeleteTrack :one
-UPDATE tracks SET status = 'deleted', deleted_at = now(), retired_at = NULL, version = version + 1, updated_at = now()
+UPDATE tracks SET status = 'deleted', deleted_at = now(), retired_at = NULL, error_code = NULL, version = version + 1, updated_at = now()
 WHERE id = $1 AND status <> 'deleted'
 RETURNING id, project_id, asset_id, kind, source, status, language, name, error_code, key_version, duration_ms, chapters, output_id, version, created_at, updated_at, ready_at, retired_at, deleted_at
 `
@@ -806,11 +806,12 @@ func (q *Queries) MarkTrackReady(ctx context.Context, id string) (Track, error) 
 }
 
 const markTracksDeleted = `-- name: MarkTracksDeleted :many
-UPDATE tracks SET status = 'deleted', deleted_at = now(), retired_at = NULL, version = version + 1, updated_at = now()
+UPDATE tracks SET status = 'deleted', deleted_at = now(), retired_at = NULL, error_code = NULL, version = version + 1, updated_at = now()
 WHERE asset_id = $1 AND status <> 'deleted'
 RETURNING id
 `
 
+// error_code goes too: only an errored track keeps one (tracks_check).
 func (q *Queries) MarkTracksDeleted(ctx context.Context, assetID string) ([]string, error) {
 	rows, err := q.db.Query(ctx, markTracksDeleted, assetID)
 	if err != nil {
