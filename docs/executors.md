@@ -99,8 +99,9 @@ create a token in Modal (**Settings → API Tokens**); pasting the
 ```
 
 Optional fields: `environment` (the Modal environment; default the account's
-own), `image` (default `CLIPMUX_WORKER_IMAGE`), `gpu` (default `L4,A10G,T4`: GPU
-types with NVENC, tried in order until one has capacity, D097), `cpu` (default 4 cores),
+own), `image` (default `CLIPMUX_WORKER_IMAGE`), `gpu` (default `L4,A10G`: GPU
+types with NVENC and an AV1 decoder, tried in order until one has capacity, D097,
+D132; the T4 can be chosen, but decodes AV1 on the CPU), `cpu` (default 4 cores),
 `memory_mib` (default 16384) and `disk_gb` (default 50, held to the
 free-disk rule).
 

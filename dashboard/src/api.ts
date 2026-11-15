@@ -362,6 +362,8 @@ export interface GPU {
   memory_gb: number
   cents_per_hour: number
   recommended?: boolean
+  /** Chosen until the owner picks (Modal, D132). */
+  default?: boolean
 }
 /** A provider's browser approval (POST /v1/executors/{kind}/authorize, D109). */
 export interface Approval {

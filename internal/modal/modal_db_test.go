@@ -254,7 +254,7 @@ func TestConnectModalSealsTheTokenAndQueuesItsSetupTest(t *testing.T) {
 	row, _, _ := dispatch.Existing(ctx, c.Pool, "prj_default", "modal")
 	var cfg Config
 	_ = json.Unmarshal(row.Config, &cfg)
-	if !strings.Contains(cfg.Image, "@sha256:") || cfg.GPU != "L4,A10G,T4" || cfg.CPU != 4 || cfg.MemoryMiB != 16384 || len(cfg.Tag) != 8 || row.DiskBytes != 50<<30 || row.RateCentsPerHour != 90 {
+	if !strings.Contains(cfg.Image, "@sha256:") || cfg.GPU != "L4,A10G" || cfg.CPU != 4 || cfg.MemoryMiB != 16384 || len(cfg.Tag) != 8 || row.DiskBytes != 50<<30 || row.RateCentsPerHour != 90 {
 		t.Fatalf("config = %+v, row %+v", cfg, row)
 	}
 	for _, secret := range []string{tokenSecret, registrytest.Password, tokenID} {
@@ -387,16 +387,20 @@ func TestConnectModalByBrowserApproval(t *testing.T) {
 
 // Choosing GPUs (D111): Modal's published prices for each NVENC GPU, plus
 // the sandbox's 4 cores and 16 GiB; left alone, Connect saves $50 a month
-// and the dearest chosen GPU's rate.
+// and the dearest chosen GPU's rate. The T4 is offered but not chosen by
+// default: it can't decode AV1, so an AV1 upload decodes on the CPU (D132).
 func TestModalPricesTheChosenGPUs(t *testing.T) {
 	want := []GPU{
-		{ID: "L4", Name: "L4", MemoryGB: 24, CentsPerHour: 112, Recommended: true},
+		{ID: "L4", Name: "L4", MemoryGB: 24, CentsPerHour: 112, Recommended: true, Default: true},
+		{ID: "A10G", Name: "A10", MemoryGB: 24, CentsPerHour: 142, Default: true},
 		{ID: "T4", Name: "T4", MemoryGB: 16, CentsPerHour: 91},
-		{ID: "A10G", Name: "A10", MemoryGB: 24, CentsPerHour: 142},
 		{ID: "L40S", Name: "L40S", MemoryGB: 48, CentsPerHour: 227},
 	}
 	if got := GPUs(4, 16384); !reflect.DeepEqual(got, want) {
 		t.Fatalf("gpus = %+v, want %+v", got, want)
+	}
+	if DefaultGPU != "L4,A10G" {
+		t.Fatalf("DefaultGPU = %q, want the GPUs marked default, in order", DefaultGPU)
 	}
 	f := newFake()
 	c, _ := connector(t, f)

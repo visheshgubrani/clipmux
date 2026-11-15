@@ -52,11 +52,14 @@ test('the owner connects Modal by approving it on Modal’s page', async ({ page
   await go(page, 'Encoding')
   await page.locator('[data-provider="modal"]').getByRole('button', { name: 'Connect Modal' }).click()
   const form = page.getByRole('form', { name: 'Connect Modal' })
-  // Modal's NVENC GPUs with its prices, the first three ticked (D111).
+  // Modal's NVENC GPUs with its prices (D111); the L4 and A10 are ticked,
+  // not the T4, which can't decode AV1 (D132).
   const gpus = form.getByRole('list', { name: 'GPUs' })
   await expect(gpus.getByRole('listitem').first()).toContainText('L4')
   await expect(gpus.getByRole('listitem').first()).toContainText('Recommended')
   await expect(gpus.getByRole('listitem').first()).toContainText('$1.12/hr')
+  await expect(gpus.getByRole('checkbox', { name: 'A10' })).toBeChecked()
+  await expect(gpus.getByRole('checkbox', { name: 'T4' })).not.toBeChecked()
   await gpus.getByRole('checkbox', { name: 'A10' }).uncheck()
   await gpus.getByRole('checkbox', { name: 'L40S' }).check()
   await form.getByRole('button', { name: 'Change' }).click()
@@ -68,7 +71,7 @@ test('the owner connects Modal by approving it on Modal’s page', async ({ page
   expect(await tab.evaluate(() => window.opener)).toBeNull()
   await expect(form).toContainText('AB12')
   await expect(form.getByText('✓ Credentials')).toBeVisible({ timeout: 15_000 })
-  expect(started).toEqual([{ max_concurrent: 1, monthly_limit_cents: 4000, gpu: 'L4,T4,L40S' }])
+  expect(started).toEqual([{ max_concurrent: 1, monthly_limit_cents: 4000, gpu: 'L4,L40S' }])
   await tab.close()
 
   // Pasting instead: the command Modal shows fills both fields.

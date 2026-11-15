@@ -1650,3 +1650,32 @@ Decision:
   - The 4K ladder stayed on `nvenc` for H.264 and AV1 on the L4. On the T4 the AV1 source failed the full-GPU stage (no AV1 decoder) and fell back to `nvenc-hybrid`, now with the reason logged.
   - On both cards, 2 s of 4K took about 45–50 s of video work, against 2.3 s on VAAPI here. That points to a large fixed cost per encode under gVisor, still to be measured with a longer clip.
 Consequence: `deploy/modal/gpu_test.py` now builds the same toolchain, CUDA included, and runs the GPU, 4K-ladder and speech tests on a chosen card (`--which l4,t4`). It also reports whether Modal's runtime exposes NVIDIA's Vulkan ICD when `graphics` is asked for.
+
+## D132 Modal machine time: parallel audio fetch, one upload pool, and default GPUs that decode AV1 — accepted (2026-11-15)
+Context: on production's Modal primary (sha-6264fa8), a 76-minute 1080p AV1 lecture on an L4 held its machine for 49 minutes. The worker's `attempt committed` phases (D129) were: video 357 s, audio 348 s, upload 460 s (3,843 files, 1.9 GB), transcription audio fetch 526 s and whisper 1,583 s.
+- Serve streamed the transcription's audio with one R2 GET per 6-second segment, one after another (about 0.69 s each).
+- The worker uploaded 8 files at a time and waited at each 500-path sign batch.
+- A second upload waited 47 minutes for its encode because `max_concurrent` was 1: the first video's machine held the only slot through its encode and its D128 hand-off.
+
+Decision:
+- **`outputs.Audio.Stream` keeps 16 segment reads in flight** and writes them in playlist order. The first failure cancels the rest and names its segment.
+- **`worker.upload` is one pool of 32 PUTs** across the whole output. It signs the next 500 paths while the current ones upload. `manifest.json` still lands last, and an expired URL is still re-signed.
+- **Modal's default GPUs are L4 then A10G.**
+  - The T4 is still offered, but it is no longer chosen by default: it has no AV1 decoder, so an AV1 source fails the full-GPU stage and decodes on the sandbox's four CPUs (`nvenc-hybrid`).
+  - The catalog marks the default GPUs, and `DefaultGPU` and the dashboard's Connect form both take them from there. Until now the form ticked the catalog's first three, which put the T4 second on production.
+
+Measured on production (sha-cce16a1), three videos uploaded back to back with `max_concurrent` 10:
+- Each video got its own machine 20–53 s after its upload finished, which is cold start, with no queue wait. Each hand-off claimed in about 5 s, and every job succeeded on its first attempt.
+
+| Video | Source | GPU | video | upload | audio fetch | whisper (RTF) | upload to subtitles |
+|---|---|---|---|---|---|---|---|
+| 20 min | 1080p VP9 | T4 | 207 s | 41 s (998 files, 207 MB) | 12 s | 162 s (0.14) | 8 min |
+| 54 min | 4K AV1, 6 rungs | L4 | 1,086 s | 121 s (3,832 files, 5.9 GB) | 31 s | 763 s (0.23) | 35 min |
+| 67 min | 1080p AV1 | T4, `nvenc-hybrid` | 1,372 s | 143 s (3,358 files, 5.2 GB) | 42 s | 1,196 s (0.30) | 48 min |
+
+- The 67-minute AV1 video on the T4 spent 23 minutes on video, where the 76-minute AV1 video on the L4 spent 6. That run is why the T4 left the defaults.
+
+Consequence:
+- The rest of a long video's time is the 4K ladder's encode and whisper.
+- Whisper ran at RTF 0.23–0.30 on Hindi lectures against 0.14 on English. Its own timings (fallbacks, encode, decode), and the beam-5 against greedy bench, decide the decoding choice next.
+- An owner who reconnects Modal from the dashboard gets L4 and A10G ticked. An existing config keeps its list until it is reconnected; production's was changed by hand on 2026-11-15.
