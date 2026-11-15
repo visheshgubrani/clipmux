@@ -598,11 +598,15 @@ func (w *Worker) download(ctx context.Context, job *workerapi.Job, dst string) e
 }
 
 // uploadConcurrency is how many PUTs run at once: an hour of 4K is
-// thousands of segments, each a short request to object storage.
-const uploadConcurrency = 8
+// thousands of segments, each a short request to object storage, and a
+// PUT from Modal to R2 takes about a second whatever its size. At 8, a
+// 76-minute output's 3,843 files took 460 s (D132).
+const uploadConcurrency = 32
 
 // upload PUTs every inventoried file, then manifest.json last, through
-// signed URLs, uploadConcurrency at a time, retrying each a few times.
+// signed URLs, uploadConcurrency at a time across the whole output,
+// retrying each a few times. The next batch of URLs is signed while the
+// last one uploads, so the pool never drains between batches.
 func (w *Worker) upload(ctx context.Context, job *workerapi.Job, outDir string, m media.Manifest, report media.Progress) error {
 	paths := make([]string, 0, len(m.Files)+1)
 	for _, f := range m.Files {
@@ -610,7 +614,7 @@ func (w *Worker) upload(ctx context.Context, job *workerapi.Job, outDir string, 
 	}
 	total, done := len(paths)+1, 0
 	var mu sync.Mutex
-	put := func(urls map[string]string, p string) error {
+	put := func(url, p string) error {
 		var err error
 		for try := 0; try < 4; try++ {
 			if try > 0 {
@@ -622,10 +626,10 @@ func (w *Worker) upload(ctx context.Context, job *workerapi.Job, outDir string, 
 					if serr != nil {
 						return serr
 					}
-					urls = fresh.URLs
+					url = fresh.URLs[p]
 				}
 			}
-			if err = w.putFile(ctx, urls[p], filepath.Join(outDir, filepath.FromSlash(p))); err == nil {
+			if err = w.putFile(ctx, url, filepath.Join(outDir, filepath.FromSlash(p))); err == nil {
 				mu.Lock()
 				done++
 				report("upload", float64(done)/float64(total))
@@ -635,45 +639,54 @@ func (w *Worker) upload(ctx context.Context, job *workerapi.Job, outDir string, 
 		}
 		return fmt.Errorf("upload %s: %w", p, err)
 	}
-	for start := 0; start < len(paths); start += workerapi.MaxSignPaths {
-		batch := paths[start:min(start+workerapi.MaxSignPaths, len(paths))]
-		signed, err := w.sign(ctx, job, batch, false)
-		if err != nil {
-			return err
-		}
-		sem := make(chan struct{}, uploadConcurrency)
-		var wg sync.WaitGroup
-		var firstErr error
-		var errMu sync.Mutex
-		for _, p := range batch {
-			sem <- struct{}{}
-			wg.Go(func() {
-				defer func() { <-sem }()
-				if err := put(signed.URLs, p); err != nil {
-					errMu.Lock()
-					firstErr = cmp(firstErr, err)
-					errMu.Unlock()
+
+	ctx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
+	type task struct{ url, path string }
+	// The signer stays at most one batch ahead of the pool.
+	tasks := make(chan task, workerapi.MaxSignPaths)
+	var wg sync.WaitGroup
+	for range uploadConcurrency {
+		wg.Go(func() {
+			for t := range tasks {
+				if err := put(t.url, t.path); err != nil {
+					cancel(err)
+					return
 				}
-			})
+			}
+		})
+	}
+	signErr := func() error {
+		defer close(tasks)
+		for start := 0; start < len(paths); start += workerapi.MaxSignPaths {
+			batch := paths[start:min(start+workerapi.MaxSignPaths, len(paths))]
+			signed, err := w.sign(ctx, job, batch, false)
+			if err != nil {
+				return err
+			}
+			for _, p := range batch {
+				select {
+				case tasks <- task{signed.URLs[p], p}:
+				case <-ctx.Done():
+					return nil // a PUT failed; its error is the cause
+				}
+			}
 		}
-		wg.Wait()
-		if firstErr != nil {
-			return firstErr
-		}
+		return nil
+	}()
+	wg.Wait()
+	if err := context.Cause(ctx); err != nil {
+		return err
+	}
+	if signErr != nil {
+		return signErr
 	}
 	// The manifest goes last, so its presence means the rest landed.
 	signed, err := w.sign(ctx, job, []string{"manifest.json"}, false)
 	if err != nil {
 		return err
 	}
-	return put(signed.URLs, "manifest.json")
-}
-
-func cmp(first, next error) error {
-	if first != nil {
-		return first
-	}
-	return next
+	return put(signed.URLs["manifest.json"], "manifest.json")
 }
 
 var errURLExpired = errors.New("signed URL expired")
@@ -741,7 +754,7 @@ func DefaultHTTPClient() *http.Client {
 		TLSHandshakeTimeout:   15 * time.Second,
 		ResponseHeaderTimeout: 2 * time.Minute,
 		IdleConnTimeout:       90 * time.Second,
-		MaxIdleConnsPerHost:   8,
+		MaxIdleConnsPerHost:   uploadConcurrency,
 	}}
 }
 
