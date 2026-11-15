@@ -25,16 +25,26 @@ repository). It holds the flow-by-flow mapping from the old API to this one.
 
 | LMS need | ClipMux equivalent |
 | --- | --- |
-| A signed upload tied to an LMS record | `POST /v1/uploads` with `passthrough`, created by the LMS server; the browser sends the bytes with `@clipmux/uploader` 0.4.0 |
+| A signed upload tied to an LMS record | `POST /v1/uploads` with `passthrough`, created by the LMS server; the browser sends the bytes with `@clipmux/uploader` 0.5.0 |
 | Find a video by LMS reference | `GET /v1/assets?passthrough=` |
-| Signed HLS, renewable in the player | The LMS signs ES256 tokens with `vid` (`@clipmux/node` `playback.session`); `<clipmux-player>` 0.5.0 renews through `getToken` |
+| Signed HLS, renewable in the player | The LMS signs ES256 tokens with `vid` (`@clipmux/node` `playback.session`); `<clipmux-player>` 0.6.0 renews through `getToken` |
 | A webhook trigger, then a re-fetch | Asset webhooks + `GET /v1/assets/{id}` |
 | Delete a video | `DELETE /v1/assets/{id}` |
 | Subtitles, chapters, transcript for the AI features | `generate: {subtitles, chapters}`; the transcript at `GET /v1/assets/{id}/tracks/{tid}/transcript` |
-| Edge delivery | The Cloudflare Worker on `media.clipmux.com`, R2 storage |
+| Edge delivery | The Cloudflare Worker on `edural.clipmux.com`, R2 storage |
 | Encoding | Modal, with no fallback (the host is too small for the built-in worker) |
 
 ## Cutover (D114)
+
+Status, 2026-11-15:
+- Steps 1–3 are done (`app.clipmux.com`, media on `edural.clipmux.com`, Modal, setup test passed; no chapters LLM yet).
+- The LMS side (P36) is built on the npm releases and passed its local end-to-end against this instance with an `Edural dev` app.
+- Step 4 is done: the `Edural` app's bundle went straight into the LMS's `api.env`, and its older key was revoked.
+- Step 5 is done: P36 deployed (LMS `d4f3610`); `doctor` passes, and ClipMux's webhooks reach `api.edural.com`.
+- Step 6 is done on the VPS: final dump, containers removed (the volume is kept for now), `clipmux.com` redirects to the repository, `api.clipmux.com` is unserved.
+- The account-side cleanup (the legacy Worker, buckets, Modal app, queues, analytics and OAuth apps) is the owner's.
+- The integration guide written from it is [../integration.md](../integration.md).
+
 
 1. **ClipMux prerequisites:**
    - an amd64 and arm64 `sha-` image from `main`;
