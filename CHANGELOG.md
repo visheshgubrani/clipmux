@@ -74,6 +74,12 @@ Fixed before release:
   audio encodes beside the video, uploads run 8 at a time, and each commit
   logs its phase timings, the GPU's name and why any GPU stage fell back.
 
+### Server fixes
+
+- Deleting an asset, or one of its tracks, no longer fails with 500 when a
+  track is `errored` (chapters with no LLM connected, say): a deleted track
+  drops its `error_code` (found by the first live integration, Edural).
+
 ### Server security (docs/security-review.md, findings 1–6)
 
 - The built-in worker refuses to run without Landlock, and serve and the

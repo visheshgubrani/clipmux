@@ -49,5 +49,5 @@ internal/          one package per job; a package is created by the task that
 internal/web/      embedded dashboard build (placeholder until P1-T10)
 toolchain/         pinned FFmpeg + Shaka Packager recipe (versions.env is the source of truth)
 deploy/            compose files
-docs/              architecture, decisions, plans, known gaps
+docs/              architecture, decisions, plans, known gaps; integration.md for app developers
 ```

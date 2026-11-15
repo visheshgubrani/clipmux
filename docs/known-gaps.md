@@ -365,3 +365,15 @@ when you introduce or discover it; remove it when it is closed.
 - Safari's native HLS with `getToken({ native })` (D126) is checked by
   reading the code and in Chrome with `native: false`; the Safari suite
   runs on the owner's Mac, not in this release's CI.
+
+## Found by the first live integration (Edural, 2026-11-15; docs/integration.md)
+
+- `@clipmux/uploader` 0.5.0 reads `Retry-After` from every part PUT
+  (`xhr.getResponseHeader`, `index.ts`). The bucket's CORS doesn't expose it,
+  so Chrome logs "Refused to get unsafe header" once per part, and a real
+  `Retry-After` from storage is never seen. Read it only on 429 or 503, and
+  add `Retry-After` to the bucket's `ExposeHeaders` in Cloudflare Connect.
+- `playback.session(playbackId)` with a string target has no duration, so a
+  native token is always signed for 12 hours; an app that wants a tighter one
+  must re-sign with `playback.token(id, { native, durationSeconds })`. A
+  `durationSeconds` option on `session` would remove the second call.

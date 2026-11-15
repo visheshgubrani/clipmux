@@ -224,3 +224,23 @@ func TestDeletingATrackLeavesNothing(t *testing.T) {
 		t.Fatalf("events %v", ev)
 	}
 }
+
+// An errored track (chapters with no LLM connected, say) must not stop its
+// asset or itself from being deleted: deleted keeps no error_code. Found by
+// the first live integration, whose every asset had such a track.
+func TestAnErroredTrackDoesNotBlockDeletes(t *testing.T) {
+	r := newRig(t)
+	r.ready()
+	r.exec(`INSERT INTO tracks (id, project_id, asset_id, kind, status, error_code) VALUES ('trk_err', 'prj_default', 'ast_1', 'chapters', 'errored', 'llm_not_connected')`)
+	if status, body := r.raw("DELETE", "/v1/assets/ast_1/tracks/trk_err", nil, ""); status != 200 {
+		t.Fatalf("DELETE the errored track = %d %s", status, body)
+	}
+	r.exec(`INSERT INTO tracks (id, project_id, asset_id, kind, status, error_code) VALUES ('trk_err2', 'prj_default', 'ast_1', 'chapters', 'errored', 'llm_not_connected')`)
+	if status, body := r.raw("DELETE", "/v1/assets/ast_1", nil, ""); status != 200 && status != 202 {
+		t.Fatalf("DELETE an asset with an errored track = %d %s", status, body)
+	}
+	var left int
+	if err := r.pool.QueryRow(context.Background(), `SELECT count(*) FROM tracks WHERE asset_id = 'ast_1' AND (status <> 'deleted' OR error_code IS NOT NULL)`).Scan(&left); err != nil || left != 0 {
+		t.Fatalf("%d tracks not cleanly deleted (%v)", left, err)
+	}
+}
