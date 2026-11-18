@@ -1,0 +1,142 @@
+---
+title: Posters and thumbnails
+description: Show a still of each video in your pages, lists and link previews, with a token that can fetch only the poster.
+---
+
+Every encoded video has one poster: a JPEG of a frame near the start. Use it
+as the player's poster, as a thumbnail in a list of videos, or as the image
+of a link preview. For a private video, the poster can have its own token
+that fetches the poster and nothing else, so a poster URL that leaks can't
+play the video.
+
+## Before you start
+
+- A video that has finished encoding (`status: "ready"`). The poster is made
+  with the first encode.
+- For a private video, your app's signing key; see
+  [Sign playback tokens](/docs/build/play/sign-tokens).
+
+## What the poster is
+
+- One frame, taken 1 second in, or halfway through a video shorter than
+  2 seconds.
+- A JPEG, scaled to at most 720 pixels on its short side, keeping the
+  video's shape.
+- One per video. There are no parameters for its size or its time, and no
+  animated or storyboard thumbnails. To show a smaller image, scale it in
+  your page or in your own image service.
+
+A re-encode makes a new poster with the new output.
+
+## Get the poster URL
+
+```txt
+Private: https://media.example.com/v/{token}/{playback_id}/poster.jpg
+Public:  https://media.example.com/p/{playback_id}/poster.jpg
+```
+
+A private poster takes either a playback token (`aud: v`) or a poster-only
+token (`aud: t`). A poster-only token is refused for anything else: the
+playlists, segments, keys and subtitles answer `403 denied`.
+
+### From a playback session
+
+A playback session already carries a poster URL. `poster_url` from
+`clipmux.playback.session()`, and from `clipmuxHandler`'s `/playback` route,
+is signed with its own poster-only token that expires with the playback
+token. `<clipmux-player session-url>` shows it unless you set `poster`.
+
+### For a poster alone
+
+On a list page you need the poster without a playback session. Sign a
+poster-only token and build the URL:
+
+<Tabs items={['Node', 'Python', 'Go', 'PHP']}>
+<Tab value="Node">
+
+```ts title="posters.ts"
+import { ClipMux } from '@clipmux/node'
+
+const clipmux = new ClipMux()
+const { base_url } = await clipmux.app.get()
+
+const token = await clipmux.playback.token('pid_…', { audience: 'poster', expiresIn: '1h' })
+const { poster } = clipmux.playback.urls({ baseUrl: base_url, playbackId: 'pid_…', policy: 'signed' }, token)
+// https://media.example.com/v/eyJ…/pid_…/poster.jpg
+```
+
+</Tab>
+<Tab value="Python">
+
+With `playback_token` from [Sign playback tokens](/docs/build/play/sign-tokens):
+
+```python
+token = playback_token("pid_…", signing_key_pem, kid, audience="t", ttl=3600)
+poster = f"{base_url}/v/{token}/pid_…/poster.jpg"
+```
+
+</Tab>
+<Tab value="Go">
+
+With `PlaybackToken` from [Sign playback tokens](/docs/build/play/sign-tokens):
+
+```go
+token, err := PlaybackToken(key, kid, "pid_…", "", "t", time.Hour)
+poster := baseURL + "/v/" + token + "/pid_…/poster.jpg"
+```
+
+</Tab>
+<Tab value="PHP">
+
+With `clipmux_playback_token` from [Sign playback tokens](/docs/build/play/sign-tokens):
+
+```php
+$token = clipmux_playback_token('pid_…', $signingKeyPem, $kid, null, 't', 3600);
+$poster = "{$baseUrl}/v/{$token}/pid_…/poster.jpg";
+```
+
+</Tab>
+</Tabs>
+
+Signing is local: a page of fifty thumbnails costs fifty signatures and no
+calls to ClipMux. `app.get()` is cached, so the media origin is read once.
+
+## Link previews
+
+A poster-only token is safe in an `og:image` tag or a chat message: whoever
+reads the page source gets a still, not the video.
+
+```html
+<meta property="og:image" content="https://media.example.com/v/eyJ…/pid_…/poster.jpg" />
+```
+
+Link preview crawlers may fetch the image long after you render the page,
+so sign that token for longer, up to `max_token_lifetime_seconds` from
+`GET /v1/app` (7 days by default). A public video's poster URL has no token
+and never expires.
+
+## Caching
+
+The poster answers with `Cache-Control: max-age=300`, `private` for a signed
+ID and `public` for a public one. Each token makes a different URL, so a
+new token means a fresh fetch. If you show the same thumbnails on a busy
+page, reuse a token for its lifetime rather than signing one per request.
+
+## Check it works
+
+```bash
+curl -s -o poster.jpg -w '%{http_code} %{content_type}\n' \
+  "https://media.example.com/v/$POSTER_TOKEN/pid_…/poster.jpg"
+```
+
+- `200 image/jpeg`: the poster is in `poster.jpg`.
+- `401 token_expired`: sign a new token.
+- `403 denied`: the token is for another playback ID, or signed with the
+  wrong key. A poster-only token used for `master.m3u8` also gets this.
+- `404`: the video isn't encoded yet, or the playback ID was revoked.
+
+## Next
+
+- [Add the player](/docs/build/play/player)
+- [Public videos](/docs/build/play/public-videos)
+- [Sign playback tokens](/docs/build/play/sign-tokens)

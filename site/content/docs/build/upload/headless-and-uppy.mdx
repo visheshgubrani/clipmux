@@ -1,0 +1,138 @@
+---
+title: Headless uploads and Uppy
+description: Drive uploads from your own interface with the ClipMuxUpload class, or from any client through the upload routes.
+---
+
+When you want your own upload interface, use the class inside
+`<clipmux-uploader>` directly: `ClipMuxUpload` from `@clipmux/uploader`. It
+sends a file in parts straight to storage, resumes from what storage holds,
+retries, and reports progress, and leaves every pixel to you. For anything
+else, such as a native app or another upload library, the upload routes are
+a small API of their own.
+
+## Before you start
+
+- A backend route that creates uploads: the `upload` callback of
+  `clipmuxHandler`, or your own route calling `POST /v1/uploads`. See
+  [Your backend route](/docs/build/upload/browser#your-backend-route).
+- `npm i @clipmux/uploader`.
+
+## Upload with ClipMuxUpload
+
+Give it the file and your `createUrl`, the same route the element uses:
+
+```ts
+import { ClipMuxUpload, ClipMuxUploadError } from '@clipmux/uploader'
+
+const upload = new ClipMuxUpload(file, {
+  createUrl: '/api/clipmux/upload?lesson=42',
+  onProgress: (p) => setProgress(p.bytesUploaded / p.bytesTotal),
+})
+
+try {
+  const asset = await upload.start() // the video, processing
+  console.log(asset.id)
+} catch (err) {
+  if (err instanceof ClipMuxUploadError) console.log(err.code, err.status, err.retryable)
+}
+```
+
+`start()` POSTs `{size, name, type}` to `createUrl` with the page's cookies,
+remembers the upload in `localStorage` so a reload resumes it, sends the
+parts and completes the upload. Calling `start()` again after a rejection
+continues from what storage holds.
+
+| Method | What it does |
+| --- | --- |
+| `start()` | Uploads what storage doesn't hold yet and completes the upload. Resolves with the video. |
+| `pause()` | Stops sending. Parts already stored stay. |
+| `resume()` | Continues after `pause()`. |
+| `cancel()` | Stops for good and tells ClipMux. The video becomes `errored` with `upload_cancelled`. |
+| `upload` | The upload in use, once there is one. |
+
+| Option | Default | What it does |
+| --- | --- | --- |
+| `createUrl` | | Your backend route that creates the upload. Give this or `upload`. |
+| `upload` | | An upload your backend already created: the body of `POST /v1/uploads`. |
+| `endpoint` | the upload's `endpoint` | Your ClipMux server's URL, if the upload doesn't carry it. |
+| `store` | `localStorage` | Where a `createUrl` upload is remembered until it completes; `null` forgets it on reload. |
+| `concurrency` | `4` | Parts in flight at once. |
+| `maxAttempts` | `6` | Tries per request before giving up. |
+| `onProgress` | | Called with `{ bytesUploaded, bytesTotal, partsDone, partsTotal }`. |
+| `signal` | | An `AbortSignal` that stops the upload. |
+
+A failure rejects with a `ClipMuxUploadError` with `code`, `status` and
+`retryable`, and leaves the upload resumable for 24 hours. Codes include
+`create_denied` (your route answered `401` or `403`), `network`,
+`etag_not_exposed`, and the API's own codes such as `too_large`.
+
+## With an upload your backend created
+
+If your backend creates the upload some other way, for example as part of
+saving a form, pass the body with `upload` and the server URL with
+`endpoint`. `rememberUpload` keeps it across a reload:
+
+```ts
+import { ClipMuxUpload, rememberUpload } from '@clipmux/uploader'
+
+const memory = rememberUpload(localStorage)
+const created = memory.load(file) ?? (await createUploadOnMyBackend(file.size))
+memory.save(file, created)
+
+const asset = await new ClipMuxUpload(file, {
+  upload: created,
+  endpoint: 'https://video.example.com',
+}).start()
+memory.forget(file)
+```
+
+Only the upload's ID, token and part layout are stored; ClipMux itself knows
+which parts it holds. `clipmux.uploads.create` in `@clipmux/node` returns
+the body with `endpoint` added, so the browser needs no other setting.
+
+## The upload routes, for any client
+
+`ClipMuxUpload` is a thin client of four routes. Any client that can make
+HTTP requests can do the same, as
+[Your first video with curl](/docs/build/first-video) does by hand.
+
+| Step | Route | Credential |
+| --- | --- | --- |
+| Create the upload; get `upload_id`, `part_size`, `part_count` and `upload_token`. | `POST /v1/uploads` | Your API key, from your backend |
+| Sign up to 100 part URLs, each good for an hour. | `POST /v1/uploads/{id}/parts` | The upload token |
+| `PUT` each part's bytes to its URL; keep the `ETag` header. | The signed URL | None |
+| On resume, list the parts storage holds. | `GET /v1/uploads/{id}/parts` | The upload token |
+| Complete with every part's number and `ETag`. | `POST /v1/uploads/{id}/complete` | The upload token |
+| Or cancel. | `POST /v1/uploads/{id}/cancel` | The upload token, or your API key |
+
+Every part is exactly `part_size` bytes (32 MiB) except the last, and the
+parts must number `part_count`. Upload-token requests are limited to 10 a
+second per upload. Storage must expose `ETag` to a browser page.
+
+## Uppy
+
+There is no Uppy plugin for ClipMux. ClipMux's upload routes are its own,
+not S3's API, and ClipMux never hands a browser S3 credentials or signs
+arbitrary S3 requests, so Uppy's S3 plugin can't talk to them as it is. To
+keep Uppy's interface, wire its upload step to `ClipMuxUpload`, or to the
+routes above, yourself. Either way, test it against your server: ClipMux
+doesn't test any Uppy release.
+
+## Check it works
+
+Upload a short file and watch `onProgress` reach `bytesTotal`. `start()`
+resolves with a video whose `status` is `processing`. Reload halfway
+through and start again with the same file: progress jumps to the parts
+already stored.
+
+- `create_invalid`: your `createUrl` route answered without an upload.
+- `file_mismatch`: the file isn't the one the upload was created for (its
+  size gives a different number of parts).
+- `part_url_rejected`: storage refused a part URL twice; check the server's
+  public URL and storage settings.
+
+## Next
+
+- [Upload from the browser](/docs/build/upload/browser)
+- [Uploads in the API reference](/docs/reference/api/uploads)
+- [@clipmux/uploader reference](/docs/reference/sdks/uploader)

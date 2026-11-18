@@ -1,0 +1,125 @@
+---
+title: Install from source with Compose
+description: Build the ClipMux image from a clone of the repository and run it with Docker Compose.
+---
+
+The one-line installer runs a published release. To run a commit of your
+own, or to change the code, build the image from a clone instead. You get
+the same stack: the app, Postgres and Caddy, defined in
+`deploy/compose.yml`.
+
+## Before you start
+
+- A server that meets the [requirements](/docs/self-host/requirements),
+  with `git` and `openssl`.
+- Ports 80 and 443 free, or see
+  [Behind your own reverse proxy](/docs/self-host/install-options/reverse-proxy).
+
+## Build and start
+
+<Steps>
+<Step>
+
+### Clone the repository
+
+```bash
+git clone https://github.com/visheshgubrani/clipmux && cd clipmux
+```
+
+</Step>
+<Step>
+
+### Write deploy/.env
+
+```bash
+cp deploy/compose.env.example deploy/.env
+```
+
+Fill in the two required values:
+
+- `POSTGRES_PASSWORD`: any long random string, for example from
+  `openssl rand -hex 24`.
+- `CLIPMUX_SECRETS_KEY`: `v1:` and 64 hex digits. Generate it once:
+
+  ```bash
+  echo "v1:$(openssl rand -hex 32)"
+  ```
+
+The file also has commented-out lines for `CLIPMUX_PUBLIC_URL` and
+`CLIPMUX_MEDIA_URL` (to pin the URLs instead of choosing them in the
+dashboard) and the host ports
+`CLIPMUX_HTTP_PORT`, `CLIPMUX_HTTPS_PORT` and `CLIPMUX_ADMIN_PORT`.
+Never commit `deploy/.env`.
+
+<Warning>
+  Copy the secrets key somewhere off the server as well. Without it, a
+  database backup can't be restored: every stored secret and every encoded
+  video becomes unusable.
+</Warning>
+
+</Step>
+<Step>
+
+### Build and start the stack
+
+```bash
+docker compose -f deploy/compose.yml up -d --build --wait
+```
+
+This builds the image, with FFmpeg, Shaka Packager and whisper.cpp, which
+takes a while the first time. Postgres starts first, then the app, then
+Caddy.
+
+</Step>
+<Step>
+
+### Get the setup token
+
+```bash
+docker compose -f deploy/compose.yml logs app | grep setup_token
+```
+
+Open `http://` and the server's address, and continue with
+[First run](/docs/self-host/first-run).
+
+</Step>
+</Steps>
+
+## How it differs from the installer
+
+- The image is built from your checkout and tagged `clipmux:local`, rather
+  than pulled from the registry.
+- Settings live in `deploy/.env`, not `/opt/clipmux/.env`, and every
+  `docker compose` command needs `-f deploy/compose.yml`.
+- Cloud GPUs on Modal and RunPod can't run your local image. A local build
+  names no worker image for them, so when you connect one, enter an image
+  they can pull under **Advanced**, **Worker image**.
+- You upgrade with git, not the installer:
+
+  ```bash
+  git pull
+  docker compose -f deploy/compose.yml up -d --build --wait
+  ```
+
+  The app applies new database migrations when it starts. See
+  [Upgrade and uninstall](/docs/self-host/install-options/upgrade-and-uninstall).
+
+## Check it works
+
+```bash
+docker compose -f deploy/compose.yml ps
+curl -fsS http://127.0.0.1:8080/readyz
+```
+
+All three services show `healthy`, and `readyz` prints `ok`.
+
+- **Compose refuses to start** with `set POSTGRES_PASSWORD in deploy/.env`
+  or `set CLIPMUX_SECRETS_KEY in deploy/.env`: that value is empty.
+- **The app keeps restarting**: `docker compose -f deploy/compose.yml logs app`
+  ends with the reason, for example a variable that doesn't parse.
+
+## Next
+
+- [First run](/docs/self-host/first-run)
+- [Behind your own reverse proxy](/docs/self-host/install-options/reverse-proxy)
+- [Environment variables](/docs/reference/configuration)

@@ -1,0 +1,119 @@
+---
+title: Back up and restore
+description: Back up the database, the secrets key and the stored videos together, and restore all three.
+icon: DatabaseBackup
+---
+
+A ClipMux backup is three things, and they only work together. Postgres
+holds every record and every secret, sealed with the secrets key. The
+secrets key opens them. The stored videos are encrypted with keys derived
+from a secret that the secrets key seals.
+
+<Warning>
+  Losing the secrets key makes every stored secret unusable, and every
+  encoded video unplayable. Back it up somewhere off the server.
+</Warning>
+
+The commands below are for the one-line install, which runs in
+`/opt/clipmux`. Run them from that directory.
+
+## Before you start
+
+- Shell access to the server, with Docker Compose.
+- Somewhere off the server to keep backups, encrypted or offline.
+
+## What to back up
+
+| What | Where | How |
+| --- | --- | --- |
+| Postgres | the `pgdata` volume | `pg_dump` in custom format, daily |
+| The secrets key | `CLIPMUX_SECRETS_KEY` in `/opt/clipmux/.env`, or `secrets.key` in `CLIPMUX_DATA_DIR` when the variable is unset | once, and again after every rotation |
+| Stored videos | the `data` volume for this server's disk, or your R2 or S3 buckets | a snapshot of the volume; for buckets, the provider's versioning or replication |
+
+Encoded videos are AES-128 ciphertext, so a media backup is useless without
+the other two. Uploaded originals are stored as they were uploaded.
+
+## Back up
+
+<Steps>
+<Step>
+
+### Dump the database
+
+```bash
+cd /opt/clipmux
+docker compose exec -T postgres pg_dump -U clipmux -Fc clipmux > clipmux.dump
+```
+
+Run it daily, for example from cron, and copy `clipmux.dump` off the
+server.
+
+</Step>
+<Step>
+
+### Keep the secrets key
+
+Copy the `CLIPMUX_SECRETS_KEY=v1:…` line from `/opt/clipmux/.env` to a
+password manager or another offline place. Do it again whenever you
+[rotate it](/docs/self-host/operate/rotate-secrets).
+
+</Step>
+<Step>
+
+### Back up the videos
+
+Snapshot the `data` volume with your host's tools, or turn on versioning or
+replication for your buckets at the provider.
+
+</Step>
+</Steps>
+
+The dump carries analytics and share links too. Viewer counts stay
+comparable after a restore, because the analytics key is sealed with the
+secrets key. With Cloudflare edge analytics, a restored install pulls only
+the last 13 days of edge counts again.
+
+## Restore
+
+```bash
+cd /opt/clipmux
+docker compose up -d postgres
+docker compose exec -T postgres pg_restore -U clipmux -d clipmux --clean --if-exists < clipmux.dump
+# restore the data volume, or point the storage configs at the restored buckets
+docker compose up -d --wait
+```
+
+Start the stack with the same `CLIPMUX_SECRETS_KEY` in `.env` that the dump
+was made with.
+
+## Check it works
+
+At boot, the server checks that its secrets key opens every sealed value in
+the database, and that every encoded video's content key version exists. If
+either check fails, it refuses to start and its last log line says why:
+
+```bash
+docker compose logs --tail 20 app
+```
+
+- A secrets key that opens nothing, naming a column: `.env` holds a
+  different key from the one the dump was sealed with. Put the right one
+  back.
+- A missing content key version: an encoded video uses a content key
+  secret version the database doesn't hold, so it could never play again.
+  Check that the dump and the secrets key are the pair you meant.
+
+Once it starts, run the setup test, which uploads, encodes and plays a
+sample:
+
+```bash
+docker compose exec app clipmux admin setup-test --wait
+```
+
+Then play an older video from the dashboard.
+
+## Next
+
+- [Rotate keys and secrets](/docs/self-host/operate/rotate-secrets)
+- [Upgrade and uninstall](/docs/self-host/install-options/upgrade-and-uninstall)
+- [Security checklist](/docs/self-host/operate/security-checklist)

@@ -1,11 +1,20 @@
 ---
 title: Self-host ClipMux
+icon: Compass
+nav: Overview
 description: Install ClipMux on your own server, then connect storage, encoding and delivery.
 ---
 
+ClipMux runs as three containers on one Linux server: the app (one Go
+binary with its built-in encoder), Postgres, and Caddy for TLS. Out of the
+box it stores videos on the server's disk, encodes them on the server's GPU
+or CPU, and serves playback itself. Each of those can move later, to a
+bucket, a rented GPU or Cloudflare's edge, without changing the API your
+apps call.
+
 You need a Linux server (amd64 or arm64) with Docker and Compose v2, ports 80
 and 443 free, and two DNS names pointing at it: one for the dashboard and API,
-one for media.
+one for media. Then run:
 
 ```bash
 curl -fsSL https://clipmux.com/install.sh | sudo sh
@@ -13,9 +22,62 @@ curl -fsSL https://clipmux.com/install.sh | sudo sh
 
 The installer puts ClipMux, Postgres and Caddy in `/opt/clipmux`, generates
 the database password and the secrets key, starts the stack, and prints the
-address and a setup token.
+address and a setup token. Run the same command again to upgrade in place;
+the data, keys and sessions are kept.
 
-<Note>
-  Run the same command again to upgrade in place; the data, keys and sessions
-  are kept.
-</Note>
+ClipMux runs as one server process. It doesn't run as several replicas
+behind a load balancer.
+
+## Get started
+
+<Cards>
+  <Card title="Requirements and sizing" href="/docs/self-host/requirements">
+    The server, disk, memory and DNS names you need.
+  </Card>
+  <Card title="Install with one line" href="/docs/self-host/install">
+    What the installer checks, downloads and writes.
+  </Card>
+  <Card title="First run" href="/docs/self-host/first-run">
+    Create the owner, set the URLs, and run the setup test.
+  </Card>
+</Cards>
+
+## Configure
+
+<Cards>
+  <Card title="Storage" href="/docs/self-host/storage">
+    This server's disk, an S3-compatible bucket, or R2.
+  </Card>
+  <Card title="Encoding" href="/docs/self-host/encoding/this-server">
+    This server, Modal, RunPod, or a PC you own.
+  </Card>
+  <Card title="Delivery" href="/docs/self-host/delivery/built-in">
+    Serve playback from this server or from Cloudflare's edge.
+  </Card>
+  <Card title="Captions and AI" href="/docs/self-host/captions-and-ai/whisper">
+    Subtitles with whisper.cpp or a speech API, chapters from an LLM.
+  </Card>
+</Cards>
+
+## Operate
+
+<Cards>
+  <Card title="Back up and restore" href="/docs/self-host/operate/backups">
+    Postgres, the secrets key and the media, together.
+  </Card>
+  <Card title="Monitoring" href="/docs/self-host/operate/monitoring">
+    Metrics, logs and health checks.
+  </Card>
+  <Card title="Upgrade and uninstall" href="/docs/self-host/install-options/upgrade-and-uninstall">
+    Move to a new release, or remove ClipMux.
+  </Card>
+  <Card title="Security checklist" href="/docs/self-host/operate/security-checklist">
+    What to check before real viewers arrive.
+  </Card>
+</Cards>
+
+## Next
+
+- [Requirements and sizing](/docs/self-host/requirements)
+- [Install with one line](/docs/self-host/install)
+- [A tour of the dashboard](/docs/self-host/dashboard)

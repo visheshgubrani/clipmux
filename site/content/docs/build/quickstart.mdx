@@ -1,0 +1,137 @@
+---
+title: Quickstart
+description: Add uploads, webhooks and private playback to a Next.js app in four steps.
+icon: Rocket
+---
+
+By the end of this page, a signed-in user of your app uploads a video from the
+browser, your database hears when it's ready, and a viewer your app allows
+watches it, encrypted. The browser never sees a ClipMux key.
+
+It takes one command, one route file, two elements and three callbacks. The
+same handler runs in [Express](/docs/build/frameworks/express),
+[Hono](/docs/build/frameworks/hono) and
+[other Fetch runtimes](/docs/build/frameworks/fetch-runtimes).
+
+## Before you start
+
+- A ClipMux server, for example `https://video.example.com`, and an owner
+  account on it to approve your app. To run one, see
+  [Install with one line](/docs/self-host/install).
+- A Next.js app with the App Router, on Node 20.19 or later.
+
+## Add ClipMux
+
+<Steps>
+<Step>
+
+### Connect the app
+
+<Tabs items={['npm', 'pnpm']}>
+<Tab value="npm">
+
+```bash
+npm i @clipmux/node @clipmux/uploader @clipmux/player
+npx @clipmux/node init --server https://video.example.com
+```
+
+</Tab>
+<Tab value="pnpm">
+
+```bash
+pnpm add @clipmux/node @clipmux/uploader @clipmux/player
+pnpm dlx @clipmux/node init --server https://video.example.com
+```
+
+</Tab>
+</Tabs>
+
+`init` opens an approval page on your ClipMux server. Approve the app there,
+as the owner, and `init` writes its credentials to `.env.local`:
+`CLIPMUX_URL`, `CLIPMUX_API_KEY`, `CLIPMUX_SIGNING_KID`,
+`CLIPMUX_SIGNING_KEY` and `CLIPMUX_WEBHOOK_SECRET`. It never prints them.
+Keep `.env.local` out of git.
+
+</Step>
+<Step>
+
+### Add one route file
+
+<include cwd lang="ts" meta='title="app/api/clipmux/[action]/route.ts"'>snippets/node/nextjs/route.ts</include>
+
+The file answers POST requests on three of your app's routes: `/api/clipmux/upload`, `/playback` and
+`/webhook`. `requireInstructor`, `getUser`, `canWatch` and `db` stand for
+your own code. Every route refuses by default: a callback you leave out is a
+404, and one that returns `null` is a 403.
+
+`passthrough` is your own ID for the video. It comes back on every webhook,
+so you can find the record it belongs to. See
+[Link videos to your records](/docs/build/upload/passthrough).
+
+</Step>
+<Step>
+
+### Add two elements
+
+<include cwd lang="tsx" meta='title="app/lessons/[id]/video.tsx"'>snippets/node/nextjs/video.tsx</include>
+
+The uploader sends the file in parts straight to storage, and resumes if the
+connection drops. The player asks your `playback` callback for a token before
+it plays, and again when the token runs out. Outside React, the same two
+elements work in plain HTML:
+
+```html
+<script type="module">
+  import '@clipmux/uploader/element'
+  import '@clipmux/player/element'
+</script>
+<clipmux-uploader create-url="/api/clipmux/upload?lesson=42"></clipmux-uploader>
+<clipmux-player playback-id="pid_…" session-url="/api/clipmux/playback"></clipmux-player>
+```
+
+</Step>
+<Step>
+
+### Check it
+
+```bash
+npx @clipmux/node doctor
+```
+
+`doctor` checks every credential and ends with `✓ Ready.` It also prints the
+origins your Content-Security-Policy must allow.
+
+While you develop, your laptop can't receive webhooks from the server, so
+forward them:
+
+```bash
+npx @clipmux/node listen --forward-to localhost:3000/api/clipmux/webhook
+```
+
+</Step>
+</Steps>
+
+## Check it works
+
+1. Open a lesson page, choose a short video in the uploader and wait for it
+   to finish.
+2. Watch the `listen` terminal: `video.asset.ready` arrives when encoding is
+   done, and your `asset` callback stores the status and the playback ID.
+3. Reload the page. The video plays.
+
+To test without the browser, upload a file from the terminal:
+
+```bash
+npx @clipmux/node upload sample.mp4 --passthrough lesson_42 --wait
+```
+
+If a step fails, [Troubleshooting](/docs/build/going-live/troubleshooting)
+lists each error and what to do.
+
+## Next
+
+- [Receive webhooks](/docs/build/webhooks): every event, and keeping your
+  records in step
+- [Add the player](/docs/build/play/player): events, React, subtitles and
+  chapters
+- [Production checklist](/docs/build/going-live/production-checklist)

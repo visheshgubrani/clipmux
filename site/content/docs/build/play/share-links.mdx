@@ -1,0 +1,164 @@
+---
+title: Share links
+description: Send someone a link that plays one private video on a page ClipMux hosts, and revoke it when you're done.
+---
+
+A share link is a URL like `https://video.example.com/s/…` that plays one
+video for anyone who has it, with no sign-in and no app of yours in the
+way. Use it to send a draft to a client, or a lesson to someone outside
+your platform. Each link can expire, you can revoke it at any time, and you
+can see how many views it had.
+
+Each link owns its own signed playback ID, made with it. Revoking the link
+revokes that ID and nothing else: your app's playback ID and other links
+keep playing.
+
+## Before you start
+
+- A video. It can still be processing; the page waits for it.
+- An API key with `assets:write` to create and revoke links, and
+  `assets:read` to list them. The default scopes have both.
+
+## Create a link
+
+<Tabs items={['Node', 'curl']}>
+<Tab value="Node">
+
+```ts
+import { ClipMux } from '@clipmux/node'
+
+const clipmux = new ClipMux()
+const share = await clipmux.shares.create('ast_…', {
+  name: 'For the client', // optional, one line, up to 100 characters
+  expires_at: '2026-12-31T23:59:59Z', // optional; leave it out for a link that never expires
+})
+console.log(share.url) // https://video.example.com/s/…
+```
+
+</Tab>
+<Tab value="curl">
+
+```bash
+curl -s https://video.example.com/v1/assets/ast_…/shares \
+  -H "Authorization: Bearer $CLIPMUX_API_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"name": "For the client", "expires_at": "2026-12-31T23:59:59Z"}'
+```
+
+</Tab>
+</Tabs>
+
+`POST /v1/assets/{id}/shares` answers `201`:
+
+```json
+{
+  "id": "shr_…",
+  "asset_id": "ast_…",
+  "name": "For the client",
+  "url": "https://video.example.com/s/…",
+  "playback_id": "pid_…",
+  "status": "active",
+  "expires_at": "2026-12-31T23:59:59Z",
+  "created_at": "2026-11-18T09:00:00Z"
+}
+```
+
+`url` is what you send. `expires_at` must be in the future, and it can't be
+changed later: to extend a link, make a new one. The link's playback ID
+shows in the video's `playback_ids` with `share: {id, name}`.
+
+You can also make links in the dashboard: open the video under **Videos**,
+then **Share links** and **New share link**.
+
+## What the recipient sees
+
+The link opens a page on your ClipMux server. It shows the video's title,
+`<clipmux-player>` with the video's subtitles and chapters, and a small
+"Shared with ClipMux" credit, and nothing else.
+
+- While the video is processing, the page says so and checks again every
+  15 seconds.
+- Once the link expires or is revoked, or the video is deleted, the page
+  says the link doesn't work and asks them to get a new one from whoever
+  shared it. A viewer who is watching when that happens is stopped.
+- The page renews its own tokens, so a long video plays to the end.
+- The page can't be put in an iframe, asks search engines not to index it,
+  and sends no referrer.
+
+The page keeps a random viewer ID in the browser's storage, so your
+analytics count unique viewers. A private window sends none.
+
+## List links and their views
+
+```ts
+const links = await clipmux.shares.list('ast_…')
+// [{ id, name, url, status, expires_at, views_30d, … }], newest first
+```
+
+`GET /v1/assets/{id}/shares` lists every link of the video, with
+`views_30d`, its views over the last 30 UTC days. A link's views also count
+in the video's [analytics](/docs/build/analytics), though ClipMux signs its
+tokens.
+
+`status` is one of:
+
+| Status | Meaning |
+| --- | --- |
+| `active` | The link plays. |
+| `revoked` | You revoked it, or the video was deleted. |
+| `expired` | Its `expires_at` has passed. |
+
+## Revoke a link
+
+```ts
+await clipmux.shares.delete('shr_…')
+```
+
+`DELETE /v1/shares/{id}` revokes the link's playback ID. It answers `200`
+once the ID is unpublished and `202` while it is being revoked. Revoking a
+link twice changes nothing.
+
+An expired link stops at its expiry by itself; within a minute ClipMux also
+revokes its playback ID.
+
+## Play a link in another player
+
+The share page is for people with a browser. For a player that can't open
+a page, such as a TV app or a media player, get a signed `master.m3u8` URL
+for the link:
+
+```ts
+const { url, expires_at } = await clipmux.shares.streamUrl('shr_…')
+```
+
+`POST /v1/shares/{id}/stream-url` answers `{url, expires_at}`. The URL
+can't renew itself: it lasts until the link's expiry or the server's
+longest token lifetime, whichever comes first, and stops when the link is
+revoked. It answers `409 share_expired`, `409 share_revoked`, or `409
+asset_not_ready` while the video is processing.
+
+## Check it works
+
+Open `share.url` in a private window. The video plays with no sign-in.
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' -X POST \
+  -H 'Content-Type: application/json' -d '{}' \
+  "https://video.example.com/s/$SECRET/playback"
+```
+
+`$SECRET` is the last part of the link's URL. This is what the page asks
+for each token:
+
+- `200`: the link plays.
+- `409 asset_not_ready`: the video is still processing.
+- `404 share_not_found`: the link was revoked, its video deleted or its app
+  disabled.
+- `410 share_expired`: the link has expired.
+
+## Next
+
+- [Public videos](/docs/build/play/public-videos), for a video anyone can
+  find and play
+- [Views, watch time and unique viewers](/docs/build/analytics)
+- [Share links API reference](/docs/reference/api/share-links)

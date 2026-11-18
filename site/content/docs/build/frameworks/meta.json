@@ -1,0 +1,5 @@
+{
+  "title": "Frameworks",
+  "icon": "Layers",
+  "pages": ["nextjs", "express", "hono", "fetch-runtimes", "any-language"]
+}

@@ -1,0 +1,93 @@
+---
+title: FAQ
+description: Short answers about DRM, scaling, cost, the licence, Docker, live streaming and more.
+icon: MessageCircleQuestionMark
+---
+
+## Is this DRM?
+
+No. Every video is stored and streamed as AES-128 encrypted HLS, and its key
+goes only to a request with a valid token. That keeps your storage useless
+to anyone who copies it, and a leaked segment URL useless without the key.
+But anyone with a valid token can fetch the key, and common download tools
+do that. There is no Widevine or FairPlay. See
+[What encryption does and doesn't do](/docs/build/concepts/encryption).
+
+## Can I run more than one replica?
+
+Not of the server. One `clipmux serve` is the supported shape: rate limits,
+sign-in limits and some caches live in the process, so a second replica
+would double the limits and keep stale settings. Encoding scales
+separately: add PC agents, or connect Modal or RunPod, and they take jobs
+from the same queue. Delivery can scale out to Cloudflare's edge with a
+Worker in your account. See [Limitations](/docs/self-host/limitations).
+
+## What does it cost to run?
+
+There is no licence fee and nothing to pay ClipMux. You pay for:
+
+- **Your server**, its disk, and its bandwidth when it serves playback
+  itself. See [Requirements and sizing](/docs/self-host/requirements).
+- **Storage**, if you use R2 or another S3-compatible bucket rather than the
+  server's disk.
+- **Optional GPUs** on Modal or RunPod, billed by the provider for the time a
+  machine runs. Each provider has a monthly spend limit, $50 unless you set
+  another; at the limit, ClipMux sends it no more jobs. See
+  [Routing, fallback and spend limits](/docs/self-host/encoding/routing-and-limits)
+  and [Encoding performance](/docs/self-host/encoding/performance).
+- **Optional Cloudflare**, for edge delivery from your own account.
+- **Optional speech or LLM APIs**, if you use one for subtitles or chapters
+  instead of the server's own whisper.cpp.
+
+## Why AGPL?
+
+The server is AGPL-3.0, so the platform and the improvements made to it stay
+open. The parts your app embeds are MIT: `@clipmux/node`,
+`@clipmux/player`, `@clipmux/uploader` and the Cloudflare Worker. They are
+MIT so your app can use them freely.
+
+## Can I use it without Docker?
+
+The server is installed with Docker Compose: the one-line installer and the
+from-source install both run ClipMux, Postgres and Caddy in containers. See
+[Install with one line](/docs/self-host/install).
+
+A PC agent, which encodes on a machine you own, can run on Linux without
+Docker. See [Encode on a PC you own](/docs/self-host/encoding/your-pc).
+
+## Does it do live streaming?
+
+No. ClipMux is video on demand: videos are uploaded, imported from a URL or
+pushed from the command line, then encoded and streamed.
+
+## Do videos leave my servers?
+
+Not unless you choose a service that sends them. Encoding on Modal or
+RunPod, Cloudflare delivery, a speech API for subtitles and an LLM for
+chapters each send something to that provider, and each is off until you
+connect it. The pages for each say exactly what goes where.
+
+## Can I use my own player?
+
+Yes. Any HLS player can play a ClipMux URL: the token rides in the path, so
+the player needs no special support, though only a player that asks for a
+new token can renew one. See
+[Other players and native apps](/docs/build/play/other-players).
+
+## Can my app's users upload directly?
+
+Yes. Your backend creates an upload with its API key, and the browser sends
+the file in parts straight to storage with a token that reaches only that
+upload. See [Upload from the browser](/docs/build/upload/browser).
+
+## Can I migrate from Mux or Cloudflare Stream?
+
+Yes, without downtime: send new uploads to ClipMux and import existing
+videos by URL. See [Migrate from Mux](/docs/resources/migrate-from-mux) and
+[Migrate from Cloudflare Stream](/docs/resources/migrate-from-cloudflare-stream).
+
+## Next
+
+- [Limitations](/docs/self-host/limitations)
+- [Architecture overview](/docs/resources/architecture)
+- [Security model](/docs/self-host/security-model)

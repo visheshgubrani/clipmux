@@ -1,0 +1,177 @@
+---
+title: Migrate from Cloudflare Stream
+description: Map what you use in Cloudflare Stream to ClipMux, see what ClipMux doesn't have, and move an app across step by step.
+icon: ArrowRightLeft
+---
+
+Cloudflare Stream and ClipMux both take an upload, encode it, and stream
+HLS with signed tokens for private videos. With Stream, Cloudflare stores
+and encodes the video. With ClipMux, you run the server, choose the storage,
+and can still serve playback from Cloudflare's edge through a Worker and R2
+bucket in your own account.
+
+This page maps the two, lists what ClipMux doesn't do, and moves an app
+across without downtime: new uploads go to ClipMux while old videos keep
+playing from Stream until they are imported.
+
+## Concept map
+
+| Cloudflare Stream | ClipMux | What changes |
+| --- | --- | --- |
+| Video, by its `uid` | Video, `ast_…` (`asset` in the API), played through a playback ID, `pid_…` | In ClipMux the playback ID is separate from the video. A video can have several, and revoking one stops it at once |
+| `requireSignedURLs: true` | A playback ID with the `signed` policy | Uploads are `signed` unless you ask for `playback_policy: "public"` |
+| `meta` | `passthrough` and `title` | `passthrough` is one string, your own reference, returned on the video and its webhooks |
+| Direct creator upload, created at `/stream/direct_upload`, then tus or a single upload to `uploadURL` | Upload (`POST /v1/uploads`), then parts sent straight to storage | Multipart and resumable without tus. `@clipmux/uploader` does it in the browser |
+| Upload from a link, at `/stream/copy` with `url` | `POST /v1/assets` with `url` | The server fetches the file from a public http(s) URL |
+| Signing key from `/stream/keys`, RS256 JWT | Signing key, ES256 JWT (P-256) | Signing stays local in your backend |
+| JWT claims `sub` (the video), `kid`, `exp`, `nbf`, `accessRules`, `downloadable` | Header `kid`; claims `sub` (the playback ID), `aud`, `iat`, `exp`, optional `vid` | No IP or country rules. `aud` is `v` to play, or `t` for the poster only |
+| `exp` at most 24 hours after signing | `exp − iat` at most the server's maximum, 7 days by default | Read it as `max_token_lifetime_seconds` from `GET /v1/app` |
+| Token in place of the video ID, `customer-<CODE>.cloudflarestream.com/<TOKEN>/manifest/video.m3u8` | Token before the playback ID, `https://media.example.com/v/{token}/{playback_id}/master.m3u8` | Public videos are `/p/{playback_id}/master.m3u8` |
+| Thumbnails with `time`, `height` and `width`, and animated GIFs | One poster per video, `…/{playback_id}/poster.jpg` | No parameters and no GIFs |
+| One webhook URL per account, `Webhook-Signature: time=…,sig1=…`, HMAC-SHA256 of `time.body` | Webhook endpoints per app, `X-Webhook-Timestamp` and `X-Webhook-Signature: sha256=…`, HMAC-SHA256 of `timestamp.body` | The same construction in other headers. Dedupe on `X-Webhook-Id` |
+| A notification when processing ends, with `status.state` `ready` or `error` | `video.asset.ready` or `video.asset.errored` | ClipMux also sends `updated`, `deleted`, `reencode_failed` and track events; see [Webhook events](/docs/reference/webhooks) |
+| The Stream Player iframe | `@clipmux/player`, or any HLS player | No iframe or hosted embed |
+
+## What ClipMux doesn't have
+
+- **Live streaming.** ClipMux is video on demand only.
+- **MP4 downloads.** Playback is HLS only; there is nothing like Stream's
+  `downloadable`.
+- **Access rules.** Tokens have no IP or country rules. Your backend decides
+  who gets a token.
+- **Thumbnails at a chosen time, and GIFs.** There is one poster per video.
+- **An iframe embed.** You add the player to your pages yourself.
+- **DRM.** Videos are AES-128 encrypted HLS, which protects your storage
+  but isn't DRM. See
+  [What encryption does and doesn't do](/docs/build/concepts/encryption).
+- **A hosted service.** You run the server, its database and backups. See
+  [Requirements and sizing](/docs/self-host/requirements).
+
+## Move an app
+
+<Steps>
+<Step>
+
+### Create the app in ClipMux
+
+[Install a server](/docs/self-host/install), then connect your app. From the
+app's project:
+
+```bash
+npx @clipmux/node init --server https://video.example.com
+```
+
+The owner approves it in the dashboard, and the API key, signing key and
+webhook secret go to `.env.local`. To keep serving from Cloudflare's edge,
+connect Cloudflare delivery on the server; see
+[Cloudflare edge delivery](/docs/self-host/delivery/cloudflare).
+
+<LeavesYourServers>
+  With Cloudflare delivery, new videos' encrypted, encoded files are stored
+  in an R2 bucket in your Cloudflare account, and a Worker there serves them
+  and their keys to viewers.
+</LeavesYourServers>
+
+</Step>
+<Step>
+
+### Store which service each video is on
+
+Add a column to your own records, such as `provider`, set to `stream` for
+every existing video, and a column for your own reference if `meta` held it.
+Your pages pick the player and the token signing by `provider` while both
+run.
+
+</Step>
+<Step>
+
+### Send new uploads to ClipMux
+
+Point your upload route at ClipMux, with your own reference as
+`passthrough`:
+
+```ts
+const upload = await clipmux.uploads.create({ size, passthrough: 'lesson_42' })
+```
+
+In the browser, replace the tus client and `uploadURL` with
+`<clipmux-uploader>` or `ClipMuxUpload`. See
+[Upload from the browser](/docs/build/upload/browser).
+
+</Step>
+<Step>
+
+### Receive ClipMux webhooks
+
+Add a webhook route that verifies ClipMux's signature and handles
+`video.asset.ready`, matching the video to your record by `passthrough`.
+Keep the Stream webhook route until the last Stream video is gone. See
+[Receive webhooks](/docs/build/webhooks).
+
+</Step>
+<Step>
+
+### Switch token signing
+
+For ClipMux videos, sign an ES256 token with your ClipMux signing key, with
+`sub` the ClipMux playback ID and `aud` `v`:
+
+```ts
+const token = await clipmux.playback.token('pid_…', { viewerId: user.id })
+```
+
+Stream's RS256 keys don't work with ClipMux. See
+[Sign playback tokens](/docs/build/play/sign-tokens).
+
+</Step>
+<Step>
+
+### Switch the player
+
+For ClipMux videos, use `<clipmux-player>` with a `session-url` in place of
+the iframe, or give another HLS player the ClipMux URL. See
+[Add the player](/docs/build/play/player).
+
+</Step>
+<Step>
+
+### Import your existing videos
+
+For each Stream video, give ClipMux a URL it can fetch the original from,
+with your reference as `passthrough`:
+
+```bash
+curl https://video.example.com/v1/assets \
+  -H "Authorization: Bearer cmx_…" \
+  -H "Content-Type: application/json" \
+  -d '{"url": "https://files.example.com/lesson-42.mp4", "passthrough": "lesson_42"}'
+```
+
+The URL must be public http(s), with no credentials in it. When
+`video.asset.ready` arrives, store the new playback ID and set the record's
+`provider` to `clipmux`. See [Import from a URL](/docs/build/upload/from-url).
+
+</Step>
+<Step>
+
+### Retire Stream
+
+Once every record says `clipmux`, remove the Stream player, token signing
+and webhook route, and delete the videos from Stream.
+
+</Step>
+</Steps>
+
+## Check it works
+
+- `npx @clipmux/node doctor` passes every check.
+- A new upload reaches `ready`, your webhook route logs `video.asset.ready`,
+  and the video plays for a signed-in viewer.
+- An imported video plays from ClipMux, and
+  `GET /v1/assets?passthrough=lesson_42` finds it.
+
+## Next
+
+- [Quickstart](/docs/build/quickstart)
+- [How ClipMux works](/docs/build/concepts/how-it-works)
+- [Limitations](/docs/self-host/limitations)

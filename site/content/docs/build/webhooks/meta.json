@@ -1,0 +1,5 @@
+{
+  "title": "Webhooks",
+  "icon": "Webhook",
+  "pages": ["index", "verify-signatures", "listen", "retries"]
+}

@@ -1,0 +1,82 @@
+---
+title: Limitations
+description: What ClipMux doesn't do, so you can decide before you build on it.
+icon: CircleAlert
+---
+
+ClipMux is deliberately small: one Go binary and Postgres. This page lists
+what it doesn't do today, plainly, so nothing here surprises you in
+production.
+
+## Playback and protection
+
+- **No DRM.** Videos are encrypted with AES-128 and keys are handed only to
+  valid tokens, but anyone with a valid token can fetch the key, and common
+  download tools do. It's deterrence, not Widevine or FairPlay. See
+  [What encryption does and doesn't do](/docs/build/concepts/encryption).
+- **Playback shares the dashboard's origin by default.** Until you set a
+  media URL on another domain, videos play from the same origin as the
+  dashboard. See [Built-in delivery](/docs/self-host/delivery/built-in).
+
+## Scale
+
+- **One server.** One serve replica is the supported shape. Rate limits,
+  the route cache, the speech and chapters runners and the shutdown drain
+  live in one process. There's no high-availability setup.
+- **No audit log.** Owner actions and key operations are logged with their
+  request IDs, but nothing durable records who did what.
+- **No OpenTelemetry tracing.** There are Prometheus metrics and structured
+  logs. See [Monitoring](/docs/self-host/operate/monitoring).
+
+## Subtitles and chapters
+
+- **One caption language per video.** whisper.cpp detects the language, and
+  a video gets one subtitles track. There's no translation and no language
+  hint.
+- **No uploaded captions.** Subtitles are generated. You can't upload your
+  own caption file, or edit a transcript.
+- **No spend cap on speech APIs.** Every transcription sent to a speech API
+  is billed by the provider. ClipMux neither estimates nor caps it.
+- **No spend estimate for chapters.** Each video's chapters are billed by
+  the LLM provider, and ClipMux doesn't estimate the cost.
+
+## Encoding
+
+- **Provider spend is an estimate.** For Modal, it's Modal's bill up to its
+  last reported hour plus an estimate since; for RunPod, an estimate from
+  the hourly rate set in Connect. A machine that runs past its reservation
+  isn't stopped at the limit, so a month can overshoot by that much.
+- **The PC agent is command-line only.** The dashboard doesn't list PCs,
+  create pairing codes or revoke them. A PC is paired with
+  `clipmux worker --server` and approved in the dashboard, or with a code
+  from `clipmux admin create-pairing`; the rest is the API.
+
+## Webhooks and outside services
+
+- **Owner-set URLs aren't filtered for private addresses.** That's by
+  design for webhook endpoints, the speech API and the chapters LLM, so
+  servers on your own network work. Only the owner can set them.
+
+## Cloudflare
+
+- **Edge analytics are sampled.** Cloudflare's Analytics Engine samples data
+  points, so edge views, watch time and bytes are close estimates, and edge
+  unique viewers can read low. See
+  [Edge analytics](/docs/self-host/delivery/edge-analytics).
+- **Disconnect leaves the Worker behind.** Disconnecting Cloudflare stops
+  the Worker serving your videos, but the Worker, its custom domain and the
+  token stay in your Cloudflare account, since ClipMux keeps no token to
+  remove them. Delete them in Cloudflare.
+
+## Packages
+
+- **ESM only.** `@clipmux/node`, `@clipmux/player` and `@clipmux/uploader`
+  are ES modules. A CommonJS app needs Node 20.19 or later (or 22.12) to
+  `require()` them, and TypeScript's `moduleResolution: node` can't resolve
+  their subpath exports.
+
+## Next
+
+- [Security model](/docs/self-host/security-model)
+- [FAQ](/docs/resources/faq)
+- [Requirements and sizing](/docs/self-host/requirements)

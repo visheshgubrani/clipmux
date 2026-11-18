@@ -1,0 +1,61 @@
+---
+title: Security checklist
+description: The settings to check before a ClipMux server faces real users and real videos.
+icon: ListChecks
+---
+
+Run through this list before you put a ClipMux server in front of real users,
+and again after a major change. Each item links to where it's explained.
+
+## Before you start
+
+- A running server, with the owner account created.
+- Shell access to the server.
+
+## The checklist
+
+- [ ] **Playback is on its own domain.** The media URL is on a different
+      registrable domain from the public URL, so a hostile stored file
+      can't reach dashboard cookies. See
+      [Built-in delivery](/docs/self-host/delivery/built-in).
+- [ ] **Only your proxy is trusted.** `CLIPMUX_TRUSTED_PROXIES` names only
+      Caddy's network. The one-line install's default covers Docker's
+      private ranges. Rate limits, sign-in limits and request IDs depend
+      on it.
+- [ ] **The metrics port isn't public.** The one-line install only exposes
+      it inside the Compose network. See
+      [Monitoring](/docs/self-host/operate/monitoring).
+- [ ] **Two-factor sign-in is on.** Turn it on under **Settings**, in
+      **Two-factor sign-in**, and store the recovery codes offline. A
+      locked-out owner runs `clipmux admin reset-password` and
+      `clipmux admin reset-totp` on the server.
+- [ ] **Backups hold the secrets key,** and the backups are encrypted or
+      offline. See [Back up and restore](/docs/self-host/operate/backups).
+- [ ] **PC agents run sandboxed.** `clipmux worker doctor` on each PC shows
+      the sandbox, and `GET /v1/agents` reports `sandboxed` for each agent.
+      An unsandboxed agent takes only its own jobs and the owner's uploads.
+- [ ] **One server, behind Caddy.** Rate limits are kept per process, so run
+      one serve replica.
+- [ ] **Share links go one per person or group,** so one can be revoked
+      without the others. Anyone holding a link can watch until it expires
+      or is revoked. See [Share links](/docs/build/play/share-links).
+- [ ] **Owner-set URLs point where you mean.** Webhook endpoints, the speech
+      API and the chapters LLM aren't filtered for private addresses, by
+      design. Only the owner can set them.
+
+## Check it works
+
+Run the setup test after you change any of the above:
+
+```bash
+cd /opt/clipmux
+docker compose exec app clipmux admin setup-test --wait
+```
+
+It exits 1 unless every check passes, and prints each one.
+
+## Next
+
+- [Security model](/docs/self-host/security-model)
+- [Rotate keys and secrets](/docs/self-host/operate/rotate-secrets)
+- [Limitations](/docs/self-host/limitations)

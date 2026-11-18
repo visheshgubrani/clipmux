@@ -1,0 +1,197 @@
+---
+title: SvelteKit, Remix, Bun, Deno and Workers
+description: Wire the ClipMux handler into any framework or runtime that speaks Fetch requests and responses.
+---
+
+`clipmuxHandler` is a Fetch handler: a function from `Request` to
+`Response`, using only Web APIs. Any framework or runtime that hands you a
+`Request` can run it. Each section below is the whole wiring; the
+callbacks are the same everywhere.
+
+## Before you start
+
+- The packages, and your app connected with `init`, which writes the
+  `CLIPMUX_*` settings to `.env.local`:
+
+<Tabs items={['npm', 'pnpm']}>
+<Tab value="npm">
+
+```bash
+npm i @clipmux/node @clipmux/uploader @clipmux/player
+npx @clipmux/node init --server https://video.example.com
+```
+
+</Tab>
+<Tab value="pnpm">
+
+```bash
+pnpm add @clipmux/node @clipmux/uploader @clipmux/player
+pnpm dlx @clipmux/node init --server https://video.example.com
+```
+
+</Tab>
+</Tabs>
+
+- Your callbacks. Every example below imports them from a module of your
+  own, `$lib/clipmux` or `./clipmux`:
+
+```ts title="clipmux.ts"
+import type { HandlerOptions } from '@clipmux/node/handlers'
+
+export const callbacks: HandlerOptions = {
+  async upload(req, { file }) {
+    const user = await requireInstructor(req)
+    const lesson = new URL(req.url).searchParams.get('lesson')
+    return { passthrough: `lesson_${lesson}`, title: file.name, generate: { subtitles: true } }
+  },
+  async playback(req, { playbackId }) {
+    const user = await getUser(req)
+    return (await canWatch(user, playbackId)) ? { viewerId: user.id } : null
+  },
+  async asset(asset) {
+    await db.lesson.update({
+      where: { ref: asset.passthrough },
+      data: { status: asset.status, playbackId: asset.playback_ids[0]?.id },
+    })
+  },
+}
+```
+
+`requireInstructor`, `getUser`, `canWatch` and `db` stand for your own code.
+
+The handler picks its route from the last part of the URL path, `upload`,
+`playback` or `webhook`, and answers only POST. Mount it so those three
+paths reach it, and let it read the request body itself: the webhook's
+signature covers the raw body.
+
+## SvelteKit
+
+```ts title="src/routes/api/clipmux/[action]/+server.ts"
+import { ClipMux } from '@clipmux/node'
+import { clipmuxHandler } from '@clipmux/node/handlers'
+import { env } from '$env/dynamic/private'
+import type { RequestHandler } from './$types'
+import { callbacks } from '$lib/clipmux'
+
+const clipmux = clipmuxHandler({ ...callbacks, clipmux: new ClipMux({ env }) })
+
+export const POST: RequestHandler = ({ request }) => clipmux(request)
+```
+
+`$env/dynamic/private` gives the client the server's environment in
+development and on every adapter, and never reaches the browser. In
+development, SvelteKit reads `.env` and `.env.local`.
+
+## Remix
+
+```ts title="app/routes/api.clipmux.$action.ts"
+import { clipmuxHandler } from '@clipmux/node/handlers'
+import type { ActionFunctionArgs } from '@remix-run/node'
+import { callbacks } from '~/clipmux'
+
+const clipmux = clipmuxHandler(callbacks)
+
+export const action = ({ request }: ActionFunctionArgs) => clipmux(request)
+```
+
+`new ClipMux()` reads `process.env`. Make sure the `CLIPMUX_*` settings are
+there in development too, for example by starting the dev server with
+`node --env-file=.env.local` or loading the file with dotenv.
+
+## Bun
+
+```ts title="server.ts"
+import { clipmuxHandler } from '@clipmux/node/handlers'
+import { callbacks } from './clipmux'
+
+const clipmux = clipmuxHandler(callbacks)
+
+Bun.serve({
+  port: 3000,
+  fetch(req) {
+    if (new URL(req.url).pathname.startsWith('/api/clipmux/')) return clipmux(req)
+    return new Response('Not found', { status: 404 })
+  },
+})
+```
+
+Bun loads `.env.local` into `process.env` by itself.
+
+## Deno
+
+```ts title="server.ts"
+import { ClipMux } from '@clipmux/node'
+import { clipmuxHandler } from '@clipmux/node/handlers'
+import { callbacks } from './clipmux.ts'
+
+const clipmux = clipmuxHandler({ ...callbacks, clipmux: new ClipMux({ env: Deno.env.toObject() }) })
+
+Deno.serve({ port: 3000 }, (req) => {
+  if (new URL(req.url).pathname.startsWith('/api/clipmux/')) return clipmux(req)
+  return new Response('Not found', { status: 404 })
+})
+```
+
+Passing `env` hands the client its settings directly. Run it with
+`deno run --allow-net --allow-env --env-file=.env.local server.ts`. Install
+the packages with npm as above, or import them with the `npm:` prefix
+(`npm:@clipmux/node`).
+
+## Cloudflare Workers
+
+Workers have no `process.env`; their settings arrive as `env` with each
+request. Give the handler a client built from it:
+
+```ts title="src/index.ts"
+import { ClipMux } from '@clipmux/node'
+import { clipmuxHandler } from '@clipmux/node/handlers'
+import { callbacks } from './clipmux'
+
+export default {
+  fetch: (req: Request, env: Record<string, string>) =>
+    clipmuxHandler({ ...callbacks, clipmux: new ClipMux({ env }) })(req),
+}
+```
+
+Set the five `CLIPMUX_*` values as secrets of the Worker, for example with
+`wrangler secret put CLIPMUX_API_KEY`, rather than in `wrangler.toml`. Route
+only `/api/clipmux/*` to this code if the Worker serves other paths too.
+
+## Add the elements
+
+In your pages, load the two elements and point them at the route:
+
+```html
+<script type="module">
+  import '@clipmux/uploader/element'
+  import '@clipmux/player/element'
+</script>
+<clipmux-uploader create-url="/api/clipmux/upload?lesson=42"></clipmux-uploader>
+<clipmux-player playback-id="pid_…" session-url="/api/clipmux/playback"></clipmux-player>
+```
+
+In a server-rendered framework, load the elements in the browser only:
+in SvelteKit from `onMount`, in Remix from `useEffect`, as in
+[Add the player](/docs/build/play/player).
+
+## Check it works
+
+```bash
+npx @clipmux/node doctor
+npx @clipmux/node listen --forward-to localhost:3000/api/clipmux/webhook
+```
+
+Use your app's port. `doctor` ends with `✓ Ready.` Upload a file from your
+page; when it's encoded, `listen` prints `✓ video.asset.ready ast_… → 200`.
+
+- `500` from the handler, with a `ClipMuxConfigError` in your logs naming a
+  variable: the settings didn't reach the client. On SvelteKit, Workers and
+  Deno, check you passed `clipmux: new ClipMux({ env })`.
+- `400` in `listen`: the secret is wrong, or something read the body first.
+
+## Next
+
+- [Receive webhooks](/docs/build/webhooks)
+- [Express](/docs/build/frameworks/express), for Node servers with
+  middleware
+- [Production checklist](/docs/build/going-live/production-checklist)

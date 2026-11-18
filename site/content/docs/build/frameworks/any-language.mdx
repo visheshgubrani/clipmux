@@ -1,0 +1,129 @@
+---
+title: Any language
+description: Use ClipMux from Python, Go, PHP, Ruby or any backend with its REST API, an API key and two small pieces of tested code.
+---
+
+There is a server SDK for Node only, but nothing in ClipMux needs it. Your
+backend makes three kinds of call, and each works from any language:
+
+- **REST calls** with an API key, to create uploads and read videos.
+- **Signing playback tokens**, locally, with your app's signing key.
+- **Verifying webhooks**, an HMAC check over the raw body.
+
+The browser elements, `<clipmux-uploader>` and `<clipmux-player>`, talk to
+your own routes, so they work with a backend in any language.
+
+## Before you start
+
+- Your app's credentials. Approve the app with
+  `npx @clipmux/node init --server https://video.example.com` from any
+  folder (it needs Node, but your backend doesn't), or on the server run
+  `clipmux admin create-integration --app NAME --webhook-url URL >> .env`.
+  Either way you get `CLIPMUX_URL`, `CLIPMUX_API_KEY`,
+  `CLIPMUX_SIGNING_KID`, `CLIPMUX_SIGNING_KEY` and
+  `CLIPMUX_WEBHOOK_SECRET`.
+- Keep all but `CLIPMUX_URL` on your server, out of browser code and logs.
+
+## Call the API
+
+Every call goes to the server's public URL with the API key as a bearer
+token:
+
+```bash
+curl -s https://video.example.com/v1/app \
+  -H "Authorization: Bearer $CLIPMUX_API_KEY"
+```
+
+`GET /v1/app` returns your app, its scopes, the media origin (`base_url`)
+and the longest token lifetime. A key's default scopes are `uploads:write`,
+`assets:read` and `assets:write`. Requests and responses are JSON, and an
+error is `{"error": {"code": "…", "message": "…"}}` with a stable `code`.
+
+Every `POST` takes an `Idempotency-Key` header. A retry with the same key
+and the same request returns the first response, so a network error never
+makes a second upload:
+
+```bash
+curl -s https://video.example.com/v1/uploads \
+  -H "Authorization: Bearer $CLIPMUX_API_KEY" \
+  -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: lesson_42' \
+  -d '{"size": 10485760, "passthrough": "lesson_42", "title": "Lesson 42"}'
+```
+
+A `429 rate_limited` carries `Retry-After` in seconds; wait that long and
+retry.
+
+### The OpenAPI spec
+
+The server describes its integration API, delivery URLs and webhooks as
+OpenAPI 3.1 at `GET /openapi.json`, with no credential:
+
+```bash
+curl -s https://video.example.com/openapi.json -o clipmux-openapi.json
+```
+
+Generate a client from it with your language's OpenAPI tools, or browse it
+in the [API reference](/docs/reference/api).
+
+## Uploads from the browser
+
+`<clipmux-uploader create-url="/your/route">` POSTs `{"size", "name",
+"type"}` to your route, with the page's cookies. Your route checks the user,
+calls `POST /v1/uploads` with its API key, and answers with ClipMux's
+response plus one field, `endpoint`, set to your `CLIPMUX_URL`:
+
+```json
+{
+  "upload_id": "upl_…",
+  "asset_id": "ast_…",
+  "part_size": 33554432,
+  "part_count": 1,
+  "upload_token": "…",
+  "playback_ids": [{ "id": "pid_…", "policy": "signed", "playable": false, "status": "active" }],
+  "endpoint": "https://video.example.com"
+}
+```
+
+The browser then sends the file in parts straight to storage with the
+`upload_token`, which reaches only that upload. Answer `401` or `403` to
+refuse. See [Upload from the browser](/docs/build/upload/browser).
+
+## Playback
+
+For `<clipmux-player>`, give it your own token route with `getToken`, or a
+route that answers its `session-url` POST. Either way your route checks the
+viewer and signs a token. The signing code for Python, Go and PHP is in
+[Sign playback tokens](/docs/build/play/sign-tokens); the player's side is
+in [Add the player](/docs/build/play/player).
+
+## Webhooks
+
+Verify each webhook over the raw body with your `whsec_…` secret, then
+re-fetch the video with `GET /v1/assets/{id}` before you store anything.
+The verifying code for Python, Go and PHP, and the test vectors to check
+your own, are in
+[Verify webhook signatures](/docs/build/webhooks/verify-signatures). To
+receive webhooks on your laptop, run `clipmux listen`; see
+[Develop locally with listen](/docs/build/webhooks/listen).
+
+## Check it works
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' https://video.example.com/v1/app \
+  -H "Authorization: Bearer $CLIPMUX_API_KEY"
+```
+
+- `200`: the key works.
+- `401 unauthorized`: the key is wrong or revoked.
+- `403 insufficient_scope` on a later call: the key lacks that call's
+  scope.
+
+Then follow [Your first video with curl](/docs/build/first-video) from
+upload to playback.
+
+## Next
+
+- [Your first video with curl](/docs/build/first-video)
+- [Sign playback tokens](/docs/build/play/sign-tokens)
+- [Verify webhook signatures](/docs/build/webhooks/verify-signatures)

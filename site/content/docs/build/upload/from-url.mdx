@@ -1,0 +1,168 @@
+---
+title: Import from a URL
+description: Have your ClipMux server fetch a video from a public URL and encode it, with no upload from your side.
+---
+
+When the file is already online, for example in another bucket or on your
+old video host, your backend can hand ClipMux its URL. The server fetches
+the file itself, stores it as the video's source and encodes it exactly as
+it would an upload. Nothing passes through your backend or a browser.
+
+## Before you start
+
+- An API key with `assets:write`, from your backend.
+- A URL that anyone on the internet can fetch with a plain `GET`: `http` or
+  `https`, answering `200` with the file. A short-lived signed URL from your
+  own storage works, as long as it lasts while the import runs.
+
+## Import a video
+
+<Tabs items={['Node', 'Python', 'Go', 'PHP']}>
+<Tab value="Node">
+
+```ts
+import { ClipMux } from '@clipmux/node'
+
+const clipmux = new ClipMux() // reads the CLIPMUX_* settings
+
+const asset = await clipmux.assets.importUrl(
+  {
+    url: 'https://files.example.com/lesson-42.mp4',
+    passthrough: 'lesson_42',
+    title: 'Lesson 42: Sorting',
+  },
+  { idempotencyKey: 'import-lesson_42' },
+)
+console.log(asset.id, asset.status) // ast_… processing
+```
+
+</Tab>
+<Tab value="Python">
+
+```python
+import os, requests
+
+res = requests.post(
+    f"{os.environ['CLIPMUX_URL']}/v1/assets",
+    headers={
+        "Authorization": f"Bearer {os.environ['CLIPMUX_API_KEY']}",
+        "Idempotency-Key": "import-lesson_42",
+    },
+    json={
+        "url": "https://files.example.com/lesson-42.mp4",
+        "passthrough": "lesson_42",
+        "title": "Lesson 42: Sorting",
+    },
+)
+res.raise_for_status()
+asset = res.json()  # status: processing
+```
+
+</Tab>
+<Tab value="Go">
+
+```go
+body := strings.NewReader(`{"url": "https://files.example.com/lesson-42.mp4",
+  "passthrough": "lesson_42", "title": "Lesson 42: Sorting"}`)
+req, _ := http.NewRequest("POST", os.Getenv("CLIPMUX_URL")+"/v1/assets", body)
+req.Header.Set("Authorization", "Bearer "+os.Getenv("CLIPMUX_API_KEY"))
+req.Header.Set("Content-Type", "application/json")
+req.Header.Set("Idempotency-Key", "import-lesson_42")
+res, err := http.DefaultClient.Do(req) // 201: the asset, processing
+```
+
+</Tab>
+<Tab value="PHP">
+
+```php
+$ch = curl_init(getenv('CLIPMUX_URL') . '/v1/assets');
+curl_setopt_array($ch, [
+    CURLOPT_POST => true,
+    CURLOPT_RETURNTRANSFER => true,
+    CURLOPT_HTTPHEADER => [
+        'Authorization: Bearer ' . getenv('CLIPMUX_API_KEY'),
+        'Content-Type: application/json',
+        'Idempotency-Key: import-lesson_42',
+    ],
+    CURLOPT_POSTFIELDS => json_encode([
+        'url' => 'https://files.example.com/lesson-42.mp4',
+        'passthrough' => 'lesson_42',
+        'title' => 'Lesson 42: Sorting',
+    ]),
+]);
+$asset = json_decode(curl_exec($ch), true); // status: processing
+```
+
+</Tab>
+</Tabs>
+
+`POST /v1/assets` answers `201` with the video, already `processing`, and
+its playback ID. With an `Idempotency-Key`, a retry of the same request
+returns the same video instead of importing twice.
+
+| Field | Default | What it does |
+| --- | --- | --- |
+| `url` | | The public `http` or `https` URL to fetch. Required. |
+| `playback_policy` | `signed` | `signed` for a private video, `public` for one anyone with the URL can watch. |
+| `passthrough` | | Your own ID for the video, up to 255 bytes. See [Link videos to your records](/docs/build/upload/passthrough). |
+| `title` | | A name for people, one line, up to 200 characters. |
+| `generate` | | `{ "subtitles": true, "chapters": true }` makes subtitles and chapters once the video is ready. Chapters imply subtitles. |
+| `renditions` | every rung up to the source | The rungs to encode, for example `["1080p", "480p"]`. See [Choose renditions](/docs/build/upload/renditions). |
+
+When the video is ready, your webhook receives `video.asset.ready`, as for
+an upload.
+
+## What is refused
+
+ClipMux fetches only public addresses, so an import can't be used to reach
+the server's own machine or your private network. It refuses:
+
+- a URL that isn't `http` or `https`, has no host, or is over 2048
+  characters;
+- a URL with credentials in it, such as `https://user:pass@…`;
+- a host that is, or resolves to, a loopback, private, link-local or other
+  non-public address, including cloud metadata addresses.
+
+The address is checked on every connection, after DNS, and on each of up to
+5 redirects, so a redirect or a DNS change can't lead around it. A URL that
+is refused when you send it is `400 import_url_refused`, and nothing is
+created. One that leads to a refused address later ends the video as
+`errored` with `import_url_refused`.
+
+## Sizes and failures
+
+The file may be up to 312.5 GiB (10,000 parts of 32 MiB), and one fetch may
+take up to 6 hours. A fetch that fails for a passing reason (a network error,
+or a `5xx`, `408` or `429` answer) is tried 3 times in all, with a growing
+wait between tries.
+
+An import that fails for good ends the video `errored`, sends
+`video.asset.errored`, and sets `error_code`:
+
+| `error_code` | What happened |
+| --- | --- |
+| `import_url_refused` | The URL, or an address it redirected to, is not public. |
+| `import_failed` | The fetch kept failing, or the server answered something other than `200`, or an empty body. |
+| `import_too_large` | The file is larger than the import limit. |
+
+A file that arrives but isn't a video ClipMux can read fails later, at
+encoding, like an upload would.
+
+## Check it works
+
+Get the video until it's ready:
+
+```bash
+curl -s https://video.example.com/v1/assets/ast_… \
+  -H "Authorization: Bearer $CLIPMUX_API_KEY" | jq '{status, error_code}'
+```
+
+`processing` turns into `ready`. If it ends `errored`, `error_code` is one of
+those above. For `import_failed`, fetch the URL yourself with
+`curl -I` from somewhere outside your network: it must answer `200`.
+
+## Next
+
+- [Receive webhooks](/docs/build/webhooks)
+- [Migrate from Mux](/docs/resources/migrate-from-mux)
+- [Videos in the API reference](/docs/reference/api/videos)

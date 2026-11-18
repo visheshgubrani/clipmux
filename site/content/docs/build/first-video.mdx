@@ -1,0 +1,212 @@
+---
+title: Your first video with curl
+description: Upload a file, wait for it to encode and play it, using nothing but curl and jq against the API.
+icon: Terminal
+---
+
+This page walks one video through the API by hand: you create an upload with
+your API key, send the file in parts straight to storage, tell ClipMux the
+upload is complete, wait until the video is ready, and play its
+`master.m3u8`. It's the same sequence the SDK and `<clipmux-uploader>` run
+for you, so it's worth doing once to see what they do.
+
+Every request and response here is in the
+[API reference](/docs/reference/api/uploads).
+
+## Before you start
+
+- A ClipMux server, for example `https://video.example.com`. To run one, see
+  [Install with one line](/docs/self-host/install).
+- An API key for an app, `cmx_…`, with the default scopes (`uploads:write`,
+  `assets:read`, `assets:write`). `npx @clipmux/node init` writes one to
+  `.env.local`; you can also create one under **Apps & API** in the
+  dashboard, or with `clipmux admin create-key --app NAME` on the server.
+- `curl`, `jq` and a short video file, here `lesson-42.mp4`.
+
+```bash
+export CLIPMUX_URL=https://video.example.com
+export CLIPMUX_API_KEY=cmx_…
+FILE=lesson-42.mp4
+```
+
+<Warning>
+  The API key is a secret. Use it from a terminal or your backend, never in
+  browser code. The browser side of an upload uses the upload token, which
+  reaches only that one upload.
+</Warning>
+
+## Upload and play
+
+<Steps>
+<Step>
+
+### Create the upload
+
+Send the file's size in bytes. `passthrough` is your own ID for the video
+and `title` is a name for people; both are optional.
+
+```bash
+SIZE=$(wc -c < "$FILE" | tr -d ' ')
+
+curl -s "$CLIPMUX_URL/v1/uploads" \
+  -H "Authorization: Bearer $CLIPMUX_API_KEY" \
+  -H 'Content-Type: application/json' \
+  -d "{\"size\": $SIZE, \"passthrough\": \"lesson_42\", \"title\": \"Lesson 42\"}" \
+  | tee upload.json
+```
+
+```json
+{
+  "upload_id": "upl_…",
+  "asset_id": "ast_…",
+  "part_size": 33554432,
+  "part_count": 22,
+  "upload_token": "M4XQ7R2VK6WT5ZJYBNC3D4F7GH",
+  "playback_ids": [{ "id": "pid_…", "policy": "signed", "playable": false, "status": "active" }]
+}
+```
+
+The video exists at once, as `ast_…` in `waiting_upload`, with a private
+(`signed`) playback ID you can store before the file arrives. Every part is
+`part_size` bytes (32 MiB) except the last.
+
+```bash
+UPLOAD_ID=$(jq -r .upload_id upload.json)
+ASSET_ID=$(jq -r .asset_id upload.json)
+UPLOAD_TOKEN=$(jq -r .upload_token upload.json)
+PART_SIZE=$(jq -r .part_size upload.json)
+PART_COUNT=$(jq -r .part_count upload.json)
+```
+
+</Step>
+<Step>
+
+### Send the parts
+
+For each part, ask ClipMux for a signed URL with the upload token, `PUT` the
+part's bytes to it, and keep the `ETag` header storage answers with. You can
+sign up to 100 part numbers in one call, and each URL lasts an hour; this
+loop signs one part at a time to keep it short.
+
+```bash
+echo '[]' > parts.json
+for n in $(seq 1 "$PART_COUNT"); do
+  URL=$(curl -s "$CLIPMUX_URL/v1/uploads/$UPLOAD_ID/parts" \
+    -H "Authorization: Bearer $UPLOAD_TOKEN" \
+    -H 'Content-Type: application/json' \
+    -d "{\"part_numbers\": [$n]}" | jq -r '.parts[0].url')
+  dd if="$FILE" of=part.bin bs="$PART_SIZE" skip=$((n - 1)) count=1 2>/dev/null
+  ETAG=$(curl -s -T part.bin -D - -o /dev/null "$URL" \
+    | grep -i '^etag:' | cut -d' ' -f2 | tr -d '\r')
+  jq --argjson n "$n" --arg etag "$ETAG" \
+    '. + [{part_number: $n, etag: $etag}]' parts.json > parts.tmp && mv parts.tmp parts.json
+done
+rm part.bin
+```
+
+The parts go straight to storage, not through your backend. If the loop
+stops halfway, `GET /v1/uploads/{id}/parts` with the upload token lists the
+parts storage already holds, so you send only the rest. An upload left idle
+for 24 hours expires.
+
+</Step>
+<Step>
+
+### Complete the upload
+
+Send every part's number and `ETag`:
+
+```bash
+jq '{parts: .}' parts.json | curl -s "$CLIPMUX_URL/v1/uploads/$UPLOAD_ID/complete" \
+  -H "Authorization: Bearer $UPLOAD_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d @- | jq '{id, status}'
+```
+
+The answer is the video, now `processing`. Encoding has started.
+
+</Step>
+<Step>
+
+### Wait until it's ready
+
+Ask for the video until its status moves on from `processing`:
+
+```bash
+while :; do
+  STATUS=$(curl -s "$CLIPMUX_URL/v1/assets/$ASSET_ID" \
+    -H "Authorization: Bearer $CLIPMUX_API_KEY" | jq -r .status)
+  echo "$STATUS"
+  [ "$STATUS" = processing ] || break
+  sleep 10
+done
+```
+
+It ends `ready`, or `errored` with an `error_code` saying why. In an app,
+don't poll: ClipMux sends `video.asset.ready` to your webhook endpoint. See
+[Receive webhooks](/docs/build/webhooks).
+
+</Step>
+<Step>
+
+### Play it
+
+Get the playback ID and the media origin, `base_url`, from the video:
+
+```bash
+curl -s "$CLIPMUX_URL/v1/assets/$ASSET_ID" \
+  -H "Authorization: Bearer $CLIPMUX_API_KEY" > asset.json
+PLAYBACK_ID=$(jq -r '.playback_ids[0].id' asset.json)
+BASE_URL=$(jq -r .base_url asset.json)
+```
+
+The video is private, so it plays only with a token: a short JWT your
+backend signs with your app's signing key. Sign one as
+[Sign playback tokens](/docs/build/play/sign-tokens) shows, in Node, Python,
+Go or PHP, and put it in `TOKEN`. Then:
+
+```bash
+echo "$BASE_URL/v/$TOKEN/$PLAYBACK_ID/master.m3u8"
+```
+
+Safari plays that URL directly, and so does
+[`<clipmux-player>`](/docs/build/play/player).
+
+To skip the token for a throwaway test, create the upload with
+`"playback_policy": "public"`. Anyone with the URL can then watch it at
+`$BASE_URL/p/$PLAYBACK_ID/master.m3u8`. See
+[Public videos](/docs/build/play/public-videos).
+
+</Step>
+</Steps>
+
+## Check it works
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' "$BASE_URL/v/$TOKEN/$PLAYBACK_ID/master.m3u8"
+```
+
+`200` means the video plays. If a step failed, the error's `code` says why:
+
+- `401 unauthorized` on create: the API key is wrong or revoked.
+- `403 insufficient_scope`: the key lacks `uploads:write` (create) or
+  `assets:read` (the status loop).
+- `413 too_large`: the file is over this server's upload limit. See
+  [Limits and defaults](/docs/reference/limits).
+- `400 invalid_parts` on complete: an `ETag` is missing or wrong, usually
+  because a `PUT` failed. Check `parts.json` for an empty `etag`, send that
+  part again and complete again.
+- `409 upload_expired`: the upload sat idle for 24 hours. Create a new one.
+- The status ends `errored`: `error_code` says why, for example
+  `unsupported_source` for a file that isn't a video ClipMux can read.
+- `401 token_expired` or `403 denied` when playing: the token is expired or
+  wrong. See [Sign playback tokens](/docs/build/play/sign-tokens).
+
+Every code is in [Errors](/docs/reference/errors).
+
+## Next
+
+- [Quickstart](/docs/build/quickstart): the same flow in an app, with the
+  uploader and the player
+- [Choose an upload method](/docs/build/upload)
+- [A video's lifecycle](/docs/build/concepts/lifecycle)

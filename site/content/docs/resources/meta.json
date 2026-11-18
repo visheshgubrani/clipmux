@@ -1,0 +1,17 @@
+{
+  "title": "Resources",
+  "description": "Migration guides, architecture, FAQ and the project",
+  "icon": "LifeBuoy",
+  "root": true,
+  "pages": [
+    "index",
+    "---Migrate---",
+    "migrate-from-mux",
+    "migrate-from-cloudflare-stream",
+    "---Project---",
+    "architecture",
+    "faq",
+    "contributing",
+    "security-policy"
+  ]
+}

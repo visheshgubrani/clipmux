@@ -1,0 +1,149 @@
+---
+title: Encode on Modal
+description: Rent a GPU machine on Modal for each video, with a monthly spend limit, and keep this server as the fallback.
+---
+
+Modal starts a GPU machine for each job and stops it when the job is done,
+so you pay only while a video encodes. Once connected, Modal takes new
+videos and this server takes over when Modal can't. The machine runs the
+same ClipMux image as your server, claims one job, and never holds your
+storage keys.
+
+## Before you start
+
+- A Modal account.
+- A public URL that Modal's machines can reach from the internet, for
+  example `https://video.example.com`. Connect refuses a public URL that
+  resolves to a private, loopback or link-local address. With videos stored
+  on this server's disk, the machines also download sources and upload
+  output through it.
+- A server built from a published release. A local build names no image for
+  Modal to run; enter one under **Advanced**, **Worker image**.
+
+<LeavesYourServers>
+  For each job, Modal's machine receives the video's source file and the
+  content key for the output it encodes, and holds them for that job's
+  length. It uploads the encrypted output back through URLs signed for that
+  one job. If the machine also makes the subtitles, it gets the video's
+  audio. Modal never receives your storage keys, your other videos or your
+  Modal token: the token stays sealed in your database.
+</LeavesYourServers>
+
+## Connect Modal
+
+<Steps>
+<Step>
+
+### Choose the GPUs
+
+On **Encoding**, choose **Connect Modal**. The dialog lists Modal's GPUs
+with NVENC, each priced per hour with the CPU and memory its machine gets.
+ClipMux tries the ones you tick in order, moving to the next when one has no
+capacity. **L4** and **A10G** are ticked by default: both decode AV1 on the
+GPU. The **T4** is cheaper but can't decode AV1, so an AV1 upload decodes
+on the machine's CPUs, about four times slower. **L40S** is also offered.
+
+</Step>
+<Step>
+
+### Check the limits
+
+The dialog shows the limits ClipMux sets: **one machine at a time** and
+**$50 a month**. Choose **Change** to edit them. One machine means a second
+upload waits for the first video's machine to finish, so raise it if videos
+arrive together.
+
+</Step>
+<Step>
+
+### Approve on Modal
+
+Choose **Connect with Modal**. Modal's own approval page opens, the one its
+CLI uses to issue tokens. Approve there, and the token goes straight to your
+server; you never copy it.
+
+To paste a token instead, choose **Paste a token instead**, create a token
+in Modal under **Settings**, **API Tokens**, and paste the `modal token set …`
+command it shows: that fills both fields.
+
+</Step>
+<Step>
+
+### Wait for the sample
+
+ClipMux checks the token by opening this install's Modal app
+(`clipmux-` and a tag of this install), checks that the public URL
+resolves to a public address, pins the worker image to its digest, saves the token sealed with
+the secrets key, and runs the [setup test](/docs/self-host/first-run) on a
+Modal machine. **Encoding** shows **Checking** meanwhile.
+
+When the sample encodes and plays, Modal shows **Ready** and becomes where
+new videos encode, with this server as the fallback when it runs the
+built-in encoder. Until then, new videos encode where they did before.
+
+</Step>
+</Steps>
+
+Through the API, connect with `POST /v1/executors/modal/connect`, or start
+the browser approval with `POST /v1/executors/modal/authorize`. See
+[Management API](/docs/reference/management-api).
+
+## Settings and defaults
+
+| Setting | Default | Notes |
+| --- | --- | --- |
+| GPUs | L4, then A10G | Tried in order until one has capacity. |
+| CPU | 4 cores | Per machine. |
+| Memory | 16 GiB | Per machine. |
+| Disk | 50 GB | A machine takes only sources that fit three times over. Larger ones go to the fallback, if there is one. |
+| Machines at once | 1 | |
+| Monthly limit | $50 | Calendar month, UTC. |
+| Rate | the dearest chosen GPU's price | Includes the machine's CPU and memory, at Modal's published prices. |
+
+ClipMux estimates spend from the rate and each machine's running time.
+Modal's own billing report then replaces the estimate up to the last hour
+it covers. **Encoding** shows this month's spend against the limit, and how
+many machines are running. What happens at the limit is in
+[Routing, fallback and spend limits](/docs/self-host/encoding/routing-and-limits).
+
+Connect again to change any of these or to rotate the token. Modal then
+needs a new setup test before it takes videos again.
+
+## How machines run
+
+- **One job per machine.** A machine runs the ClipMux image with a one-time
+  key that claims one job, before a deadline. It holds no storage
+  credentials: each step gets URLs signed for that job alone.
+- **Only its own machines.** Machines run in the app `clipmux-{tag}`,
+  tagged with this install, so ClipMux only ever lists or stops its own.
+- **Stopped on time.** Modal ends a machine when its job exits, or after
+  6 h 15 min at most. ClipMux also stops one whose attempt ended, or that
+  didn't claim its job in time.
+- **Sandboxed.** Modal runs machines under gVisor, which has no Landlock.
+  The media tools still run with their resource limits, `no_new_privs` and
+  seccomp.
+
+## Disconnect
+
+On **Encoding**, choose **Disconnect** under Modal, or call
+`DELETE /v1/executors/{kind}`. ClipMux forgets the token, and if Modal was
+where new videos encode, they go back to this server. It refuses while a
+Modal machine may still be running.
+
+## Check it works
+
+- **Encoding** shows Modal as **Ready**, with its spend this month.
+- Upload a short video. **Jobs** shows it routed to Modal, and the attempt
+  ran there.
+- The Connect dialog shows each step's result. A failed `public_url` step
+  means the public URL is private or doesn't resolve; a failed `image` step
+  means the worker image can't be found or pulled.
+- If Modal shows **Check failed** after connecting, the line under it names
+  the setup test's check that failed, and new videos keep encoding on this
+  server. Choose **Connect again** to retry.
+
+## Next
+
+- [Routing, fallback and spend limits](/docs/self-host/encoding/routing-and-limits)
+- [Encoding performance](/docs/self-host/encoding/performance)
+- [Encode on RunPod](/docs/self-host/encoding/runpod)

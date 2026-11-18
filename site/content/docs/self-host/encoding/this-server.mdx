@@ -1,0 +1,166 @@
+---
+title: Encode on this server
+description: Use the built-in encoder on the ClipMux server, with its NVIDIA, AMD or Intel GPU when Docker passes one in.
+---
+
+The ClipMux server encodes videos itself, with no setup. The app starts a
+built-in encoder beside the API, which uses the server's GPU when it can see
+one and the CPU otherwise. This page covers giving the container a GPU,
+choosing the encoder, turning the built-in encoder off, and the sandbox it
+runs in.
+
+## Before you start
+
+- ClipMux installed with the [one-line installer](/docs/self-host/install)
+  or [from source](/docs/self-host/install-options/compose-from-source).
+- For a GPU: an NVIDIA card with its driver and the NVIDIA Container
+  Toolkit on the host, or an AMD or Intel GPU with a render node under
+  `/dev/dri`.
+- A kernel with Landlock. See [Requirements](/docs/self-host/requirements).
+
+## How it chooses an encoder
+
+When the built-in encoder starts, it runs a two-frame test encode on each
+GPU path, inside the same sandbox jobs use, and offers only the paths that
+pass:
+
+| Path | Hardware | What runs where |
+| --- | --- | --- |
+| `nvenc` | NVIDIA with NVENC | Decode, scale and encode on the GPU |
+| `vaapi` | AMD (Radeon), Intel (iHD driver) | Decode, scale and encode on the GPU |
+| `cuda-decode` | NVIDIA without NVENC | Decode on the GPU, encode with libx264 |
+| `cpu` | Every machine | libx264 |
+
+A source the GPU can't decode, such as 10-bit or 4:2:2 video, decodes on
+the CPU and still scales and encodes on the GPU: `nvenc-hybrid` and
+`vaapi-hybrid`. If a path fails during a job, the whole set of renditions
+runs again on the next path, ending with the CPU, within the same attempt.
+Every path encodes the same bitrates and keyframes, so renditions match
+whichever path made them. **Jobs** shows the path each output used, and any
+that failed.
+
+`CLIPMUX_ENCODER` picks the first path to try (`auto`, `nvenc`, `vaapi`,
+`cuda-decode` or `cpu`; the CPU always backs it up), and
+`CLIPMUX_VAAPI_DEVICE` picks a render node, for example
+`/dev/dri/renderD129`, when there is more than one.
+
+## Give the container a GPU
+
+Docker gives a container no GPU unless asked. Put the request in an override
+file beside `compose.yml`, for example `/opt/clipmux/compose.gpu.yml`:
+
+<Tabs items={['NVIDIA', 'AMD or Intel']}>
+<Tab value="NVIDIA">
+
+```yaml title="compose.gpu.yml"
+services:
+  app:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+```
+
+This needs the NVIDIA Container Toolkit on the host. The image already asks
+the runtime for the driver's video, compute and graphics libraries, which
+NVENC and whisper.cpp use.
+
+</Tab>
+<Tab value="AMD or Intel">
+
+```yaml title="compose.gpu.yml"
+services:
+  app:
+    devices:
+      - /dev/dri:/dev/dri
+    group_add:
+      - "992"
+```
+
+Replace `992` with your host's `render` group ID, from
+`getent group render | cut -d: -f3`. The app runs as an unprivileged user,
+and the group lets it open the render node.
+
+</Tab>
+</Tabs>
+
+To set `CLIPMUX_ENCODER` or `CLIPMUX_VAAPI_DEVICE`, add them to the same
+file under `app`, as `environment:` entries. Then start the stack with both
+files:
+
+```bash
+cd /opt/clipmux
+sudo docker compose -f compose.yml -f compose.gpu.yml up -d --wait
+```
+
+<Note>
+  The installer's upgrade starts the stack with `compose.yml` alone, so the
+  app comes back without the GPU. After each upgrade, run the command above
+  again.
+</Note>
+
+## Turn the built-in encoder off
+
+On a small or shared server, you may want the app to encode nothing and
+send every video to [Modal](/docs/self-host/encoding/modal),
+[RunPod](/docs/self-host/encoding/runpod) or a
+[PC you own](/docs/self-host/encoding/your-pc). Set
+`CLIPMUX_BUILTIN_WORKER=false` in `.env`, then restart with
+`docker compose up -d --wait`.
+
+Connect the other encoder first: with no encoder online, new videos wait in
+`processing`.
+
+To cap how much CPU encoding takes, add `cpus:` to the `app` service in an
+override (for example `cpus: 4`). Without a cap, encoding runs at idle
+priority, so it yields to the API and playback but uses whatever CPU is
+free.
+
+## The sandbox
+
+Every ffmpeg, Shaka Packager and whisper.cpp run is confined with Landlock
+and seccomp:
+
+- no network;
+- writes only to the job's own directory;
+- reads only system paths and the job's source;
+- CPU, memory and file limits, with 8 GiB of memory per tool by default
+  (`CLIPMUX_TOOL_MEMORY_MB`);
+- a GPU path may also open its own device nodes, and local sockets that
+  CUDA needs, never a network socket.
+
+The encoder holds no storage keys: it fetches the source and uploads its
+output through the app, with URLs signed for that one job.
+
+The built-in encoder refuses to start on a kernel without Landlock, because
+its tools could otherwise read the server's keys. Uploads then wait in
+`processing`. `CLIPMUX_UNSANDBOXED_WORKER=true` runs it anyway; set it only
+if the host isolates the app another way. Where only Landlock is missing,
+the tools keep seccomp and the limits.
+
+## Check it works
+
+- **Encoding** shows **This server** as **Online**.
+- The app's log names the paths that passed, best first:
+
+  ```bash
+  cd /opt/clipmux && sudo docker compose logs app | grep '"msg":"encoders"'
+  ```
+
+  A line with `"order":"nvenc (NVIDIA …), cpu"` or
+  `"order":"vaapi (/dev/dri/renderD128), cpu"` means the GPU passed its
+  test. `"order":"cpu"` alone means it didn't: the container can't see the
+  GPU, or the driver is too old for this FFmpeg.
+- `built-in worker not started` in the log says why the encoder didn't
+  start, for example a kernel without Landlock.
+- Upload a video and open it on **Jobs**: the attempt shows the path each
+  output used.
+
+## Next
+
+- [Routing, fallback and spend limits](/docs/self-host/encoding/routing-and-limits)
+- [Encoding performance](/docs/self-host/encoding/performance)
+- [Transcribe with whisper.cpp](/docs/self-host/captions-and-ai/whisper)

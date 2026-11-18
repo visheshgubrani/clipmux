@@ -1,0 +1,197 @@
+---
+title: Receive webhooks
+description: Keep your own records in step with each video's state, from signed webhook events and a catch-up job for any you miss.
+---
+
+ClipMux tells your backend when something happens to a video: it's ready,
+it failed, its subtitles are done, it was deleted. Each event is an HTTP
+POST to a URL of yours, signed with your webhook secret. Your handler finds
+the record the video belongs to, by your own `passthrough`, and stores what
+changed.
+
+## Before you start
+
+- A webhook endpoint registered for your app, and its secret as
+  `CLIPMUX_WEBHOOK_SECRET`. `npx @clipmux/node init` makes both when the
+  owner gives a webhook URL on the approval page. Otherwise add one under
+  **Apps & API**, your app, **Webhooks** in the dashboard, or with
+  `clipmux admin create-webhook --app NAME --url URL` on the server.
+- Uploads made with a `passthrough`, your own ID for the record; see
+  [Link videos to your records](/docs/build/upload/passthrough).
+- While you develop on a laptop the server can't reach, forward events with
+  [listen](/docs/build/webhooks/listen).
+
+## The events
+
+| Event | When |
+| --- | --- |
+| `video.asset.ready` | The video is encoded and plays. |
+| `video.asset.updated` | Its title changed. |
+| `video.asset.errored` | It failed; `error_code` on the video says why. |
+| `video.asset.reencode_failed` | A re-encode failed. The video still plays its previous encode. |
+| `video.asset.deleted` | It was deleted. |
+| `video.asset.track.ready` | A subtitles or chapters track is ready. |
+| `video.asset.track.errored` | A track failed; `track.error_code` says why. |
+| `video.asset.track.deleted` | A track was deleted. |
+
+Each body has the event's `id` (`evt_…`), `type`, `created_at` and `data`,
+the video as `GET /v1/assets/{id}` returned it when the event was made.
+Track events add `track: {id, kind, error_code?}`, and re-encode events add
+`job`. Every field is in [Webhook events](/docs/reference/webhooks).
+
+## Handle them with clipmuxHandler
+
+`clipmuxHandler` from `@clipmux/node/handlers` verifies each request, then
+re-fetches the video, so your code sees its current state rather than the
+state when the event was made:
+
+```ts title="app/api/clipmux/[action]/route.ts"
+import { clipmuxHandler } from '@clipmux/node/handlers'
+
+export const POST = clipmuxHandler({
+  // Every verified event, before asset(). Optional.
+  async event(event) {
+    console.log(event.type, event.id)
+  },
+  // The video, re-fetched so it's current, and the event that triggered it.
+  async asset(asset, event) {
+    await db.lesson.update({
+      where: { ref: asset.passthrough },
+      data: { status: asset.status, playbackId: asset.playback_ids[0]?.id },
+    })
+  },
+  // Errors the handler turned into a 4xx or 5xx. Default: console.error for 5xx.
+  onError(err, req) {
+    logger.warn({ err }, 'clipmux handler')
+  },
+})
+```
+
+The webhook route is `/api/clipmux/webhook` on your app. ClipMux POSTs to
+the URL you registered, so register that one. What the handler does with each
+request:
+
+1. Verifies the signature and timestamp. A request that fails gets `400`
+   with the reason (`missing_header`, `stale`, `bad_signature` or
+   `invalid_body`), and your callbacks aren't called.
+2. Calls `event(event)`, if you passed it.
+3. Calls `asset(asset, event)` with the video from `GET /v1/assets/{id}`.
+   If the video is gone (`404`), it passes the event's copy instead. Within
+   one process, it skips a video whose `version` is older than one it has
+   already passed you.
+4. Answers `200 {"received": true}`.
+
+If `event` or `asset` throws, the handler answers with a `5xx` and ClipMux retries
+the delivery, for up to 24 hours. Throw when your own database fails;
+return normally for anything you mean to ignore.
+
+`event` narrows on `type`, so a track event has its `track`:
+
+```ts
+async event(event) {
+  if (event.type === 'video.asset.track.ready') console.log(event.track.kind) // 'subtitles' | 'chapters'
+},
+```
+
+## Write the handler to be safe
+
+Delivery is **at least once** and **unordered**. The same event can arrive
+twice, and `video.asset.ready` can arrive after a later
+`video.asset.updated`. Write your handler so that doesn't matter:
+
+- **Upsert by `passthrough`.** Find your record by `asset.passthrough` and
+  set its fields, rather than appending or counting.
+- **Keep the highest `version`.** Every change to a video raises its
+  `version`. Store the one you applied and skip any video with a lower one.
+  The handler does this within one process, but not across restarts or
+  several instances of your app.
+- **Dedupe on the event ID** if an event triggers something that mustn't
+  run twice, such as an email. `event.id` is the same as the `X-Webhook-Id`
+  header, and stays the same on every retry.
+- **Ignore what isn't yours.** Answer `200` for an event whose
+  `passthrough` you don't know, so ClipMux doesn't retry it.
+
+A video's status on your record:
+
+| Video `status` | Your record |
+| --- | --- |
+| `waiting_upload` | Uploading |
+| `processing` | Processing |
+| `ready`, with an active playback ID | Ready |
+| `errored` or `deleted` | Failed or removed |
+
+Tracks are made after the video is ready, so expect `video.asset.ready`
+first, then `video.asset.track.ready` or `video.asset.track.errored`.
+
+## Catch up on missed events
+
+If your endpoint is down for longer than the 24 hours of retries, its
+events are dropped. Run a catch-up job, for example every few minutes or at
+start, that walks every video changed since the last run:
+
+```ts
+let since = await db.state.get('clipmux_since') // a Date or ISO string you stored
+const startedAt = new Date()
+for await (const asset of clipmux.assets.changes({ since })) {
+  await applyAsset(asset) // the same upsert as your asset callback
+}
+await db.state.set('clipmux_since', startedAt)
+```
+
+`assets.changes` pages through `GET /v1/assets?updated_since=…`, oldest
+first, deleted videos included. Because your upsert keeps the highest
+`version`, running it alongside webhooks is safe.
+
+## Verify by hand
+
+Without `clipmuxHandler`, verify each request yourself with the raw body:
+
+```ts
+import { ClipMux, WebhookVerificationError } from '@clipmux/node'
+
+const clipmux = new ClipMux()
+
+export async function POST(req: Request) {
+  const raw = await req.text() // the exact bytes; never parse and re-serialize
+  let event
+  try {
+    event = await clipmux.webhooks.verify(raw, req.headers)
+  } catch (err) {
+    if (err instanceof WebhookVerificationError) return new Response(null, { status: 400 })
+    throw err
+  }
+  const asset = await clipmux.assets.get(event.data.id) // the body says something changed; re-fetch what
+  await applyAsset(asset)
+  return new Response(null, { status: 200 })
+}
+```
+
+Any `2xx` counts as delivered. Redirects aren't followed. For the scheme
+and Python, Go and PHP, see
+[Verify webhook signatures](/docs/build/webhooks/verify-signatures).
+
+## Check it works
+
+With your app running, upload a short file and watch the events arrive:
+
+```bash
+npx @clipmux/node upload sample.mp4 --passthrough lesson_42 --wait
+```
+
+Your `asset` callback runs for `video.asset.ready` and your record shows the
+video as ready. If nothing arrives, open **Deliveries** on the endpoint in
+the dashboard: each try shows its HTTP status or error.
+
+- `400` with `bad_signature`: the secret is wrong, or a middleware parsed
+  the body before the handler read it.
+- `400` with `stale`: your server's clock is more than 5 minutes off.
+- `404`: the URL isn't the handler's `/webhook` route, or you passed
+  neither `asset` nor `event`.
+- `connection_failed` or `timeout`: ClipMux can't reach the URL, or your
+  handler took longer than 10 seconds.
+
+## Next
+
+- [Verify webhook signatures](/docs/build/webhooks/verify-signatures)
+- [Develop locally with listen](/docs/build/webhooks/listen)
+- [Retries, redelivery and secret rotation](/docs/build/webhooks/retries)

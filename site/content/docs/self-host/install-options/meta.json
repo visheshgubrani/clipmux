@@ -1,0 +1,5 @@
+{
+  "title": "Install options",
+  "icon": "Package",
+  "pages": ["compose-from-source", "reverse-proxy", "upgrade-and-uninstall"]
+}

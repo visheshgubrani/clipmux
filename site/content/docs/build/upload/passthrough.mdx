@@ -1,0 +1,181 @@
+---
+title: Link videos to your records
+description: Tag each video with your own ID through passthrough, so every webhook and lookup leads straight back to your record.
+---
+
+`passthrough` is your own ID for a video, such as `lesson_42`. You set it
+when you create the upload or import, ClipMux stores it on the video, and it
+comes back on the video and in every webhook. Your webhook handler finds the
+record a video belongs to without keeping a map of ClipMux IDs, and without
+trusting anything else in the body.
+
+## Before you start
+
+- A record in your own database for each video, created before you call
+  ClipMux, with an ID you can send.
+
+## Set it
+
+Make the record first, then send its ID as `passthrough` when you create
+the upload (`POST /v1/uploads`) or the import (`POST /v1/assets`).
+
+<Tabs items={['Node', 'Python', 'Go', 'PHP']}>
+<Tab value="Node">
+
+```ts
+// With clipmuxHandler, return it from the upload callback:
+async upload(req, { file }) {
+  const lesson = new URL(req.url).searchParams.get('lesson')
+  return { passthrough: `lesson_${lesson}`, title: file.name }
+}
+
+// Or with the client:
+const upload = await clipmux.uploads.create({ size, passthrough: 'lesson_42' })
+```
+
+</Tab>
+<Tab value="Python">
+
+```python
+res = requests.post(
+    f"{os.environ['CLIPMUX_URL']}/v1/uploads",
+    headers={"Authorization": f"Bearer {os.environ['CLIPMUX_API_KEY']}"},
+    json={"size": size, "passthrough": "lesson_42"},
+)
+```
+
+</Tab>
+<Tab value="Go">
+
+```go
+body := strings.NewReader(fmt.Sprintf(`{"size": %d, "passthrough": "lesson_42"}`, size))
+req, _ := http.NewRequest("POST", os.Getenv("CLIPMUX_URL")+"/v1/uploads", body)
+req.Header.Set("Authorization", "Bearer "+os.Getenv("CLIPMUX_API_KEY"))
+req.Header.Set("Content-Type", "application/json")
+```
+
+</Tab>
+<Tab value="PHP">
+
+```php
+$ch = curl_init(getenv('CLIPMUX_URL') . '/v1/uploads');
+curl_setopt_array($ch, [
+    CURLOPT_POST => true,
+    CURLOPT_RETURNTRANSFER => true,
+    CURLOPT_HTTPHEADER => [
+        'Authorization: Bearer ' . getenv('CLIPMUX_API_KEY'),
+        'Content-Type: application/json',
+    ],
+    CURLOPT_POSTFIELDS => json_encode(['size' => $size, 'passthrough' => 'lesson_42']),
+]);
+```
+
+</Tab>
+</Tabs>
+
+The command lines take it as `--passthrough lesson_42`.
+
+- It is a string of up to 255 bytes; a longer one is `400 invalid_request`.
+- It is set once, when the video is made. The API has no route to change
+  it later.
+- It isn't unique: ClipMux doesn't stop two videos sharing one, for example
+  when a lesson's video is replaced. Your record decides which video is
+  current.
+- It isn't secret, and it isn't checked. Use an ID, not personal data.
+
+## Use it in webhooks
+
+Every webhook body carries the video, and the video carries `passthrough`:
+
+```json
+{ "id": "evt_…", "type": "video.asset.ready", "created_at": "…",
+  "data": { "id": "ast_…", "status": "ready", "version": 4, "passthrough": "lesson_42", "…": "…" } }
+```
+
+In your handler, after verifying the signature:
+
+1. Find the record by `data.passthrough`. If it isn't one of yours (the
+   dashboard's test event has none), answer `200` and ignore it.
+2. Re-fetch the video with `GET /v1/assets/{id}`, since the body says that
+   something changed, not what it is now.
+3. Store its `status`, its playback ID and its `version`, if the `version`
+   is at least the one you have.
+
+`clipmuxHandler`'s `asset` callback does the verifying and re-fetching, so
+you upsert by `asset.passthrough`. See [Receive webhooks](/docs/build/webhooks).
+
+Store the video's ID on your record as soon as the upload is created, from
+`asset_id` in the answer: you have it before the file arrives.
+
+## Find videos by it
+
+`GET /v1/assets?passthrough=lesson_42` returns your app's videos with that
+passthrough, newest first, leaving out deleted ones:
+
+<Tabs items={['Node', 'Python', 'Go', 'PHP']}>
+<Tab value="Node">
+
+```ts
+const videos = await clipmux.assets.findByPassthrough('lesson_42')
+const latest = videos[0]
+```
+
+</Tab>
+<Tab value="Python">
+
+```python
+res = requests.get(
+    f"{os.environ['CLIPMUX_URL']}/v1/assets",
+    params={"passthrough": "lesson_42"},
+    headers={"Authorization": f"Bearer {os.environ['CLIPMUX_API_KEY']}"},
+)
+videos = res.json()["data"]
+```
+
+</Tab>
+<Tab value="Go">
+
+```go
+u := os.Getenv("CLIPMUX_URL") + "/v1/assets?passthrough=" + url.QueryEscape("lesson_42")
+req, _ := http.NewRequest("GET", u, nil)
+req.Header.Set("Authorization", "Bearer "+os.Getenv("CLIPMUX_API_KEY"))
+// the response's "data" is the list, newest first
+```
+
+</Tab>
+<Tab value="PHP">
+
+```php
+$ch = curl_init(getenv('CLIPMUX_URL') . '/v1/assets?passthrough=' . urlencode('lesson_42'));
+curl_setopt_array($ch, [
+    CURLOPT_RETURNTRANSFER => true,
+    CURLOPT_HTTPHEADER => ['Authorization: Bearer ' . getenv('CLIPMUX_API_KEY')],
+]);
+$videos = json_decode(curl_exec($ch), true)['data'];
+```
+
+</Tab>
+</Tabs>
+
+This needs `assets:read`. Use it to repair a record that missed its
+webhooks, or to check before creating a second upload for the same record.
+
+## Check it works
+
+Upload a test file with a passthrough, then look it up:
+
+```bash
+npx @clipmux/node upload sample.mp4 --passthrough lesson_42
+curl -s "https://video.example.com/v1/assets?passthrough=lesson_42" \
+  -H "Authorization: Bearer $CLIPMUX_API_KEY" | jq '.data[] | {id, status, passthrough}'
+```
+
+The new video is first in the list. An empty list means the passthrough was
+spelled differently, or the key belongs to another app: each app sees only
+its own videos.
+
+## Next
+
+- [Receive webhooks](/docs/build/webhooks)
+- [Choose an upload method](/docs/build/upload)
+- [Webhook events](/docs/reference/webhooks)

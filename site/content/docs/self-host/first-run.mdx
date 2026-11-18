@@ -1,0 +1,142 @@
+---
+title: First run
+description: Create the owner account, set the public and media URLs, turn on two-factor sign-in, and run the setup test.
+icon: Flag
+---
+
+A fresh install already works: it stores videos on the server's disk,
+encodes them with the built-in encoder and serves playback itself. First
+run gives it an owner and its addresses, and proves the whole path with a
+sample video. It takes a few minutes.
+
+## Before you start
+
+- ClipMux installed and running. See [Install with one line](/docs/self-host/install).
+- The setup token the installer printed.
+- Your two DNS names, for example `video.example.com` and
+  `media.example.com`, pointing at the server.
+
+## Set up the instance
+
+<Steps>
+<Step>
+
+### Create the owner account
+
+Open the address the installer printed (`http://` and the server's address).
+The page asks for:
+
+- **Setup token**: the token from the installer. It lasts a day. If it has
+  run out, or you lost it, find the current one with
+  `cd /opt/clipmux && sudo docker compose logs app | grep setup_token`.
+- **Email** and **Password**: at least 12 characters.
+
+An instance has one owner. Once the account exists, sign-up closes for good,
+and later visitors see only the sign-in page.
+
+</Step>
+<Step>
+
+### Set the public and media URLs
+
+The next page, **Where will people reach ClipMux?**, asks for two URLs:
+
+- **Public URL**: where browsers and apps reach the dashboard and the API,
+  for example `https://video.example.com`.
+- **Media URL**: where videos play from, for example
+  `https://media.example.com`. Leave it blank to use the public URL.
+
+Write both with `https://`. Caddy gets a certificate for each hostname the
+first time someone visits it, so open `https://video.example.com` once
+you've saved, and sign in there.
+
+You can keep `localhost` to try things out, but while the public URL is
+loopback, apps can't get API keys: upload URLs and playback URLs would point
+at this machine. You can change both URLs later under **Settings**. If
+`CLIPMUX_PUBLIC_URL` is set in `.env`, the fields are read-only and show the
+pinned values.
+
+</Step>
+<Step>
+
+### Turn on two-factor sign-in
+
+In **Settings**, open the **Account** tab and find **Two-factor sign-in**.
+Enter your password and choose **Set up two-factor sign-in**, add the key it
+shows to any authenticator app, then enter the code the app shows and choose
+**Turn on**.
+
+ClipMux then shows ten recovery codes, once. Each signs you in once if you
+lose the authenticator. Keep them offline.
+
+</Step>
+<Step>
+
+### Run the setup test
+
+In **Settings**, on the **General** tab, choose **Run the setup test**. A
+sample video goes through upload, encoding, encryption and playback, and the
+page shows each check as it passes. The test then checks that:
+
+- a playback token plays the video and fetches its key;
+- a poster-only token can't fetch a segment or the key;
+- a request with no token is refused;
+- a segment read straight from storage is encrypted, not a plain video
+  file.
+
+When every check passes, the sample plays on the page. The setup test runs
+only when you ask, and on its own after you connect or disconnect
+Cloudflare and when you connect a cloud GPU. From the server you can run the
+same test with:
+
+```bash
+cd /opt/clipmux && sudo docker compose exec app clipmux admin setup-test --wait
+```
+
+</Step>
+</Steps>
+
+## Check it works
+
+- **Settings** shows **All N checks passed** under **Setup test**.
+- `https://video.example.com` opens the dashboard with a valid certificate.
+  If the browser shows a certificate error, the hostname's DNS doesn't point
+  at this server yet, or ports 80 and 443 aren't reachable from the
+  internet.
+- **Home** shows **Finish setting up**, with the optional steps below.
+
+If a check fails, its line says which step and why. The setup test sends
+its sample to the encoder that takes new videos, so a failure in
+**encode** points at [encoding](/docs/self-host/encoding/this-server), and a
+failure in playback at [delivery](/docs/self-host/delivery/built-in).
+
+If you get locked out:
+
+- **Lost the authenticator and the recovery codes:**
+  `cd /opt/clipmux && sudo docker compose exec app clipmux admin reset-totp`
+  turns off two-factor sign-in.
+- **Forgot the password:** put the new password on one line in a file, then
+  run `sudo docker compose exec -T app clipmux admin reset-password < new-password.txt`
+  from `/opt/clipmux`. It also signs out every browser.
+
+## What to do next
+
+**Home** lists the optional steps in **Finish setting up**:
+
+- **Store uploads in a bucket**: R2 or any S3-compatible store, instead of
+  this server's disk. See [Where videos are stored](/docs/self-host/storage).
+- **Connect Cloudflare**: serve playback from Cloudflare's edge. See
+  [Cloudflare edge delivery](/docs/self-host/delivery/cloudflare).
+- **Add a cloud GPU**: Modal or RunPod, with a monthly spend limit. See
+  [Encode on Modal](/docs/self-host/encoding/modal).
+- **Turn on chapters**: connect an LLM. See
+  [Choose an LLM for chapters](/docs/self-host/captions-and-ai/chapters-llm).
+- **Create an app**: credentials for your own site. See the
+  [Quickstart](/docs/build/quickstart).
+
+## Next
+
+- [A tour of the dashboard](/docs/self-host/dashboard)
+- [Back up and restore](/docs/self-host/operate/backups): copy the secrets
+  key off the server first
+- [Quickstart](/docs/build/quickstart)

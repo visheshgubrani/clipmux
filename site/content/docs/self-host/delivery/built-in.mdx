@@ -1,0 +1,152 @@
+---
+title: Built-in delivery
+description: How your ClipMux server streams encrypted HLS itself, and when to give it its own hostname or move it to Cloudflare.
+---
+
+Out of the box, the ClipMux server streams every video itself. Players fetch
+playlists, segments, posters and keys from the media URL, and the server
+checks each request against the playback ID's route before it sends a byte.
+Nothing else needs to run, and nothing leaves your server.
+
+This page explains what the server does per request, what it lets browsers
+and proxies cache, and how to put playback on its own hostname.
+
+## Before you start
+
+- A running ClipMux server. See [Install with one line](/docs/self-host/install).
+- For a separate media hostname: a DNS name you control, such as
+  `media.example.com`, that you can point at the same server.
+
+## What happens on each request
+
+Playback URLs have two shapes:
+
+```txt
+https://media.example.com/v/{token}/{playback_id}/master.m3u8   private (signed)
+https://media.example.com/p/{playback_id}/master.m3u8           public
+```
+
+For every request, the server:
+
+1. Looks up the playback ID's route. An unknown or revoked ID, or a video
+   that is deleted or not ready yet, is a `404`. A signed ID requested
+   through `/p/`, or any ID of a disabled app, is `403 denied`.
+2. For a signed ID, verifies the token from the path: an ES256 signature by
+   a signing key of the video's app that isn't revoked or retired, `sub`
+   equal to the playback ID, an `iat` no more than 60 seconds in the future,
+   and `exp - iat` within the maximum token lifetime. An expired token is
+   `401 token_expired`; anything else wrong is `403 denied`.
+3. Checks the audience. A `t` token fetches only the poster.
+4. Builds the master playlist fresh, pointing every rendition at the
+   current output, so a viewer stays on one output for the whole session,
+   even if the video is re-encoded meanwhile.
+5. Serves only files the output's committed manifest lists, with a
+   `Content-Type` from an extension allowlist (`.m3u8`, `.mp4`, `.m4s`,
+   `.jpg`) and `X-Content-Type-Options: nosniff`.
+
+Every output is encrypted with AES-128. When a player asks for the key, the
+server derives it on the spot: an HMAC-SHA256 over the video's asset ID and
+the output ID, keyed with the content key secret. No key is stored anywhere,
+and a token for one video can't fetch another video's key. Public playback
+IDs get the key without a token, so the same output plays under either
+policy. See [What encryption does and doesn't do](/docs/build/concepts/encryption).
+
+Players on any origin may fetch: responses carry
+`Access-Control-Allow-Origin: *`. The URL is the credential, and no cookie
+is involved.
+
+## What's cached
+
+| Response | `Cache-Control` |
+| --- | --- |
+| `master.m3u8` | `no-store`. It's generated per request. |
+| The content key | `no-store` |
+| Rendition playlists, segments and the output's poster, under `{playback_id}/{output_id}/` | `max-age=31536000, immutable`. An output's files never change. |
+| `poster.jpg` at the top level | `max-age=300`, since it follows the current output |
+| Subtitle and chapter files (`.vtt`) | `max-age=31536000, immutable` |
+| Subtitle playlists | `no-store` |
+
+Files of a private video are marked `private`, so shared caches and CDNs
+don't keep them; files of a public video are marked `public`.
+
+The server also caches routes, signing keys and outputs in memory for 30
+seconds. On one server, a published change (a revoked playback ID or signing
+key, a new output) applies at the next request. A change to the maximum
+token lifetime can take up to 30 seconds.
+
+## Give playback its own hostname
+
+By default the media URL is the public URL, so videos play from the same
+origin as the dashboard and the API. For production, serve them from a
+separate registrable domain, such as `example-media.com` next to
+`video.example.com`. A hostile file that somehow got stored then can't
+reach dashboard cookies. A different hostname on the same domain, such as
+`media.example.com`, is better than the same origin, but not as strong.
+
+<Steps>
+<Step>
+
+### Point DNS at the server
+
+Create a DNS record for the media hostname that points at the same server as
+the public URL. With the one-line install, Caddy obtains a certificate for
+it on its first request.
+
+</Step>
+<Step>
+
+### Set the media URL
+
+In the dashboard, open **Settings**, and under **Addresses** set
+**Media URL** to `https://media.example.com`. Or set
+`CLIPMUX_MEDIA_URL=https://media.example.com` in the server's environment,
+along with `CLIPMUX_PUBLIC_URL`, and restart. When the environment sets the
+URLs, the dashboard shows them read-only.
+
+</Step>
+<Step>
+
+### Let your apps pick it up
+
+`GET /v1/app` returns the media URL as `base_url`. Apps that build playback
+URLs from `base_url` follow it. Update any Content-Security-Policy that
+names the old origin: `npx @clipmux/node doctor` prints the origins it
+must allow.
+
+</Step>
+</Steps>
+
+## Check it works
+
+Play a public video's master playlist and look at the headers:
+
+```bash
+curl -sI https://media.example.com/p/pid_…/master.m3u8
+```
+
+- `200` with `Cache-Control: no-store` and
+  `Content-Type: application/vnd.apple.mpegurl`: delivery works.
+- `404`: the playback ID doesn't exist or was revoked, or the video isn't
+  ready.
+- `403 denied`: the playback ID is signed, and plays only through
+  `/v/{token}/`. Or its app is disabled.
+- A TLS or connection error: DNS doesn't reach the server yet, or Caddy
+  hasn't been able to get a certificate for the hostname.
+
+The setup test checks the whole path, including playback: run it from
+**Settings**, or with `clipmux admin setup-test --wait` on the server.
+
+## When to move to Cloudflare
+
+Built-in delivery sends every byte from your server. The dashboard describes
+it as fine for a few hundred viewers at once. Move to Cloudflare when your
+server's bandwidth is the limit, when viewers are far from it, or when you
+want playback to keep working while the server restarts: the ClipMux Worker
+serves from R2 and caches at the edge. Your apps, tokens and playback IDs
+stay the same.
+
+## Next
+
+- [Cloudflare edge delivery](/docs/self-host/delivery/cloudflare)
+- [Sign playback tokens](/docs/build/play/sign-tokens)
+- [Security model](/docs/self-host/security-model)

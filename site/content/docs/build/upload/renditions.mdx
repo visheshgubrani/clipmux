@@ -1,0 +1,118 @@
+---
+title: Choose renditions
+description: Pick which resolutions ClipMux encodes a video at, from 360p up to 2160p, and what the larger ones cost.
+---
+
+ClipMux encodes each video into a ladder of renditions, so the player can
+switch between them as the viewer's connection changes. By default a video
+gets every rung up to its own resolution: a 1080p source gets 1080p, 720p,
+480p and 360p, and a 4K source adds 1440p and 2160p. You can ask for fewer,
+to save encoding time and storage.
+
+## Before you start
+
+- An API key with `uploads:write` to choose on an upload, or `assets:write`
+  to choose on an import or a re-encode.
+
+## The ladder
+
+A rung is named by the video's short side, so a vertical video's 1080p is
+1080 pixels wide. Video is H.264 in 6-second segments; audio is one shared
+rendition.
+
+| Rung | Target bitrate | Peak bitrate |
+| --- | --- | --- |
+| `2160p` | 14 Mbit/s | 16.8 Mbit/s |
+| `1440p` | 8 Mbit/s | 9.6 Mbit/s |
+| `1080p` | 5 Mbit/s | 6 Mbit/s |
+| `720p` | 3 Mbit/s | 3.5 Mbit/s |
+| `480p` | 1.5 Mbit/s | 1.8 Mbit/s |
+| `360p` | 800 kbit/s | 1 Mbit/s |
+
+Which rungs a video can get depends on the source:
+
+- **Never above the source.** Only rungs up to the source's short side are
+  encoded. ClipMux doesn't upscale.
+- **At most 4096 pixels on the long side.** A rung whose frame would be
+  wider than that is skipped, so a 21:9 4K source tops out at 1440p.
+- **Small sources.** A source smaller than 360p gets one rendition at its
+  own size.
+
+## Choose renditions
+
+Send `renditions` on `POST /v1/uploads`, on an import with `POST /v1/assets`,
+or on `POST /v1/assets/{id}/reencode`:
+
+```json
+{ "size": 734003200, "passthrough": "lesson_42", "renditions": ["1080p", "480p"] }
+```
+
+- Use the names above, each once, at least one. Anything else is
+  `400 invalid_request`.
+- Rungs above the source are skipped. If none of the ones you chose fits,
+  the largest rung that does is encoded instead, so a video always gets a
+  rendition.
+- Leave `renditions` out for every rung up to the source.
+
+The asset shows `renditions` only when there is a choice, largest first.
+
+The same choice is in each client:
+
+- `@clipmux/node`: `renditions` on `uploads.create`, `assets.importUrl` and
+  `assets.reencode`, or returned from the handler's `upload` callback.
+- `npx @clipmux/node upload --renditions 1080p,480p` and
+  `clipmux push --renditions 1080p,480p`.
+- The dashboard's upload dialog, under **Resolutions**: every rung is on by
+  default, and rungs above the chosen file's resolution show as skipped.
+
+## Change them later
+
+Re-encode with a new list. The video keeps playing its current renditions
+until the new output is ready, then switches:
+
+```bash
+curl -s -X POST https://video.example.com/v1/assets/ast_…/reencode \
+  -H "Authorization: Bearer $CLIPMUX_API_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"renditions": ["2160p", "1080p", "480p"]}'
+```
+
+The new list replaces the video's choice for this output and the ones after
+it; leave `renditions` out to keep the current one. See
+[A video's lifecycle](/docs/build/concepts/lifecycle) for what a re-encode
+does.
+
+## What 4K costs
+
+Adding 2160p and 1440p to a 4K source is the largest choice you make about
+cost:
+
+- **Encoding:** the full ladder for a 4K source is about 4.3 times the
+  pixels of a 1080p source's ladder, so it takes several times longer on the
+  same worker. On a CPU-only worker, a 4K ladder is slow.
+- **Storage and delivery:** the full ladder's target bitrates add up to
+  32.3 Mbit/s with 2160p and 1440p, against 10.3 Mbit/s up to 1080p, so a 4K
+  video stores about 3 times the bytes. Viewers who watch at 2160p also pull
+  about 14 Mbit/s each.
+
+If your viewers watch on laptops and phones, `["1080p", "720p", "480p",
+"360p"]` keeps 4K uploads at the cost of a 1080p one. See
+[Encoding performance](/docs/self-host/encoding/performance) for timings.
+
+## Check it works
+
+Once the video is ready, get it and read `renditions`, or open its
+`master.m3u8` and count the variants:
+
+```bash
+curl -s "https://media.example.com/v/$TOKEN/pid_…/master.m3u8" | grep -A1 EXT-X-STREAM-INF
+```
+
+Each `EXT-X-STREAM-INF` entry is one rendition. A rung you asked for that is missing was above
+the source.
+
+## Next
+
+- [Encoding performance](/docs/self-host/encoding/performance)
+- [Where videos are stored](/docs/self-host/storage)
+- [Upload from the browser](/docs/build/upload/browser)

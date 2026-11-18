@@ -1,0 +1,77 @@
+---
+title: Encoding performance
+description: Measured encode and transcription times on Modal GPUs and a local AMD card, and what drives them.
+---
+
+These are measurements of real ClipMux runs, with the hardware and the date
+of each. They aren't guarantees: your sources, GPUs and network will differ.
+Use them to choose where to encode and to estimate how long a library takes.
+
+## What drives encode time
+
+- **The source's resolution and codec.** A 4K source encodes about 4.3
+  times the pixels of a 1080p one, and gets two more renditions (2160p and
+  1440p). A codec the GPU can't decode, such as AV1 on a T4, decodes on the
+  CPU instead (`nvenc-hybrid`), which is much slower.
+- **Which renditions you ask for.** By default every standard rendition up
+  to the source's size is encoded. Asking for fewer encodes less. See
+  [Choose renditions](/docs/build/upload/renditions).
+- **GPU or CPU.** A GPU path decodes, scales and encodes on the card. The CPU
+  path encodes with libx264, at idle priority on this server.
+- **Uploading the output.** A long video makes thousands of files. The
+  encoder uploads 32 at a time.
+- **Subtitles.** Transcription is its own job after the encode, and on a
+  long video it can take as long as the encode.
+- **Cloud start-up.** A Modal machine took 20 to 53 seconds to start after
+  an upload finished.
+
+## Three videos on Modal
+
+Measured November 2026 on Modal, with the default sandbox (4 CPU cores,
+16 GiB), three lectures uploaded back to back with up to 10 machines at
+once. Each got its own machine with no queue wait, and every job succeeded
+first time. "Upload to subtitles" is from the end of the upload until the
+subtitles were ready.
+
+| Video | Source | GPU | Video encode | Output upload | Audio fetch | Transcription (realtime factor) | Upload to subtitles |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 20 min | 1080p VP9 | T4 | 207 s | 41 s (998 files, 207 MB) | 12 s | 162 s (0.14) | 8 min |
+| 54 min | 4K AV1, 6 renditions | L4 | 1,086 s | 121 s (3,832 files, 5.9 GB) | 31 s | 763 s (0.23) | 35 min |
+| 67 min | 1080p AV1 | T4, `nvenc-hybrid` | 1,372 s | 143 s (3,358 files, 5.2 GB) | 42 s | 1,196 s (0.30) | 48 min |
+
+The 67-minute AV1 video on the T4 spent 23 minutes on video, because the T4
+can't decode AV1 and the machine's four CPUs decoded it. A 76-minute 1080p
+AV1 video on an L4 spent 6 minutes. That is why the L4 and A10G are Modal's
+default GPUs.
+
+## Transcription
+
+The realtime factor is transcription time divided by the audio's length:
+0.23 means 10 minutes of audio took 2.3 minutes.
+
+- **On Modal with CUDA** (November 2026), whisper.cpp ran at 0.14 on an
+  English lecture and 0.23 to 0.30 on Hindi lectures, in the table above.
+- **The 14-second JFK test clip**, under the sandbox with CUDA, took 5.2 s on
+  an L4 and 4.3 s on a T4, including loading the model.
+- **On an AMD RX 6600 XT with Vulkan**, under the sandbox, the same clip
+  took 2.7 s, against 22.8 s on the CPU.
+
+## Short 4K clips
+
+A 2-second 4K clip, encoded into every rendition, measures the fixed cost of
+an encode more than its speed:
+
+| Hardware | Path | Time for 2 s of 4K |
+| --- | --- | --- |
+| AMD RX 6600 XT, local, November 2026 | `vaapi` | 2.3 s |
+| NVIDIA L4 and T4 on Modal, November 2026 | `nvenc` | about 45 to 50 s |
+
+The gap points to a large fixed cost per encode on Modal's runtime, which a
+short clip shows and a long video spreads out; the Modal table above is the
+better guide for real videos.
+
+## Next
+
+- [Encode on Modal](/docs/self-host/encoding/modal)
+- [Encode on this server](/docs/self-host/encoding/this-server)
+- [Requirements and sizing](/docs/self-host/requirements)

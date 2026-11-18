@@ -1,0 +1,76 @@
+---
+title: Troubleshooting
+description: What to look at when a ClipMux server misbehaves, from a server that won't start to playback that fails at the edge.
+icon: LifeBuoy
+---
+
+This page is for the person running the server. If you're building an app
+against ClipMux and an API call fails, start with
+[Troubleshooting for apps](/docs/build/going-live/troubleshooting) instead.
+
+The commands below are for the one-line install, run from `/opt/clipmux`.
+
+## Before you start
+
+- Shell access to the server, and the owner's dashboard sign-in.
+- The request ID, if someone reports an error: it's in the `X-Request-Id`
+  response header, and every log line for that request carries it as
+  `request_id`.
+
+## Three commands to start with
+
+```bash
+cd /opt/clipmux
+docker compose logs --tail 50 app                        # the server's last lines
+docker compose exec app clipmux admin setup-test --wait  # the whole path, end to end
+docker compose exec app clipmux admin outbox             # side effects stuck for over an hour
+```
+
+- `setup-test --wait` puts a sample through upload, encoding, encryption and
+  playback on the configured path, prints each check, and exits 1 unless
+  they all pass.
+- `outbox` lists route publications, key publications, wakes and stops
+  still pending after an hour. They're retried forever;
+  `clipmux admin outbox --retry ID` makes one due at once.
+- On a PC agent, `clipmux worker doctor` checks the connection to the
+  server and its key, then ffmpeg and Shaka Packager, the sandbox, the
+  encoders, the scratch disk and speech, in that order. The first ✗ is the
+  one to fix.
+
+## Symptoms
+
+| Symptom | Look at |
+| --- | --- |
+| The server won't start | The last log line: `schema_newer` (the database was migrated by a newer ClipMux), a secrets key that opens nothing, a missing content key version, or a variable that doesn't parse, named. |
+| Uploads stay processing | **Jobs** in the dashboard shows where each job was routed and why. `clipmux_workers_online` says whether any worker has been seen in the last minute. The built-in worker's lines are in the server's log. |
+| A job waits with `no_fallback` or `fallback_offline` | The primary executor is offline and no fallback can take it. See [Routing, fallback and spend limits](/docs/self-host/encoding/routing-and-limits). |
+| A job waits with `fallback_refused` | An earlier attempt failed in a way that may be the file's fault, so the job waits for the primary rather than reach a paid machine. |
+| Subtitles never appear | Whether a worker can transcribe: its log says which speech backend it chose, or why it won't. See [Transcribe with whisper.cpp](/docs/self-host/captions-and-ai/whisper). |
+| Chapters end `llm_not_connected` | No LLM was connected when they were made. See [Choose an LLM for chapters](/docs/self-host/captions-and-ai/chapters-llm). |
+| An app gets `429` | The `Retry-After` header; the limits are in [Limits and defaults](/docs/reference/limits). |
+| A webhook stopped arriving | The endpoint's deliveries, on the app's **Webhooks** tab or `GET /v1/webhook-endpoints/{id}/deliveries`. After 5 failures in a row the endpoint is skipped for a minute, doubling up to an hour. A delivery that gave up can be redelivered. |
+| Playback `404`s at the edge after a change | `clipmux admin outbox`: a route publication that keeps failing. |
+| Delivery says "R2 refuses the stored credentials" | The Cloudflare token was revoked or rolled. **Connect again** with a new one. |
+| Analytics misses Cloudflare playback | The **Edge analytics** card on **Delivery**: whether a token is connected, the last pull and its error. `collecting.edge` in `GET /v1/analytics`. |
+| Analytics shows no unique viewers | Your app's tokens carry no `vid`. Previews and posters never count. |
+| A share link doesn't work | The link was revoked or expired, its video deleted, or its app disabled. The **Sharing** tab on the video's page shows each link's state. |
+| The dashboard shows a 5xx | The log line with the same `request_id`, and any error logged for it. |
+
+## Get more detail
+
+Set `CLIPMUX_LOG_LEVEL=debug` to log successful playback, storage and worker
+requests too. With the one-line install, the app's environment is set in
+`compose.yml`; add the variable through a `compose.override.yml` beside it,
+restart, and remove it when you're done, since debug is verbose.
+
+## Check it works
+
+After a fix, run `clipmux admin setup-test --wait` again. Exit code `0` and
+every check passing means upload, encoding, encryption and playback work on
+the configured path.
+
+## Next
+
+- [Monitoring](/docs/self-host/operate/monitoring)
+- [Retention](/docs/self-host/operate/retention)
+- [Limitations](/docs/self-host/limitations)

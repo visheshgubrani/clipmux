@@ -1,0 +1,150 @@
+---
+title: Install with one line
+description: Run the installer to start ClipMux, Postgres and Caddy on your server, and get the setup token.
+icon: Download
+---
+
+One command installs ClipMux from the latest release. When it finishes, the
+app, Postgres and Caddy are running under Docker in `/opt/clipmux`, and the
+installer prints the address to open and the setup token that creates the
+owner account.
+
+## Before you start
+
+- A server that meets the [requirements](/docs/self-host/requirements):
+  Linux on amd64 or arm64, Docker with Compose v2, ports 80 and 443 free.
+- Root, or a user in the `docker` group.
+- Two DNS names pointing at the server, for example `video.example.com` and
+  `media.example.com`. You can install before DNS is ready, but you need
+  both names to finish [first run](/docs/self-host/first-run).
+
+## Run the installer
+
+```bash
+curl -fsSL https://clipmux.com/install.sh | sudo sh
+```
+
+`https://clipmux.com/install.sh` redirects to `install.sh` on the latest
+GitHub release. The script then:
+
+1. Checks Docker, Compose, the architecture, free disk space and, on a first
+   install, that ports 80 and 443 are free.
+2. Downloads the release's `SHA256SUMS`, `compose.yml` and `Caddyfile`, and
+   checks both files against `SHA256SUMS`. It never runs anything it
+   downloads.
+3. Writes `.env` with a random Postgres password and a new secrets key,
+   readable only by root.
+4. Pulls the images and starts the stack, waiting up to 10 minutes for it to
+   become healthy. Pulling takes a few minutes the first time.
+5. Reads the setup token from the app's log and prints it.
+
+## What lands in /opt/clipmux
+
+<Files>
+  <Folder name="/opt/clipmux" defaultOpen>
+    <File name=".env" />
+    <File name="compose.yml" />
+    <File name="Caddyfile" />
+  </Folder>
+</Files>
+
+- **`.env`** holds `CLIPMUX_VERSION` (the release), `POSTGRES_PASSWORD` and
+  `CLIPMUX_SECRETS_KEY`, which seals every secret ClipMux keeps in Postgres.
+  It also has commented-out `CLIPMUX_PUBLIC_URL` and `CLIPMUX_MEDIA_URL`
+  lines, for pinning the URLs instead of choosing them in the dashboard.
+  Keep this file.
+- **`compose.yml`** runs three services: `app` (ClipMux), `postgres` and
+  `caddy`. The app is published only on `127.0.0.1:8080`, for commands on
+  the host; everything else reaches it through Caddy.
+- **`Caddyfile`** names no hostnames. Caddy asks ClipMux before it gets a
+  certificate, and ClipMux approves only the public and media URLs you set.
+
+Your videos, Postgres and Caddy's certificates live in Docker volumes
+(`data`, `pgdata`, `caddy-data`), not in this folder.
+
+## What it prints
+
+```text
+  ClipMux v1.0.0 is running.
+
+  Open:         http://203.0.113.10
+  Setup token:  N4V3…
+
+  Secrets key:  v1:…
+  Store this off the host, with your database backups.
+```
+
+- **Open** is the server's first address from `hostname -I`. Behind NAT or
+  on a cloud network, that can be a private address: use the server's public
+  address, or one of your DNS names, instead.
+- **Setup token** creates the owner account. It works for a day; restarting
+  the app prints a new one. If the installer couldn't find it, run
+  `cd /opt/clipmux && sudo docker compose logs app | grep setup_token`.
+- **Secrets key** is also in `.env`. Copy it somewhere off the server now.
+  Without it, a database backup can't be restored: every stored secret and
+  every encoded video becomes unusable.
+
+## Options
+
+Pass options to the script after `sh -s --`:
+
+```bash
+curl -fsSL https://clipmux.com/install.sh | sudo sh -s -- --version v1.0.0
+```
+
+| Option | What it does |
+| --- | --- |
+| `--version vX.Y.Z` | Installs that release instead of the latest. |
+| `--dir DIR` | Installs in `DIR` instead of `/opt/clipmux`. Pass the same `--dir` when you upgrade or uninstall. |
+| `--uninstall` | Stops and removes the stack, keeping the volumes and `.env`. See [Upgrade and uninstall](/docs/self-host/install-options/upgrade-and-uninstall). |
+| `--purge` | With `--uninstall`, also deletes the volumes and the folder. |
+
+## Installer variables
+
+The installer reads these from its environment. Put them after `sudo` so
+they reach the script:
+
+```bash
+curl -fsSL https://clipmux.com/install.sh | sudo CLIPMUX_ADMIN_PORT=8090 sh
+```
+
+| Variable | Default | What it does |
+| --- | --- | --- |
+| `CLIPMUX_HTTP_PORT` | `80` | The host port for Caddy's HTTP. Saved in `.env` on the first install. |
+| `CLIPMUX_HTTPS_PORT` | `443` | The host port for Caddy's HTTPS. Saved in `.env` on the first install. |
+| `CLIPMUX_ADMIN_PORT` | `8080` | The loopback port the app is published on, for commands on the host. Saved in `.env` on the first install. |
+| `CLIPMUX_IMAGE` | `ghcr.io/visheshgubrani/clipmux` | The image, without its tag, for a mirror. Saved in `.env` when set. |
+| `CLIPMUX_RELEASE_URL` | the release on GitHub | Where to download `SHA256SUMS`, `compose.yml` and `Caddyfile` from, for a mirror. |
+
+Caddy's certificates come from Let's Encrypt, which connects to ports 80
+and 443 from the internet. Other HTTP and HTTPS ports only work if something
+forwards 80 and 443 to them.
+
+## Check it works
+
+```bash
+curl -fsS http://127.0.0.1:8080/readyz
+```
+
+It prints `ok` once the app is up and Postgres answers (use your
+`CLIPMUX_ADMIN_PORT` if you changed it). Then open the
+printed address in a browser: the page asks for the setup token.
+
+If the installer stopped instead:
+
+- **`port 80 is in use`**: another web server owns the port. Stop it, or
+  follow [Behind your own reverse proxy](/docs/self-host/install-options/reverse-proxy).
+- **`only N GiB free under …`**: free disk space; ClipMux needs at least
+  4 GiB.
+- **`can't reach Docker`**: run it with `sudo`, or as a user in the `docker`
+  group.
+- **`ClipMux didn't become healthy`**: the app's last 50 log lines are
+  printed above the error. The last line says why, for example a
+  variable that doesn't parse.
+
+## Next
+
+- [First run](/docs/self-host/first-run): create the owner, set the URLs,
+  run the setup test
+- [Requirements and sizing](/docs/self-host/requirements)
+- [Upgrade and uninstall](/docs/self-host/install-options/upgrade-and-uninstall)

@@ -1,0 +1,183 @@
+---
+title: Other players and native apps
+description: Play ClipMux videos in hls.js, Safari, ExoPlayer and any other HLS player, with the token in the URL path.
+---
+
+`<clipmux-player>` is the easy path in a web page, but nothing about ClipMux
+needs it. A video is standard HLS: a master playlist, fMP4 (CMAF) segments,
+a separate audio rendition and AES-128 encryption with the key served
+beside the segments. Any player that plays that plays ClipMux. This page
+covers the URL, how the token travels, and how to keep a long session
+playing.
+
+## Before you start
+
+- A playback ID, and for a private video a token your backend signed; see
+  [Sign playback tokens](/docs/build/play/sign-tokens).
+- The media origin, `base_url`, from the video or from `GET /v1/app`. This
+  page uses `https://media.example.com`.
+
+## The URL
+
+```txt
+Private: https://media.example.com/v/{token}/{playback_id}/master.m3u8
+Public:  https://media.example.com/p/{playback_id}/master.m3u8
+```
+
+The token is part of the path, not a query string or a header. Every
+playlist, segment and key URL inside the master is relative, so the token
+rides along to each of them without the player knowing. There are no
+cookies and no custom headers to set, and delivery allows requests from any
+origin (`Access-Control-Allow-Origin: *`), so a web player on your own
+domain needs no CORS setup.
+
+What delivery answers, and what a player should do:
+
+| Status | Meaning | Do |
+| --- | --- | --- |
+| `401 token_expired` | The token's `exp` has passed. | Get a new token and retry. |
+| `403 denied` | The token is wrong for this video, or the app was disabled. | Stop. |
+| `404` | The playback ID was revoked or doesn't exist, or the video isn't ready. | Stop, and show that the video is gone. |
+
+## Keep long sessions playing
+
+A token expires, and a player keeps fetching segments for as long as the
+viewer watches. There are two ways to handle it:
+
+1. **Renew the token.** A player that lets you change request URLs can swap
+   a new token into the path when it sees a `401`. `@clipmux/player`
+   exports helpers for this, shown for hls.js below.
+2. **Sign for the whole session.** A player you can't hook into, including
+   every native HLS player, gets a token that outlives the session. Sign it
+   for the larger of twice the video's duration and 4 hours, within
+   `max_token_lifetime_seconds` from `GET /v1/app` (7 days by default):
+
+   ```ts
+   const token = await clipmux.playback.token('pid_…', {
+     native: true,
+     durationSeconds: asset.duration_seconds, // 12 hours if you leave it out
+   })
+   ```
+
+   In another language, set `exp` to `iat` plus that many seconds.
+
+A longer token is a longer-lived URL: anyone who copies it can play the
+video until it expires. Prefer renewal where the player allows it.
+
+## hls.js
+
+ClipMux's own tests play videos with plain hls.js. Load the master URL:
+
+```ts
+import Hls from 'hls.js'
+
+const hls = new Hls()
+hls.loadSource(`https://media.example.com/v/${token}/${playbackId}/master.m3u8`)
+hls.attachMedia(video)
+```
+
+To renew tokens, wrap hls.js's loader with `createRefreshLoader` from
+`@clipmux/player`. On a `401` it asks your callback for a new token once,
+however many requests failed together, puts it into that request and every
+later one, and retries. hls.js loads playlists, segments and keys through
+the same loader, so this covers them all:
+
+```ts title="player.ts"
+import Hls from 'hls.js'
+import { createRefreshLoader, type LoaderClass, playbackUrl, TokenSession } from '@clipmux/player'
+
+const baseUrl = 'https://media.example.com'
+const session = new TokenSession(firstToken, () => fetchTokenFromYourBackend(playbackId), {
+  onDenied: () => video.pause(), // your callback returned null, or delivery said 403
+})
+const Base = Hls.DefaultConfig.loader as unknown as LoaderClass<{ url: string }>
+const loader = createRefreshLoader(Base, session, baseUrl, playbackId)
+const hls = new Hls({ loader: loader as unknown as typeof Hls.DefaultConfig.loader })
+hls.loadSource(playbackUrl({ baseUrl, playbackId, token: session.current }))
+hls.attachMedia(video)
+```
+
+Your callback returns a new token, or `null` to stop. A callback that throws
+is retried after 1, 2 and 4 seconds. For a player with another loader or
+request hook, `rewriteTokenUrl(url, mediaOrigin, playbackId, token)` puts a
+token into a ClipMux URL and leaves any other URL alone.
+
+## Safari and iOS
+
+Safari plays HLS itself. ClipMux's tests play a private video in Safari with
+a plain `<video>` element, including its separate audio track:
+
+```html
+<video src="https://media.example.com/v/eyJ…/pid_…/master.m3u8" controls playsinline></video>
+```
+
+Safari's own player can't renew a token mid-video, so sign for the whole
+session. On iOS 17.1 and later, hls.js runs on Managed Media Source, so
+hls.js with the refresh loader, or `<clipmux-player>`, can renew instead.
+
+## Android with ExoPlayer
+
+ClipMux's tests play a private video with Media3 ExoPlayer 1.5.1, including
+its encryption and separate audio rendition. Add the HLS module:
+
+```kotlin title="build.gradle.kts"
+implementation("androidx.media3:media3-exoplayer:1.5.1")
+implementation("androidx.media3:media3-exoplayer-hls:1.5.1")
+```
+
+and play the master URL:
+
+```kotlin
+val player = ExoPlayer.Builder(context).build()
+player.setMediaItem(MediaItem.fromUri("https://media.example.com/v/$token/$playbackId/master.m3u8"))
+player.prepare()
+player.play()
+```
+
+Fetch the token from your own backend, which checks the viewer first, and
+sign it for the whole session.
+
+## Other players
+
+Video.js, Shaka Player, AVPlayer on iOS and tvOS, and players on smart TVs
+aren't covered by ClipMux's tests. They should play the same URL, since it
+is standard HLS with AES-128, but check them yourself. Unless you can hook
+the player's requests, sign tokens for the whole session.
+
+AirPlay and Chromecast hand the URL to the receiving device, which fetches
+the video itself, so nothing on the sending side can renew the token. Sign
+those tokens for the whole session too. `<clipmux-player>` reports native
+playback to your backend with `native: true`, but it can't tell whether the
+viewer will cast, so a long session that starts in the browser and moves to
+a TV may stop when its token expires.
+
+## Subtitles and chapters
+
+Ready subtitles are listed in the master playlist as an HLS subtitles
+rendition, so players that show HLS subtitles find them with no extra
+work. A player that wants a WebVTT file instead can fetch the sidecar URL:
+
+```txt
+https://media.example.com/v/{token}/{playback_id}/tracks/{track_id}.vtt
+```
+
+Chapters are never in the master playlist. Fetch the chapters track's VTT
+from the same URL form, and `parseChapters` from `@clipmux/player` reads it
+into `{ startTime, endTime, title }` in seconds. See
+[Chapters](/docs/build/captions/chapters).
+
+## Check it works
+
+```bash
+curl -s "https://media.example.com/v/$TOKEN/pid_…/master.m3u8" | head
+```
+
+A `200` with `#EXTM3U` and `#EXT-X-STREAM-INF` lines means the URL is right.
+If the player still fails, open its network log: a `401` partway through a
+session means the token expired and nothing renewed it.
+
+## Next
+
+- [Add the player](/docs/build/play/player)
+- [Sign playback tokens](/docs/build/play/sign-tokens)
+- [Delivery API reference](/docs/reference/api/delivery)

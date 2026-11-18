@@ -1,0 +1,100 @@
+---
+title: Production checklist
+description: Check credentials, webhooks, playback and error handling before real viewers use your ClipMux integration.
+icon: ListChecks
+---
+
+Work through this list before your app's first real upload. Each item is
+something that works in development and fails, or leaks, in production when
+it's missed.
+
+## Credentials
+
+- [ ] **A separate ClipMux app for production.** Make one app per
+      environment: production, staging, and one per developer. Videos,
+      events and `passthrough` lookups are scoped to the app, so a test
+      upload never shows up in production.
+- [ ] **The production credentials only in production.** Put the five
+      `CLIPMUX_*` values in your host's secret store, not in a committed
+      file or a container image.
+- [ ] **Secrets stay on the server.** `CLIPMUX_API_KEY`,
+      `CLIPMUX_SIGNING_KEY` and `CLIPMUX_WEBHOOK_SECRET` never appear in
+      browser code, and no variable holding them has a public prefix such as
+      `NEXT_PUBLIC_`.
+- [ ] **The key has only the scopes it needs.** The defaults are
+      `uploads:write`, `assets:read` and `assets:write`. Give
+      `analytics:read` to a separate key if only part of your app reads
+      analytics.
+- [ ] **Nothing logs tokens, playback URLs, keys or webhook signatures.** A
+      playback URL contains its token.
+
+## The server
+
+- [ ] **The ClipMux server has its real public URL, on HTTPS.** Browsers
+      upload to it and play from its media origin, so `localhost` won't do.
+      The server refuses to make API keys while its public URL is loopback.
+- [ ] **`doctor` passes with the production settings.**
+
+  ```bash
+  npx @clipmux/node doctor --env-file .env.production
+  ```
+
+  It must end with `✓ Ready.`
+
+## Your pages
+
+- [ ] **The Content-Security-Policy allows ClipMux's origins.** Use the
+      `connect-src`, `media-src`, `img-src` and `style-src` sources that
+      `doctor` prints for the production app.
+- [ ] **Uploads reach storage from your production origin.** Upload a file
+      from the production site, and watch the parts in the browser's network
+      panel. The record goes from uploading to processing to ready without a
+      reload.
+
+## Webhooks
+
+- [ ] **A webhook endpoint is registered for the production app,** at a URL
+      ClipMux can reach, and it answers `200`.
+- [ ] **`CLIPMUX_WEBHOOK_SECRET` is that endpoint's secret.** A
+      `whsec_local_…` secret from `init` is for `listen` only, and `doctor`
+      warns about it.
+- [ ] **The handler is idempotent.** It upserts by `passthrough`, keeps the
+      highest `version`, and answers `200` for events that aren't yours.
+- [ ] **A catch-up job runs.** Walk `clipmux.assets.changes({ since })` on
+      a schedule, so an event missed after 24 hours of retries is still
+      applied. See [Receive webhooks](/docs/build/webhooks).
+- [ ] **The handler answers non-2xx only when your own store fails,** so
+      ClipMux retries what you couldn't save and nothing else.
+
+## Playback
+
+- [ ] **Tokens are short.** 15 minutes, the SDK's default, for
+      `<clipmux-player>`, which renews them. Sign longer only for native
+      playback.
+- [ ] **`native` is passed through.** If you sign tokens yourself, pass the
+      player's `native` to `playback.token`, or Safari before 17.1 stops
+      when the first token expires.
+- [ ] **A long session keeps playing.** Watch for more than 15 minutes and
+      check that renewals succeed.
+- [ ] **A refused viewer sees your own state,** such as a sign-in or enrol
+      page, on `clipmux-denied`, not an error.
+- [ ] **Tokens carry a viewer ID.** Pass `viewerId` so analytics count
+      unique viewers. ClipMux keeps only a keyed hash.
+
+## Errors and clean-up
+
+- [ ] **Errors are handled by `code`.** `ClipMuxError` has a stable `code`
+      and `status`; branch on those, not the message. See
+      [Troubleshooting](/docs/build/going-live/troubleshooting).
+- [ ] **Uploads use an idempotency key,** such as your record's ID, so a
+      retried request can't make a second upload.
+- [ ] **Videos you no longer need are deleted.** Delete replaced and
+      cancelled uploads' videos from a scheduled job, so a failure is
+      retried: `200`, `202` and `404` from `assets.delete` all mean done.
+
+## Next
+
+- [Troubleshooting](/docs/build/going-live/troubleshooting)
+- [Receive webhooks](/docs/build/webhooks)
+- [Security checklist](/docs/self-host/operate/security-checklist), for the
+  server's owner

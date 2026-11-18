@@ -1,0 +1,192 @@
+---
+title: Cloudflare edge delivery
+description: Serve playback from Cloudflare's edge with the ClipMux Worker and an R2 bucket, connected from the dashboard with one token.
+---
+
+Connecting Cloudflare moves playback from your server to the ClipMux Worker,
+which runs in your own Cloudflare account, reads an R2 bucket and caches at
+the edge. Your apps, tokens, playback IDs and `base_url` stay the same; the
+Worker checks tokens and derives keys exactly as
+[built-in delivery](/docs/self-host/delivery/built-in) does.
+
+You paste one API token into the dashboard. ClipMux reads what the token can
+reach, creates the bucket, deploys the Worker and points your media
+hostname at it.
+
+<LeavesYourServers>
+  Cloudflare stores the encoded, encrypted video files of new videos in your
+  R2 bucket, and holds the content key secret as a Worker secret so it can
+  derive each video's key at the edge. Viewers' playback requests go to
+  Cloudflare instead of your server. Uploaded originals stay where
+  **Storage** keeps them.
+</LeavesYourServers>
+
+## Before you start
+
+- A domain that is an **active zone** in your Cloudflare account, and a media
+  hostname in it, such as `media.example.com`. It must differ from the public
+  URL's hostname; a different registrable domain is better still.
+- **Workers Paid** on the account. Video delivery exceeds the free plan's
+  request quota, and Cloudflare's terms ask for a paid service for video.
+  See [Workers pricing](https://developers.cloudflare.com/workers/platform/pricing/).
+- A public URL that Cloudflare can reach. Videos encoded before you connect
+  keep their files on your server, and the Worker fetches them from there.
+- The owner's dashboard sign-in.
+
+## Connect Cloudflare
+
+<Steps>
+<Step>
+
+### Create the token
+
+In the dashboard, open **Delivery** and choose **Connect Cloudflare**, then
+**Create token on Cloudflare**. Cloudflare's create-token form opens with
+every permission already chosen:
+
+| Permission | On |
+| --- | --- |
+| Workers Scripts: Edit | the account |
+| Workers Routes: Edit | the account |
+| Workers R2 Storage: Edit | the account |
+| Billing: Read | the account |
+| Zone: Read | its zones |
+| DNS: Edit | its zones |
+
+Pick the account, create the token and copy it. To limit R2 to one bucket,
+create the bucket first and scope the token to it there.
+
+</Step>
+<Step>
+
+### Paste it and choose
+
+Paste the token into **API token**. ClipMux reads what it reaches, so
+nothing is typed by hand: the **Account** (only when the token reaches
+several), the **Media hostname** as a subdomain of one of the account's
+active zones, and the **R2 bucket** new videos are encoded into, an
+existing one or `clipmux-media`, created for you. If the account isn't on
+Workers Paid, the dialog says so before anything changes.
+
+</Step>
+<Step>
+
+### Connect
+
+Choose **Connect Cloudflare**. ClipMux runs these steps in order and shows
+each one, stopping at the first that fails:
+
+1. Checks the token and the account.
+2. Finds the zone and checks it is active.
+3. Checks Workers Paid.
+4. Creates the bucket if it's missing, derives R2 credentials from the
+   token, checks the bucket and applies CORS.
+5. Deploys the Worker, with the content key secret and the analytics key
+   as Worker secrets.
+6. Writes a route record for every playback ID to the bucket, so the Worker
+   serves from its first request.
+7. Removes the DNS records at the media hostname, and attaches the Worker
+   to it as a custom domain.
+8. Sets the media URL to `https://media.example.com`.
+9. Saves the connection and queues the setup test through the Worker.
+
+Every step is safe to repeat: fix what failed and connect again.
+
+</Step>
+</Steps>
+
+The Worker is named after its hostname: `media.example.com` deploys
+`clipmux-media-example-com`. Two installs can share one Cloudflare account
+without overwriting each other's Worker. Connecting again to the same
+hostname redeploys the Worker made before, whatever it's called.
+
+ClipMux uses the token for the request and keeps only its ID. Its Workers
+and DNS permissions stay live in Cloudflare: narrow or revoke them there
+when you no longer need to redeploy.
+
+<Warning>
+  R2's credentials are derived from the token. Revoking or rolling the token
+  cuts off storage, and **Delivery** then shows "R2 refuses the stored
+  credentials". Connect again with a new token to fix it.
+</Warning>
+
+If `CLIPMUX_MEDIA_URL` is set in the server's environment, ClipMux can't
+change the media URL. Set it to the Worker's hostname and restart, then
+connect again.
+
+## What changes
+
+- **New videos' encoded files go to the R2 bucket.** Where uploads go
+  doesn't change: **Storage** keeps the originals, on this server's disk or
+  a bucket you chose.
+- **Older videos keep playing.** The Worker fetches their files from your
+  server until you move them. **Delivery** shows how many videos still play
+  through this server, with a button to move their encoded files to the
+  bucket. Progress shows on **Jobs**.
+- **Revocations reach the edge within a minute.** The Worker caches route
+  records for 60 seconds, so a revoked playback ID or signing key stops
+  playing within that time.
+
+## Redeploy the Worker
+
+A ClipMux upgrade can carry a newer Worker. **Delivery** then shows "A newer
+Worker is available", with the deployed and current versions. Choose
+**Connect again** and paste a token; Connect redeploys the Worker in place.
+
+Rotating the content key secret also redeploys the Worker, so it needs a
+token too. See [Rotate keys and secrets](/docs/self-host/operate/rotate-secrets).
+
+To move to a different media hostname, connect again with the new one.
+ClipMux deploys a new Worker named after it. The old Worker and its custom
+domain stay in your account, serving from route records that are no longer
+updated, until you remove them in Cloudflare.
+
+## Disconnect
+
+Choose **Disconnect Cloudflare** on **Delivery**, or call
+`DELETE /v1/cloudflare`. ClipMux puts the media URL back to the public URL,
+switches delivery back to this server, removes the Worker's route records
+and keys from the bucket so it refuses every playback ID, forgets the
+connection and queues a setup test.
+
+- Files already on R2 stay there and keep playing through this server. The
+  bucket stays a storage config.
+- The Worker and its custom domain stay in your Cloudflare account, since
+  ClipMux keeps no token to remove them. Delete them in Cloudflare.
+- While `CLIPMUX_MEDIA_URL` names the Worker's hostname, disconnecting
+  answers `409 pinned`. Change the variable first.
+
+<Note>
+  Connect from the dashboard is the supported way to set up the Worker.
+  Deploying it by hand isn't, because ClipMux has no command that exports
+  the content key secrets or switches delivery to a Worker you deployed.
+</Note>
+
+## Check it works
+
+The last step of Connect queues the setup test through the Worker. Its
+result shows under **Settings**, or run it on the server:
+
+```bash
+docker compose exec app clipmux admin setup-test --wait
+```
+
+Then fetch a public video through the new hostname:
+
+```bash
+curl -sI https://media.example.com/p/pid_…/master.m3u8
+```
+
+- `200`: the Worker answers.
+- `404` for a video that plays through built-in delivery: its route
+  record hasn't reached the bucket. `clipmux admin outbox` on the server
+  lists route publications that keep failing.
+- A failed step in Connect: its detail says what to fix. Connect again
+  once it's fixed.
+
+## Next
+
+- [Edge analytics](/docs/self-host/delivery/edge-analytics): count playback
+  at the edge
+- [Where videos are stored](/docs/self-host/storage)
+- [Rotate keys and secrets](/docs/self-host/operate/rotate-secrets)

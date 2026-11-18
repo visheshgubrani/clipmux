@@ -1,0 +1,141 @@
+---
+title: A tour of the dashboard
+description: What each page of the ClipMux dashboard shows and what you can do there.
+icon: LayoutDashboard
+---
+
+The dashboard is where the owner runs the instance: videos, encoding,
+storage, delivery, captions and the apps that use the API. It is an API
+client like any other, with no private path into the server, so everything
+it does can also be done through the
+[management API](/docs/reference/management-api). It works in light and dark
+themes, on a laptop or a phone.
+
+The sidebar has two groups: **Home**, **Videos**, **Analytics** and
+**Jobs**, then **Encoding**, **Storage**, **Delivery**, **Captions & AI**
+and **Apps & API**, with **Settings** at the bottom. The menu under your
+email holds the theme switch, **Settings** and **Sign out**.
+
+## Home
+
+A summary line and an **Upload** button, then:
+
+- **Finish setting up**: the optional steps left (store uploads in a
+  bucket, connect Cloudflare, add a cloud GPU, turn on chapters, create an
+  app), until they're done or you hide them.
+- **Needs attention**: videos that failed or are still encoding, with what
+  to do.
+- **Recent videos**, and a status line for encoding, delivery, uploads and
+  captions, each linking to its page.
+
+## Videos
+
+![The Videos page: a grid of posters with a search box and status filters](/screenshots/videos-light.webp)
+
+Every video, as a poster grid or a list. Search by title, reference or ID,
+filter by status (**All**, **Ready**, **Encoding**, **Failed**) and, when
+there's more than one, by app. Drop files anywhere on the page to upload
+them.
+
+## A video
+
+![A video's page: the player with subtitles, and the video's details](/screenshots/video-light.webp)
+
+Opening a video shows four tabs:
+
+- **Overview**: the player, a chapter strip under it when the video has
+  chapters, and the details (duration, privacy, app, resolutions, captions,
+  ID and reference).
+- **Captions & chapters**: the subtitles and chapters as timed rows, to
+  generate again or delete.
+- **Sharing**: who can watch (signed or public), share links, and playback
+  IDs. A public video shows its stream URL and a `<clipmux-player>`
+  snippet.
+- **Analytics**: views, watch time and other metrics for this video.
+
+From the video's header you can rename it, re-encode it (with a choice of
+resolutions) or delete it.
+
+## Upload
+
+Choose or drop several files at once. Each shows its progress, can be
+paused or cancelled, and resumes after a reload. Before uploading you choose
+who can watch, whether to generate subtitles and chapters, which
+resolutions to encode, and, under advanced options, the app and a
+reference of your own. Chapters need an LLM connected under
+**Captions & AI**.
+
+## Analytics
+
+Views, watch time, unique viewers and bandwidth for the last 24 hours, 7,
+30 or 90 days, compared with the period before, and the top videos. Filter
+by app. See [Views, watch time and unique viewers](/docs/build/analytics)
+for what counts.
+
+## Jobs
+
+Every job: encodes, re-encodes, imports, subtitles, chapters, moves and
+deletes, filtered by status and kind. A row opens into its attempts: where
+each ran, why it was routed there, which encoder each output used and any
+that failed, and the error.
+
+## Encoding
+
+![The Encoding page: this server, Modal and RunPod as choices](/screenshots/encoding-light.webp)
+
+Where new videos are encoded: **This server**, **Modal** or **RunPod**.
+Connect a cloud GPU here, see its spend this month against its limit, and
+choose whether this server takes over when the cloud GPU can't. See
+[Encode on this server](/docs/self-host/encoding/this-server) and
+[Routing, fallback and spend limits](/docs/self-host/encoding/routing-and-limits).
+
+## Storage
+
+Where uploaded originals are kept: this server's disk, R2 buckets and
+S3-compatible stores, with how many videos each holds and which is the
+default. Add a bucket, rotate an S3 store's keys, remove one no video uses,
+and move existing uploads to the default. See
+[Where videos are stored](/docs/self-host/storage).
+
+## Delivery
+
+How viewers get videos: from this server, or from Cloudflare's edge with
+encoded files in R2. Connect or disconnect Cloudflare, move existing
+encoded files to R2, and connect edge analytics. See
+[Built-in delivery](/docs/self-host/delivery/built-in) and
+[Cloudflare edge delivery](/docs/self-host/delivery/cloudflare).
+
+## Captions & AI
+
+![Captions and AI: subtitles on your machines or a speech API, and an LLM for chapters](/screenshots/captions-light.webp)
+
+Where subtitles are made, on machines you run or by a speech API you
+connect, each choice saying what leaves your servers; and the LLM that
+titles chapters. See
+[Transcribe with whisper.cpp](/docs/self-host/captions-and-ai/whisper),
+[Use a speech API](/docs/self-host/captions-and-ai/speech-apis) and
+[Choose an LLM for chapters](/docs/self-host/captions-and-ai/chapters-llm).
+
+## Apps & API
+
+![Apps and API: an app's API keys, signing keys and webhooks](/screenshots/apps-light.webp)
+
+One app per site or service that uses ClipMux. **Create app** shows its
+secrets once. Each app has tabs for **API keys**, **Signing keys**,
+**Webhooks** (with each endpoint's health and deliveries, redelivery, and
+secret rotation) and a **Danger zone** to disable it. See the
+[Quickstart](/docs/build/quickstart).
+
+## Settings
+
+- **General**: the public and media URLs, and the setup test.
+- **Account**: your password and two-factor sign-in.
+- **Security**: rotating the content key, and a reminder about backups.
+- **About**: the licences. Run `clipmux version` on the server for the
+  release.
+
+## Next
+
+- [First run](/docs/self-host/first-run)
+- [Where videos are stored](/docs/self-host/storage)
+- [Management API](/docs/reference/management-api)

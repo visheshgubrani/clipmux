@@ -1,0 +1,180 @@
+---
+title: Subtitles and transcripts
+description: Have ClipMux transcribe a video's speech into subtitles the player shows, and read the transcript as text with timings.
+---
+
+ClipMux can transcribe a video's speech into a subtitles track. The player
+shows it in its captions menu with no extra code, any HLS player finds it in
+the playlist, and your backend can read the same transcript as text, with
+segment and word timings, for search, notes or an AI feature of your own.
+
+Transcription runs where the server's owner set it up: on the server's own
+workers with [whisper.cpp](/docs/self-host/captions-and-ai/whisper), or with
+a [speech API](/docs/self-host/captions-and-ai/speech-apis) they connected.
+Your app asks for subtitles the same way in both cases.
+
+<LeavesYourServers>
+  If the owner connected a speech API, the video's audio is sent to that
+  provider to be transcribed. With whisper.cpp, nothing leaves the
+  owner's machines.
+</LeavesYourServers>
+
+## Before you start
+
+- An API key with `assets:write` to ask for subtitles, and `assets:read` to
+  read tracks and transcripts. The default scopes have both.
+- A video with speech in it. ClipMux detects the language.
+
+## Ask for subtitles
+
+### At upload
+
+Add `generate` when you create the upload:
+
+```ts title="app/api/clipmux/[action]/route.ts"
+async upload(req, { file }) {
+  return { passthrough: 'lesson_42', title: file.name, generate: { subtitles: true } }
+},
+```
+
+`generate` works the same on `POST /v1/uploads`, on an import with
+`POST /v1/assets`, and with the client's `uploads.create`.
+`generate: { chapters: true }` asks for subtitles too, since chapters are
+made from them.
+
+Subtitles are made after the video is ready, and never hold it up:
+`video.asset.ready` comes first, then the track's own event.
+
+### For a video you already have
+
+```ts
+const { track, job } = await clipmux.tracks.create('ast_…', { kind: 'subtitles' })
+// track: { id: 'trk_…', kind: 'subtitles', source: 'generated', status: 'preparing' }
+```
+
+`POST /v1/assets/{id}/tracks` with `{"kind": "subtitles"}` answers `202`.
+If the video already has subtitles, a new track is made and the old one
+keeps playing until the new one is ready. It refuses with `409` and:
+
+| Code | Meaning |
+| --- | --- |
+| `asset_not_ready` | The video is still processing. Wait for `video.asset.ready`. |
+| `no_audio` | The video has no audio track. |
+| `job_active` | Another job is changing this video. Wait, or send `"supersede": true` to cancel a transcription that's running. |
+| `asset_deleted` | The video is deleted. |
+
+## Know when it's ready
+
+A track's `status` is `preparing`, `ready` or `errored`. It's on the video,
+in `tracks`, and ClipMux sends a webhook when it changes:
+
+| Event | When |
+| --- | --- |
+| `video.asset.track.ready` | The track is ready to play and read. |
+| `video.asset.track.errored` | Transcription failed. `track.error_code` says why. |
+| `video.asset.track.deleted` | The track was deleted. |
+
+Track events carry `track: {id, kind, error_code?}` beside the video. With
+`clipmuxHandler`, your `asset` callback gets the video with its current
+`tracks`, and the event as its second argument:
+
+```ts
+async asset(asset, event) {
+  const subtitles = asset.tracks?.find((t) => t.kind === 'subtitles' && t.status === 'ready')
+  await db.lesson.update({ where: { ref: asset.passthrough }, data: { subtitlesTrackId: subtitles?.id } })
+},
+```
+
+See [Receive webhooks](/docs/build/webhooks).
+
+## Show them
+
+`<clipmux-player>` needs nothing more: a ready subtitles track is listed in
+the video's HLS playlist, so it appears in the player's captions menu,
+labelled with its language. Other HLS players find it in the same place.
+
+For a player that wants a WebVTT file, the track is also at:
+
+```txt
+https://media.example.com/v/{token}/{playback_id}/tracks/{track_id}.vtt
+```
+
+or under `/p/{playback_id}/…` for a public playback ID.
+
+## Read the transcript
+
+```ts
+const t = await clipmux.tracks.transcript('ast_…', 'trk_…')
+```
+
+`GET /v1/assets/{id}/tracks/{track_id}/transcript` returns, the moment the
+track reads `ready`:
+
+```json
+{
+  "track_id": "trk_…",
+  "language": "en",
+  "duration_ms": 612400,
+  "text": "Welcome to the course. Today we…",
+  "segments": [{ "id": "s0", "start_ms": 0, "end_ms": 4200, "text": "Welcome to the course." }]
+}
+```
+
+Times are in milliseconds. `language` is the detected language code, for
+example `en` or `hi`. Add `words: true` (`?words=true`) for each segment's
+word timings. Before the track is ready, the route answers
+`409 track_not_ready`.
+
+If you store the text in Postgres, strip any `\u0000` characters first:
+Postgres `text` columns refuse them.
+
+## Remove subtitles
+
+```ts
+await clipmux.tracks.delete('ast_…', 'trk_…')
+```
+
+`DELETE /v1/assets/{id}/tracks/{track_id}` removes the track. Its file and
+transcript go at once; it answers `202` while the track is taken out of the
+playlist and `200` once nothing lists it.
+
+## When transcription fails
+
+An `errored` track's `error_code` is one of:
+
+| Code | Meaning |
+| --- | --- |
+| `no_audio` | The video has no audio. |
+| `transcribe_failed` | Speech recognition failed. |
+| `transcribe_unavailable` | No worker or speech API can transcribe right now. |
+| `transcript_invalid` | The transcript that came back was not valid. |
+| `speech_api_rejected` | The speech API refused the request. The server's owner should check its key and model. |
+| `speech_api_unavailable` | The speech API kept failing. |
+
+To try again, ask for subtitles with `POST /v1/assets/{id}/tracks`.
+
+## What it doesn't do
+
+- One language per video, detected from the speech. There is no language
+  hint, and no translation.
+- No uploading your own caption files.
+- No editing a transcript.
+
+## Check it works
+
+Upload a short clip with speech and `generate: { subtitles: true }`, or run
+`tracks.create` on a ready video. Your webhook receives
+`video.asset.track.ready` once it's transcribed. Then:
+
+```bash
+curl -s https://video.example.com/v1/assets/ast_…/tracks/trk_…/transcript \
+  -H "Authorization: Bearer $CLIPMUX_API_KEY" | head -c 300
+```
+
+prints the transcript, and the player's captions button lists the language.
+
+## Next
+
+- [Chapters](/docs/build/captions/chapters), made from the transcript
+- [Add the player](/docs/build/play/player)
+- [Subtitles and chapters API reference](/docs/reference/api/subtitles-and-chapters)

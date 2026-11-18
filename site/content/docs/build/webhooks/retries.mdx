@@ -1,0 +1,164 @@
+---
+title: Retries, redelivery and secret rotation
+description: How ClipMux retries a failed webhook for 24 hours, how to send one again, and how to change a webhook secret without losing events.
+---
+
+A webhook that fails isn't lost at once. ClipMux retries it on a schedule
+for 24 hours, backs off from an endpoint that keeps failing, and keeps a
+log of every delivery that the server's owner can read and redeliver from
+the dashboard. This page covers that schedule, redelivery, and changing an
+endpoint's secret with no downtime.
+
+## Before you start
+
+- A webhook endpoint for your app; see [Receive webhooks](/docs/build/webhooks).
+- For redelivery and rotation, the owner's account on the ClipMux server.
+  These are owner actions in the dashboard; an API key can't reach them.
+
+## What counts as delivered
+
+Any `2xx` answer within 10 seconds. Everything else is a failure: another
+status, a redirect (never followed), a timeout, or a connection that
+fails. Each try is signed with a fresh timestamp, and every try of the same
+event has the same `X-Webhook-Id`.
+
+## The retry schedule
+
+After a failed try, ClipMux waits, then tries again:
+
+| Try | About this long after the event |
+| --- | --- |
+| 1 | at once |
+| 2 | 30 seconds |
+| 3 | 2½ minutes |
+| 4 | 12½ minutes |
+| 5 | 42½ minutes |
+| 6 | 1 hour 42½ minutes |
+| 7 | 3 hours 42½ minutes |
+| 8 | 7 hours 42½ minutes |
+| 9 | 15 hours 42½ minutes |
+| 10 | 23 hours 42½ minutes |
+| 11 | 24 hours, the last |
+
+After the last try fails, the delivery is marked `failed`. Your
+[catch-up job](/docs/build/webhooks) picks up anything you missed, or the
+owner can redeliver it.
+
+Events are delivered independently, so a failing one doesn't hold up the
+next, and they can arrive out of order.
+
+## When an endpoint keeps failing
+
+After 5 failed tries in a row to the same endpoint, ClipMux stops sending
+to it for a minute, then for twice as long after each further failure, up
+to an hour. Deliveries skipped this way aren't charged a try, and their
+24-hour window doesn't move, so an endpoint that comes back catches up. One
+success resets the count.
+
+In the dashboard, an endpoint shows **Healthy**, the number of failures in
+a row, or **Paused after N failures** while it's being skipped.
+
+## See deliveries and redeliver
+
+Under **Apps & API**, open your app, then **Webhooks**, and choose
+**Deliveries** on an endpoint. The latest 100 deliveries show their event
+type, HTTP status or error (`timeout`, `connection_failed`, `http_500` and
+so on), how many tries they took, and when the next try is due. A delivery
+that gave up has **Redeliver**: it's retried on the same schedule for a
+fresh 24 hours.
+
+The same as owner routes:
+
+- `GET /v1/webhook-endpoints/{id}/deliveries` lists the latest 100, each
+  with `status` (`pending`, `delivered` or `failed`), `attempts`,
+  `last_status`, `last_error` and `next_attempt_at`.
+- `POST /v1/webhook-deliveries/{id}/redeliver` answers `202` for a `failed`
+  delivery, and `409 not_redeliverable` for any other.
+
+Since delivery is at least once, a redelivered event may be one your
+handler already applied. An idempotent handler doesn't care.
+
+## Rotate a secret with no downtime
+
+An endpoint can hold a new secret beside the current one. Deliveries stay
+signed with the current secret until you activate the new one, so you can
+deploy first and switch after.
+
+<Steps>
+<Step>
+
+### Create the new secret
+
+In the dashboard, choose **Rotate secret** on the endpoint, or call
+`POST /v1/webhook-endpoints/{id}/secret`, which answers
+`201 {"secret": "whsec_…", "active": false}`. The secret is shown once;
+copy it into your secret store.
+
+</Step>
+<Step>
+
+### Deploy a verifier that accepts both
+
+Deploy your app so it accepts the new secret and the current one. With the
+Node SDK, try one, then the other:
+
+```ts title="webhook.ts"
+import { verifyWebhook, WebhookVerificationError } from '@clipmux/node'
+
+async function verifyEither(raw: string, headers: Headers) {
+  try {
+    return await verifyWebhook(process.env.CLIPMUX_WEBHOOK_SECRET!, raw, headers) // the new secret
+  } catch (err) {
+    const previous = process.env.PREVIOUS_WEBHOOK_SECRET
+    if (!(err instanceof WebhookVerificationError) || err.reason !== 'bad_signature' || !previous) throw err
+    return verifyWebhook(previous, raw, headers)
+  }
+}
+```
+
+The Python, Go and PHP functions in
+[Verify webhook signatures](/docs/build/webhooks/verify-signatures) work the
+same way: call them with the new secret, and on `bad_signature` with the
+old one.
+
+</Step>
+<Step>
+
+### Activate it
+
+Choose **Activate new secret** in the dashboard, or call
+`POST /v1/webhook-endpoints/{id}/secret/activate`, which answers
+`{"active": true}`. From the next try, deliveries are signed with the new
+secret, retries of older events included. Without a waiting secret it
+answers `409 no_pending_secret`.
+
+</Step>
+<Step>
+
+### Drop the old secret
+
+Once you've seen deliveries verify with the new secret, remove the old one
+from your app.
+
+</Step>
+</Steps>
+
+`clipmuxHandler` verifies with one secret. If you use it, set
+`CLIPMUX_WEBHOOK_SECRET` to the new secret, deploy, and activate right
+after. Deliveries that arrive in between fail and are retried, so nothing
+is lost; they arrive a little late.
+
+If a secret leaked, rotate it the same way, and activate as soon as your
+app accepts the new one.
+
+## Check it works
+
+After activating, open **Deliveries**: new deliveries show `200`. A row
+with `400` means your app is still checking only the old secret, or not yet
+the new one.
+
+## Next
+
+- [Receive webhooks](/docs/build/webhooks)
+- [Verify webhook signatures](/docs/build/webhooks/verify-signatures)
+- [Management API](/docs/reference/management-api)

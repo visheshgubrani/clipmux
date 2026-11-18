@@ -1,0 +1,44 @@
+---
+title: Choose an upload method
+description: Compare the ways a video gets into ClipMux, from a drop zone in your app to a URL import or a terminal, and pick the one that fits.
+---
+
+Every method below ends in the same place: a video that encodes, sends your
+webhook `video.asset.ready`, and plays through its playback ID. They differ
+in where the file starts and who sends it. Whichever you pick, the file goes
+straight to storage, and an API key never reaches a browser.
+
+| Method | The file starts | Use it when |
+| --- | --- | --- |
+| [The browser element](/docs/build/upload/browser) | On a user's device | Your users upload from your app, and a ready-made drop zone with progress, Cancel and Retry is enough. |
+| [Headless](/docs/build/upload/headless-and-uppy) | On a user's device | You want your own upload interface, or a client other than a web page. |
+| [Import from a URL](/docs/build/upload/from-url) | On a public URL | The file is already online, for example in another bucket or on the video host you are leaving. |
+| [The command line](/docs/build/upload/command-line) | On your machine | You're testing an integration, or loading a folder of existing videos. |
+| [The dashboard](/docs/self-host/dashboard) | On the owner's machine | The server's owner adds a video by hand, without any app code. |
+
+Uploads and imports through the API take the same options: `passthrough`
+(your own ID), `title`, `playback_policy`, `generate` (subtitles and
+chapters) and `renditions`. The command lines take a subset of them, as
+flags.
+
+<Cards>
+  <Card title="Upload from the browser" href="/docs/build/upload/browser">A drop zone that resumes after a reload.</Card>
+  <Card title="Headless uploads and Uppy" href="/docs/build/upload/headless-and-uppy">The upload class and routes, for your own interface.</Card>
+  <Card title="Import from a URL" href="/docs/build/upload/from-url">The server fetches a public URL itself.</Card>
+  <Card title="Upload from the command line" href="/docs/build/upload/command-line">Push files and folders from a terminal.</Card>
+  <Card title="Link videos to your records" href="/docs/build/upload/passthrough">Tag each video with your own ID.</Card>
+  <Card title="Choose renditions" href="/docs/build/upload/renditions">Pick the resolutions to encode, up to 2160p.</Card>
+</Cards>
+
+## Limits
+
+An upload may be up to 312.5 GiB (10,000 parts of 32 MiB), or less if the
+server's owner set a lower limit. An upload left idle for 24 hours expires.
+See [Limits and defaults](/docs/reference/limits).
+
+## Next
+
+- [Your first video with curl](/docs/build/first-video): the upload routes by
+  hand
+- [A video's lifecycle](/docs/build/concepts/lifecycle)
+- [Receive webhooks](/docs/build/webhooks)

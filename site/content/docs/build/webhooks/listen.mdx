@@ -1,0 +1,107 @@
+---
+title: Develop locally with listen
+description: Receive your app's webhook events on a laptop the ClipMux server can't reach, signed so your handler verifies them unchanged.
+---
+
+While you develop, your app runs on `localhost`, and the ClipMux server
+can't POST webhooks to it. `listen` fixes that without a tunnel: it
+long-polls your app's events from the server and forwards each one to your
+local handler, signed as a real delivery would be. Your handler's code
+doesn't change between development and production.
+
+There are two versions: `npx @clipmux/node listen` for apps built with the
+Node SDK, and the server binary's `clipmux listen` for any other language.
+
+## Before you start
+
+- `CLIPMUX_URL` and `CLIPMUX_API_KEY` for your app, in your env file or
+  environment. The key needs `assets:read`, which the default scopes
+  include.
+- Your app running locally, with its webhook handler.
+- Your app doesn't need a webhook endpoint registered for this. `listen`
+  reads the same events an endpoint would receive.
+
+## With @clipmux/node
+
+```bash
+npx @clipmux/node listen --forward-to localhost:3000/api/clipmux/webhook
+```
+
+```txt
+Forwarding "My app dev" events to http://localhost:3000/api/clipmux/webhook, signed with CLIPMUX_WEBHOOK_SECRET. Ctrl-C stops.
+✓ video.asset.ready ast_… → 200
+```
+
+It signs each event with your own `CLIPMUX_WEBHOOK_SECRET`, so
+`clipmuxHandler` or `clipmux.webhooks.verify` accepts it as it is. Any
+secret works here. If your app has no webhook endpoint yet, `init` writes a
+local one (`whsec_local_…`) for `listen`, and `doctor` warns that it's for
+`listen` only.
+
+| Flag | What it does |
+| --- | --- |
+| `--forward-to URL` | Your local webhook URL. Required. Without a scheme, `http://` is assumed. |
+| `--since DURATION` | Also replay events from this long ago, such as `10m` or `2h`. Without it, only new events. |
+| `--events LIST` | Only these event types, comma separated, such as `video.asset.ready,video.asset.track.ready`. |
+| `--env-file FILE` | Where to read the settings. Default `.env.local`, or `.env` if there's no `.env.local`. |
+
+Each event is tried up to four times if your handler is unreachable or
+answers `5xx`, then `listen` moves on.
+
+## With clipmux listen, for any language
+
+The server binary has its own `listen`. It signs with a secret it makes
+for you, which you set as your app's webhook secret:
+
+```bash
+CLIPMUX_API_KEY=cmx_… clipmux listen --server https://video.example.com --forward-to localhost:8000/webhooks
+```
+
+```txt
+Forwarding events to http://localhost:8000/webhooks
+Webhook secret: whsec_…  (set it as your app's webhook secret; it stays the same next time)
+```
+
+It reads `CLIPMUX_API_KEY` from the environment, not from an env file. The
+secret is kept in a `clipmux` folder in your user's config directory (or
+`CLIPMUX_AGENT_DIR`), so it stays the same between runs. To choose it yourself, set `CLIPMUX_LISTEN_SECRET`. `--server`
+defaults to `CLIPMUX_SERVER`, then `CLIPMUX_URL`. It takes `--events` and
+`--since` like the Node version; `--since` takes a Go duration such as
+`10m` or `1h30m`. See [Command line](/docs/reference/cli).
+
+## What it forwards
+
+Each event is POSTed to your URL exactly as a webhook endpoint receives it,
+with the same headers: `X-Webhook-Event`, `X-Webhook-Id`,
+`X-Webhook-Timestamp` and `X-Webhook-Signature`. Underneath, both versions
+read `GET /v1/events`, the app's events oldest first, long-polling for new
+ones.
+
+`listen` sees only your API key's app. Make a separate ClipMux app for each
+developer, so your test uploads and events don't mix with anyone else's or
+with production.
+
+## Check it works
+
+1. Start your app, then `listen`.
+2. Upload a short file to the same app:
+
+   ```bash
+   npx @clipmux/node upload sample.mp4 --passthrough lesson_42
+   ```
+
+3. When encoding finishes, `listen` prints `✓ video.asset.ready ast_… → 200`.
+
+If the line shows another status, it's your handler's answer:
+
+- `400`: the signature didn't verify. With `npx @clipmux/node listen`, your
+  app must read the same `CLIPMUX_WEBHOOK_SECRET`. With `clipmux listen`,
+  set your app's secret to the one it printed.
+- `404`: `--forward-to` isn't your handler's route.
+- `unreachable`: nothing is listening on that port.
+
+## Next
+
+- [Receive webhooks](/docs/build/webhooks)
+- [Verify webhook signatures](/docs/build/webhooks/verify-signatures)
+- [Production checklist](/docs/build/going-live/production-checklist)

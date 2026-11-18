@@ -1,0 +1,119 @@
+---
+title: Security model
+description: The threats ClipMux is built against and the controls that answer each one.
+icon: Shield
+---
+
+ClipMux treats every uploaded file as hostile and assumes any single secret
+can leak. ffmpeg parses untrusted input, and in ClipMux it can run beside the
+database or on someone's PC, so the design keeps credentials away from the
+machines that touch media, checks every playback request, and keeps keys out
+of storage.
+
+This page summarizes the threats and the controls. The full table, with the
+reasoning behind each control, is in the
+[architecture document](https://github.com/visheshgubrani/clipmux/blob/main/docs/architecture.md)
+on GitHub.
+
+## Workers hold no storage credentials
+
+A worker, whether the built-in one, a PC or a Modal or RunPod machine, never
+gets storage keys or database access. For each attempt it gets an attempt
+token and signed URLs: it downloads the source from one URL and uploads each
+encoded file to a URL signed for that path. The server checks the file names
+against a path grammar when it signs, and checks the playlists when the
+worker commits. A stolen worker key reaches only the jobs that worker could
+claim, and the owner can revoke it at once.
+
+## Media tools run sandboxed
+
+Every ffmpeg, ffprobe, Shaka Packager and whisper.cpp process runs inside a
+sandbox:
+
+- **No network.** A seccomp filter makes `socket()` fail, and also refuses
+  ptrace, bpf, io_uring and the calls that make new namespaces.
+- **Landlock**, where the kernel has it: read-only system paths, and write
+  access to one work directory only. The built-in worker refuses to start
+  without Landlock unless you set `CLIPMUX_UNSANDBOXED_WORKER`.
+- **Resource limits** on memory, CPU seconds, file size and open files, and
+  no core dumps.
+- **An empty environment**, with no secrets. The packager gets the one
+  output's content key it needs, in a file.
+- **An allowlist of input formats** that excludes HLS playlists and concat
+  files, which could otherwise pull local files into an output.
+- **`no_new_privs`**, so nothing it runs can gain privileges.
+
+The tools run at `SCHED_IDLE` priority, so encoding gets only the CPU the API
+leaves. That's a priority, not a quota: to cap the CPU, set a limit on the
+container. On macOS and Windows, where the Linux sandbox doesn't apply, a PC
+agent runs in Docker, WSL2 or a VM; an agent without a sandbox takes only its
+own jobs and the owner's uploads.
+
+## Playback needs a token, and routes default to deny
+
+A private video plays only with a short ES256 JWT that your app signs. On
+every request, delivery checks the signature, the key's app, the playback
+ID, the audience and the lifetime. A playback ID with no route is refused,
+and a signed ID never plays without its token. Delivery serves only the
+files an output's manifest lists, with a `Content-Type` from an extension
+allowlist and `nosniff`. See [Built-in delivery](/docs/self-host/delivery/built-in).
+
+## Keys are derived at delivery
+
+Every output is encrypted with AES-128. Its key is derived when a player asks
+for it, from the content key secret, the video and the output, and handed
+only to a request that passes the same checks as its segments. No key is
+written to storage, so a leaked bucket or a copied disk exposes no playable
+video. Encryption is deterrence, not DRM: anyone with a valid token can
+fetch the key. See [What encryption does and doesn't do](/docs/build/concepts/encryption).
+
+## The owner signs in with two factors
+
+The dashboard supports two-factor sign-in with an authenticator app and ten
+single-use recovery codes. Sign-in failures are limited per address. On first
+boot, creating the owner account needs a setup token printed to the server's
+log, so nobody else can claim the server first.
+
+## Secrets are sealed with a key outside Postgres
+
+API keys are stored as hashes. Everything ClipMux must be able to read back,
+such as provider credentials, the content key secret, the internal signing
+key, webhook secrets and speech and LLM keys, is encrypted in Postgres with
+the secrets key, which lives outside the database. A copy of the database
+alone opens none of them. The server checks at boot that its key opens every
+sealed value.
+
+## Webhooks are signed, and their URLs are the owner's choice
+
+Every delivery carries an HMAC-SHA256 signature over its timestamp and body,
+which also blocks replays. An endpoint URL must be an absolute `http` or
+`https` URL of at most 2,048 characters, with no credentials or fragment.
+Redirects aren't followed, and a receiver has 10 seconds to start answering.
+
+Endpoint URLs are not filtered for private addresses. The same goes for the
+speech API and the chapters LLM, so a server on your own network works. Only
+the owner can set them. Importing a video from a URL is different: it
+blocks private, loopback and link-local addresses, after DNS and on every
+redirect.
+
+## Viewers are counted without being identified
+
+A token may carry a viewer ID, `vid`, to count unique viewers. ClipMux
+stores only a keyed hash of it, per day, for 180 days. No IP address,
+User-Agent, referrer or token is stored for analytics, on your server or at
+Cloudflare's edge.
+
+## What leaves your servers
+
+Nothing, until you connect something. Each connection says what it sends:
+encoded files and keys to [Cloudflare](/docs/self-host/delivery/cloudflare),
+source videos to Modal or RunPod, audio to a
+[speech API](/docs/self-host/captions-and-ai/speech-apis), and transcript
+text to a [chapters LLM](/docs/self-host/captions-and-ai/chapters-llm).
+
+## Next
+
+- [Security checklist](/docs/self-host/operate/security-checklist)
+- [Limitations](/docs/self-host/limitations)
+- [Security policy](/docs/resources/security-policy), to report a
+  vulnerability

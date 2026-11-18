@@ -1,0 +1,5 @@
+{
+  "title": "Delivery",
+  "icon": "Globe",
+  "pages": ["built-in", "cloudflare", "edge-analytics"]
+}

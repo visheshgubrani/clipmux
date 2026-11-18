@@ -1,0 +1,146 @@
+---
+title: Encode on RunPod
+description: Rent a GPU pod on RunPod's Secure Cloud for each video, with a monthly spend limit, and keep this server as the fallback.
+---
+
+RunPod starts a GPU pod on its Secure Cloud for each job, and ClipMux stops
+it when the job is done. Once connected, RunPod takes new videos and this
+server takes over when RunPod can't. The pod runs the same ClipMux image as
+your server, claims one job, and never holds your storage keys.
+
+## Before you start
+
+- A RunPod account with credit.
+- A public URL that RunPod's pods can reach from the internet, for example
+  `https://video.example.com`. Connect refuses a public URL that resolves to
+  a private, loopback or link-local address. With videos stored on this
+  server's disk, pods also download sources and upload output through it.
+- A server built from a published release. A local build names no image for
+  RunPod to run; enter one under **Advanced**, **Worker image**.
+
+<LeavesYourServers>
+  For each job, RunPod's pod receives the video's source file and the
+  content key for the output it encodes, and holds them for that job's
+  length. It uploads the encrypted output back through URLs signed for that
+  one job. If the pod also makes the subtitles, it gets the video's audio.
+  RunPod never receives your storage keys or your other videos. Your RunPod
+  API key stays sealed in your database.
+</LeavesYourServers>
+
+## Connect RunPod
+
+<Steps>
+<Step>
+
+### Get an API key
+
+On **Encoding**, choose **Connect RunPod**, then **Get a key from RunPod**.
+RunPod's console opens, creates a key for ClipMux and shows it; paste it into
+**RunPod API key**. A key you create yourself under **Settings**, **API
+Keys** works too, with read and write access to pods and container registry
+auths.
+
+</Step>
+<Step>
+
+### Choose the GPUs
+
+The dialog then lists the Secure Cloud GPUs whose NVENC the encoder can
+use, each with its price per hour, the **L4** recommended. By default
+ClipMux asks for an L4, RTX A4000 or RTX A5000, whichever has capacity.
+RunPod's RTX 4090 hosts refuse NVENC sessions, so they aren't offered.
+
+</Step>
+<Step>
+
+### Check the limits
+
+The dialog shows the limits ClipMux sets: **one machine at a time** and
+**$50 a month**. Choose **Change** to edit them. One machine means a second
+upload waits for the first video's pod to finish, so raise it if videos
+arrive together.
+
+</Step>
+<Step>
+
+### Connect and wait for the sample
+
+Choose **Connect RunPod**. ClipMux checks the key and the public URL, pins
+the worker image to its digest, saves the key sealed with the secrets key,
+and runs the [setup test](/docs/self-host/first-run) on a RunPod pod.
+**Encoding** shows **Checking** meanwhile.
+
+When the sample encodes and plays, RunPod shows **Ready** and becomes where
+new videos encode, with this server as the fallback when it runs the
+built-in encoder. Until then, new videos encode where they did before.
+
+</Step>
+</Steps>
+
+Through the API, connect with `POST /v1/executors/runpod/connect`, or start
+the browser approval with `POST /v1/executors/runpod/authorize`. See
+[Management API](/docs/reference/management-api).
+
+## Settings and defaults
+
+| Setting | Default | Notes |
+| --- | --- | --- |
+| GPUs | L4, RTX A4000, RTX A5000 | Whichever has capacity. |
+| Disk | 50 GB | A pod takes only sources that fit three times over. Larger ones go to the fallback, if there is one. |
+| Machines at once | 1 | |
+| Monthly limit | $50 | Calendar month, UTC. |
+| Rate | the dearest chosen GPU's Secure Cloud price | |
+
+ClipMux estimates RunPod spend from the rate and each pod's running time;
+it doesn't read RunPod's bill. **Encoding** shows this month's estimate
+against the limit, and how many pods are running. What happens at the
+limit is in
+[Routing, fallback and spend limits](/docs/self-host/encoding/routing-and-limits).
+
+Connect again to change any of these or to rotate the key. RunPod then needs
+a new setup test before it takes videos again.
+
+## How pods run
+
+- **One job per pod.** A pod runs the ClipMux image with a one-time key
+  that claims one job, before a deadline. It holds no storage credentials:
+  each step gets URLs signed for that job alone. Its media tools always run
+  sandboxed.
+- **Only its own pods.** Pods are named `clipmux-{tag}-{dispatch}`, with
+  this install's tag. ClipMux never lists, stops or touches any other pod in
+  the account.
+- **Secure Cloud only.** A pod sees the source and the output's content key,
+  and Community Cloud hosts are other people's machines, so ClipMux doesn't
+  offer them.
+- **Stopped by ClipMux.** RunPod restarts a container that exits, so ClipMux
+  stops each pod when its attempt ends, when it hasn't claimed its job
+  within 10 minutes, or after 6 h 15 min at most. Every 15 minutes, and when
+  the server starts, it also stops any of its pods that no job accounts for.
+
+## Disconnect
+
+On **Encoding**, choose **Disconnect** under RunPod, or call
+`DELETE /v1/executors/{kind}`. ClipMux forgets the key, and if RunPod was
+where new videos encode, they go back to this server. It refuses while a
+RunPod pod may still be running.
+
+## Check it works
+
+- **Encoding** shows RunPod as **Ready**, with its spend this month.
+- Upload a short video. **Jobs** shows it routed to RunPod, and the attempt
+  ran there.
+- The Connect dialog shows each step's result. A failed `credentials` step
+  means RunPod refused the key; a failed `public_url` step means the public
+  URL is private or doesn't resolve.
+- If RunPod shows **Check failed** after connecting, the line under it names
+  the setup test's check that failed, and new videos keep encoding on this
+  server. Choose **Connect again** to retry.
+- **RunPod has none of the GPUs ClipMux encodes on for rent right now**:
+  RunPod's Secure Cloud has no capacity for them at the moment; try again
+  later.
+
+## Next
+
+- [Routing, fallback and spend limits](/docs/self-host/encoding/routing-and-limits)
+- [Encoding performance](/docs/self-host/encoding/performance)
+- [Encode on Modal](/docs/self-host/encoding/modal)

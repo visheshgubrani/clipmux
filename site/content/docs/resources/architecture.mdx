@@ -1,0 +1,75 @@
+---
+title: Architecture overview
+description: The core model, the three adapters and the rules that keep ClipMux safe, on one screen.
+icon: Network
+---
+
+ClipMux is one Go binary and Postgres. Ingest (how bytes get in), compute
+(who encodes and encrypts) and delivery (how viewers get the video) are
+separate layers that share one data model in Postgres. Each sits behind a
+narrow adapter, so the API your apps call stays the same when you change
+storage, encoding or delivery.
+
+The full specification is
+[docs/architecture.md](https://github.com/visheshgubrani/clipmux/blob/main/docs/architecture.md)
+on GitHub.
+
+## The core model
+
+| Object | What it is |
+| --- | --- |
+| App | One integration, such as a course site. It owns its API keys, signing keys, webhook endpoints and the videos it creates |
+| Asset | A video, as the API sees it |
+| Output | An immutable set of encrypted files from one encode |
+| Job | A unit of work on a video: transcode, re-encode, move, delete |
+| Attempt | One executor's run of a job, with a lease |
+| Playback ID | The public handle a player uses. A video can have several, public or signed |
+| Upload | A multipart upload in progress |
+| Agent | A PC you approved to encode |
+
+A video points at its current output, and a playback ID reaches files only
+through that pointer. A re-encode writes a new output, and the pointer moves
+when it's done, so viewers never see a half-written version.
+
+All work goes through one job queue in Postgres. Every executor, including
+the worker built into the server, claims jobs through the same worker API.
+
+## The adapters
+
+| Adapter | Choices |
+| --- | --- |
+| Storage | This server's disk, Cloudflare R2, or any S3-compatible bucket |
+| Executor | The server's built-in worker, a PC agent, Modal, RunPod |
+| Delivery | The built-in handler, or a Cloudflare Worker in your account |
+
+Core logic never branches on a vendor. Both delivery adapters use the same
+hostname, URLs, tokens and key derivation, so moving to the Worker changes no
+playback URL.
+
+## The rules
+
+These hold everywhere in the code, and nothing weakens them:
+
+- **Executors hold no storage credentials.** A worker gets a job and
+  short-lived signed URLs for the files it may write. Its file names are
+  checked against a path grammar, its playlists at commit, and delivery
+  serves only allowed file types. FFmpeg runs sandboxed.
+- **Outputs are immutable.** Only the video's current-output pointer moves.
+  A path is never reused, so cached files never go stale.
+- **Outputs are ciphertext.** Every output is AES-128 encrypted, and its key
+  is derived at delivery, never stored.
+- **One mutating job per video.** A re-encode, a move and a delete never
+  overlap on the same video. A delete always wins.
+- **Side effects run from an outbox.** Anything outside Postgres, such as
+  publishing a playback route or sending a webhook, is written as an outbox
+  row in the same transaction and retried until it succeeds.
+- **Routes are default-deny.** Delivery serves a playback ID only from its
+  route record; an unknown or revoked ID is refused.
+- **The dashboard and CLI are API clients.** Neither has a private path into
+  the server.
+
+## Next
+
+- [How ClipMux works](/docs/build/concepts/how-it-works)
+- [Security model](/docs/self-host/security-model)
+- [Management API](/docs/reference/management-api)

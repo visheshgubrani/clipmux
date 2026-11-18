@@ -1,21 +1,83 @@
 ---
 title: Build with ClipMux
-description: Add uploads, webhooks and signed playback to your app.
+icon: Compass
+nav: Overview
+description: Add uploads, webhooks and private playback to your app, with the Node SDK or the REST API.
 ---
 
-With the Node SDK, an app goes from nothing to signed, encrypted playback in
-four steps: connect the app, add one route file, add two elements, and check
-it.
+Your app talks to a ClipMux server the way it would talk to Mux: it creates
+uploads, hears about them through webhooks, and plays them with tokens it
+signs. The browser talks only to your app. It never sees an API key or a
+signing key.
 
-```bash tab="npm"
+With the Node SDK, the whole integration is one command, one route file, two
+elements and three callbacks.
+
+<Tabs items={['npm', 'pnpm']}>
+<Tab value="npm">
+
+```bash
 npm i @clipmux/node @clipmux/uploader @clipmux/player
 npx @clipmux/node init --server https://video.example.com
 ```
 
-```bash tab="pnpm"
+</Tab>
+<Tab value="pnpm">
+
+```bash
 pnpm add @clipmux/node @clipmux/uploader @clipmux/player
 pnpm dlx @clipmux/node init --server https://video.example.com
 ```
 
-The browser never sees an API key or a signing key. From any other language,
-call the REST API and sign playback tokens as standard ES256 JWTs.
+</Tab>
+</Tabs>
+
+From any other language, call the REST API and sign playback tokens as
+standard ES256 JWTs.
+
+## Get started
+
+<Cards>
+  <Card title="Quickstart" href="/docs/build/quickstart">
+    Add video to a Next.js app in four steps.
+  </Card>
+  <Card title="Your first video with curl" href="/docs/build/first-video">
+    Upload, wait for it, and play it, with nothing but HTTP.
+  </Card>
+  <Card title="How ClipMux works" href="/docs/build/concepts/how-it-works">
+    Videos, playback IDs, tokens and tracks, and how they fit.
+  </Card>
+  <Card title="AI and agents" href="/docs/build/ai-and-agents">
+    Give a coding agent everything it needs to integrate ClipMux.
+  </Card>
+</Cards>
+
+## Guides
+
+<Cards>
+  <Card title="Upload" href="/docs/build/upload">
+    From the browser, a URL, the command line, or your own UI.
+  </Card>
+  <Card title="Play" href="/docs/build/play/player">
+    The player, signed tokens, public videos, posters and share links.
+  </Card>
+  <Card title="Captions and chapters" href="/docs/build/captions/subtitles">
+    Subtitles, transcripts and chapters, made on the server.
+  </Card>
+  <Card title="Webhooks" href="/docs/build/webhooks">
+    Keep your records in step with each video.
+  </Card>
+  <Card title="Analytics" href="/docs/build/analytics">
+    Views, watch time and unique viewers.
+  </Card>
+  <Card title="Frameworks" href="/docs/build/frameworks/nextjs">
+    Next.js, Express, Hono, other Fetch runtimes, and any language.
+  </Card>
+</Cards>
+
+## Before you ship
+
+- [Production checklist](/docs/build/going-live/production-checklist)
+- [Troubleshooting](/docs/build/going-live/troubleshooting): each error and
+  what to do
+- [API reference](/docs/reference/api)

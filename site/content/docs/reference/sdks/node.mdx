@@ -1,0 +1,281 @@
+---
+title: "@clipmux/node"
+description: The server SDK, with its client, route handlers, token signing, webhook verification and CLI.
+icon: Hexagon
+---
+
+`@clipmux/node` is what your backend uses to talk to ClipMux: it creates
+uploads, reads videos, signs playback tokens and verifies webhooks. It also
+ships `clipmuxHandler`, the three routes the browser elements call, and a CLI
+that connects your app to a server.
+
+- Version 0.1.0, MIT licensed. The ClipMux server is AGPL-3.0; this package
+  is MIT so your app can embed it.
+- ESM only. A CommonJS backend on Node 20.19 or later can `require()` it.
+- No runtime dependencies other than `@clipmux/uploader`, which the CLI's
+  `upload` command uses. It uses Web APIs only, so it runs on Node 20.19 or
+  later, Bun, Deno, Cloudflare Workers and Vercel Edge.
+- Its types are generated from the server's OpenAPI spec.
+
+For how to use it, start with the [quickstart](/docs/build/quickstart).
+
+## Install
+
+<Tabs items={['npm', 'pnpm']}>
+<Tab value="npm">
+
+```bash
+npm i @clipmux/node
+```
+
+</Tab>
+<Tab value="pnpm">
+
+```bash
+pnpm add @clipmux/node
+```
+
+</Tab>
+</Tabs>
+
+## Entry points
+
+| Import | What it has |
+| --- | --- |
+| `@clipmux/node` | `ClipMux`, the errors, `signToken`, `importSigningKey`, `verifyWebhook`, `signWebhook`, and the API's types |
+| `@clipmux/node/handlers` | `clipmuxHandler` |
+| `@clipmux/node/express` | `toNodeListener`, for Express, Fastify and `node:http` |
+
+The package also installs a `clipmux-node` binary, which `npx @clipmux/node`
+runs.
+
+## The client
+
+```ts
+import { ClipMux } from '@clipmux/node'
+
+const clipmux = new ClipMux() // reads the CLIPMUX_* variables
+```
+
+### Options
+
+`new ClipMux(options?)` reads each setting from its option, or else from the
+environment. A missing setting throws a `ClipMuxConfigError` only when a call
+needs it.
+
+<TypeTable
+  type={{
+    url: { type: 'string', description: "The server's public URL.", default: 'CLIPMUX_URL' },
+    apiKey: { type: 'string', description: 'The API key, cmx_….', default: 'CLIPMUX_API_KEY' },
+    signingKid: { type: 'string', description: "The signing key's ID.", default: 'CLIPMUX_SIGNING_KID' },
+    signingKey: { type: 'string', description: "The signing key's PKCS #8 PEM.", default: 'CLIPMUX_SIGNING_KEY' },
+    webhookSecret: { type: 'string', description: "The webhook endpoint's secret, whsec_….", default: 'CLIPMUX_WEBHOOK_SECRET' },
+    env: { type: 'Record<string, string | undefined>', description: 'Where the defaults come from. Pass the binding on Cloudflare Workers.', default: 'process.env' },
+    fetch: { type: 'typeof fetch', description: 'The fetch to use.', default: 'globalThis.fetch' },
+    maxRetries: { type: 'number', description: 'Retries of a temporary failure.', default: '3' },
+    timeoutMs: { type: 'number', description: 'Timeout per request, in milliseconds.', default: '30000' },
+  }}
+/>
+
+Every `POST` carries an `Idempotency-Key`, and a retry reuses it. The client
+retries 408, 429 (after `Retry-After`), 5xx and network errors.
+
+### uploads
+
+| Method | Does |
+| --- | --- |
+| `create(body, { idempotencyKey? })` | Creates an upload (`POST /v1/uploads`). Returns it with `upload_token` and `endpoint`, the object `@clipmux/uploader` takes as it is |
+| `cancel(uploadId)` | Cancels an upload; the video becomes `errored` with `upload_cancelled` |
+
+### assets
+
+| Method | Does |
+| --- | --- |
+| `get(assetId)` | One video |
+| `findByPassthrough(passthrough)` | Your own reference's videos, newest first |
+| `changes({ since, limit? })` | An async iterator of every video changed since a time, oldest first, deleted ones included: the catch-up for missed webhooks |
+| `update(assetId, { title })` | Sets the title; `null` clears it |
+| `delete(assetId)` | Deletes a video; playback stops at once |
+| `reencode(assetId, body?)` | Queues a re-encode |
+| `importUrl(body, { idempotencyKey? })` | Imports a public http(s) URL (`POST /v1/assets` with `url`) |
+| `waitUntilReady(assetId, { timeoutMs?, signal? })` | Resolves once the video is ready, from the events long-poll; rejects with code `asset_errored` if it fails, or `timeout` after 30 minutes by default. For scripts and tests; an app should use the webhook |
+
+### tracks
+
+| Method | Does |
+| --- | --- |
+| `create(assetId, { kind, supersede? })` | Makes subtitles or chapters for a video |
+| `get(assetId, trackId)` | One track, with its chapters once ready |
+| `transcript(assetId, trackId, { words? })` | A ready subtitles track's transcript, with word timings when `words` is true |
+| `delete(assetId, trackId)` | Deletes a track |
+
+### playbackIds, shares, events, analytics, app
+
+| Method | Does |
+| --- | --- |
+| `playbackIds.create(assetId, { policy })` | Adds a playback ID |
+| `playbackIds.delete(assetId, playbackId)` | Revokes a playback ID |
+| `shares.create(assetId, { name?, expires_at? })` | Creates a share link |
+| `shares.list(assetId)` | A video's share links |
+| `shares.delete(shareId)` | Revokes a share link |
+| `shares.streamUrl(shareId)` | A signed `master.m3u8` URL for a share link |
+| `events.poll({ since?, after?, wait?, signal? })` | Long-polls the app's events, what its webhooks receive |
+| `analytics.get(range)` | The app's analytics for `24h`, `7d`, `30d` or `90d`; needs a key with `analytics:read` |
+| `analytics.asset(assetId, range)` | The same for one video |
+| `app.get({ fresh? })` | The key's app (`GET /v1/app`): scopes, URLs, the longest token, signing keys. Cached until `fresh: true` |
+
+### playback
+
+These sign locally with your signing key and make no call per play.
+
+| Method | Does |
+| --- | --- |
+| `token(playbackId, options?)` | Signs a playback token. Returns a promise of the JWT |
+| `urls(target, token?)` | Playback URLs, `{ hls, poster, track(trackId) }`, for a video (its first active playback ID) or `{ baseUrl, playbackId, policy? }` |
+| `session(target, { viewerId?, native?, expiresIn? })` | Everything `<clipmux-player session-url>` needs, as the answer to its request: `{playback_id, base_url, token, expires_at, poster_url, title?, duration_seconds, tracks}`. Pass the video, not only its playback ID, to include its tracks and duration |
+
+`token` options:
+
+<TypeTable
+  type={{
+    expiresIn: { type: 'number | string', description: 'Seconds, or 90s, 10m, 4h, 7d. Longer than the server allows throws a RangeError.', default: "'15m'" },
+    audience: { type: "'video' | 'poster'", description: 'video plays everything; poster fetches only the poster.', default: "'video'" },
+    viewerId: { type: 'string', description: 'A stable ID for the viewer, which counts unique viewers.' },
+    native: { type: 'boolean', description: 'For a player that plays HLS itself and cannot refresh: the token lasts the larger of twice durationSeconds and 4 hours (12 hours without a duration), within the server maximum. Overrides expiresIn.' },
+    durationSeconds: { type: 'number | null', description: "The video's duration, for a native token." },
+  }}
+/>
+
+`session` gives `poster_url` its own poster-only token, so the poster URL is
+safe in an `og:image`.
+
+### webhooks
+
+| Method | Does |
+| --- | --- |
+| `verify(rawBody, headers, { tolerance? })` | Verifies a webhook against `CLIPMUX_WEBHOOK_SECRET` and returns its event. Pass the raw body as it arrived. `tolerance` is the seconds a timestamp may be off, 300 by default |
+
+## Route handlers
+
+`clipmuxHandler(options)` returns a Fetch handler, `(req: Request) => Promise<Response>`,
+for three `POST` routes, chosen by the last part of the path:
+
+| Route | Called by | Calls |
+| --- | --- | --- |
+| `…/upload` | `<clipmux-uploader create-url>` | `upload(req, { file })` |
+| `…/playback` | `<clipmux-player session-url>` | `playback(req, { playbackId, native })` |
+| `…/webhook` | ClipMux's webhook | `event(event)`, then `asset(asset, event)` |
+
+```ts title="app/api/clipmux/[action]/route.ts"
+import { clipmuxHandler } from '@clipmux/node/handlers'
+
+export const POST = clipmuxHandler({
+  async upload(req, { file }) {
+    return { passthrough: 'lesson_42', title: file.name }
+  },
+  async playback(req, { playbackId }) {
+    return { viewerId: 'user_7' } // or null to refuse
+  },
+  async asset(asset) {
+    // store asset.status and asset.playback_ids by asset.passthrough
+  },
+})
+```
+
+<TypeTable
+  type={{
+    clipmux: { type: 'ClipMux', description: 'The client to use. Pass one on Cloudflare Workers, built with new ClipMux({ env }).', default: 'new ClipMux()' },
+    upload: { type: '(req, { file: { size, name, type } }) => UploadDecision | null', description: 'Decide whether this request may upload, and how: return the upload body without size (passthrough, title, playback_policy, generate, renditions), or null to refuse. playback_policy defaults to signed.' },
+    playback: { type: '(req, { playbackId, native }) => { viewerId?, asset? } | null', description: 'Decide whether this viewer may watch this playback ID. Return the asset as well to include its tracks and duration.' },
+    asset: { type: '(asset, event) => void', description: 'A verified webhook, with the video fetched again so it is current. A delivery older than one already handled is skipped. Throw to have ClipMux retry the delivery.' },
+    event: { type: '(event) => void', description: 'Every verified webhook event as it arrived, before asset.' },
+    onError: { type: '(err, req) => void', description: 'Called with errors the handler turned into a 4xx or 5xx.', default: 'console.error for 5xx' },
+  }}
+/>
+
+Every route is default-deny:
+
+- A callback you don't pass is a `404`; the webhook route needs `asset` or
+  `event`.
+- A callback that returns `null` is `403 denied`.
+- The browser routes accept only `Content-Type: application/json`
+  (`415 unsupported_media_type`), and any method but `POST` is `405`.
+- A webhook that fails verification is `400`, with the reason as its code:
+  `missing_header`, `stale`, `bad_signature` or `invalid_body`.
+
+When ClipMux refuses a request, the browser gets what it can act on:
+
+- 400, 409, 413 and 422 pass through with ClipMux's `code`, and the
+  elements don't retry them.
+- 429 passes through with `Retry-After`.
+- A wrong key or app is `500 clipmux_misconfigured`, logged on your server.
+- ClipMux unreachable or failing is `502 clipmux_unavailable`, which the
+  elements retry.
+
+### toNodeListener
+
+`toNodeListener(handler)` runs a Fetch handler on Node's request and
+response, for Express, Fastify (through its raw request) or `node:http`.
+Mount the route before `express.json()`, or give it
+`express.raw({ type: '*/*' })`: the webhook needs the body as it arrived.
+
+```ts
+import { clipmuxHandler } from '@clipmux/node/handlers'
+import { toNodeListener } from '@clipmux/node/express'
+
+app.post('/api/clipmux/:action', toNodeListener(clipmuxHandler({ /* … */ })))
+```
+
+## Functions
+
+| Export | Does |
+| --- | --- |
+| `importSigningKey(pem)` | Imports a P-256 PKCS #8 PEM as a `CryptoKey` for signing |
+| `signToken(key, kid, claims)` | Signs an ES256 playback token from `{sub, aud: 'v' \| 't', iat, exp, vid?}` |
+| `verifyWebhook(secret, rawBody, headers, { tolerance?, now? })` | Verifies a webhook and returns its event, without a client |
+| `signWebhook(secret, timestamp, body)` | The `X-Webhook-Signature` value ClipMux sends for a body, for tests |
+| `VERSION` | The package version |
+
+## Errors
+
+| Class | When | Fields |
+| --- | --- | --- |
+| `ClipMuxError` | The API answered with an error, or couldn't be reached (`status` 0) | `status`, `code`, `details`, `request` |
+| `ClipMuxConfigError` | A setting the call needs is missing or malformed | `variable` |
+| `WebhookVerificationError` | A webhook that must not be trusted; answer it with `400` | `reason`: `missing_header`, `stale`, `bad_signature` or `invalid_body` |
+
+A `ClipMuxError`'s message says what to do next. The codes are in
+[Errors](/docs/reference/errors).
+
+## Types
+
+The package exports the API's types, generated from the spec (`Asset`,
+`Upload`, `Track`, `PlaybackID`, `CreateUpload` and the rest), and these of
+its own: `ClipMuxOptions`, `CreatedUpload`, `PlaybackSession`,
+`SessionOptions`, `TokenOptions`, `TokenClaims`, `Audience`,
+`WebhookEvent` (an `AssetEvent` or a `TrackEvent`, narrowed by `type`),
+`HeadersLike`, `RawBody`, `VerifyOptions` and `WebhookFailure`.
+
+## CLI
+
+```bash
+npx @clipmux/node init --server https://video.example.com
+npx @clipmux/node doctor
+npx @clipmux/node listen --forward-to localhost:3000/api/clipmux/webhook
+npx @clipmux/node upload lesson-42.mp4 --passthrough lesson_42 --wait
+```
+
+| Command | Does |
+| --- | --- |
+| `init` | Connects this app to a server: the owner approves it in the dashboard, and the credentials go to an env file, never printed |
+| `doctor` | Checks the server, the API key, the signing key and the webhook secret, and prints the Content-Security-Policy sources your pages need |
+| `listen` | Forwards this app's webhook events to a local URL, signed with `CLIPMUX_WEBHOOK_SECRET` |
+| `upload` | Uploads a file |
+
+Every flag is in [Command line](/docs/reference/cli).
+
+## Next
+
+- [Quickstart](/docs/build/quickstart)
+- [Sign playback tokens](/docs/build/play/sign-tokens)
+- [Verify webhook signatures](/docs/build/webhooks/verify-signatures)

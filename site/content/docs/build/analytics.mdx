@@ -1,0 +1,163 @@
+---
+title: Views, watch time and unique viewers
+description: Read how often your videos are watched, for how long and by how many people, counted by ClipMux's delivery with no player beacon.
+icon: ChartLine
+---
+
+ClipMux counts playback where it serves it. Every view, every segment of
+watch time and every byte comes from delivery's own requests, so there is
+no analytics script to add to your pages and nothing for a viewer's ad
+blocker to stop. Your backend reads the numbers from the API; the server's
+owner sees them under **Analytics** in the dashboard.
+
+## Before you start
+
+- An API key with the `analytics:read` scope. Keys don't have it by
+  default, including the one `init` makes; the server's owner adds it to a
+  new key on the server:
+
+  ```bash
+  clipmux admin create-key --app "My app" --scopes uploads:write,assets:read,assets:write,analytics:read
+  ```
+
+  The owner can also create one with `POST /v1/apps/{id}/api-keys` and
+  `"scopes"` in the body.
+
+- For unique viewers, tokens signed with a viewer ID; see below.
+
+## Read the numbers
+
+<Tabs items={['Node', 'curl']}>
+<Tab value="Node">
+
+```ts
+import { ClipMux } from '@clipmux/node'
+
+const clipmux = new ClipMux({ apiKey: process.env.ANALYTICS_API_KEY })
+
+const app = await clipmux.analytics.get('30d') // every video of the key's app
+const one = await clipmux.analytics.asset('ast_…', '7d') // one video
+```
+
+</Tab>
+<Tab value="curl">
+
+```bash
+curl -s 'https://video.example.com/v1/analytics?range=30d' \
+  -H "Authorization: Bearer $ANALYTICS_API_KEY"
+curl -s 'https://video.example.com/v1/analytics/assets/ast_…?range=7d' \
+  -H "Authorization: Bearer $ANALYTICS_API_KEY"
+```
+
+</Tab>
+</Tabs>
+
+`range` is `24h`, `7d`, `30d` or `90d`; anything else is
+`400 invalid_request`. `GET /v1/analytics` covers the key's own app.
+`GET /v1/analytics/assets/{id}` covers one of its videos, and a deleted
+video keeps its history.
+
+```json
+{
+  "totals": { "views": 1840, "watch_seconds": 302400, "unique_viewers": 412, "bytes_delivered": 98123456789 },
+  "previous": { "views": 1502, "watch_seconds": 251000, "unique_viewers": null, "bytes_delivered": 80211000000 },
+  "series": [{ "t": "2026-11-03T00:00:00Z", "views": 260, "watch_seconds": 43100, "bytes_delivered": 14000000000 }],
+  "top_assets": [{ "asset_id": "ast_…", "title": "Lesson 42", "views": 310, "watch_seconds": 61000, "bytes_delivered": 17000000000 }],
+  "collecting": { "builtin": true, "edge": "not_used" }
+}
+```
+
+| Field | What it is |
+| --- | --- |
+| `totals` | The range's views, watch time in seconds, unique viewers and bytes. They include deleted videos' history. |
+| `previous` | The same for the same length of time immediately before, to show a change. |
+| `series` | One bucket per hour for `24h`, per UTC day otherwise, oldest first, with empty buckets as zeros. `t` is the bucket's start. The last bucket is the current one, so it's partial. |
+| `top_assets` | Up to 10 live videos, by views. Not in the one-video response. A `title` may be missing. |
+| `collecting` | Where counts come from; see [Edge counts](#edge-counts). |
+
+## What counts
+
+- **A view** is one `master.m3u8` served. A player loads the master once
+  when it starts, so a view is one play start. A viewer who reloads the page
+  makes another view.
+- **Watch time** is 6 seconds for each audio segment served (or video
+  segment, for a video with no audio). It counts what was fetched, not what
+  was watched, so it overcounts by the player's buffer ahead: a viewer who
+  stops after 10 seconds may have fetched 30.
+- **Bytes** are every body delivery sent.
+
+Only successful answers count; refusals never do. Dashboard previews,
+library posters and the server's setup test aren't counted. Plays through
+[share links](/docs/build/play/share-links) are.
+
+## Unique viewers
+
+ClipMux doesn't know who your viewers are. To count them, put a stable ID
+for each viewer in the playback token's `vid` claim:
+
+```ts
+// clipmuxHandler's playback callback
+return { viewerId: user.id }
+
+// or when you sign a token yourself
+await clipmux.playback.token('pid_…', { viewerId: user.id })
+```
+
+For anonymous viewers, use a random ID you keep in their session. ClipMux
+stores only a keyed hash of `vid`, never the ID itself. `unique_viewers`
+counts distinct viewers on the days the range touches (for `24h`, yesterday
+and today), and is `null` when no view in the range carried a `vid`.
+
+Nothing in analytics stores an IP address, User-Agent, referrer, token or
+raw viewer ID.
+
+## How long numbers are kept
+
+- Hourly counts, behind the `24h` range: 14 days.
+- Daily counts and viewer hashes: 180 days, enough for two `90d` ranges.
+
+Older numbers are deleted.
+
+## Edge counts
+
+With [Cloudflare edge delivery](/docs/self-host/delivery/cloudflare), most
+requests never reach the ClipMux server. The Cloudflare Worker counts them
+instead, and the server pulls those counts in every 5 minutes once the
+owner connects [edge analytics](/docs/self-host/delivery/edge-analytics).
+`collecting.edge` says which applies:
+
+| `collecting.edge` | Meaning |
+| --- | --- |
+| `not_used` | No Cloudflare delivery. The server counts everything. |
+| `not_connected` | Cloudflare delivers, but its counts aren't pulled in, so most plays are missing. |
+| `connected` | Edge counts are pulled in. The last few minutes appear on the next pull. |
+
+<LeavesYourServers>
+  With Cloudflare delivery, Cloudflare serves your viewers, and the Worker
+  records each counted request in Cloudflare's Analytics Engine: the
+  project, app, video and playback IDs, the kind of request, the views,
+  watch time and bytes, and the keyed viewer hash. The ClipMux server reads
+  them back with a read-only token.
+</LeavesYourServers>
+
+## Check it works
+
+Play a video for a minute with a token that carries a `vid`, then:
+
+```bash
+curl -s 'https://video.example.com/v1/analytics/assets/ast_…?range=24h' \
+  -H "Authorization: Bearer $ANALYTICS_API_KEY"
+```
+
+`totals.views` is at least 1 and `unique_viewers` at least 1. Counts reach
+Postgres within about 15 seconds.
+
+- `403 insufficient_scope`: the key lacks `analytics:read`.
+- `404 not_found`: the video belongs to another app.
+- `unique_viewers` is `null`: no token in the range had a `vid`.
+
+## Next
+
+- [Sign playback tokens](/docs/build/play/sign-tokens)
+- [Edge analytics](/docs/self-host/delivery/edge-analytics)
+- [Analytics API reference](/docs/reference/api/analytics)

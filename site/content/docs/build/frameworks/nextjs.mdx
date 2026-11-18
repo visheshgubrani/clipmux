@@ -1,0 +1,141 @@
+---
+title: Next.js
+description: Add ClipMux uploads, playback and webhooks to a Next.js App Router app with one route file and one client component.
+---
+
+In Next.js, ClipMux is one route handler and one client component. The
+route handler answers the uploader, the player and ClipMux's webhooks; the
+component puts the two elements on your page. This is the setup the
+[quickstart](/docs/build/quickstart) walks through, with the details
+around it.
+
+## Before you start
+
+- A Next.js app with the App Router, on Node 20.19 or later.
+- A ClipMux server and its owner to approve your app.
+- The packages, and your app connected:
+
+<Tabs items={['npm', 'pnpm']}>
+<Tab value="npm">
+
+```bash
+npm i @clipmux/node @clipmux/uploader @clipmux/player
+npx @clipmux/node init --server https://video.example.com
+```
+
+</Tab>
+<Tab value="pnpm">
+
+```bash
+pnpm add @clipmux/node @clipmux/uploader @clipmux/player
+pnpm dlx @clipmux/node init --server https://video.example.com
+```
+
+</Tab>
+</Tabs>
+
+## The env file
+
+`init` writes five variables to `.env.local`, which Next.js loads on the
+server:
+
+| Variable | What it is |
+| --- | --- |
+| `CLIPMUX_URL` | The ClipMux server's public URL. |
+| `CLIPMUX_API_KEY` | Your app's API key, `cmx_…`. |
+| `CLIPMUX_SIGNING_KID` | The ID of your app's signing key. |
+| `CLIPMUX_SIGNING_KEY` | The signing key itself, a PEM. |
+| `CLIPMUX_WEBHOOK_SECRET` | The webhook secret, `whsec_…`. |
+
+None has the `NEXT_PUBLIC_` prefix, so none reaches the browser. Keep it
+that way, and keep `.env.local` out of git. In production, set the same
+five in your host's secret settings.
+
+## The route file
+
+<include cwd lang="ts" meta='title="app/api/clipmux/[action]/route.ts"'>snippets/node/nextjs/route.ts</include>
+
+The `[action]` segment makes this one file answer POSTs to
+`/api/clipmux/upload`, `/api/clipmux/playback` and
+`/api/clipmux/webhook`. `requireInstructor`, `getUser`, `canWatch` and `db`
+stand for your own code.
+
+- `upload` runs when someone chooses a file. Return the upload's settings,
+  or `null` to refuse with `403`.
+- `playback` runs when someone presses play, and again when the token runs
+  out. Return `{ viewerId }`, or `null` to refuse.
+- `asset` runs for each verified webhook, with the video re-fetched.
+
+A callback you leave out makes its route a `404`. See
+[Receive webhooks](/docs/build/webhooks) for `event` and `onError`.
+
+The handler reads the request body itself, so the webhook's raw body
+reaches it untouched; there's nothing to configure. It uses only Web APIs,
+so the route also runs on the Edge runtime.
+
+## The client component
+
+<include cwd lang="tsx" meta='title="app/lessons/[id]/video.tsx"'>snippets/node/nextjs/video.tsx</include>
+
+`'use client'` and the `import()` inside `useEffect` keep the elements out
+of the server render: they need the DOM, and the player needs Media Source.
+The two `import type` lines add the elements' JSX types without loading
+them.
+
+Render it from a server component, which reads the playback ID from your
+database:
+
+```tsx title="app/lessons/[id]/page.tsx"
+import { LessonVideo } from './video'
+
+export default async function Page({ params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params
+  const lesson = await db.lesson.findUnique({ where: { id } })
+  return <LessonVideo lessonId={id} playbackId={lesson?.playbackId ?? undefined} />
+}
+```
+
+To react when a viewer is refused, handle `clipmux-denied` and call
+`router.refresh()` to re-render the page's locked state. See
+[Add the player](/docs/build/play/player).
+
+## Content-Security-Policy
+
+If your app sends a Content-Security-Policy, pages with the elements must
+allow ClipMux's origins. `doctor` prints them:
+
+```bash
+npx @clipmux/node doctor
+```
+
+For each directive (`connect-src`, `media-src`, `img-src` and `style-src`), it
+names the exact origins your server uses.
+
+Add those sources to the directives your app already sets, in
+`next.config.ts` headers or your middleware. `connect-src` also lists the
+storage bucket that upload parts go to, when it isn't the ClipMux server.
+
+## Check it works
+
+Run `npx @clipmux/node doctor`; it ends with `✓ Ready.` Then forward
+webhooks and upload from the lesson page:
+
+```bash
+npx @clipmux/node listen --forward-to localhost:3000/api/clipmux/webhook
+```
+
+`listen` prints `✓ video.asset.ready ast_… → 200` when encoding is done,
+and the video plays after a reload.
+
+- The uploader shows an error at once: your `upload` callback returned
+  `null`, or threw.
+- `/api/clipmux/upload` answers with Next.js's own 404 page: the file isn't
+  at `app/api/clipmux/[action]/route.ts`.
+- `listen` shows `400`: the app reads a different `CLIPMUX_WEBHOOK_SECRET`
+  from the one `listen` signs with.
+
+## Next
+
+- [Production checklist](/docs/build/going-live/production-checklist)
+- [Add the player](/docs/build/play/player)
+- [Troubleshooting](/docs/build/going-live/troubleshooting)

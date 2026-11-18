@@ -1,0 +1,229 @@
+---
+title: Behind your own reverse proxy
+description: Run ClipMux without its bundled Caddy, behind a Caddy, nginx or Traefik you already run on ports 80 and 443.
+---
+
+If another proxy already owns ports 80 and 443 on the server, for example a
+Caddy or nginx serving other sites, run ClipMux without its own Caddy and
+point your proxy at it. `deploy/compose.proxy.yml` does this: it leaves the
+bundled Caddy out and has the setup test reach your public URLs through
+your proxy. Your proxy then terminates TLS for both of ClipMux's hostnames.
+
+## Before you start
+
+- A server that meets the [requirements](/docs/self-host/requirements), with
+  a reverse proxy already serving ports 80 and 443.
+- Two DNS names pointing at it, for example `video.example.com` and
+  `media.example.com`, and certificates for both from your proxy.
+- `openssl` and `sha256sum` on the server.
+
+<Warning>
+  Don't use the one-line installer on this server. It starts the bundled
+  Caddy on ports 80 and 443: a first install stops because the ports are in
+  use, and an upgrade with it fails to start.
+</Warning>
+
+## Start ClipMux without Caddy
+
+<Tabs items={['Release image', 'From source']}>
+<Tab value="Release image">
+
+As root, download a release's `compose.yml` and check it, then fetch
+`compose.proxy.yml` from the same tag. Set `V` to the release you want:
+
+```bash
+mkdir -p /opt/clipmux && cd /opt/clipmux
+V=v1.0.0
+curl -fsSL -O "https://github.com/visheshgubrani/clipmux/releases/download/$V/SHA256SUMS" \
+  -O "https://github.com/visheshgubrani/clipmux/releases/download/$V/compose.yml"
+sha256sum --check --ignore-missing SHA256SUMS
+curl -fsSL -o compose.proxy.yml "https://raw.githubusercontent.com/visheshgubrani/clipmux/$V/deploy/compose.proxy.yml"
+```
+
+Write `.env`, readable only by root:
+
+```bash
+umask 077
+cat > .env <<EOF
+CLIPMUX_VERSION=$V
+POSTGRES_PASSWORD=$(openssl rand -hex 24)
+CLIPMUX_SECRETS_KEY=v1:$(openssl rand -hex 32)
+EOF
+```
+
+Start it, and read the setup token:
+
+```bash
+docker compose -f compose.yml -f compose.proxy.yml up -d --wait
+docker compose -f compose.yml -f compose.proxy.yml logs app | grep setup_token
+```
+
+</Tab>
+<Tab value="From source">
+
+From a clone with `deploy/.env` written as in
+[Install from source with Compose](/docs/self-host/install-options/compose-from-source):
+
+```bash
+docker compose -f deploy/compose.yml -f deploy/compose.proxy.yml up -d --build --wait
+docker compose -f deploy/compose.yml -f deploy/compose.proxy.yml logs app | grep setup_token
+```
+
+</Tab>
+</Tabs>
+
+Copy `CLIPMUX_SECRETS_KEY` from `.env` somewhere off the server. Without
+it, a database backup can't be restored.
+
+The app now listens on `127.0.0.1:8080`, and only there. If 8080 is taken,
+set `CLIPMUX_ADMIN_PORT` in `.env` to another port and run the `up`
+command again.
+
+## What your proxy must do
+
+- **Serve both hostnames.** Forward the public and the media hostname to
+  `127.0.0.1:8080`, with TLS for each.
+- **Keep the `Host` header.** ClipMux compares it with the public and media
+  URLs to decide where to redirect and when to send HSTS.
+- **Send `X-Forwarded-For` and `X-Forwarded-Proto`.** ClipMux believes them
+  only from `CLIPMUX_TRUSTED_PROXIES`, which compose sets to Docker's private
+  ranges: that is where a proxy on the host connects from. Rate limits and
+  sign-in limits use the client address, and when the public URL is
+  `https`, a request that says it came over `http` is redirected to `https`.
+  A proxy that sends `X-Forwarded-Proto: http` for HTTPS traffic causes a
+  redirect loop.
+- **Allow large request bodies.** With videos stored on this server,
+  browsers upload 32 MiB parts through `/_storage/` on the public hostname,
+  and encoders upload their output there too.
+- **Allow slow responses.** Connecting a cloud GPU or Cloudflare, and the
+  setup test, can take up to 5 minutes to answer; encoders hold requests
+  open for up to 45 seconds while they wait for work.
+- **Hide `/_tls/`.** `/_tls/ask` tells the bundled Caddy which hostnames may
+  get a certificate. The bundled config answers `404` to it from outside;
+  do the same.
+
+ClipMux uses no WebSockets.
+
+Keep the public hostname off any CDN proxy that challenges API clients,
+such as Cloudflare's Browser Integrity Check: it refuses `@clipmux/node`,
+the CLI and encoders, and hides the client's address. Point its DNS
+straight at the server ("DNS only" on Cloudflare). Playback goes through the
+media hostname, which can be served by
+[Cloudflare edge delivery](/docs/self-host/delivery/cloudflare) later.
+
+The setup test fetches your public and media URLs from inside the app
+container, through your proxy, so the server must be able to reach its own
+hostnames.
+
+## Example configurations
+
+<Tabs items={['Caddy', 'nginx']}>
+<Tab value="Caddy">
+
+```txt title="Caddyfile"
+video.example.com, media.example.com {
+	respond /_tls/* 404
+	reverse_proxy 127.0.0.1:8080
+}
+```
+
+Caddy keeps the `Host` header, sets `X-Forwarded-For` and
+`X-Forwarded-Proto`, and limits neither body size nor response time by
+default. If your Caddy uses on-demand TLS, point its `ask` at
+`http://127.0.0.1:8080/_tls/ask`, which approves only the hostnames you set
+in ClipMux.
+
+</Tab>
+<Tab value="nginx">
+
+```nginx title="/etc/nginx/conf.d/clipmux.conf"
+server {
+    listen 80;
+    server_name video.example.com media.example.com;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    server_name video.example.com media.example.com;
+    ssl_certificate     /etc/ssl/clipmux/fullchain.pem;
+    ssl_certificate_key /etc/ssl/clipmux/privkey.pem;
+
+    # Upload parts are 32 MiB; ClipMux checks each part's length itself.
+    client_max_body_size 0;
+    proxy_request_buffering off;
+    proxy_buffering off;
+    proxy_read_timeout 300s;
+    proxy_send_timeout 300s;
+
+    location /_tls/ {
+        return 404;
+    }
+
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+```
+
+The certificate must cover both hostnames. nginx's defaults would refuse
+upload parts (`client_max_body_size` is 1 MB) and cut off the slower
+requests after 60 seconds.
+
+</Tab>
+</Tabs>
+
+## On a small or shared server
+
+Encoding on a server that also runs other services competes with them for
+CPU. With `compose.proxy.yml`, set `CLIPMUX_BUILTIN_WORKER=false` in `.env`
+and run the `up` command again: the app then runs no encoder of its own.
+Connect [Modal](/docs/self-host/encoding/modal),
+[RunPod](/docs/self-host/encoding/runpod) or a
+[PC you own](/docs/self-host/encoding/your-pc) first, so new videos have
+somewhere to encode, and the setup test runs there.
+
+## Upgrade
+
+Edit `CLIPMUX_VERSION` in `.env`, download that release's `compose.yml` and
+`compose.proxy.yml` as above, then pull and restart:
+
+```bash
+cd /opt/clipmux
+docker compose -f compose.yml -f compose.proxy.yml pull app
+docker compose -f compose.yml -f compose.proxy.yml up -d --wait
+```
+
+The app applies database migrations when it starts. See
+[Upgrade and uninstall](/docs/self-host/install-options/upgrade-and-uninstall)
+for what changes between releases and how to roll back.
+
+## Check it works
+
+```bash
+curl -fsS http://127.0.0.1:8080/readyz
+curl -fsSI https://video.example.com/readyz
+```
+
+The first prints `ok`: the app is up. The second answers `200` through your
+proxy once the certificate is in place.
+
+- **`502` or `connection refused` from the proxy**: the app isn't
+  listening yet, or your proxy points at another port than
+  `CLIPMUX_ADMIN_PORT`.
+- **A redirect loop**: your proxy sends `X-Forwarded-Proto: http` for HTTPS
+  requests.
+- **Uploads stop at the first part**: the proxy's body size limit is below
+  32 MiB.
+- **The setup test fails to reach a URL**: the server can't reach its own
+  hostnames through the proxy.
+
+## Next
+
+- [First run](/docs/self-host/first-run)
+- [Upgrade and uninstall](/docs/self-host/install-options/upgrade-and-uninstall)
+- [Security checklist](/docs/self-host/operate/security-checklist)

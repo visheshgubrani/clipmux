@@ -1,0 +1,74 @@
+---
+title: A video's lifecycle
+description: The five states a video moves through, what moves it, and what a re-encode does to a video that is already playing.
+icon: RefreshCw
+---
+
+A video has one of five statuses, in the asset's `status` field. The status
+says whether it can play; the work of encoding (probing, transcoding,
+packaging) is tracked on jobs, so a video that is ready stays ready while it
+is encoded again.
+
+## The states
+
+| Status | What it means | Plays? |
+| --- | --- | --- |
+| `waiting_upload` | The video exists and its playback IDs are made, but the file hasn't arrived. | No |
+| `processing` | The file has arrived and is being encoded. | No |
+| `ready` | An output is published. | Yes |
+| `errored` | The upload, the import or the first encode failed. `error_code` says why. | No |
+| `deleted` | The video was deleted. Its playback stopped at once. | No |
+
+## What moves it
+
+| From | To | When | Webhook |
+| --- | --- | --- | --- |
+| (new) | `waiting_upload` | Your backend creates an upload with `POST /v1/uploads`. | |
+| (new) | `processing` | Your backend imports a URL with `POST /v1/assets`. | |
+| `waiting_upload` | `processing` | The upload is completed. | |
+| `waiting_upload` | `errored` | The upload is cancelled (`upload_cancelled`) or sits idle for 24 hours (`upload_expired`). | `video.asset.errored` |
+| `processing` | `ready` | The first output is written and published. | `video.asset.ready` |
+| `processing` | `errored` | The import or the encode fails for good, for example `import_failed` or `unsupported_source`. | `video.asset.errored` |
+| `errored` | `processing` | You re-encode it with `POST /v1/assets/{id}/reencode`, if its source was kept. | |
+| `ready` | `ready` | A re-encode finishes, the title changes, a playback ID is published, or the files move storage. | `video.asset.updated` |
+| any | `deleted` | You delete it with `DELETE /v1/assets/{id}`. | `video.asset.deleted` |
+
+The asset's `version` rises on every change. Webhooks are delivered at least
+once and in no fixed order, so keep the highest `version` you have stored
+and ignore an older snapshot. See [Receive webhooks](/docs/build/webhooks).
+
+## Re-encoding a ready video
+
+`POST /v1/assets/{id}/reencode` encodes the source again, for example with
+other [renditions](/docs/build/upload/renditions). The new encode writes a
+new output beside the current one:
+
+- The video stays `ready`, and viewers keep watching the current output.
+- When the new output is complete, the video switches to it in one step and
+  you get `video.asset.updated`. Players that start after that get the new
+  output.
+- If the re-encode fails, the current output keeps playing and you get
+  `video.asset.reencode_failed`, with `job.error_code` saying why.
+
+Only one job that changes a video runs at a time. A second re-encode while
+one runs is `409 job_active`, with the running job's `job_id`; send
+`"supersede": true` to cancel the running job and start yours. A delete
+always wins: it cancels whatever is running.
+
+A re-encode needs the source file. A video still `waiting_upload` has none
+(`409 asset_not_ready`), and one whose source was not kept can't be encoded
+again (`409 source_missing`).
+
+## Tracks
+
+Subtitles and chapters have their own status, on each track: `preparing`,
+`ready` or `errored`. They are made after the video is ready and never hold
+it up, so expect `video.asset.ready` first, then
+`video.asset.track.ready` or `video.asset.track.errored`. See
+[Subtitles and transcripts](/docs/build/captions/subtitles).
+
+## Next
+
+- [Receive webhooks](/docs/build/webhooks)
+- [Webhook events](/docs/reference/webhooks)
+- [Errors](/docs/reference/errors): every `error_code`
