@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { highlight } from 'fumadocs-core/highlight'
 import Link from 'next/link'
 import type { ReactNode } from 'react'
@@ -90,50 +92,13 @@ const ROUTES: Record<string, { file: string; source: string }> = {
   },
 }
 
+// The token-signing code for other languages is the docs' own snippets, the
+// files `make snippets-test` runs against the delivery vectors.
+const snippet = (file: string) => readFileSync(join(process.cwd(), 'snippets', file), 'utf8')
 const SIGNING = [
-  {
-    key: 'py',
-    label: 'Python',
-    lang: 'python',
-    source: `import time, jwt  # PyJWT
-
-def playback_token(playback_id: str) -> str:
-    now = int(time.time())
-    return jwt.encode(
-        {"sub": playback_id, "aud": "v", "iat": now, "exp": now + 600},
-        SIGNING_KEY_PEM, algorithm="ES256", headers={"kid": SIGNING_KID},
-    )`,
-  },
-  {
-    key: 'go',
-    label: 'Go',
-    lang: 'go',
-    source: `import "github.com/golang-jwt/jwt/v5"
-
-func playbackToken(playbackID string) (string, error) {
-	now := time.Now()
-	t := jwt.NewWithClaims(jwt.SigningMethodES256, jwt.MapClaims{
-		"sub": playbackID, "aud": "v", "iat": now.Unix(), "exp": now.Add(10 * time.Minute).Unix(),
-	})
-	t.Header["kid"] = signingKID
-	return t.SignedString(signingKey) // *ecdsa.PrivateKey
-}`,
-  },
-  {
-    key: 'php',
-    label: 'PHP',
-    lang: 'php',
-    source: `<?php
-use Firebase\\JWT\\JWT;
-
-function playback_token(string $playbackId): string {
-    $now = time();
-    return JWT::encode(
-        ['sub' => $playbackId, 'aud' => 'v', 'iat' => $now, 'exp' => $now + 600],
-        SIGNING_KEY_PEM, 'ES256', SIGNING_KID,
-    );
-}`,
-  },
+  { key: 'py', label: 'Python', lang: 'python', source: snippet('python/playback_token.py') },
+  { key: 'go', label: 'Go', lang: 'go', source: snippet('go/playback_token.go') },
+  { key: 'php', label: 'PHP', lang: 'php', source: snippet('php/playback_token.php') },
 ]
 
 const TRACKS: Track[] = [
@@ -502,7 +467,7 @@ export default async function Home() {
                   <CopyButton text={AGENT_PROMPT} />
                 </div>
               </div>
-              <CopyCommand command="npx skills add visheshgubrani/clipmux" />
+              {/* Agent skills (npx skills add) join here once they ship; see docs/known-gaps.md. */}
             </div>
             <ul className="links">
               <li>

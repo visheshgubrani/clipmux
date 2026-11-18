@@ -115,7 +115,9 @@ function walk(dir) {
   })
 }
 
-function main() {
+// `--content` checks the MDX only (frontmatter, IDs, routes, settings), with
+// no build: quick while writing. The full run also checks the static build.
+function main(contentOnly = false) {
   const site = new URL('..', import.meta.url).pathname
   const root = join(site, '..')
   const out = join(site, 'out')
@@ -123,8 +125,11 @@ function main() {
   const problems = []
 
   const known = specRoutes(JSON.parse(readFileSync(join(root, 'internal/openapi/openapi.json'), 'utf8')))
-  // The management and worker routes have no spec yet; docs/api.md lists them.
-  for (const r of routesIn(readFileSync(join(root, 'docs/api.md'), 'utf8'))) known.add(r)
+  // The owner's management routes are on the management API page, which
+  // internal/manage/docs_test.go keeps equal to the routes serve registers;
+  // the worker routes have no page, and docs/api.md lists them.
+  for (const f of ['site/content/docs/reference/management-api.mdx', 'docs/api.md'])
+    for (const r of routesIn(readFileSync(join(root, f), 'utf8'))) known.add(r)
   const settings = new Set(
     ['site/content/docs/reference/configuration.mdx', 'docs/configuration.md'].flatMap(
       (f) => readFileSync(join(root, f), 'utf8').match(/\bCLIPMUX_[A-Z0-9_]+\b/g) ?? [],
@@ -141,6 +146,15 @@ function main() {
       ...envProblems(text, settings),
     ])
       problems.push(`${name}: ${p}`)
+  }
+
+  if (contentOnly) {
+    if (problems.length) {
+      console.error(problems.map((p) => `site lint: ${p}`).join('\n'))
+      process.exit(1)
+    }
+    console.log('site lint: content checked, no problems')
+    return
   }
 
   const exists = (path) => existsSync(join(out, path)) && statSync(join(out, path)).isFile()
@@ -176,4 +190,4 @@ function main() {
   console.log(`site lint: ${htmlFiles.length} pages checked, no problems`)
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) main()
+if (import.meta.url === `file://${process.argv[1]}`) main(process.argv.includes('--content'))

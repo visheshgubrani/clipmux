@@ -12,6 +12,7 @@
       "!site/.source",
       "!site/next-env.d.ts",
       "!site/data/github.json",
+      "!site/snippets/php",
       "!**/dist",
       "!**/*.gen.ts",
       "!**/node_modules",

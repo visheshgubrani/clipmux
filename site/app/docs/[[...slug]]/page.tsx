@@ -1,4 +1,4 @@
-import { DocsBody, DocsDescription, DocsPage, DocsTitle } from 'fumadocs-ui/layouts/docs/page'
+import { DocsBody, DocsDescription, DocsPage, DocsTitle } from 'fumadocs-ui/layouts/notebook/page'
 import type { Metadata } from 'next'
 import { notFound } from 'next/navigation'
 import { PageActions } from '@/components/page-actions'
@@ -16,7 +16,9 @@ export default async function Page({ params }: Props) {
   if (!page) notFound()
   const MDX = page.data.body
   return (
-    <DocsPage toc={page.data.toc}>
+    // Notebook leaves the article at the start of its column; centre it, as the
+    // docs layout did.
+    <DocsPage toc={page.data.toc} full={page.data.full} className="*:mx-auto *:w-full">
       <DocsTitle className="type-title">{page.data.title}</DocsTitle>
       <DocsDescription className="mb-0">{page.data.description}</DocsDescription>
       <PageActions

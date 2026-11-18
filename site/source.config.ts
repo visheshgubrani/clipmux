@@ -9,7 +9,8 @@ export const docs = defineDocs({
   dir: 'content/docs',
   docs: {
     // `source` names the file a generated page is built from, for Edit on GitHub.
-    schema: pageSchema.extend({ source: z.string().optional() }),
+    // `nav` is a shorter name for the sidebar ("Overview" for a tab's index).
+    schema: pageSchema.extend({ source: z.string().optional(), nav: z.string().optional() }),
     postprocess: { includeProcessedMarkdown: true },
   },
   meta: { schema: metaSchema },
