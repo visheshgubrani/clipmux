@@ -1,0 +1,38 @@
+/* The dashboard's design v2 tokens (docs/design.md, D098), copied from
+   dashboard/src/index.css. Duplicated once on purpose (AGENTS.md: duplicate
+   once before abstracting); a shared package comes with a third consumer.
+   Keep the values in step with the dashboard. */
+
+:root {
+  --canvas: #f5f5f7;
+  --screen: #ffffff;
+  --ink: #18171e;
+  --graphite: #6b6a75;
+  --hairline: #e2e1e6;
+  --input: #d6d5dc;
+  --muted: #ebebef;
+  --tally: #6d28d9; /* fill: buttons */
+  --tally-text: #6d28d9; /* links, focus, the playhead */
+  --on-tally: #ffffff;
+  --poster: #000000;
+  --success: #16803c;
+  --warning: #b45309;
+  --destructive: #c81e1e;
+}
+
+.dark {
+  --canvas: #121118;
+  --screen: #1a1922;
+  --ink: #edecf3;
+  --graphite: #a3a2ae;
+  --hairline: #2b2a35;
+  --input: #383744;
+  --muted: #25242e;
+  --tally: #7c3aed;
+  --tally-text: #a78bfa;
+  --on-tally: #ffffff;
+  --poster: #000000;
+  --success: #4ade80;
+  --warning: #fbbf24;
+  --destructive: #f87171;
+}

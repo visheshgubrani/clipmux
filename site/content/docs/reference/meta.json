@@ -1,0 +1,6 @@
+{
+  "title": "Reference",
+  "description": "API, webhooks, errors, CLI and settings",
+  "root": true,
+  "pages": ["index", "api", "webhooks", "errors", "limits", "configuration", "cli", "changelog"]
+}

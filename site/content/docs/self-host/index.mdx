@@ -1,0 +1,21 @@
+---
+title: Self-host ClipMux
+description: Install ClipMux on your own server, then connect storage, encoding and delivery.
+---
+
+You need a Linux server (amd64 or arm64) with Docker and Compose v2, ports 80
+and 443 free, and two DNS names pointing at it: one for the dashboard and API,
+one for media.
+
+```bash
+curl -fsSL https://clipmux.com/install.sh | sudo sh
+```
+
+The installer puts ClipMux, Postgres and Caddy in `/opt/clipmux`, generates
+the database password and the secrets key, starts the stack, and prints the
+address and a setup token.
+
+<Note>
+  Run the same command again to upgrade in place; the data, keys and sessions
+  are kept.
+</Note>

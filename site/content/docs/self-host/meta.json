@@ -1,0 +1,6 @@
+{
+  "title": "Self-host",
+  "description": "Run ClipMux on your own server",
+  "root": true,
+  "pages": ["index"]
+}

@@ -6,6 +6,11 @@
       "e2e/web/**",
       "dashboard/**",
       "worker/**",
+      "site/**",
+      "!site/.next",
+      "!site/out",
+      "!site/.source",
+      "!site/next-env.d.ts",
       "!**/dist",
       "!**/*.gen.ts",
       "!**/node_modules",
@@ -56,6 +61,16 @@
           },
           "correctness": {
             "useExhaustiveDependencies": "off"
+          }
+        }
+      }
+    },
+    {
+      "includes": ["site/app/(home)/landing.css"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noDescendingSpecificity": "off"
           }
         }
       }

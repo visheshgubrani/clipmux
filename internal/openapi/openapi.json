@@ -3,7 +3,7 @@
   "info": {
     "title": "ClipMux integration API",
     "version": "1",
-    "description": "The routes an app's backend, its browser uploader and its player use (D112). The management API (owner session) is not here; see docs/api.md. Every POST takes Idempotency-Key. Errors are {error: {code, message, ...details}}.",
+    "description": "The routes an app's backend, its browser uploader and its player use, and the webhooks the app receives. Requests and responses are JSON, with bodies up to 64 KiB. Every POST takes an `Idempotency-Key`. Errors are `{\"error\": {\"code\", \"message\", ...details}}`; a `429 rate_limited` carries `Retry-After`. The management API, which the dashboard uses with the owner's session, is not described here.",
     "license": {
       "name": "AGPL-3.0-only",
       "identifier": "AGPL-3.0-only"
@@ -26,9 +26,9 @@
         "operationId": "uploads_create",
         "summary": "Create an upload",
         "tags": [
-          "uploads"
+          "Uploads"
         ],
-        "description": "Call from your backend; hand the body to the browser uploader.",
+        "description": "Call from your backend, then hand the body to the browser uploader. The asset exists at once in `waiting_upload`, with its playback IDs, so you can store them before the file arrives. `generate` asks for subtitles and chapters once the video is ready; `renditions` limits the ladder.",
         "security": [
           {
             "apiKey": [
@@ -47,6 +47,16 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/CreateUpload"
+              },
+              "example": {
+                "size": 734003200,
+                "playback_policy": "signed",
+                "passthrough": "lesson_42",
+                "title": "Lesson 42: Sorting",
+                "generate": {
+                  "subtitles": true,
+                  "chapters": true
+                }
               }
             }
           }
@@ -58,6 +68,21 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Upload"
+                },
+                "example": {
+                  "upload_id": "upl_01jx169zxgft4kq0ydjct7r5y4",
+                  "asset_id": "ast_01jhsze3w2mhtbzr5qv1w5xy68",
+                  "part_size": 33554432,
+                  "part_count": 22,
+                  "upload_token": "M4XQ7R2VK6WT5ZJYBNC3D4F7GH",
+                  "playback_ids": [
+                    {
+                      "id": "pid_01j88d4vyy93fwe7p3aqr8kcqz",
+                      "policy": "signed",
+                      "playable": true,
+                      "status": "active"
+                    }
+                  ]
                 }
               }
             }
@@ -280,7 +305,7 @@
         "operationId": "uploads_signParts",
         "summary": "Sign part URLs",
         "tags": [
-          "uploads"
+          "Uploads"
         ],
         "security": [
           {
@@ -303,6 +328,13 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/PartNumbers"
+              },
+              "example": {
+                "part_numbers": [
+                  1,
+                  2,
+                  3
+                ]
               }
             }
           }
@@ -314,6 +346,15 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/SignedParts"
+                },
+                "example": {
+                  "parts": [
+                    {
+                      "part_number": 1,
+                      "url": "https://storage.example.com/...&partNumber=1&..."
+                    }
+                  ],
+                  "expires_at": "2026-11-18T10:30:00Z"
                 }
               }
             }
@@ -500,13 +541,14 @@
               }
             }
           }
-        }
+        },
+        "description": "Up to 100 part numbers at a time. PUT each part's bytes to its URL before `expires_at`, and keep the `ETag` storage returns for each."
       },
       "get": {
         "operationId": "uploads_listParts",
         "summary": "List stored parts, for resuming",
         "tags": [
-          "uploads"
+          "Uploads"
         ],
         "security": [
           {
@@ -530,6 +572,15 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/StoredParts"
+                },
+                "example": {
+                  "parts": [
+                    {
+                      "part_number": 1,
+                      "etag": "\"9b2cf535f27731c974343645a3985328\"",
+                      "size": 33554432
+                    }
+                  ]
                 }
               }
             }
@@ -684,7 +735,8 @@
               }
             }
           }
-        }
+        },
+        "description": "The parts storage already holds, so an upload can resume after a dropped connection or a closed tab."
       }
     },
     "/v1/uploads/{id}/complete": {
@@ -692,7 +744,7 @@
         "operationId": "uploads_complete",
         "summary": "Complete an upload",
         "tags": [
-          "uploads"
+          "Uploads"
         ],
         "security": [
           {
@@ -715,6 +767,14 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/CompleteUpload"
+              },
+              "example": {
+                "parts": [
+                  {
+                    "part_number": 1,
+                    "etag": "\"9b2cf535f27731c974343645a3985328\""
+                  }
+                ]
               }
             }
           }
@@ -726,6 +786,27 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Asset"
+                },
+                "example": {
+                  "id": "ast_01jhsze3w2mhtbzr5qv1w5xy68",
+                  "app_id": "app_01j6hrm8vmt8f27hd13py42rdc",
+                  "status": "processing",
+                  "version": 2,
+                  "passthrough": "lesson_42",
+                  "title": "Lesson 42: Sorting",
+                  "base_url": "https://media.example.com",
+                  "playback_ids": [
+                    {
+                      "id": "pid_01j88d4vyy93fwe7p3aqr8kcqz",
+                      "policy": "signed",
+                      "playable": true,
+                      "status": "active"
+                    }
+                  ],
+                  "duration_seconds": null,
+                  "tracks": [],
+                  "created_at": "2026-11-18T09:30:00Z",
+                  "updated_at": "2026-11-18T09:30:00Z"
                 }
               }
             }
@@ -915,7 +996,8 @@
               }
             }
           }
-        }
+        },
+        "description": "Send every part's number and `ETag`. The asset moves to `processing`, and encoding starts."
       }
     },
     "/v1/uploads/{id}/cancel": {
@@ -923,7 +1005,7 @@
         "operationId": "uploads_cancel",
         "summary": "Cancel an upload",
         "tags": [
-          "uploads"
+          "Uploads"
         ],
         "security": [
           {
@@ -952,6 +1034,28 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Asset"
+                },
+                "example": {
+                  "id": "ast_01jhsze3w2mhtbzr5qv1w5xy68",
+                  "app_id": "app_01j6hrm8vmt8f27hd13py42rdc",
+                  "status": "errored",
+                  "version": 2,
+                  "passthrough": "lesson_42",
+                  "title": "Lesson 42: Sorting",
+                  "base_url": "https://media.example.com",
+                  "playback_ids": [
+                    {
+                      "id": "pid_01j88d4vyy93fwe7p3aqr8kcqz",
+                      "policy": "signed",
+                      "playable": true,
+                      "status": "active"
+                    }
+                  ],
+                  "duration_seconds": null,
+                  "tracks": [],
+                  "created_at": "2026-11-18T09:30:00Z",
+                  "updated_at": "2026-11-18T09:30:00Z",
+                  "error_code": "upload_cancelled"
                 }
               }
             }
@@ -1106,7 +1210,8 @@
               }
             }
           }
-        }
+        },
+        "description": "Stops the upload. The asset becomes `errored` with `error_code` `upload_cancelled`. Takes the upload token or an API key with `uploads:write`."
       }
     },
     "/v1/assets": {
@@ -1114,7 +1219,7 @@
         "operationId": "assets_create",
         "summary": "Import from a URL, or attach a PC agent's local file",
         "tags": [
-          "assets"
+          "Videos"
         ],
         "security": [
           {
@@ -1134,6 +1239,12 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/CreateAsset"
+              },
+              "example": {
+                "url": "https://files.example.com/lesson-42.mp4",
+                "playback_policy": "signed",
+                "passthrough": "lesson_42",
+                "title": "Lesson 42: Sorting"
               }
             }
           }
@@ -1145,6 +1256,27 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Asset"
+                },
+                "example": {
+                  "id": "ast_01jhsze3w2mhtbzr5qv1w5xy68",
+                  "app_id": "app_01j6hrm8vmt8f27hd13py42rdc",
+                  "status": "processing",
+                  "version": 2,
+                  "passthrough": "lesson_42",
+                  "title": "Lesson 42: Sorting",
+                  "base_url": "https://media.example.com",
+                  "playback_ids": [
+                    {
+                      "id": "pid_01j88d4vyy93fwe7p3aqr8kcqz",
+                      "policy": "signed",
+                      "playable": true,
+                      "status": "active"
+                    }
+                  ],
+                  "duration_seconds": null,
+                  "tracks": [],
+                  "created_at": "2026-11-18T09:30:00Z",
+                  "updated_at": "2026-11-18T09:30:00Z"
                 }
               }
             }
@@ -1361,13 +1493,14 @@
               }
             }
           }
-        }
+        },
+        "description": "Two ways to make an asset without an upload. With `url`, the server fetches a public http(s) URL and encodes it; a non-public or credentialed URL is `400 import_url_refused`, and a fetch that fails ends `errored` with `import_url_refused`, `import_failed` or `import_too_large`. With `agent_source_id`, it attaches a file a PC agent registered for `clipmux push --local`, and its jobs run only on that agent."
       },
       "get": {
         "operationId": "assets_list",
         "summary": "Find by passthrough, or page through changes",
         "tags": [
-          "assets"
+          "Videos"
         ],
         "security": [
           {
@@ -1422,6 +1555,46 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/AssetList"
+                },
+                "example": {
+                  "data": [
+                    {
+                      "id": "ast_01jhsze3w2mhtbzr5qv1w5xy68",
+                      "app_id": "app_01j6hrm8vmt8f27hd13py42rdc",
+                      "status": "ready",
+                      "version": 4,
+                      "passthrough": "lesson_42",
+                      "title": "Lesson 42: Sorting",
+                      "base_url": "https://media.example.com",
+                      "playback_ids": [
+                        {
+                          "id": "pid_01j88d4vyy93fwe7p3aqr8kcqz",
+                          "policy": "signed",
+                          "playable": true,
+                          "status": "active"
+                        }
+                      ],
+                      "duration_seconds": 1830.4,
+                      "tracks": [
+                        {
+                          "id": "trk_01j0qtsj1vyp4dyn7fsdkb9t8q",
+                          "kind": "subtitles",
+                          "source": "generated",
+                          "status": "ready",
+                          "language": "en",
+                          "name": "English"
+                        },
+                        {
+                          "id": "trk_01jbz1ke29rzfnpwz5grhd401k",
+                          "kind": "chapters",
+                          "source": "generated",
+                          "status": "ready"
+                        }
+                      ],
+                      "created_at": "2026-11-18T09:30:00Z",
+                      "updated_at": "2026-11-18T09:34:12Z"
+                    }
+                  ]
                 }
               }
             }
@@ -1547,7 +1720,8 @@
               }
             }
           }
-        }
+        },
+        "description": "With `passthrough`, the app's assets with that reference, newest first. With `updated_since`, every change since an RFC 3339 time, oldest first, deleted assets included, up to 100 a page with `next_cursor`: the way to catch up after missed webhooks."
       }
     },
     "/v1/assets/{id}": {
@@ -1555,7 +1729,7 @@
         "operationId": "assets_get",
         "summary": "Get an asset",
         "tags": [
-          "assets"
+          "Videos"
         ],
         "security": [
           {
@@ -1582,6 +1756,42 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Asset"
+                },
+                "example": {
+                  "id": "ast_01jhsze3w2mhtbzr5qv1w5xy68",
+                  "app_id": "app_01j6hrm8vmt8f27hd13py42rdc",
+                  "status": "ready",
+                  "version": 4,
+                  "passthrough": "lesson_42",
+                  "title": "Lesson 42: Sorting",
+                  "base_url": "https://media.example.com",
+                  "playback_ids": [
+                    {
+                      "id": "pid_01j88d4vyy93fwe7p3aqr8kcqz",
+                      "policy": "signed",
+                      "playable": true,
+                      "status": "active"
+                    }
+                  ],
+                  "duration_seconds": 1830.4,
+                  "tracks": [
+                    {
+                      "id": "trk_01j0qtsj1vyp4dyn7fsdkb9t8q",
+                      "kind": "subtitles",
+                      "source": "generated",
+                      "status": "ready",
+                      "language": "en",
+                      "name": "English"
+                    },
+                    {
+                      "id": "trk_01jbz1ke29rzfnpwz5grhd401k",
+                      "kind": "chapters",
+                      "source": "generated",
+                      "status": "ready"
+                    }
+                  ],
+                  "created_at": "2026-11-18T09:30:00Z",
+                  "updated_at": "2026-11-18T09:34:12Z"
                 }
               }
             }
@@ -1736,13 +1946,14 @@
               }
             }
           }
-        }
+        },
+        "description": "The asset, as it is now. Keep the highest `version` you have seen."
       },
       "patch": {
         "operationId": "assets_update",
         "summary": "Change an asset's title",
         "tags": [
-          "assets"
+          "Videos"
         ],
         "security": [
           {
@@ -1768,6 +1979,9 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/UpdateAsset"
+              },
+              "example": {
+                "title": "Lesson 42: Sorting algorithms"
               }
             }
           }
@@ -1779,6 +1993,42 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Asset"
+                },
+                "example": {
+                  "id": "ast_01jhsze3w2mhtbzr5qv1w5xy68",
+                  "app_id": "app_01j6hrm8vmt8f27hd13py42rdc",
+                  "status": "ready",
+                  "version": 5,
+                  "passthrough": "lesson_42",
+                  "title": "Lesson 42: Sorting algorithms",
+                  "base_url": "https://media.example.com",
+                  "playback_ids": [
+                    {
+                      "id": "pid_01j88d4vyy93fwe7p3aqr8kcqz",
+                      "policy": "signed",
+                      "playable": true,
+                      "status": "active"
+                    }
+                  ],
+                  "duration_seconds": 1830.4,
+                  "tracks": [
+                    {
+                      "id": "trk_01j0qtsj1vyp4dyn7fsdkb9t8q",
+                      "kind": "subtitles",
+                      "source": "generated",
+                      "status": "ready",
+                      "language": "en",
+                      "name": "English"
+                    },
+                    {
+                      "id": "trk_01jbz1ke29rzfnpwz5grhd401k",
+                      "kind": "chapters",
+                      "source": "generated",
+                      "status": "ready"
+                    }
+                  ],
+                  "created_at": "2026-11-18T09:30:00Z",
+                  "updated_at": "2026-11-18T09:34:12Z"
                 }
               }
             }
@@ -1963,13 +2213,14 @@
               }
             }
           }
-        }
+        },
+        "description": "Sets the title; `\"\"` or `null` clears it. A change raises `version` and sends `video.asset.updated`; the same title changes nothing."
       },
       "delete": {
         "operationId": "assets_delete",
         "summary": "Delete an asset",
         "tags": [
-          "assets"
+          "Videos"
         ],
         "security": [
           {
@@ -1996,6 +2247,42 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Asset"
+                },
+                "example": {
+                  "id": "ast_01jhsze3w2mhtbzr5qv1w5xy68",
+                  "app_id": "app_01j6hrm8vmt8f27hd13py42rdc",
+                  "status": "deleted",
+                  "version": 5,
+                  "passthrough": "lesson_42",
+                  "title": "Lesson 42: Sorting",
+                  "base_url": "https://media.example.com",
+                  "playback_ids": [
+                    {
+                      "id": "pid_01j88d4vyy93fwe7p3aqr8kcqz",
+                      "policy": "signed",
+                      "playable": false,
+                      "status": "revoked"
+                    }
+                  ],
+                  "duration_seconds": 1830.4,
+                  "tracks": [
+                    {
+                      "id": "trk_01j0qtsj1vyp4dyn7fsdkb9t8q",
+                      "kind": "subtitles",
+                      "source": "generated",
+                      "status": "ready",
+                      "language": "en",
+                      "name": "English"
+                    },
+                    {
+                      "id": "trk_01jbz1ke29rzfnpwz5grhd401k",
+                      "kind": "chapters",
+                      "source": "generated",
+                      "status": "ready"
+                    }
+                  ],
+                  "created_at": "2026-11-18T09:30:00Z",
+                  "updated_at": "2026-11-18T09:34:12Z"
                 }
               }
             }
@@ -2006,6 +2293,42 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Asset"
+                },
+                "example": {
+                  "id": "ast_01jhsze3w2mhtbzr5qv1w5xy68",
+                  "app_id": "app_01j6hrm8vmt8f27hd13py42rdc",
+                  "status": "deleted",
+                  "version": 5,
+                  "passthrough": "lesson_42",
+                  "title": "Lesson 42: Sorting",
+                  "base_url": "https://media.example.com",
+                  "playback_ids": [
+                    {
+                      "id": "pid_01j88d4vyy93fwe7p3aqr8kcqz",
+                      "policy": "signed",
+                      "playable": false,
+                      "status": "revoking"
+                    }
+                  ],
+                  "duration_seconds": 1830.4,
+                  "tracks": [
+                    {
+                      "id": "trk_01j0qtsj1vyp4dyn7fsdkb9t8q",
+                      "kind": "subtitles",
+                      "source": "generated",
+                      "status": "ready",
+                      "language": "en",
+                      "name": "English"
+                    },
+                    {
+                      "id": "trk_01jbz1ke29rzfnpwz5grhd401k",
+                      "kind": "chapters",
+                      "source": "generated",
+                      "status": "ready"
+                    }
+                  ],
+                  "created_at": "2026-11-18T09:30:00Z",
+                  "updated_at": "2026-11-18T09:34:12Z"
                 }
               }
             }
@@ -2160,7 +2483,8 @@
               }
             }
           }
-        }
+        },
+        "description": "Playback stops at once. `200` once the files are gone, `202` while the delete job runs."
       }
     },
     "/v1/assets/{id}/reencode": {
@@ -2168,7 +2492,7 @@
         "operationId": "assets_reencode",
         "summary": "Re-encode an asset",
         "tags": [
-          "assets"
+          "Videos"
         ],
         "security": [
           {
@@ -2197,6 +2521,13 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/Reencode"
+              },
+              "example": {
+                "renditions": [
+                  "1080p",
+                  "720p",
+                  "480p"
+                ]
               }
             }
           }
@@ -2208,6 +2539,11 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Job"
+                },
+                "example": {
+                  "id": "job_01jq68ea3qk8sxe3rv83fez7sf",
+                  "kind": "reencode",
+                  "status": "queued"
                 }
               }
             }
@@ -2426,7 +2762,8 @@
               }
             }
           }
-        }
+        },
+        "description": "Encodes the source again, for example with other `renditions`. The current output keeps playing until the new one is ready. `409 job_active` (with `job_id`) while another job changes the asset; `supersede` cancels it."
       }
     },
     "/v1/assets/{id}/tracks": {
@@ -2434,7 +2771,7 @@
         "operationId": "tracks_create",
         "summary": "Make subtitles or chapters",
         "tags": [
-          "tracks"
+          "Subtitles and chapters"
         ],
         "security": [
           {
@@ -2463,6 +2800,9 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/CreateTrack"
+              },
+              "example": {
+                "kind": "subtitles"
               }
             }
           }
@@ -2474,6 +2814,19 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/TrackJob"
+                },
+                "example": {
+                  "track": {
+                    "id": "trk_01j0qtsj1vyp4dyn7fsdkb9t8q",
+                    "kind": "subtitles",
+                    "source": "generated",
+                    "status": "preparing"
+                  },
+                  "job": {
+                    "id": "job_01jq68ea3qk8sxe3rv83fez7sf",
+                    "kind": "transcribe",
+                    "status": "queued"
+                  }
                 }
               }
             }
@@ -2694,7 +3047,8 @@
               }
             }
           }
-        }
+        },
+        "description": "Makes a new subtitles or chapters track. The old one keeps playing until the new one is ready. Chapters need ready subtitles and a connected LLM."
       }
     },
     "/v1/assets/{id}/tracks/{track_id}": {
@@ -2702,7 +3056,7 @@
         "operationId": "tracks_get",
         "summary": "Get a track",
         "tags": [
-          "tracks"
+          "Subtitles and chapters"
         ],
         "security": [
           {
@@ -2737,6 +3091,25 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/TrackDetail"
+                },
+                "example": {
+                  "id": "trk_01jbz1ke29rzfnpwz5grhd401k",
+                  "kind": "chapters",
+                  "source": "generated",
+                  "status": "ready",
+                  "duration_ms": 1830400,
+                  "chapters": [
+                    {
+                      "start_ms": 0,
+                      "end_ms": 412000,
+                      "title": "Why sorting matters"
+                    },
+                    {
+                      "start_ms": 412000,
+                      "end_ms": 1830400,
+                      "title": "Merge sort"
+                    }
+                  ]
                 }
               }
             }
@@ -2891,13 +3264,14 @@
               }
             }
           }
-        }
+        },
+        "description": "A track, with its chapters once a chapters track is ready."
       },
       "delete": {
         "operationId": "tracks_delete",
         "summary": "Delete a track",
         "tags": [
-          "tracks"
+          "Subtitles and chapters"
         ],
         "security": [
           {
@@ -2932,6 +3306,34 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Asset"
+                },
+                "example": {
+                  "id": "ast_01jhsze3w2mhtbzr5qv1w5xy68",
+                  "app_id": "app_01j6hrm8vmt8f27hd13py42rdc",
+                  "status": "ready",
+                  "version": 6,
+                  "passthrough": "lesson_42",
+                  "title": "Lesson 42: Sorting",
+                  "base_url": "https://media.example.com",
+                  "playback_ids": [
+                    {
+                      "id": "pid_01j88d4vyy93fwe7p3aqr8kcqz",
+                      "policy": "signed",
+                      "playable": true,
+                      "status": "active"
+                    }
+                  ],
+                  "duration_seconds": 1830.4,
+                  "tracks": [
+                    {
+                      "id": "trk_01jbz1ke29rzfnpwz5grhd401k",
+                      "kind": "chapters",
+                      "source": "generated",
+                      "status": "ready"
+                    }
+                  ],
+                  "created_at": "2026-11-18T09:30:00Z",
+                  "updated_at": "2026-11-18T09:34:12Z"
                 }
               }
             }
@@ -2942,6 +3344,34 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Asset"
+                },
+                "example": {
+                  "id": "ast_01jhsze3w2mhtbzr5qv1w5xy68",
+                  "app_id": "app_01j6hrm8vmt8f27hd13py42rdc",
+                  "status": "ready",
+                  "version": 5,
+                  "passthrough": "lesson_42",
+                  "title": "Lesson 42: Sorting",
+                  "base_url": "https://media.example.com",
+                  "playback_ids": [
+                    {
+                      "id": "pid_01j88d4vyy93fwe7p3aqr8kcqz",
+                      "policy": "signed",
+                      "playable": true,
+                      "status": "active"
+                    }
+                  ],
+                  "duration_seconds": 1830.4,
+                  "tracks": [
+                    {
+                      "id": "trk_01jbz1ke29rzfnpwz5grhd401k",
+                      "kind": "chapters",
+                      "source": "generated",
+                      "status": "ready"
+                    }
+                  ],
+                  "created_at": "2026-11-18T09:30:00Z",
+                  "updated_at": "2026-11-18T09:34:12Z"
                 }
               }
             }
@@ -3096,7 +3526,8 @@
               }
             }
           }
-        }
+        },
+        "description": "Removes a track: its file and transcript go at once. `200` once no playlist lists it, `202` while it is unpublished."
       }
     },
     "/v1/assets/{id}/tracks/{track_id}/transcript": {
@@ -3104,7 +3535,7 @@
         "operationId": "tracks_transcript",
         "summary": "Get a subtitles track's transcript",
         "tags": [
-          "tracks"
+          "Subtitles and chapters"
         ],
         "security": [
           {
@@ -3148,6 +3579,20 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Transcript"
+                },
+                "example": {
+                  "track_id": "trk_01j0qtsj1vyp4dyn7fsdkb9t8q",
+                  "language": "en",
+                  "duration_ms": 1830400,
+                  "text": "Today we look at three ways to sort a list.",
+                  "segments": [
+                    {
+                      "id": "s0",
+                      "start_ms": 0,
+                      "end_ms": 4200,
+                      "text": "Today we look at three ways to sort a list."
+                    }
+                  ]
                 }
               }
             }
@@ -3332,7 +3777,8 @@
               }
             }
           }
-        }
+        },
+        "description": "A subtitles track's transcript, from the moment the track reads `ready`; `409 track_not_ready` before. Add `words=true` for word timings."
       }
     },
     "/v1/assets/{id}/playback-ids": {
@@ -3340,7 +3786,7 @@
         "operationId": "playbackIds_create",
         "summary": "Add a playback ID",
         "tags": [
-          "playbackIds"
+          "Playback IDs"
         ],
         "security": [
           {
@@ -3369,6 +3815,9 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/CreatePlaybackID"
+              },
+              "example": {
+                "policy": "public"
               }
             }
           }
@@ -3380,6 +3829,12 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PlaybackID"
+                },
+                "example": {
+                  "id": "pid_01jmgkyp0c3ct46ees12paekfv",
+                  "policy": "public",
+                  "playable": true,
+                  "status": "active"
                 }
               }
             }
@@ -3596,7 +4051,8 @@
               }
             }
           }
-        }
+        },
+        "description": "Adds a playback ID. A `signed` one plays only with a token your backend signs; a `public` one plays for anyone with the URL."
       }
     },
     "/v1/assets/{id}/playback-ids/{pid}": {
@@ -3604,7 +4060,7 @@
         "operationId": "playbackIds_delete",
         "summary": "Revoke a playback ID",
         "tags": [
-          "playbackIds"
+          "Playback IDs"
         ],
         "security": [
           {
@@ -3639,6 +4095,12 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PlaybackID"
+                },
+                "example": {
+                  "id": "pid_01j88d4vyy93fwe7p3aqr8kcqz",
+                  "policy": "signed",
+                  "playable": false,
+                  "status": "revoked"
                 }
               }
             }
@@ -3649,6 +4111,12 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PlaybackID"
+                },
+                "example": {
+                  "id": "pid_01j88d4vyy93fwe7p3aqr8kcqz",
+                  "policy": "signed",
+                  "playable": false,
+                  "status": "revoking"
                 }
               }
             }
@@ -3803,7 +4271,8 @@
               }
             }
           }
-        }
+        },
+        "description": "Revokes a playback ID: `200 revoked` once it is unpublished, `202 revoking` before. Its playback stops; the asset's other IDs keep playing."
       }
     },
     "/v1/assets/{id}/shares": {
@@ -3811,7 +4280,7 @@
         "operationId": "shares_create",
         "summary": "Create a share link",
         "tags": [
-          "shares"
+          "Share links"
         ],
         "security": [
           {
@@ -3840,6 +4309,10 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/CreateShare"
+              },
+              "example": {
+                "name": "For the review",
+                "expires_at": "2026-12-01T00:00:00Z"
               }
             }
           }
@@ -3851,6 +4324,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Share"
+                },
+                "example": {
+                  "id": "shr_01jepn315k8tfeyh86qtbhnna7",
+                  "asset_id": "ast_01jhsze3w2mhtbzr5qv1w5xy68",
+                  "name": "For the review",
+                  "url": "https://video.example.com/s/QR2V7M4K5X3T6WAY5ZEB2CND4F",
+                  "playback_id": "pid_01jmgkyp0c3ct46ees12paekfv",
+                  "expires_at": "2026-12-01T00:00:00Z",
+                  "status": "active",
+                  "created_at": "2026-11-18T09:30:00Z"
                 }
               }
             }
@@ -4067,13 +4550,14 @@
               }
             }
           }
-        }
+        },
+        "description": "Makes a share link and its own signed playback ID. `url` is the page to send. `name` is one line of up to 100 characters; `expires_at` must be in the future and can't be changed later. Allowed while the asset is processing."
       },
       "get": {
         "operationId": "shares_list",
         "summary": "List an asset's share links",
         "tags": [
-          "shares"
+          "Share links"
         ],
         "security": [
           {
@@ -4100,6 +4584,21 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ShareList"
+                },
+                "example": {
+                  "data": [
+                    {
+                      "id": "shr_01jepn315k8tfeyh86qtbhnna7",
+                      "asset_id": "ast_01jhsze3w2mhtbzr5qv1w5xy68",
+                      "name": "For the review",
+                      "url": "https://video.example.com/s/QR2V7M4K5X3T6WAY5ZEB2CND4F",
+                      "playback_id": "pid_01jmgkyp0c3ct46ees12paekfv",
+                      "expires_at": "2026-12-01T00:00:00Z",
+                      "status": "active",
+                      "created_at": "2026-11-18T09:30:00Z",
+                      "views_30d": 27
+                    }
+                  ]
                 }
               }
             }
@@ -4254,7 +4753,8 @@
               }
             }
           }
-        }
+        },
+        "description": "The asset's share links, newest first, each with `views_30d`: its views over the last 30 UTC days."
       }
     },
     "/v1/shares/{id}": {
@@ -4262,7 +4762,7 @@
         "operationId": "shares_delete",
         "summary": "Revoke a share link",
         "tags": [
-          "shares"
+          "Share links"
         ],
         "security": [
           {
@@ -4288,6 +4788,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Share"
+                },
+                "example": {
+                  "id": "shr_01jepn315k8tfeyh86qtbhnna7",
+                  "asset_id": "ast_01jhsze3w2mhtbzr5qv1w5xy68",
+                  "name": "For the review",
+                  "url": "https://video.example.com/s/QR2V7M4K5X3T6WAY5ZEB2CND4F",
+                  "playback_id": "pid_01jmgkyp0c3ct46ees12paekfv",
+                  "expires_at": "2026-12-01T00:00:00Z",
+                  "status": "revoked",
+                  "created_at": "2026-11-18T09:30:00Z"
                 }
               }
             }
@@ -4298,6 +4808,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Share"
+                },
+                "example": {
+                  "id": "shr_01jepn315k8tfeyh86qtbhnna7",
+                  "asset_id": "ast_01jhsze3w2mhtbzr5qv1w5xy68",
+                  "name": "For the review",
+                  "url": "https://video.example.com/s/QR2V7M4K5X3T6WAY5ZEB2CND4F",
+                  "playback_id": "pid_01jmgkyp0c3ct46ees12paekfv",
+                  "expires_at": "2026-12-01T00:00:00Z",
+                  "status": "revoked",
+                  "created_at": "2026-11-18T09:30:00Z"
                 }
               }
             }
@@ -4452,7 +4972,8 @@
               }
             }
           }
-        }
+        },
+        "description": "Revokes the link's playback ID: `200` once unpublished, `202` while revoking. Revoking again changes nothing."
       }
     },
     "/v1/shares/{id}/stream-url": {
@@ -4460,7 +4981,7 @@
         "operationId": "shares_streamUrl",
         "summary": "A signed master.m3u8 URL for a share link",
         "tags": [
-          "shares"
+          "Share links"
         ],
         "security": [
           {
@@ -4486,6 +5007,10 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/StreamURL"
+                },
+                "example": {
+                  "url": "https://media.example.com/v/eyJhbGciOiJFUzI1NiIs.../pid_01jmgkyp0c3ct46ees12paekfv/master.m3u8",
+                  "expires_at": "2026-11-25T09:30:00Z"
                 }
               }
             }
@@ -4672,7 +5197,8 @@
               }
             }
           }
-        }
+        },
+        "description": "A signed `master.m3u8` URL for players that can't open the share page. It can't refresh: it lasts until the link's expiry or the longest token lifetime, whichever is first, and stops when the link is revoked."
       }
     },
     "/v1/events": {
@@ -4680,7 +5206,7 @@
         "operationId": "events_poll",
         "summary": "Long-poll the app's webhook events",
         "tags": [
-          "events"
+          "Events"
         ],
         "security": [
           {
@@ -4727,6 +5253,55 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/EventList"
+                },
+                "example": {
+                  "data": [
+                    {
+                      "id": "evt_01j2ef9545dh466aggzfdgtejb",
+                      "created_at": "2026-11-18T09:34:12Z",
+                      "body": {
+                        "id": "evt_01j2ef9545dh466aggzfdgtejb",
+                        "type": "video.asset.ready",
+                        "created_at": "2026-11-18T09:34:12Z",
+                        "data": {
+                          "id": "ast_01jhsze3w2mhtbzr5qv1w5xy68",
+                          "app_id": "app_01j6hrm8vmt8f27hd13py42rdc",
+                          "status": "ready",
+                          "version": 4,
+                          "passthrough": "lesson_42",
+                          "title": "Lesson 42: Sorting",
+                          "base_url": "https://media.example.com",
+                          "playback_ids": [
+                            {
+                              "id": "pid_01j88d4vyy93fwe7p3aqr8kcqz",
+                              "policy": "signed",
+                              "playable": true,
+                              "status": "active"
+                            }
+                          ],
+                          "duration_seconds": 1830.4,
+                          "tracks": [
+                            {
+                              "id": "trk_01j0qtsj1vyp4dyn7fsdkb9t8q",
+                              "kind": "subtitles",
+                              "source": "generated",
+                              "status": "ready",
+                              "language": "en",
+                              "name": "English"
+                            },
+                            {
+                              "id": "trk_01jbz1ke29rzfnpwz5grhd401k",
+                              "kind": "chapters",
+                              "source": "generated",
+                              "status": "ready"
+                            }
+                          ],
+                          "created_at": "2026-11-18T09:30:00Z",
+                          "updated_at": "2026-11-18T09:34:12Z"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -4851,7 +5426,8 @@
               }
             }
           }
-        }
+        },
+        "description": "The app's webhook events created at or after `since` (default now), oldest first, up to 100. `body` is exactly what an endpoint receives. Long-polls up to `wait` seconds (at most 25) until an event is newer than `after`, the `created_at` of the newest event you have."
       }
     },
     "/v1/app": {
@@ -4859,7 +5435,7 @@
         "operationId": "app_get",
         "summary": "The key's own app",
         "tags": [
-          "app"
+          "App"
         ],
         "security": [
           {
@@ -4873,6 +5449,28 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/App"
+                },
+                "example": {
+                  "id": "app_01j6hrm8vmt8f27hd13py42rdc",
+                  "name": "Course site",
+                  "scopes": [
+                    "uploads:write",
+                    "assets:read",
+                    "assets:write"
+                  ],
+                  "public_url": "https://video.example.com",
+                  "base_url": "https://media.example.com",
+                  "max_token_lifetime_seconds": 604800,
+                  "upload_origins": [
+                    "https://video.example.com"
+                  ],
+                  "signing_keys": [
+                    {
+                      "kid": "kid_01jsxwyx7223sqpr1we59kgw33",
+                      "public_key_pem": "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE...\n-----END PUBLIC KEY-----\n",
+                      "created_at": "2026-11-18T09:30:00Z"
+                    }
+                  ]
                 }
               }
             }
@@ -4997,7 +5595,8 @@
               }
             }
           }
-        }
+        },
+        "description": "The key's own app. `base_url` is the media origin playback URLs start with; `upload_origins` are where a browser sends parts. With `base_url`, they are what a page's Content-Security-Policy must allow. A token's `exp - iat` may not exceed `max_token_lifetime_seconds`; `signing_keys` are the keys that still verify tokens, newest first."
       }
     },
     "/v1/analytics": {
@@ -5005,7 +5604,7 @@
         "operationId": "analytics_get",
         "summary": "The app's analytics",
         "tags": [
-          "analytics"
+          "Analytics"
         ],
         "security": [
           {
@@ -5037,6 +5636,41 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Analytics"
+                },
+                "example": {
+                  "totals": {
+                    "views": 1840,
+                    "watch_seconds": 302400,
+                    "unique_viewers": 412,
+                    "bytes_delivered": 98123456789
+                  },
+                  "previous": {
+                    "views": 1502,
+                    "watch_seconds": 251000,
+                    "unique_viewers": null,
+                    "bytes_delivered": 80211000000
+                  },
+                  "series": [
+                    {
+                      "t": "2026-11-17T00:00:00Z",
+                      "views": 260,
+                      "watch_seconds": 43100,
+                      "bytes_delivered": 14000000000
+                    }
+                  ],
+                  "top_assets": [
+                    {
+                      "asset_id": "ast_01jhsze3w2mhtbzr5qv1w5xy68",
+                      "title": "Lesson 42: Sorting",
+                      "views": 310,
+                      "watch_seconds": 61000,
+                      "bytes_delivered": 17000000000
+                    }
+                  ],
+                  "collecting": {
+                    "builtin": true,
+                    "edge": "not_used"
+                  }
                 }
               }
             }
@@ -5161,7 +5795,8 @@
               }
             }
           }
-        }
+        },
+        "description": "Totals, the same number of whole buckets just before (`previous`), a zero-filled series (hourly for `24h`, daily otherwise; the last bucket is partial), and the top 10 videos by views. `unique_viewers` counts distinct `vid` claims in tokens and is `null` when no view carried one."
       }
     },
     "/v1/analytics/assets/{id}": {
@@ -5169,7 +5804,7 @@
         "operationId": "analytics_asset",
         "summary": "One asset's analytics",
         "tags": [
-          "analytics"
+          "Analytics"
         ],
         "security": [
           {
@@ -5210,6 +5845,32 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Analytics"
+                },
+                "example": {
+                  "totals": {
+                    "views": 1840,
+                    "watch_seconds": 302400,
+                    "unique_viewers": 412,
+                    "bytes_delivered": 98123456789
+                  },
+                  "previous": {
+                    "views": 1502,
+                    "watch_seconds": 251000,
+                    "unique_viewers": null,
+                    "bytes_delivered": 80211000000
+                  },
+                  "series": [
+                    {
+                      "t": "2026-11-17T00:00:00Z",
+                      "views": 260,
+                      "watch_seconds": 43100,
+                      "bytes_delivered": 14000000000
+                    }
+                  ],
+                  "collecting": {
+                    "builtin": true,
+                    "edge": "not_used"
+                  }
                 }
               }
             }
@@ -5364,7 +6025,8 @@
               }
             }
           }
-        }
+        },
+        "description": "The same for one video, without `top_assets`. A deleted video keeps its history."
       }
     },
     "/v1/app-pairings": {
@@ -5372,7 +6034,7 @@
         "operationId": "appPairings_start",
         "summary": "Start an app pairing (npx @clipmux/node init)",
         "tags": [
-          "appPairings"
+          "App pairing"
         ],
         "security": [],
         "requestBody": {
@@ -5381,6 +6043,11 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/StartPairing"
+              },
+              "example": {
+                "name": "Course site",
+                "hostname": "laptop.local",
+                "client": "@clipmux/node 0.1.0"
               }
             }
           }
@@ -5392,6 +6059,13 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Pairing"
+                },
+                "example": {
+                  "code": "KXFT-9M2Q",
+                  "poll_token": "K4M2QX7R3VZ6W5TYBJ2C3DNF7G",
+                  "verify_url": "https://video.example.com/connect?code=KXFT-9M2Q",
+                  "expires_at": "2026-11-18T09:40:00Z",
+                  "interval_seconds": 2
                 }
               }
             }
@@ -5457,7 +6131,8 @@
               }
             }
           }
-        }
+        },
+        "description": "Starts a pairing: show the `code` and open `verify_url`, where the owner checks the code and approves. The code works for 10 minutes. `429 too_many_pairings` while 10 wait for the owner."
       }
     },
     "/v1/app-pairings/poll": {
@@ -5465,7 +6140,7 @@
         "operationId": "appPairings_poll",
         "summary": "Poll an app pairing",
         "tags": [
-          "appPairings"
+          "App pairing"
         ],
         "security": [],
         "requestBody": {
@@ -5474,6 +6149,9 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/PollPairing"
+              },
+              "example": {
+                "poll_token": "K4M2QX7R3VZ6W5TYBJ2C3DNF7G"
               }
             }
           }
@@ -5485,6 +6163,9 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PairingStatus"
+                },
+                "example": {
+                  "status": "pending"
                 }
               }
             }
@@ -5579,7 +6260,8 @@
               }
             }
           }
-        }
+        },
+        "description": "Poll every `interval_seconds`. The first poll after approval carries `credentials`, and is the only one that ever does: they are deleted as they are returned, so a later poll is `404 pairing_not_found`."
       }
     },
     "/s/{secret}/playback": {
@@ -5587,7 +6269,7 @@
         "operationId": "sharePage_playback",
         "summary": "A share link's playback session",
         "tags": [
-          "sharePage"
+          "Share page"
         ],
         "security": [],
         "parameters": [
@@ -5612,6 +6294,9 @@
                     "pattern": "^[A-Za-z0-9_-]{16,64}$"
                   }
                 }
+              },
+              "example": {
+                "viewer_id": "b7f3k9q2m4x8r1v6t0w5"
               }
             }
           }
@@ -5623,6 +6308,25 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/SharePlayback"
+                },
+                "example": {
+                  "title": "Lesson 42: Sorting",
+                  "duration_seconds": 1830.4,
+                  "base_url": "https://media.example.com",
+                  "playback_id": "pid_01jmgkyp0c3ct46ees12paekfv",
+                  "token": "eyJhbGciOiJFUzI1NiIs...",
+                  "expires_at": "2026-11-18T13:30:00Z",
+                  "poster_url": "https://media.example.com/v/eyJhbGciOiJFUzI1NiIs.../pid_01jmgkyp0c3ct46ees12paekfv/poster.jpg",
+                  "tracks": [
+                    {
+                      "id": "trk_01j0qtsj1vyp4dyn7fsdkb9t8q",
+                      "kind": "subtitles",
+                      "source": "generated",
+                      "status": "ready",
+                      "language": "en",
+                      "name": "English"
+                    }
+                  ]
                 }
               }
             }
@@ -5777,7 +6481,8 @@
               }
             }
           }
-        }
+        },
+        "description": "What the share page's script asks for: a `v` token for the link's playback ID, valid until the earliest of the link's expiry, max(2 x duration, 4 h) and the longest token lifetime. A `viewer_id` of 16 to 64 `[A-Za-z0-9_-]` characters counts as a unique viewer."
       }
     },
     "/v/{token}/{pid}/master.m3u8": {
@@ -5785,7 +6490,7 @@
         "operationId": "delivery_signedMaster",
         "summary": "Signed HLS master playlist",
         "tags": [
-          "delivery"
+          "Delivery"
         ],
         "servers": [
           {
@@ -5827,7 +6532,8 @@
               "application/vnd.apple.mpegurl": {
                 "schema": {
                   "type": "string"
-                }
+                },
+                "example": "#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,URI=\"out_01jwmgegachysgyeayn62q1gdp/audio/index.m3u8\",GROUP-ID=\"a\",NAME=\"audio\"\n#EXT-X-STREAM-INF:BANDWIDTH=5400000,RESOLUTION=1920x1080,AUDIO=\"a\"\nout_01jwmgegachysgyeayn62q1gdp/1080p/index.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=1200000,RESOLUTION=854x480,AUDIO=\"a\"\nout_01jwmgegachysgyeayn62q1gdp/480p/index.m3u8\n"
               }
             }
           },
@@ -5959,7 +6665,7 @@
         "operationId": "delivery_publicMaster",
         "summary": "Public HLS master playlist",
         "tags": [
-          "delivery"
+          "Delivery"
         ],
         "servers": [
           {
@@ -5992,7 +6698,8 @@
               "application/vnd.apple.mpegurl": {
                 "schema": {
                   "type": "string"
-                }
+                },
+                "example": "#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,URI=\"out_01jwmgegachysgyeayn62q1gdp/audio/index.m3u8\",GROUP-ID=\"a\",NAME=\"audio\"\n#EXT-X-STREAM-INF:BANDWIDTH=5400000,RESOLUTION=1920x1080,AUDIO=\"a\"\nout_01jwmgegachysgyeayn62q1gdp/1080p/index.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=1200000,RESOLUTION=854x480,AUDIO=\"a\"\nout_01jwmgegachysgyeayn62q1gdp/480p/index.m3u8\n"
               }
             }
           },
@@ -6094,7 +6801,7 @@
         "operationId": "delivery_signedPoster",
         "summary": "Signed poster",
         "tags": [
-          "delivery"
+          "Delivery"
         ],
         "servers": [
           {
@@ -6268,7 +6975,7 @@
         "operationId": "delivery_publicPoster",
         "summary": "Public poster",
         "tags": [
-          "delivery"
+          "Delivery"
         ],
         "servers": [
           {
@@ -6293,7 +7000,7 @@
             "description": "Playback ID"
           }
         ],
-        "description": "",
+        "description": "A public playback ID's poster, a JPEG of a frame near the start.",
         "responses": {
           "200": {
             "description": "OK",
@@ -6403,7 +7110,7 @@
         "operationId": "delivery_signedTrack",
         "summary": "A track's sidecar VTT",
         "tags": [
-          "delivery"
+          "Delivery"
         ],
         "servers": [
           {
@@ -6445,7 +7152,7 @@
             }
           }
         ],
-        "description": "",
+        "description": "A ready track's WebVTT file, for players that show subtitles from a sidecar file rather than the playlist. A chapters track's file is at the same path.",
         "responses": {
           "200": {
             "description": "OK",
@@ -6453,7 +7160,8 @@
               "text/vtt": {
                 "schema": {
                   "type": "string"
-                }
+                },
+                "example": "WEBVTT\n\n00:00:00.000 --> 00:00:04.200\nToday we look at three ways to sort a list.\n"
               }
             }
           },
@@ -6585,7 +7293,7 @@
         "operationId": "delivery_publicTrack",
         "summary": "A public track's sidecar VTT",
         "tags": [
-          "delivery"
+          "Delivery"
         ],
         "servers": [
           {
@@ -6618,7 +7326,7 @@
             }
           }
         ],
-        "description": "",
+        "description": "A public playback ID's track as WebVTT.",
         "responses": {
           "200": {
             "description": "OK",
@@ -6626,7 +7334,8 @@
               "text/vtt": {
                 "schema": {
                   "type": "string"
-                }
+                },
+                "example": "WEBVTT\n\n00:00:00.000 --> 00:00:04.200\nToday we look at three ways to sort a list.\n"
               }
             }
           },
@@ -6729,7 +7438,7 @@
       "post": {
         "operationId": "webhook_ready",
         "summary": "video.asset.ready",
-        "description": "Verify X-Webhook-Signature over the raw body; reject a timestamp more than 300 s off; dedupe on X-Webhook-Id; re-fetch the asset. Vectors: internal/webhooks/testdata/vectors.json.",
+        "description": "The video is ready to play: its first encode is done and published. Delivery is at least once and unordered: verify `X-Webhook-Signature` over the raw body, reject a timestamp more than 300 s off, dedupe on `X-Webhook-Id`, and re-fetch the asset before acting on it. Retries back off for 24 hours.",
         "parameters": [
           {
             "$ref": "#/components/parameters/WebhookEvent"
@@ -6750,6 +7459,47 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/WebhookEvent"
+              },
+              "example": {
+                "id": "evt_01j2ef9545dh466aggzfdgtejb",
+                "type": "video.asset.ready",
+                "created_at": "2026-11-18T09:34:12Z",
+                "data": {
+                  "id": "ast_01jhsze3w2mhtbzr5qv1w5xy68",
+                  "app_id": "app_01j6hrm8vmt8f27hd13py42rdc",
+                  "status": "ready",
+                  "version": 4,
+                  "passthrough": "lesson_42",
+                  "title": "Lesson 42: Sorting",
+                  "base_url": "https://media.example.com",
+                  "playback_ids": [
+                    {
+                      "id": "pid_01j88d4vyy93fwe7p3aqr8kcqz",
+                      "policy": "signed",
+                      "playable": true,
+                      "status": "active"
+                    }
+                  ],
+                  "duration_seconds": 1830.4,
+                  "tracks": [
+                    {
+                      "id": "trk_01j0qtsj1vyp4dyn7fsdkb9t8q",
+                      "kind": "subtitles",
+                      "source": "generated",
+                      "status": "ready",
+                      "language": "en",
+                      "name": "English"
+                    },
+                    {
+                      "id": "trk_01jbz1ke29rzfnpwz5grhd401k",
+                      "kind": "chapters",
+                      "source": "generated",
+                      "status": "ready"
+                    }
+                  ],
+                  "created_at": "2026-11-18T09:30:00Z",
+                  "updated_at": "2026-11-18T09:34:12Z"
+                }
               }
             }
           }
@@ -6765,7 +7515,7 @@
       "post": {
         "operationId": "webhook_updated",
         "summary": "video.asset.updated",
-        "description": "Verify X-Webhook-Signature over the raw body; reject a timestamp more than 300 s off; dedupe on X-Webhook-Id; re-fetch the asset. Vectors: internal/webhooks/testdata/vectors.json.",
+        "description": "The asset changed after it was ready: a re-encode finished, its title changed, a playback ID was published, or it moved storage. Re-fetch and keep the highest `version`. Delivery is at least once and unordered: verify `X-Webhook-Signature` over the raw body, reject a timestamp more than 300 s off, dedupe on `X-Webhook-Id`, and re-fetch the asset before acting on it. Retries back off for 24 hours.",
         "parameters": [
           {
             "$ref": "#/components/parameters/WebhookEvent"
@@ -6786,6 +7536,47 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/WebhookEvent"
+              },
+              "example": {
+                "id": "evt_01j2ef9545dh466aggzfdgtejb",
+                "type": "video.asset.updated",
+                "created_at": "2026-11-18T09:34:12Z",
+                "data": {
+                  "id": "ast_01jhsze3w2mhtbzr5qv1w5xy68",
+                  "app_id": "app_01j6hrm8vmt8f27hd13py42rdc",
+                  "status": "ready",
+                  "version": 4,
+                  "passthrough": "lesson_42",
+                  "title": "Lesson 42: Sorting",
+                  "base_url": "https://media.example.com",
+                  "playback_ids": [
+                    {
+                      "id": "pid_01j88d4vyy93fwe7p3aqr8kcqz",
+                      "policy": "signed",
+                      "playable": true,
+                      "status": "active"
+                    }
+                  ],
+                  "duration_seconds": 1830.4,
+                  "tracks": [
+                    {
+                      "id": "trk_01j0qtsj1vyp4dyn7fsdkb9t8q",
+                      "kind": "subtitles",
+                      "source": "generated",
+                      "status": "ready",
+                      "language": "en",
+                      "name": "English"
+                    },
+                    {
+                      "id": "trk_01jbz1ke29rzfnpwz5grhd401k",
+                      "kind": "chapters",
+                      "source": "generated",
+                      "status": "ready"
+                    }
+                  ],
+                  "created_at": "2026-11-18T09:30:00Z",
+                  "updated_at": "2026-11-18T09:34:12Z"
+                }
               }
             }
           }
@@ -6801,7 +7592,7 @@
       "post": {
         "operationId": "webhook_errored",
         "summary": "video.asset.errored",
-        "description": "Verify X-Webhook-Signature over the raw body; reject a timestamp more than 300 s off; dedupe on X-Webhook-Id; re-fetch the asset. Vectors: internal/webhooks/testdata/vectors.json.",
+        "description": "The video can't be played: the upload, import or first encode failed. `data.error_code` says why. Delivery is at least once and unordered: verify `X-Webhook-Signature` over the raw body, reject a timestamp more than 300 s off, dedupe on `X-Webhook-Id`, and re-fetch the asset before acting on it. Retries back off for 24 hours.",
         "parameters": [
           {
             "$ref": "#/components/parameters/WebhookEvent"
@@ -6822,6 +7613,33 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/WebhookEvent"
+              },
+              "example": {
+                "id": "evt_01j2ef9545dh466aggzfdgtejb",
+                "type": "video.asset.errored",
+                "created_at": "2026-11-18T09:34:12Z",
+                "data": {
+                  "id": "ast_01jhsze3w2mhtbzr5qv1w5xy68",
+                  "app_id": "app_01j6hrm8vmt8f27hd13py42rdc",
+                  "status": "errored",
+                  "version": 2,
+                  "passthrough": "lesson_42",
+                  "title": "Lesson 42: Sorting",
+                  "base_url": "https://media.example.com",
+                  "playback_ids": [
+                    {
+                      "id": "pid_01j88d4vyy93fwe7p3aqr8kcqz",
+                      "policy": "signed",
+                      "playable": true,
+                      "status": "active"
+                    }
+                  ],
+                  "duration_seconds": null,
+                  "tracks": [],
+                  "created_at": "2026-11-18T09:30:00Z",
+                  "updated_at": "2026-11-18T09:30:00Z",
+                  "error_code": "unsupported_source"
+                }
               }
             }
           }
@@ -6837,7 +7655,7 @@
       "post": {
         "operationId": "webhook_reencode_failed",
         "summary": "video.asset.reencode_failed",
-        "description": "Verify X-Webhook-Signature over the raw body; reject a timestamp more than 300 s off; dedupe on X-Webhook-Id; re-fetch the asset. Vectors: internal/webhooks/testdata/vectors.json.",
+        "description": "A re-encode failed. The video keeps playing its previous output; `job.error_code` says why. Delivery is at least once and unordered: verify `X-Webhook-Signature` over the raw body, reject a timestamp more than 300 s off, dedupe on `X-Webhook-Id`, and re-fetch the asset before acting on it. Retries back off for 24 hours.",
         "parameters": [
           {
             "$ref": "#/components/parameters/WebhookEvent"
@@ -6858,6 +7676,52 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/WebhookEvent"
+              },
+              "example": {
+                "id": "evt_01j2ef9545dh466aggzfdgtejb",
+                "type": "video.asset.reencode_failed",
+                "created_at": "2026-11-18T09:34:12Z",
+                "data": {
+                  "id": "ast_01jhsze3w2mhtbzr5qv1w5xy68",
+                  "app_id": "app_01j6hrm8vmt8f27hd13py42rdc",
+                  "status": "ready",
+                  "version": 4,
+                  "passthrough": "lesson_42",
+                  "title": "Lesson 42: Sorting",
+                  "base_url": "https://media.example.com",
+                  "playback_ids": [
+                    {
+                      "id": "pid_01j88d4vyy93fwe7p3aqr8kcqz",
+                      "policy": "signed",
+                      "playable": true,
+                      "status": "active"
+                    }
+                  ],
+                  "duration_seconds": 1830.4,
+                  "tracks": [
+                    {
+                      "id": "trk_01j0qtsj1vyp4dyn7fsdkb9t8q",
+                      "kind": "subtitles",
+                      "source": "generated",
+                      "status": "ready",
+                      "language": "en",
+                      "name": "English"
+                    },
+                    {
+                      "id": "trk_01jbz1ke29rzfnpwz5grhd401k",
+                      "kind": "chapters",
+                      "source": "generated",
+                      "status": "ready"
+                    }
+                  ],
+                  "created_at": "2026-11-18T09:30:00Z",
+                  "updated_at": "2026-11-18T09:34:12Z"
+                },
+                "job": {
+                  "id": "job_01jq68ea3qk8sxe3rv83fez7sf",
+                  "kind": "reencode",
+                  "error_code": "transcode_failed"
+                }
               }
             }
           }
@@ -6873,7 +7737,7 @@
       "post": {
         "operationId": "webhook_deleted",
         "summary": "video.asset.deleted",
-        "description": "Verify X-Webhook-Signature over the raw body; reject a timestamp more than 300 s off; dedupe on X-Webhook-Id; re-fetch the asset. Vectors: internal/webhooks/testdata/vectors.json.",
+        "description": "The video was deleted, and its playback has stopped. Delivery is at least once and unordered: verify `X-Webhook-Signature` over the raw body, reject a timestamp more than 300 s off, dedupe on `X-Webhook-Id`, and re-fetch the asset before acting on it. Retries back off for 24 hours.",
         "parameters": [
           {
             "$ref": "#/components/parameters/WebhookEvent"
@@ -6894,6 +7758,47 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/WebhookEvent"
+              },
+              "example": {
+                "id": "evt_01j2ef9545dh466aggzfdgtejb",
+                "type": "video.asset.deleted",
+                "created_at": "2026-11-18T09:34:12Z",
+                "data": {
+                  "id": "ast_01jhsze3w2mhtbzr5qv1w5xy68",
+                  "app_id": "app_01j6hrm8vmt8f27hd13py42rdc",
+                  "status": "deleted",
+                  "version": 4,
+                  "passthrough": "lesson_42",
+                  "title": "Lesson 42: Sorting",
+                  "base_url": "https://media.example.com",
+                  "playback_ids": [
+                    {
+                      "id": "pid_01j88d4vyy93fwe7p3aqr8kcqz",
+                      "policy": "signed",
+                      "playable": true,
+                      "status": "active"
+                    }
+                  ],
+                  "duration_seconds": 1830.4,
+                  "tracks": [
+                    {
+                      "id": "trk_01j0qtsj1vyp4dyn7fsdkb9t8q",
+                      "kind": "subtitles",
+                      "source": "generated",
+                      "status": "ready",
+                      "language": "en",
+                      "name": "English"
+                    },
+                    {
+                      "id": "trk_01jbz1ke29rzfnpwz5grhd401k",
+                      "kind": "chapters",
+                      "source": "generated",
+                      "status": "ready"
+                    }
+                  ],
+                  "created_at": "2026-11-18T09:30:00Z",
+                  "updated_at": "2026-11-18T09:34:12Z"
+                }
               }
             }
           }
@@ -6909,7 +7814,7 @@
       "post": {
         "operationId": "webhook_track_ready",
         "summary": "video.asset.track.ready",
-        "description": "Verify X-Webhook-Signature over the raw body; reject a timestamp more than 300 s off; dedupe on X-Webhook-Id; re-fetch the asset. Vectors: internal/webhooks/testdata/vectors.json.",
+        "description": "A subtitles or chapters track is ready. `track` names it. Delivery is at least once and unordered: verify `X-Webhook-Signature` over the raw body, reject a timestamp more than 300 s off, dedupe on `X-Webhook-Id`, and re-fetch the asset before acting on it. Retries back off for 24 hours.",
         "parameters": [
           {
             "$ref": "#/components/parameters/WebhookEvent"
@@ -6930,6 +7835,51 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/WebhookEvent"
+              },
+              "example": {
+                "id": "evt_01j2ef9545dh466aggzfdgtejb",
+                "type": "video.asset.track.ready",
+                "created_at": "2026-11-18T09:34:12Z",
+                "data": {
+                  "id": "ast_01jhsze3w2mhtbzr5qv1w5xy68",
+                  "app_id": "app_01j6hrm8vmt8f27hd13py42rdc",
+                  "status": "ready",
+                  "version": 4,
+                  "passthrough": "lesson_42",
+                  "title": "Lesson 42: Sorting",
+                  "base_url": "https://media.example.com",
+                  "playback_ids": [
+                    {
+                      "id": "pid_01j88d4vyy93fwe7p3aqr8kcqz",
+                      "policy": "signed",
+                      "playable": true,
+                      "status": "active"
+                    }
+                  ],
+                  "duration_seconds": 1830.4,
+                  "tracks": [
+                    {
+                      "id": "trk_01j0qtsj1vyp4dyn7fsdkb9t8q",
+                      "kind": "subtitles",
+                      "source": "generated",
+                      "status": "ready",
+                      "language": "en",
+                      "name": "English"
+                    },
+                    {
+                      "id": "trk_01jbz1ke29rzfnpwz5grhd401k",
+                      "kind": "chapters",
+                      "source": "generated",
+                      "status": "ready"
+                    }
+                  ],
+                  "created_at": "2026-11-18T09:30:00Z",
+                  "updated_at": "2026-11-18T09:34:12Z"
+                },
+                "track": {
+                  "id": "trk_01j0qtsj1vyp4dyn7fsdkb9t8q",
+                  "kind": "subtitles"
+                }
               }
             }
           }
@@ -6945,7 +7895,7 @@
       "post": {
         "operationId": "webhook_track_errored",
         "summary": "video.asset.track.errored",
-        "description": "Verify X-Webhook-Signature over the raw body; reject a timestamp more than 300 s off; dedupe on X-Webhook-Id; re-fetch the asset. Vectors: internal/webhooks/testdata/vectors.json.",
+        "description": "A track couldn't be made. `track.error_code` says why, for example `no_audio`. Delivery is at least once and unordered: verify `X-Webhook-Signature` over the raw body, reject a timestamp more than 300 s off, dedupe on `X-Webhook-Id`, and re-fetch the asset before acting on it. Retries back off for 24 hours.",
         "parameters": [
           {
             "$ref": "#/components/parameters/WebhookEvent"
@@ -6966,6 +7916,52 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/WebhookEvent"
+              },
+              "example": {
+                "id": "evt_01j2ef9545dh466aggzfdgtejb",
+                "type": "video.asset.track.errored",
+                "created_at": "2026-11-18T09:34:12Z",
+                "data": {
+                  "id": "ast_01jhsze3w2mhtbzr5qv1w5xy68",
+                  "app_id": "app_01j6hrm8vmt8f27hd13py42rdc",
+                  "status": "ready",
+                  "version": 4,
+                  "passthrough": "lesson_42",
+                  "title": "Lesson 42: Sorting",
+                  "base_url": "https://media.example.com",
+                  "playback_ids": [
+                    {
+                      "id": "pid_01j88d4vyy93fwe7p3aqr8kcqz",
+                      "policy": "signed",
+                      "playable": true,
+                      "status": "active"
+                    }
+                  ],
+                  "duration_seconds": 1830.4,
+                  "tracks": [
+                    {
+                      "id": "trk_01j0qtsj1vyp4dyn7fsdkb9t8q",
+                      "kind": "subtitles",
+                      "source": "generated",
+                      "status": "ready",
+                      "language": "en",
+                      "name": "English"
+                    },
+                    {
+                      "id": "trk_01jbz1ke29rzfnpwz5grhd401k",
+                      "kind": "chapters",
+                      "source": "generated",
+                      "status": "ready"
+                    }
+                  ],
+                  "created_at": "2026-11-18T09:30:00Z",
+                  "updated_at": "2026-11-18T09:34:12Z"
+                },
+                "track": {
+                  "id": "trk_01j0qtsj1vyp4dyn7fsdkb9t8q",
+                  "kind": "subtitles",
+                  "error_code": "no_audio"
+                }
               }
             }
           }
@@ -6981,7 +7977,7 @@
       "post": {
         "operationId": "webhook_track_deleted",
         "summary": "video.asset.track.deleted",
-        "description": "Verify X-Webhook-Signature over the raw body; reject a timestamp more than 300 s off; dedupe on X-Webhook-Id; re-fetch the asset. Vectors: internal/webhooks/testdata/vectors.json.",
+        "description": "A track was deleted. Delivery is at least once and unordered: verify `X-Webhook-Signature` over the raw body, reject a timestamp more than 300 s off, dedupe on `X-Webhook-Id`, and re-fetch the asset before acting on it. Retries back off for 24 hours.",
         "parameters": [
           {
             "$ref": "#/components/parameters/WebhookEvent"
@@ -7002,6 +7998,51 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/WebhookEvent"
+              },
+              "example": {
+                "id": "evt_01j2ef9545dh466aggzfdgtejb",
+                "type": "video.asset.track.deleted",
+                "created_at": "2026-11-18T09:34:12Z",
+                "data": {
+                  "id": "ast_01jhsze3w2mhtbzr5qv1w5xy68",
+                  "app_id": "app_01j6hrm8vmt8f27hd13py42rdc",
+                  "status": "ready",
+                  "version": 4,
+                  "passthrough": "lesson_42",
+                  "title": "Lesson 42: Sorting",
+                  "base_url": "https://media.example.com",
+                  "playback_ids": [
+                    {
+                      "id": "pid_01j88d4vyy93fwe7p3aqr8kcqz",
+                      "policy": "signed",
+                      "playable": true,
+                      "status": "active"
+                    }
+                  ],
+                  "duration_seconds": 1830.4,
+                  "tracks": [
+                    {
+                      "id": "trk_01j0qtsj1vyp4dyn7fsdkb9t8q",
+                      "kind": "subtitles",
+                      "source": "generated",
+                      "status": "ready",
+                      "language": "en",
+                      "name": "English"
+                    },
+                    {
+                      "id": "trk_01jbz1ke29rzfnpwz5grhd401k",
+                      "kind": "chapters",
+                      "source": "generated",
+                      "status": "ready"
+                    }
+                  ],
+                  "created_at": "2026-11-18T09:30:00Z",
+                  "updated_at": "2026-11-18T09:34:12Z"
+                },
+                "track": {
+                  "id": "trk_01j0qtsj1vyp4dyn7fsdkb9t8q",
+                  "kind": "subtitles"
+                }
               }
             }
           }
@@ -7047,17 +8088,20 @@
         "type": "object",
         "properties": {
           "id": {
-            "type": "string"
+            "type": "string",
+            "description": "The playback ID (pid_...) that goes in playback URLs."
           },
           "policy": {
             "type": "string",
             "enum": [
               "signed",
               "public"
-            ]
+            ],
+            "description": "signed plays only with a token your backend signs; public plays for anyone with the URL."
           },
           "playable": {
-            "type": "boolean"
+            "type": "boolean",
+            "description": "Whether the ID plays now: false until the asset has an output, and once revoked."
           },
           "status": {
             "type": "string",
@@ -7065,7 +8109,8 @@
               "active",
               "revoking",
               "revoked"
-            ]
+            ],
+            "description": "active, revoking while its routes are unpublished, then revoked."
           },
           "share": {
             "type": "object",
@@ -7080,7 +8125,8 @@
             "required": [
               "id",
               "name"
-            ]
+            ],
+            "description": "Present when a share link owns this ID."
           }
         },
         "required": [
@@ -7101,10 +8147,12 @@
             "enum": [
               "subtitles",
               "chapters"
-            ]
+            ],
+            "description": "subtitles, or chapters."
           },
           "source": {
-            "type": "string"
+            "type": "string",
+            "description": "generated: made by speech recognition or an LLM."
           },
           "status": {
             "type": "string",
@@ -7112,16 +8160,19 @@
               "preparing",
               "ready",
               "errored"
-            ]
+            ],
+            "description": "preparing, ready or errored."
           },
           "language": {
-            "type": "string"
+            "type": "string",
+            "description": "The detected language code for subtitles, for example en or hi."
           },
           "name": {
             "type": "string"
           },
           "error_code": {
-            "type": "string"
+            "type": "string",
+            "description": "Why the track errored, for example no_audio or llm_not_connected."
           }
         },
         "required": [
@@ -7257,10 +8308,12 @@
         "type": "object",
         "properties": {
           "id": {
-            "type": "string"
+            "type": "string",
+            "description": "The asset ID (ast_...)."
           },
           "app_id": {
-            "type": "string"
+            "type": "string",
+            "description": "The app the asset belongs to."
           },
           "status": {
             "type": "string",
@@ -7270,17 +8323,20 @@
               "ready",
               "errored",
               "deleted"
-            ]
+            ],
+            "description": "waiting_upload until the file arrives, processing while it encodes, then ready or errored; deleted once deleted."
           },
           "version": {
             "type": "integer",
             "description": "Rises on every change; keep the highest seen."
           },
           "passthrough": {
-            "type": "string"
+            "type": "string",
+            "description": "Your own reference, such as lesson_42. Absent when unset."
           },
           "title": {
-            "type": "string"
+            "type": "string",
+            "description": "For people: not unique and never part of a URL. One line, up to 200 characters. Absent when unset."
           },
           "renditions": {
             "allOf": [
@@ -7291,7 +8347,8 @@
             "description": "The renditions this asset's outputs are encoded at; absent means every rung up to the source."
           },
           "error_code": {
-            "type": "string"
+            "type": "string",
+            "description": "Why the asset is errored, for example upload_cancelled, import_failed or unsupported_source."
           },
           "base_url": {
             "type": "string",
@@ -7301,7 +8358,8 @@
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/PlaybackID"
-            }
+            },
+            "description": "Every playback ID, including revoked ones and those a share link owns."
           },
           "duration_seconds": {
             "oneOf": [
@@ -7311,13 +8369,15 @@
               {
                 "type": "null"
               }
-            ]
+            ],
+            "description": "Null until the first output exists."
           },
           "tracks": {
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/Track"
-            }
+            },
+            "description": "Subtitles and chapters tracks; retired and deleted tracks are not listed."
           },
           "created_at": {
             "type": "string",
@@ -7375,14 +8435,16 @@
         "properties": {
           "size": {
             "type": "integer",
-            "minimum": 1
+            "minimum": 1,
+            "description": "The file size in bytes."
           },
           "playback_policy": {
             "type": "string",
             "enum": [
               "signed",
               "public"
-            ]
+            ],
+            "description": "The policy of the playback ID made with the asset. Default signed."
           },
           "passthrough": {
             "type": "string",
@@ -7390,10 +8452,12 @@
           },
           "title": {
             "type": "string",
-            "maxLength": 200
+            "maxLength": 200,
+            "description": "One line, up to 200 characters."
           },
           "generate": {
-            "$ref": "#/components/schemas/Generate"
+            "$ref": "#/components/schemas/Generate",
+            "description": "Ask for subtitles and chapters once the video is ready; chapters imply subtitles."
           },
           "renditions": {
             "$ref": "#/components/schemas/Renditions"
@@ -7407,16 +8471,20 @@
         "type": "object",
         "properties": {
           "upload_id": {
-            "type": "string"
+            "type": "string",
+            "description": "The upload ID (upl_...)."
           },
           "asset_id": {
-            "type": "string"
+            "type": "string",
+            "description": "The asset this upload fills."
           },
           "part_size": {
-            "type": "integer"
+            "type": "integer",
+            "description": "Bytes in every part but the last."
           },
           "part_count": {
-            "type": "integer"
+            "type": "integer",
+            "description": "How many parts to send."
           },
           "upload_token": {
             "type": "string",
@@ -7426,7 +8494,8 @@
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/PlaybackID"
-            }
+            },
+            "description": "The asset's playback IDs, already made."
           }
         },
         "required": [
@@ -7721,10 +8790,12 @@
             "type": "string"
           },
           "url": {
-            "type": "string"
+            "type": "string",
+            "description": "The page to send: {public_url}/s/{secret}."
           },
           "playback_id": {
-            "type": "string"
+            "type": "string",
+            "description": "The signed playback ID the link owns."
           },
           "expires_at": {
             "oneOf": [
@@ -7735,7 +8806,8 @@
               {
                 "type": "null"
               }
-            ]
+            ],
+            "description": "When the link stops working, or null for never."
           },
           "status": {
             "type": "string",
@@ -7743,14 +8815,16 @@
               "active",
               "revoked",
               "expired"
-            ]
+            ],
+            "description": "active, revoked or expired."
           },
           "created_at": {
             "type": "string",
             "format": "date-time"
           },
           "views_30d": {
-            "type": "integer"
+            "type": "integer",
+            "description": "Views over the last 30 UTC days, in lists."
           }
         },
         "required": [
@@ -7818,7 +8892,8 @@
             "format": "date-time"
           },
           "body": {
-            "$ref": "#/components/schemas/WebhookEvent"
+            "$ref": "#/components/schemas/WebhookEvent",
+            "description": "Exactly what a webhook endpoint receives."
           }
         },
         "required": [
@@ -7845,7 +8920,8 @@
         "type": "object",
         "properties": {
           "id": {
-            "type": "string"
+            "type": "string",
+            "description": "The event ID (evt_...), the same as X-Webhook-Id. Dedupe on it."
           },
           "type": {
             "type": "string",
@@ -7865,7 +8941,8 @@
             "format": "date-time"
           },
           "data": {
-            "$ref": "#/components/schemas/Asset"
+            "$ref": "#/components/schemas/Asset",
+            "description": "The asset when the event was made. Re-fetch it before acting."
           },
           "job": {
             "type": "object",
@@ -7883,7 +8960,8 @@
             "required": [
               "id",
               "kind"
-            ]
+            ],
+            "description": "The job behind the event, for re-encodes."
           },
           "track": {
             "type": "object",
@@ -7901,7 +8979,8 @@
             "required": [
               "id",
               "kind"
-            ]
+            ],
+            "description": "The track, for track events."
           }
         },
         "required": [
@@ -7927,13 +9006,16 @@
             }
           },
           "public_url": {
-            "type": "string"
+            "type": "string",
+            "description": "Where the API is."
           },
           "base_url": {
-            "type": "string"
+            "type": "string",
+            "description": "The media origin playback URLs start with."
           },
           "max_token_lifetime_seconds": {
-            "type": "integer"
+            "type": "integer",
+            "description": "The longest a playback token may last: exp - iat."
           },
           "upload_origins": {
             "type": "array",
@@ -7967,7 +9049,8 @@
                 "public_key_pem",
                 "created_at"
               ]
-            }
+            },
+            "description": "The keys that still verify tokens, newest first."
           }
         },
         "required": [
@@ -8174,7 +9257,8 @@
         "type": "object",
         "properties": {
           "code": {
-            "type": "string"
+            "type": "string",
+            "description": "Show it; the owner checks it matches on verify_url. Any case, the dash optional."
           },
           "poll_token": {
             "type": "string"
@@ -8187,7 +9271,8 @@
             "format": "date-time"
           },
           "interval_seconds": {
-            "type": "integer"
+            "type": "integer",
+            "description": "How often to poll."
           }
         },
         "required": [
@@ -8225,7 +9310,8 @@
             "type": "string"
           },
           "api_key": {
-            "type": "string"
+            "type": "string",
+            "description": "A new API key with the default scopes. Shown once."
           },
           "signing_kid": {
             "type": "string"
@@ -8238,7 +9324,8 @@
             "type": "string"
           },
           "webhook_secret": {
-            "type": "string"
+            "type": "string",
+            "description": "Present when a webhook URL was given."
           },
           "env": {
             "type": "string",
@@ -8358,6 +9445,80 @@
   "security": [
     {
       "apiKey": []
+    }
+  ],
+  "tags": [
+    {
+      "name": "Uploads",
+      "description": "Resumable browser uploads. Your backend creates the upload; the browser sends S3 multipart parts straight to storage with the upload token, then completes it."
+    },
+    {
+      "name": "Videos",
+      "description": "A video is an asset in the API: its status, playback IDs, tracks and renditions. Find one by your own `passthrough`, page through changes, rename, re-encode or delete it."
+    },
+    {
+      "name": "Subtitles and chapters",
+      "description": "Tracks made after a video is ready: subtitles from speech, and chapters from an LLM. A new track replaces the old one only once it is ready."
+    },
+    {
+      "name": "Playback IDs",
+      "description": "Each video has one or more playback IDs, public or signed, each revocable on its own."
+    },
+    {
+      "name": "Share links",
+      "description": "A share link plays one video for anyone holding its URL, until it expires or is revoked."
+    },
+    {
+      "name": "Events",
+      "description": "The same events your webhook endpoints receive, read by long-polling. `npx @clipmux/node listen` uses it."
+    },
+    {
+      "name": "App",
+      "description": "The API key's own app: its URLs, scopes, token lifetime and signing keys."
+    },
+    {
+      "name": "Analytics",
+      "description": "Views, watch time, unique viewers and bytes delivered, counted at delivery. Needs the `analytics:read` scope."
+    },
+    {
+      "name": "App pairing",
+      "description": "How `npx @clipmux/node init` gets an app's credentials without anyone copying a secret. None of these routes needs a key."
+    },
+    {
+      "name": "Share page",
+      "description": "The token endpoint behind a share link's page. It needs no session or key."
+    },
+    {
+      "name": "Delivery",
+      "description": "Playback, from the media URL (`base_url`): HLS playlists, posters and subtitle files. Signed playback IDs take an ES256 token your backend signs; public ones take none."
+    }
+  ],
+  "x-tagGroups": [
+    {
+      "name": "Videos",
+      "tags": [
+        "Uploads",
+        "Videos",
+        "Subtitles and chapters",
+        "Playback IDs",
+        "Share links"
+      ]
+    },
+    {
+      "name": "Your app",
+      "tags": [
+        "App",
+        "Events",
+        "Analytics",
+        "App pairing"
+      ]
+    },
+    {
+      "name": "Playback",
+      "tags": [
+        "Delivery",
+        "Share page"
+      ]
     }
   ]
 }

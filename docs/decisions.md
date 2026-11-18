@@ -1679,3 +1679,12 @@ Consequence:
 - The rest of a long video's time is the 4K ladder's encode and whisper.
 - Whisper ran at RTF 0.23–0.30 on Hindi lectures against 0.14 on English. Its own timings (fallbacks, encode, decode), and the beam-5 against greedy bench, decide the decoding choice next.
 - An owner who reconnects Modal from the dashboard gets L4 and A10G ticked. An existing config keeps its list until it is reconnected; production's was changed by hand on 2026-11-15.
+
+## D133 clipmux.com: the site in this repository, and the landing page signed off — accepted (2026-11-18)
+P6-T15, answering P6 open question 3. The plan is [P6-T15-site.md](plans/P6-T15-site.md). The owner chose where the site lives and its theme, reviewed the clickable mock ([ClipMux landing mock](https://claude.ai/artifact/6xL3k84S8WSEn295rjShZt)), and signed it off with no changes.
+- **One site in `site/`,** Next.js 16 with Fumadocs and a static export. It serves `clipmux.com`: the landing page at `/`, the docs at `/docs`. Docs change in the same pull request as the behaviour they describe, the API reference is generated from `internal/openapi/openapi.json`, and snippets are tested against the vector files in the same CI. AGENTS.md's TypeScript rule gains `site/` in T15.1.
+- **Light by default, dark by system preference,** on the dashboard's tokens and Archivo (D098). The one loud element is the black poster playing a real ClipMux stream; the page's only ambient motion is a scroll-linked playhead on a chapter track under the nav.
+- **The landing page's sections,** as in the mock: Watch (the player and the demo video's event log), four integration steps, the storage, encoding and delivery track editor, security with its "isn't DRM" row, features with dashboard screenshots, coding agents, and install.
+- **Headline:** "Video infrastructure you host.", the mock's default.
+
+Consequence: T15.1 scaffolds `site/` and updates AGENTS.md. The mock's stand-ins (star count, event times, the demo playback, the Python, Go and PHP snippets) become real in T15.8 and T16. P6-T15-site.md's open question 6 is settled; questions 1–5 stay open.

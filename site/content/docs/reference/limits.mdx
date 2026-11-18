@@ -1,0 +1,70 @@
+---
+title: Limits and defaults
+description: Rate limits, sizes and the defaults a ClipMux instance enforces.
+---
+
+## Rate limits
+
+A refused request is `429 rate_limited` with `Retry-After` (seconds), and
+`retry_after` in the error details. Wait that long, then retry. Limits are
+per server process.
+
+| Surface | Counted by | Limit |
+| --- | --- | --- |
+| Integration API (an API key, or the owner's session acting as an app) | key | 20 requests a second, bursts of 200. Of those, writes (`POST`, `DELETE`) 2 a second, bursts of 60. |
+| `GET /v1/events` | key | 4 long-polls at once. |
+| `/v1/uploads/{id}/*` with an upload token | upload | 10 requests a second, bursts of 50. |
+| `POST /v1/app-pairings` | address | 20 an hour, and at most 10 waiting at once (`too_many_pairings`). |
+| `POST /v1/app-pairings/poll` | address | 2 a second, bursts of 4. |
+| `POST /s/{secret}/playback` | address | 2 successes a second, bursts of 20. |
+| Playback (`/v/`, `/p/`) | address | Only refusals count: after 300 answers of 401, 403 or 404 in 5 minutes, every playback request from that address gets 429 until they age out. Successful playback is never limited. |
+| Owner sign-in | address, and overall | 5 failed sign-ins per address and 20 overall in 15 minutes. A browser the owner has signed in from before skips the overall limit. |
+
+An address is the client's as the trusted proxy reports it
+(`CLIPMUX_TRUSTED_PROXIES`); IPv6 addresses are grouped by their /64.
+
+## Uploads and videos
+
+| What | Limit |
+| --- | --- |
+| Upload size | 312.5 GiB (10,000 parts of 32 MiB), or `CLIPMUX_MAX_UPLOAD_BYTES` if lower. |
+| Part size | 32 MiB, the last part smaller. |
+| Part URLs per request | 100, each valid for an hour. |
+| An upload left idle | Expires after 24 hours, as `upload_expired`. |
+| `title` | One line, up to 200 characters. |
+| `passthrough` | Up to 255 bytes. |
+| Playback IDs per video | 1000. |
+| Renditions | `2160p`, `1440p`, `1080p`, `720p`, `480p` and `360p`, never above the source. |
+| Share link `name` | One line, up to 100 characters. |
+
+## Requests
+
+| What | Limit |
+| --- | --- |
+| Request body | JSON, up to 64 KiB. |
+| `Idempotency-Key` | Up to 255 bytes. |
+| Page size | Up to 100 items, with `next_cursor`. |
+| `GET /v1/events` long-poll | Up to 25 seconds. |
+
+## Playback tokens
+
+| What | Default |
+| --- | --- |
+| Longest token lifetime (`exp - iat`) | 7 days. `GET /v1/app` returns the instance's value as `max_token_lifetime_seconds`. |
+| Signing | ES256, with the app's signing key; the `kid` header names it. |
+| Audiences | `v` plays everything, including the content key; `t` fetches only the poster. |
+
+## Webhooks
+
+| What | Default |
+| --- | --- |
+| Timestamp tolerance | 300 seconds. |
+| Retries | Back off for 24 hours; then catch up with `GET /v1/assets?updated_since=`. |
+| Success | Any 2xx. Redirects are not followed. |
+
+## Analytics
+
+| What | Default |
+| --- | --- |
+| Ranges | `24h`, `7d`, `30d` and `90d`. |
+| History kept | 180 days. |

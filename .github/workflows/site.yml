@@ -1,0 +1,38 @@
+# clipmux.com (site/, D133): build the static site on pull requests that touch
+# it or what it is generated from. ci.yml already typechecks it; this adds the
+# Next.js build. Deploying from main arrives with P6-T15.10.
+name: Site
+on:
+  pull_request:
+    paths:
+      - site/**
+      - internal/openapi/**
+      - CHANGELOG.md
+      - packages/*/README.md
+      - docs/api.md
+      - docs/configuration.md
+      - pnpm-lock.yaml
+      - .github/workflows/site.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: site-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @clipmux/site run typecheck
+      - run: pnpm --filter @clipmux/site run build
+      - run: pnpm --filter @clipmux/site run test
+      - run: pnpm --filter @clipmux/site run lint:docs
+      - run: pnpm exec biome ci site

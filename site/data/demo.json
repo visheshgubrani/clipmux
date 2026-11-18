@@ -1,0 +1,16 @@
+{
+  "$comment": "The hero's demo video and what it went through. Illustrative until the demo recording is on production (P6-T15-site.md, open question 1); then `pnpm --filter @clipmux/site demo` writes the real values from the API.",
+  "illustrative": true,
+  "events": [
+    { "at": "00:00", "what": "Upload finished", "detail": "4 min 12 s, 1080p source" },
+    { "at": "00:21", "what": "Encoding started", "detail": "Modal, L4" },
+    { "at": "01:03", "what": "video.asset.ready", "code": true, "detail": "5 renditions, AES-128" },
+    {
+      "at": "02:40",
+      "what": "video.asset.track.ready",
+      "code": true,
+      "detail": "English subtitles, whisper.cpp"
+    },
+    { "at": "02:52", "what": "video.asset.track.ready", "code": true, "detail": "Chapters, Claude" }
+  ]
+}

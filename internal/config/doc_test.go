@@ -9,11 +9,16 @@ import (
 	"testing"
 )
 
-// Every variable the Go source reads is documented in docs/configuration.md,
-// and, unless only tests read it, has an example in .env.example.
+// Every variable a deployment reads is documented on the site's
+// configuration page and has an example in .env.example; a variable only
+// tests read is documented there or in docs/configuration.md.
 func TestEveryVariableIsDocumented(t *testing.T) {
 	root := filepath.Join("..", "..")
-	doc, err := os.ReadFile(filepath.Join(root, "docs", "configuration.md"))
+	public, err := os.ReadFile(filepath.Join(root, "site", "content", "docs", "reference", "configuration.mdx"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dev, err := os.ReadFile(filepath.Join(root, "docs", "configuration.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,10 +54,15 @@ func TestEveryVariableIsDocumented(t *testing.T) {
 		t.Fatalf("found only %d variables; is the walk wrong?", len(found))
 	}
 	for v, deployed := range found {
-		documented := strings.Contains(string(doc), "`"+v+"`") ||
-			(strings.HasPrefix(v, "CLIPMUX_E2E_") && strings.Contains(string(doc), "`CLIPMUX_E2E_*`"))
-		if !documented {
-			t.Errorf("%s is read but not in docs/configuration.md", v)
+		in := func(doc []byte) bool {
+			return strings.Contains(string(doc), "`"+v+"`") ||
+				(strings.HasPrefix(v, "CLIPMUX_E2E_") && strings.Contains(string(doc), "`CLIPMUX_E2E_*`"))
+		}
+		switch {
+		case deployed && !in(public):
+			t.Errorf("%s is read but not on site/content/docs/reference/configuration.mdx", v)
+		case !deployed && !in(public) && !in(dev):
+			t.Errorf("%s is read by tests but in neither configuration page", v)
 		}
 		if deployed && !strings.Contains(string(example), v+"=") {
 			t.Errorf("%s is read but has no example in .env.example", v)

@@ -26,7 +26,7 @@ import (
 
 const workerUsage = `Usage:
   clipmux worker --server URL              connect this PC (approve it in the dashboard)
-  clipmux worker --server URL --pair CODE  connect with a code from the Workers page
+  clipmux worker --server URL --pair CODE  connect with a code from clipmux admin create-pairing
   clipmux worker                           run, once this PC is connected
   clipmux worker doctor [--offline]        check everything this PC needs (--offline: before pairing)
   CLIPMUX_WORKER_KEY=KEY clipmux worker --server URL [--once]
@@ -54,8 +54,8 @@ func runWorker(args []string, getenv func(string) string, stderr io.Writer) int 
 	viaServer := fs.Bool("storage-via-server", false, "fetch and upload signed storage URLs through --server (the built-in worker)")
 	confine := fs.Bool("sandbox", false, "confine ffmpeg and the packager (Linux; agents always do unless --unsandboxed)")
 	unconfined := fs.Bool("unsandboxed", false, "run an agent's tools unconfined: it then gets only its own local jobs and the owner's uploads")
-	pair := fs.String("pair", "", "connect this PC with a code from the dashboard's Workers page")
-	name := fs.String("name", "", "what to call this PC on the Workers page (default: its hostname)")
+	pair := fs.String("pair", "", "connect this PC with a pairing code from clipmux admin create-pairing")
+	name := fs.String("name", "", "what to call this PC (default: its hostname)")
 	encoder := fs.String("encoder", orEnv(getenv("CLIPMUX_ENCODER"), "auto"), "first encoder to try: auto, nvenc, vaapi, cuda-decode or cpu; the CPU always backs it up")
 	speechFlag := fs.String("speech", orEnv(getenv("CLIPMUX_SPEECH"), "auto"), "transcribe subtitles: auto (a GPU, or a CPU with 4+ cores and 6 GiB), off, cpu, vulkan or cuda")
 	if err := fs.Parse(args); err != nil {
@@ -305,7 +305,7 @@ func runLoop(ctx context.Context, w *worker.Worker, once bool, logger *slog.Logg
 		return 0
 	}
 	if err := w.Run(ctx); errors.Is(err, worker.ErrKeyRefused) && getenv("CLIPMUX_WORKER_KEY") == "" {
-		logger.Error("this PC was disconnected from the server (revoked on its Workers page). " +
+		logger.Error("this PC was disconnected from the server (revoked). " +
 			"Remove " + worker.ConfigPath(agentDir(getenv)) + " and run clipmux worker --server URL to connect it again")
 		return 1
 	} else if err != nil {

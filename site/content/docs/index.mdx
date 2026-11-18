@@ -1,0 +1,21 @@
+---
+title: Introduction
+description: ClipMux is self-hosted video infrastructure, an open-source alternative to Mux and Cloudflare Stream.
+---
+
+Any app uploads a video, gets a playback ID, and streams it to every device as
+encrypted HLS: from your own storage, encoded on your own GPU (or one you rent
+by the minute), behind playback tokens your backend signs.
+
+ClipMux is one Go binary and Postgres. Storage, encoding and delivery each sit
+behind an adapter, so you can move from a disk to R2, or from your server to a
+cloud GPU, and the API your apps call doesn't change.
+
+## Choose a path
+
+- **Run a server.** Install ClipMux on a Linux machine with Docker, then
+  connect storage, encoding and delivery. Start at [Self-host](/docs/self-host).
+- **Add video to an app.** Uploads, webhooks and signed playback with the Node
+  SDK, or the REST API from any language. Start at [Build](/docs/build).
+- **Hand it to a coding agent.** Every page here is written so an agent can
+  follow it as well as a person can.

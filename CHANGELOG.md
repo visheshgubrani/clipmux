@@ -56,6 +56,10 @@ Fixed before release:
 ### Server
 
 - `GET /v1/app` lists `upload_origins`, for an app's Content-Security-Policy.
+- The OpenAPI spec at `/openapi.json` describes every operation and webhook,
+  groups its tags, and has an example for every JSON body.
+- `clipmux worker --pair` names `clipmux admin create-pairing` as where its
+  code comes from, not the removed Workers page.
 - `clipmux admin create-key` defaults to the scopes `doctor` checks
   (`uploads:write`, `assets:read`, `assets:write`) and accepts spaces in
   `--scopes`.

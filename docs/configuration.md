@@ -1,89 +1,14 @@
 # Configuration
 
-Every setting is an environment variable; nothing is read from a file except
-the keys serve keeps under `CLIPMUX_DATA_DIR`. `.env.example` lists each
-variable with an example. A test (`internal/config/doc_test.go`) fails when the
-Go source reads a variable this page or `.env.example` doesn't name.
-
-A value that doesn't parse stops the command at start, naming the variable.
-
-## clipmux serve
-
-| Variable | Default | What it does |
-| --- | --- | --- |
-| `DATABASE_URL` | required | Postgres. pgxpool options go in the URL (`pool_max_conns=20`); session settings too (`statement_timeout=30s`). Unset, every session gets `statement_timeout=60s` and `idle_in_transaction_session_timeout=5min` (D068). serve waits up to a minute for Postgres at boot. |
-| `CLIPMUX_LISTEN` | `:8080` | Where serve listens. Behind Caddy, keep it off the public interface. |
-| `CLIPMUX_DATA_DIR` | `./data` | Filesystem storage, the storage signing key, and the secrets key when `CLIPMUX_SECRETS_KEY` is unset. Back it up (docs/operations.md). |
-| `CLIPMUX_SECRETS_KEY` | `{data_dir}/secrets.key` | `v1:` and 64 hex digits; seals every secret kept in Postgres (D017). Losing it makes every stored secret, and every output, unusable. |
-| `CLIPMUX_SECRETS_KEY_PREVIOUS` | unset | The key being rotated away from, only until `clipmux admin reseal-secrets` has run (D071). |
-| `CLIPMUX_PUBLIC_URL` | chosen at first boot | The origin browsers and workers reach serve at. Set, it pins both URLs and the first-boot URL step is read-only (D023). |
-| `CLIPMUX_MEDIA_URL` | `CLIPMUX_PUBLIC_URL` | The origin playback is served from (`base_url`); ideally another registrable domain. Needs `CLIPMUX_PUBLIC_URL`. |
-| `CLIPMUX_TRUSTED_PROXIES` | none | Addresses or CIDR ranges (Caddy's) whose `X-Forwarded-For`, `X-Forwarded-Proto` and `X-Request-Id` are believed. Rate limits, sign-in limits, request IDs and the https redirect all depend on it (D064, D065, D067). |
-| `CLIPMUX_MAX_UPLOAD_BYTES` | the storage limit (~312 GiB) | The largest declared upload. |
-| `CLIPMUX_BUILTIN_WORKER` | `true` | Start `clipmux worker` as serve's child. |
-| `CLIPMUX_UNSANDBOXED_WORKER` | `false` | Run the built-in worker where the media tool sandbox or Landlock doesn't hold. Only if the host isolates it another way (D027, D120). Where only Landlock is missing, the tools keep seccomp and the limits. |
-| `CLIPMUX_TOOL_MEMORY_MB` | `8192` | Memory limit for each media tool. Passed to the built-in worker. |
-| `CLIPMUX_FFMPEG`, `CLIPMUX_FFPROBE`, `CLIPMUX_PACKAGER`, `CLIPMUX_WHISPER` | found on `PATH` | The media tools. Shaka Packager must be 3.9.1 or later; `whisper-cli` is the pinned whisper.cpp from `toolchain/build_whisper.sh`, used only to transcribe. |
-| `CLIPMUX_LOG_FORMAT` | `text` | `text` or `json` (D064). Passed to the built-in worker. |
-| `CLIPMUX_LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error`. Successful playback, storage and worker requests log at debug. |
-| `CLIPMUX_METRICS_ADDR` | unset (off) | `host:port` for `/metrics`, a listener of its own with no auth: keep it off the internet (D066). |
-| `CLIPMUX_PPROF` | `false` | Add Go's `/debug/pprof/` to the metrics listener. Needs `CLIPMUX_METRICS_ADDR`. |
-| `CLIPMUX_SELF_DIAL` | unset | Where the setup test connects for every URL it checks, keeping each URL's hostname (compose: `caddy`) (D026). |
-| `CLIPMUX_CLOUDFLARE_API` | Cloudflare's v4 API | Cloudflare's API base, for a proxy or a test double. |
-| `CLIPMUX_R2_ENDPOINT` | `https://{account_id}.r2.cloudflarestorage.com` | R2's S3 endpoint, e.g. the EU jurisdiction's. |
-| `CLIPMUX_RUNPOD_API` | RunPod's v1 REST API | RunPod's API base, for a test double. |
-| `CLIPMUX_RUNPOD_CATALOG` | RunPod's v2 API | Where RunPod's GPU prices come from (D111), for a test double. |
-| `CLIPMUX_WORKER_IMAGE` | the image this build names | The image RunPod and Modal machines run (D058). |
-| `CLIPMUX_EXECUTORS_ALLOW_PRIVATE_URL` | `false` | Connect RunPod or Modal while the public URL is private: development only. |
-
-## clipmux worker
-
-A PC agent paired with `--pair` keeps its server and key in `agent.json` and
-needs none of these; the built-in worker gets its own from serve.
-
-| Variable | Default | What it does |
-| --- | --- | --- |
-| `CLIPMUX_SERVER` | from `agent.json` | The server's public URL. |
-| `CLIPMUX_WORKER_KEY` | from `agent.json` | The worker's key. Never in argv. |
-| `CLIPMUX_AGENT_DIR` | the user's config directory | Where `agent.json`, `sources.json` and `agent.sock` live. |
-| `CLIPMUX_ENCODER` | `auto` | The first encoder to try: `auto`, `nvenc`, `vaapi`, `cuda-decode` or `cpu` (D046). |
-| `CLIPMUX_VAAPI_DEVICE` | every `/dev/dri/renderD*` | The VAAPI render node. |
-| `CLIPMUX_SPEECH` | `auto` | Whether the worker transcribes subtitles: `auto` (on a GPU whose Vulkan probe passes, else on a CPU with at least 4 cores and 6 GiB), `off`, `cpu` or `vulkan` (D077, D079). serve passes it to the built-in worker. |
-| `CLIPMUX_FOLLOW_ON_SPEECH` | unset | Set by serve on a serverless machine woken for an encode, never by hand: the speech mode (`auto`) it proves speech in if serve hands it the asset's transcription after the encode (D128). `off` or unset: it takes no transcription. |
-| `CLIPMUX_BAKED_MODELS_DIR` | `/usr/share/clipmux/models` in the image; unset elsewhere | The speech models baked into the image (D118). A worker uses them when they are there, and downloads nothing. serve passes it to the built-in worker. |
-| `CLIPMUX_MODELS_DIR` | `models/` in `CLIPMUX_AGENT_DIR`; the built-in worker's is `models/` in serve's data directory | Where a worker without baked models keeps the speech models it downloads by digest (about 0.9 GB), across restarts. |
-| `CLIPMUX_TOOL_MEMORY_MB`, `CLIPMUX_FFMPEG`, `CLIPMUX_FFPROBE`, `CLIPMUX_PACKAGER`, `CLIPMUX_WHISPER`, `CLIPMUX_LOG_FORMAT`, `CLIPMUX_LOG_LEVEL` | as for serve | |
-
-## clipmux push and clipmux listen
-
-| Variable | Default | What it does |
-| --- | --- | --- |
-| `CLIPMUX_API_KEY` | required | The app's API key. Never in argv. |
-| `CLIPMUX_PUSH_STATE_DIR` | the user's cache directory | Where unfinished pushes keep their upload tokens (0600). |
-| `CLIPMUX_LISTEN_SECRET` | generated once, kept beside `agent.json` | The `whsec_` secret `listen` signs forwarded events with. |
-
-## clipmux admin
-
-`clipmux admin` reads `DATABASE_URL`, and where it needs secrets
-`CLIPMUX_DATA_DIR`, `CLIPMUX_SECRETS_KEY` and `CLIPMUX_SECRETS_KEY_PREVIOUS`,
-the same as serve. `clipmux admin` with no arguments lists its commands.
-
-## Your app's backend
-
-These are not read by ClipMux: they are what an app's backend reads, as
-`npx @clipmux/node init`, `clipmux admin create-integration` and the
-dashboard's "Create credentials" write them (P6-T23). Keep them on the
-server; none belongs in a browser bundle.
-
-| Variable | What it holds |
-| --- | --- |
-| `CLIPMUX_URL` | The server's public URL, which the backend calls. |
-| `CLIPMUX_API_KEY` | The app's `cmx_` API key, with `uploads:write`, `assets:read` and `assets:write`. |
-| `CLIPMUX_SIGNING_KID` | The kid of the app's signing key, the `kid` header of every playback token. |
-| `CLIPMUX_SIGNING_KEY` | The ES256 private key (PKCS #8 PEM) as one double-quoted line with `\n` escapes, which dotenv, Next.js and `node --env-file` expand. |
-| `CLIPMUX_WEBHOOK_SECRET` | The `whsec_` secret webhook deliveries are signed with; only when a webhook URL was given. |
+Every setting a deployment uses is documented on the site, in
+[site/content/docs/reference/configuration.mdx](../site/content/docs/reference/configuration.mdx)
+(clipmux.com/docs/reference/configuration). This file keeps only the
+variables that tests and development read, which the public page leaves
+out. `internal/config/doc_test.go` fails when the Go source reads a variable
+neither page names, or a deployed one the public page doesn't.
 
 ## Tests and development
+
 
 | Variable | What it does |
 | --- | --- |

@@ -1,0 +1,6 @@
+{
+  "title": "Build",
+  "description": "Add video to your app",
+  "root": true,
+  "pages": ["index"]
+}
