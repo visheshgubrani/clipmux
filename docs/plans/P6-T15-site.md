@@ -662,12 +662,12 @@ Source: README.
 | T15.1 | **done** (TypeScript 7 works with Next 16.4.6 and Fumadocs 16.19.3; no pinned TypeScript 5) — **Scaffold** (decided in D133). The TypeScript 7 spike; `site/` with Next 16, Fumadocs and static export; tokens, Archivo and the pre-paint theme script; the workspace and Biome entries; `make site`; empty landing and docs shells; `site.yml` (build only). Update AGENTS.md. |
 | T15.2 | **done**; the Markdown twins are built under `/raw` and moved to `/docs` by `site/scripts/postbuild.mjs`, and the snippet tests wait for T16 — **Docs plumbing.** Page template; MDX components (Steps, synced Tabs, the three callouts, Files, TypeTable); page actions; `.md` twins; `llms.txt`, `llms-full.txt` and the per-tab files; Orama static search; OG template; sitemap, robots, `_headers` and `_redirects`; `make site-check` with every lint above. |
 | T15.3 | **done**: the spec has tag names, descriptions and groups, a description for every operation and webhook, and examples that `internal/openapi/openapi_test.go` validates against their schemas; the reference is generated as plain MDX (see "Stack"); the configuration page moved to the site, with `internal/config/doc_test.go` reading it; a Go test keeps the CLI page complete — **Generated reference.** Enrich `openapi.json` (Go tests stay green; T22's tests still pass); the API reference and webhook events through fumadocs-openapi; errors, limits, env vars, both CLIs and the changelog page. |
-| T15.4 | **Build content.** Every launch page in Build, ported or written; T16's snippets and their tests land here. |
-| T15.5 | **Self-host content.** Every launch page in Self-host (T18 lands here); stubs left for the moved `docs/*.md`. |
-| T15.6 | **Resources.** Migration from Mux and from Cloudflare Stream, the architecture overview, FAQ, contributing, security policy. |
-| T15.7 | **Agent surface.** `/agents.md` built from `packages/node/AGENTS.md`; the sidebar's agent group; anchors the skills (T17) use; the agent check (done-criterion 4). |
+| T15.4 | **done** (D134): every Build page; the Python, Go and PHP snippets in `site/snippets/` with `make snippets-test` and CI's `snippets` job; the quickstart's TypeScript compiled in the site typecheck; no `examples/`, so the framework pages use the handler as the README does and one page covers the other Fetch runtimes — **Build content.** Every launch page in Build, ported or written; T16's snippets and their tests land here. |
+| T15.5 | **done** (D134): every Self-host page; the moved docs are pointers; the installer and Compose variables are on the settings page — **Self-host content.** Every launch page in Self-host (T18 lands here); stubs left for the moved `docs/*.md`. |
+| T15.6 | **done** (D134): a fourth tab — **Resources.** Migration from Mux and from Cloudflare Stream, the architecture overview, FAQ, contributing, security policy. |
+| T15.7 | **done**, except the skills' anchors, which wait for T17 (D134) — **Agent surface.** `/agents.md` built from `packages/node/AGENTS.md`; the sidebar's agent group; anchors the skills (T17) use; the agent check (done-criterion 4). |
 | T15.8 | **built**, waiting on open question 1: the hero steps through the dashboard's screens with `site/data/demo.json`'s example events until the demo recording is on production; the security rows link to the Build and Self-host introductions until their pages exist (T15.4–T15.5); the star count is fetched at build and left out while the repository is private — **Landing page.** First the clickable mock in light and dark, signed off by the owner. Then build: the timeline nav, the hero with the live player and `demo.json`, four steps, the track editor, security, features with new screenshots, agents, install; meet the quality floor; OG image. |
-| T15.9 | **Repoint.** README, package READMEs, `docs/` links and the dashboard's help links point at `clipmux.com/docs`; `known-gaps.md` updated. |
+| T15.9 | **done**: the README, the package READMEs, the dashboard and the deploy files link to clipmux.com/docs — **Repoint.** README, package READMEs, `docs/` links and the dashboard's help links point at `clipmux.com/docs`; `known-gaps.md` updated. |
 | T15.10 | **changed**: the VPS, not Workers static assets. `make site-deploy` and `deploy/site/clipmux.com.caddy`; the first release is uploaded to `/srv/clipmux-site`, and Caddy switches `clipmux.com` from its redirect to the site once the owner approves the change — **Deploy.** Workers static assets on a preview hostname behind Cloudflare Access; `site.yml` deploys on `main`. At T20 `clipmux.com` moves from its redirect to the repository onto the site. |
 
 **Order:**
@@ -699,7 +699,7 @@ Each answer becomes a decision before the task that needs it.
 4. **Versioned docs?** Recommendation: one "latest" set, matching the
    latest release, with the version shown in the sidebar. Versioning comes
    with the first breaking API change.
-5. **Should the management API be in the public reference?** Recommendation:
+5. **Should the management API be in the public reference?** **Answered (D134):** yes, marked "may change". Recommendation was:
    yes, marked "used by the dashboard; may change", because self-hosters
    script it. A machine-readable spec for it comes after launch.
 6. **The headline.** **Answered (D133):** "Video infrastructure you host."

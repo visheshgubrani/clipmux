@@ -42,7 +42,12 @@ anything decided since, and wins over the architecture doc where they differ.
   Fumadocs, built as static files. User-facing docs move into
   `site/content/docs` as P6-T15.4 and T15.5 port them; `docs/` keeps the internal records (architecture,
   decisions, plans, design, known gaps). A change in behaviour updates its
-  docs page in the same pull request. The plan is
+  docs page in the same pull request. Code that pages show lives in
+  `site/snippets/` and runs in tests: Python, Go and PHP against the vector
+  files (`make snippets-test`), TypeScript in the site's typecheck. The
+  management API page is kept complete by `internal/manage/docs_test.go`, the
+  CLI page by `cmd/clipmux/docs_test.go`, the settings page by
+  `internal/config/doc_test.go`. The plan is
   [docs/plans/P6-T15-site.md](docs/plans/P6-T15-site.md).
 
 ## Commands
@@ -55,6 +60,7 @@ make run                      # clipmux serve (migrates the dev database on boot
 make lint                     # gofmt, vet, staticcheck -checks all, govulncheck
 make sqlc / make sqlc-check   # regenerate / verify the generated code in internal/db (runs sqlc in Docker)
 make site / make site-check   # clipmux.com dev server on :8100 / typecheck, build, docs lints, Biome
+make snippets-test            # the docs' Python, Go and PHP snippets against both vector files
 gofmt -l .                    # must print nothing
 ```
 

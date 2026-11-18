@@ -8,7 +8,7 @@ workflow uses a self-hosted runner.
 
 | Workflow | Runs on | When |
 | --- | --- | --- |
-| `ci.yml`: gofmt, vet and Go tests against Postgres (`go`); TypeScript typecheck and tests, the clipmux.com build with its docs lints, and Biome (`web`) | hosted Linux | every pull request and push to main; by hand |
+| `ci.yml`: gofmt, vet and Go tests against Postgres (`go`); TypeScript typecheck and tests, the clipmux.com build with its docs lints, and Biome (`web`); the docs' Python, Go and PHP snippets against the vector files (`snippets`) | hosted Linux | every pull request and push to main; by hand |
 | `image.yml`: the image under compose, the setup test, pushes `sha-{commit}` | hosted Linux | by hand (pushes from main); `v*` tags |
 | `agent.yml`: the amd64 and arm64 agent tarballs | hosted Linux | by hand; `v*` tags |
 | `exit.yml`: the Phase 1–5 exit tests, Chromium and ExoPlayer | hosted Linux | by hand (`soak` for 30 minutes), before a release |

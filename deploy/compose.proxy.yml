@@ -8,7 +8,7 @@
 # Your proxy terminates TLS for the public hostname and forwards to the app
 # on 127.0.0.1:${CLIPMUX_ADMIN_PORT}; set that port in .env if 8080 is taken.
 # Keep the public hostname off any CDN proxy that challenges API clients
-# (docs/operations.md, "Behind your own proxy").
+# (https://clipmux.com/docs/self-host/install-options/reverse-proxy).
 services:
   caddy:
     # Never started: your proxy serves the public hostname.

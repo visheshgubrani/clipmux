@@ -47,9 +47,9 @@ ClipMux serves the course videos of [Edural](https://edural.com) in production.
   hundreds of gigabytes. Import from a URL, or push from the command line with
   `clipmux push`.
 - **Encode anywhere.** The built-in worker uses NVENC or VAAPI when it finds a
-  GPU. Or send encodes to [Modal](docs/executors.md#modal) or
-  [RunPod](docs/executors.md#runpod) GPUs with a monthly spend limit, or to a
-  [PC at home](docs/agents.md). Executors never hold storage credentials.
+  GPU. Or send encodes to [Modal](https://clipmux.com/docs/self-host/encoding/modal) or
+  [RunPod](https://clipmux.com/docs/self-host/encoding/runpod) GPUs with a monthly spend limit, or to a
+  [PC at home](https://clipmux.com/docs/self-host/encoding/your-pc). Executors never hold storage credentials.
 - **A ladder up to 4K.** Every standard rendition up to the source's own size,
   or only the ones an upload asks for.
 - **Encrypted by default.** Every output is AES-128 fMP4 HLS, segmented and
@@ -59,7 +59,7 @@ ClipMux serves the course videos of [Edural](https://edural.com) in production.
   with no call to ClipMux. Playback IDs are public or signed, many per video,
   and revocable; poster tokens can't play the video.
 - **Origin or edge delivery.** Serve playback from ClipMux itself, or connect
-  Cloudflare in one dialog: the [ClipMux Worker](docs/cloudflare.md) serves
+  Cloudflare in one dialog: the [ClipMux Worker](https://clipmux.com/docs/self-host/delivery/cloudflare) serves
   from R2 at the edge, and videos keep playing while your server is down.
 - **Subtitles and chapters.** Transcribe with whisper.cpp on your own GPU
   (CUDA or Vulkan) or CPU, or with any OpenAI-compatible speech API. Chapters
@@ -130,13 +130,13 @@ On a host where another proxy already owns ports 80 and 443, add
 `deploy/compose.proxy.yml`, which leaves Caddy out and listens on
 `127.0.0.1:8080`. On a small or shared host, set
 `CLIPMUX_BUILTIN_WORKER=false` and encode on Modal or RunPod instead. See
-[Running ClipMux](docs/operations.md#behind-your-own-proxy).
+[Behind your own reverse proxy](https://clipmux.com/docs/self-host/install-options/reverse-proxy).
 
 </details>
 
-Backups, upgrades, metrics and every setting are in
-[docs/operations.md](docs/operations.md) and
-[docs/configuration.md](docs/configuration.md).
+Backups, upgrades, metrics and every setting are in the
+[Self-host docs](https://clipmux.com/docs/self-host) and the
+[environment variables](https://clipmux.com/docs/reference/configuration).
 
 ## Integrate in four steps
 
@@ -192,10 +192,10 @@ npx @clipmux/node listen --forward-to localhost:3000/api/clipmux/webhook
 
 The handler is a plain Fetch handler, so it also runs in Express, Hono,
 SvelteKit, Remix, Bun, Deno and Cloudflare Workers. From any other language,
-call the [REST API](docs/api.md) (its OpenAPI spec is at `/openapi.json` on
+call the [REST API](https://clipmux.com/docs/reference/api) (its OpenAPI spec is at `/openapi.json` on
 your instance) and sign playback tokens as standard ES256 JWTs.
-[docs/integration.md](docs/integration.md) is the path through it, from a
-live integration.
+The [Build docs](https://clipmux.com/docs/build) are the path through it, starting with the
+[quickstart](https://clipmux.com/docs/build/quickstart).
 
 ## How it works
 
@@ -276,13 +276,11 @@ The full design, with its threat model, is in
 
 | | |
 | --- | --- |
-| [Running ClipMux](docs/operations.md) | Install, upgrade, back up, monitor and secure an instance |
-| [Configuration](docs/configuration.md) | Every environment variable |
-| [Integrating ClipMux](docs/integration.md) | Uploads, webhooks and signed playback in your app |
-| [API reference](docs/api.md) | Every route, with the integration API and webhooks |
-| [Serverless encoding](docs/executors.md) | Modal and RunPod |
-| [PC agents](docs/agents.md) | Encode on a computer you own |
-| [Cloudflare delivery](docs/cloudflare.md) | The edge Worker and R2 |
+| [Build](https://clipmux.com/docs/build) | Uploads, webhooks and signed playback in your app, from the quickstart on |
+| [Self-host](https://clipmux.com/docs/self-host) | Install, configure, upgrade, back up, monitor and secure a server |
+| [Reference](https://clipmux.com/docs/reference) | The API, webhook events, errors, limits, environment variables, the CLIs and the SDKs |
+| [Resources](https://clipmux.com/docs/resources) | Migrating from Mux or Cloudflare Stream, the FAQ, contributing |
+| [For coding agents](https://clipmux.com/agents.md) | The guide an agent follows to integrate ClipMux; every docs page is also Markdown |
 | [Architecture](docs/architecture.md) · [Decisions](docs/decisions.md) | The design and why it is this way |
 | [Known gaps](docs/known-gaps.md) | Deliberate limits and deferred work |
 

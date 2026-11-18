@@ -1,5 +1,7 @@
 # @clipmux/player
 
+The docs: [Add the player](https://clipmux.com/docs/build/play/player) and the [reference](https://clipmux.com/docs/reference/sdks/player).
+
 Plays ClipMux videos with Video.js 10 and refreshes expired playback tokens
 without losing the viewer's place.
 
@@ -143,7 +145,7 @@ export async function playbackToken(playbackId: string): Promise<string> {
 
 A public playback ID needs no token: set `playback-id` and leave `getToken`
 unset. The full contract, including posters and the maximum lifetime, is the
-Delivery section of [docs/api.md](https://github.com/visheshgubrani/clipmux/blob/main/docs/api.md#delivery).
+[delivery reference](https://clipmux.com/docs/reference/api/delivery).
 
 ## TypeScript
 

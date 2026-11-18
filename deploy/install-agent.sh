@@ -2,8 +2,8 @@
 # Installs the ClipMux agent on a Linux PC and connects it to a server
 # (docs/plans/P6-launch.md, "One-line install"): the self-contained tarball
 # (D061) for this machine's architecture, checked against the release's
-# SHA256SUMS, and a systemd unit that starts it at boot. The Workers page
-# shows the command with a fresh pairing code:
+# SHA256SUMS, and a systemd unit that starts it at boot. A fresh pairing code
+# comes from `clipmux admin create-pairing` on the server:
 #
 #   curl -fsSL https://github.com/visheshgubrani/clipmux/releases/download/vX.Y.Z/install-agent.sh | sh -s -- --server URL --pair CODE
 #
@@ -15,8 +15,8 @@
 #
 # Options (after `sh -s --`):
 #   --server URL       the ClipMux server
-#   --pair CODE        a pairing code from its Workers page (not needed to upgrade)
-#   --name NAME        what the Workers page calls this PC (default: its hostname)
+#   --pair CODE        a code from `clipmux admin create-pairing` (not needed to upgrade)
+#   --name NAME        what the server calls this PC (default: its hostname)
 #   --version vX.Y.Z   that release (default: the one this script came from, else the latest)
 #   --uninstall        stop and remove the agent; its connection is kept unless --purge
 #   --purge            with --uninstall: forget the connection too
@@ -24,8 +24,8 @@
 # Environment, for testing and mirrors:
 #   CLIPMUX_RELEASE_URL   where the release's files are (default: its GitHub Release)
 #
-# macOS and Windows run the agent in Docker; the Workers page shows that
-# command too. Everything is inside main, so a truncated download runs nothing.
+# macOS and Windows run the agent in Docker; `POST /v1/agents/pairings` returns
+# that command with a code. Everything is inside main, so a truncated download runs nothing.
 
 main() {
 	repo=visheshgubrani/clipmux
@@ -54,7 +54,7 @@ main() {
 		shift
 	done
 	[ -z "$purge" ] || [ -n "$uninstall" ] || die "--purge goes with --uninstall"
-	[ "$(uname -s)" = Linux ] || die "this installer is for Linux; on macOS and Windows, run the Docker command from the Workers page"
+	[ "$(uname -s)" = Linux ] || die "this installer is for Linux; on macOS and Windows, run the agent in Docker (https://clipmux.com/docs/self-host/encoding/your-pc)"
 
 	if [ "$(id -u)" = 0 ]; then
 		system=1
@@ -84,7 +84,7 @@ main() {
 	need tar
 	need awk
 	if [ ! -f "$state/agent.json" ] && { [ -z "$server" ] || [ -z "$code" ]; }; then
-		die "give --server URL and --pair CODE (the Workers page shows this command with both)"
+		die "give --server URL and --pair CODE (clipmux admin create-pairing on the server makes a code)"
 	fi
 
 	case $version in
@@ -145,7 +145,7 @@ main() {
 		done
 		if [ ! -f "$state/agent.json" ]; then
 			logs >&2
-			die "the agent didn't connect: the code may have expired or been used (create a new one on the Workers page); its log is above"
+			die "the agent didn't connect: the code may have expired or been used (make a new one with clipmux admin create-pairing on the server); its log is above"
 		fi
 		# The code is spent; take it out of the unit.
 		write_unit ""
@@ -160,7 +160,7 @@ main() {
 	if [ -n "$paired" ]; then
 		say "The ClipMux agent is upgraded to $version and running."
 	else
-		say "This PC is connected. It shows on the Workers page and takes jobs now."
+		say "This PC is connected and takes jobs now."
 	fi
 	if [ -n "$system" ]; then
 		say "Logs: journalctl -u clipmux-agent -f    Check: sudo -u clipmux-agent $bindir/clipmux worker doctor"
@@ -227,12 +227,12 @@ verify() {
 # The tarball's FFmpeg and libraries are built on Ubuntu 24.04 (glibc 2.39).
 check_glibc() {
 	v=$(getconf GNU_LIBC_VERSION 2>/dev/null | awk '{print $2}')
-	[ -n "$v" ] || die "the agent needs glibc (not musl); run the Docker command from the Workers page instead"
+	[ -n "$v" ] || die "the agent needs glibc (not musl); run the agent in Docker instead (https://clipmux.com/docs/self-host/encoding/your-pc)"
 	major=${v%%.*}
 	minor=${v#*.}
 	minor=${minor%%.*}
 	if [ "$major" -lt 2 ] || { [ "$major" = 2 ] && [ "$minor" -lt 39 ]; }; then
-		die "the agent needs glibc 2.39 or newer (Ubuntu 24.04, Debian 13, Fedora 40); this has $v. Run the Docker command from the Workers page instead"
+		die "the agent needs glibc 2.39 or newer (Ubuntu 24.04, Debian 13, Fedora 40); this has $v. Run the agent in Docker instead (https://clipmux.com/docs/self-host/encoding/your-pc)"
 	fi
 }
 
@@ -314,7 +314,7 @@ remove() {
 	if [ -n "$purge" ]; then
 		rm -f "$state/agent.json"
 		[ -z "$system" ] || rm -rf "$state"
-		say "The ClipMux agent is removed, and this PC's connection forgotten. Revoke it on the Workers page too."
+		say "The ClipMux agent is removed, and this PC's connection forgotten. Revoke it on the server too (DELETE /v1/agents/ID)."
 	else
 		say "The ClipMux agent is removed. Its connection ($state/agent.json) is kept for a reinstall; --uninstall --purge forgets it."
 	fi
