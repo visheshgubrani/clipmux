@@ -441,7 +441,6 @@ function ConnectCloudflare({
                     ? 'Connect again'
                     : 'Connect Cloudflare'}
               </Button>
-              <span className="text-sm text-muted-foreground">Prefer wrangler? See docs/cloudflare.md.</span>
             </div>
           </FieldGroup>
         </form>

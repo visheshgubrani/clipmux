@@ -63,8 +63,16 @@ export function Settings({ setup }: { setup: Setup }) {
           <ContentKeySection />
           <Section title="Backups">
             <p className="text-sm text-muted-foreground">
-              Back up Postgres and the secrets key together. Losing either makes every video unplayable. See
-              docs/operations.md for the backup and restore steps.
+              Back up Postgres and the secrets key together. Losing either makes every video unplayable.{' '}
+              <a
+                href="https://clipmux.com/docs/self-host/operate/backups"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="underline underline-offset-3 hover:text-foreground"
+              >
+                Back up and restore
+              </a>{' '}
+              has the steps.
             </p>
           </Section>
         </TabsContent>

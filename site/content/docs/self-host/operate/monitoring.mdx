@@ -1,0 +1,151 @@
+---
+title: Monitoring
+description: Watch a ClipMux server with its health checks, Prometheus metrics, ready-made alerts and structured logs.
+icon: Activity
+---
+
+A ClipMux server tells you how it's doing in three ways: two health checks
+for a load balancer or uptime monitor, Prometheus metrics on a listener of
+their own, and one structured log line per request. The repository ships
+alert rules for the metrics.
+
+## Before you start
+
+- A running server. The one-line install already turns on metrics and JSON
+  logs.
+- For metrics: Prometheus, or anything that scrapes the Prometheus text
+  format, on a network that can reach the metrics listener.
+
+## Health checks
+
+| Path | Answers `200 ok` when |
+| --- | --- |
+| `/healthz` | The process is up. |
+| `/readyz` | Postgres answers within 2 seconds and the server isn't shutting down. Otherwise `503`, with `database unavailable` or `draining`. |
+
+Both are on the main listener, so `https://video.example.com/readyz` works
+through Caddy. The image's own Docker health check uses `/healthz`.
+
+## Metrics
+
+Set `CLIPMUX_METRICS_ADDR` to a `host:port` and the server serves `/metrics`
+there, on a listener of its own with no authentication. Keep it off the
+internet.
+
+The one-line install sets it to `:9090` and only exposes the port inside the
+Compose network; it's never published on the host. Run Prometheus on that
+network and scrape `app:9090` with the job name `clipmux`. Setting
+`CLIPMUX_PPROF=true` adds Go's profiler on the same listener.
+
+### What it reports
+
+**Requests and delivery**
+
+- `clipmux_http_requests_total` by `route` and `code`
+- `clipmux_http_request_duration_seconds` by `route`, long-polls left out
+- `clipmux_http_in_flight`
+- `clipmux_delivery_bytes_total` by playback policy
+- `clipmux_delivery_cache_lookups_total` by `table` and `result` (`hit` or
+  `miss`)
+
+**Jobs and workers**
+
+- `clipmux_jobs`: queued and running jobs, by `kind`, `status`, `routed_to`
+  and `route_reason`
+- `clipmux_job_queue_oldest_seconds` by `kind`
+- `clipmux_attempts_finished_total` by `executor`, `result` and `error_code`
+- `clipmux_workers_online` by `kind`: PC agents and the built-in worker seen
+  in the last minute
+- `clipmux_dispatches`: Modal and RunPod machines, by `provider` and `status`
+
+**Background loops and the outbox**
+
+- `clipmux_leader`: 1 on the replica that runs the background loops
+- `clipmux_sweeper_pass_seconds`, `clipmux_sweeper_errors_total`,
+  `clipmux_sweeper_panics_total` and
+  `clipmux_sweeper_last_success_timestamp_seconds`, by loop
+- `clipmux_outbox_pending` and `clipmux_outbox_oldest_pending_seconds` by
+  `kind`: route publications, webhooks, wakes and stops not yet done
+- `clipmux_webhook_deliveries` by `status`
+
+**Analytics and speech**
+
+- `clipmux_analytics_flush_rows_total`: rows the analytics flushes wrote
+- `clipmux_analytics_dropped_total`: viewer keys dropped because more than
+  100,000 piled up between flushes
+- `clipmux_speech_api_audio_seconds_total`: seconds of audio sent to a
+  [speech API](/docs/self-host/captions-and-ai/speech-apis)
+
+**Database pool and process**
+
+- `clipmux_db_pool_acquired_conns`, `clipmux_db_pool_idle_conns`,
+  `clipmux_db_pool_max_conns`, `clipmux_db_pool_acquire_wait_seconds_total`
+  and `clipmux_db_pool_empty_acquires_total`
+- `clipmux_build_info` by `version`, `clipmux_process_start_time_seconds`,
+  `clipmux_go_goroutines` and `clipmux_go_heap_bytes`
+
+### Alerts
+
+Load
+[`deploy/prometheus/alerts.yml`](https://github.com/visheshgubrani/clipmux/blob/main/deploy/prometheus/alerts.yml)
+from the repository into Prometheus. It alerts when:
+
+- the server stops answering its metrics listener;
+- no replica runs the background loops;
+- more than 2% of requests answer 5xx;
+- a background loop keeps failing, or panics;
+- outbox rows other than webhooks have been pending for over an hour;
+- a job has waited over 30 minutes;
+- jobs are queued and no worker has been seen in the last minute;
+- webhook deliveries gave up;
+- the Postgres pool is more than 90% used.
+
+## Logs
+
+The server logs to standard output.
+
+- `CLIPMUX_LOG_FORMAT` is `text` (the default) or `json`, one object per
+  line. The one-line install uses `json`, and Docker rotates the log at 5
+  files of 50 MB.
+- `CLIPMUX_LOG_LEVEL` is `debug`, `info` (the default), `warn` or `error`.
+
+Every request logs one `http request` line with its method, route pattern,
+path, status, bytes, duration and client address. Successful playback,
+storage, worker and health-check requests log at `debug`, so they stay out
+of the way at `info`; any 4xx logs at `info` and any 5xx at `warn`.
+
+Each request has an ID, logged as `request_id` and sent back in the
+`X-Request-Id` header. When someone reports an error with that ID, it finds
+the request's line and any error logged for it. The server takes an incoming
+`X-Request-Id` only from a proxy named in `CLIPMUX_TRUSTED_PROXIES`.
+
+Credentials are redacted before anything is written, whatever logged them:
+API, agent and dispatch keys, webhook secrets, any JWT, the playback token
+in a `/v/{token}/` path, a share link's secret, pairing codes, and URL query
+strings, which may carry signatures. Request lines never include the query,
+the `Referer` or the `Authorization` header.
+
+```bash
+cd /opt/clipmux
+docker compose logs app | grep req_…
+```
+
+## Check it works
+
+```bash
+curl -s https://video.example.com/readyz
+```
+
+- `ok`: the server and Postgres are up.
+- `database unavailable`: the server can't reach Postgres.
+- `draining`: the server is shutting down.
+
+For metrics, Prometheus's targets page shows the `clipmux` job as up. If
+it's down, check that `CLIPMUX_METRICS_ADDR` is set and that Prometheus runs
+on the Compose network.
+
+## Next
+
+- [Troubleshooting](/docs/self-host/operate/troubleshooting)
+- [Retention](/docs/self-host/operate/retention)
+- [Security checklist](/docs/self-host/operate/security-checklist)

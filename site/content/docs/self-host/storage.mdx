@@ -1,0 +1,186 @@
+---
+title: Where videos are stored
+description: Keep videos on this server's disk, in any S3-compatible bucket, or in Cloudflare R2, and move your library between them.
+icon: HardDrive
+---
+
+Every video has two parts in storage: the **upload**, the original file as
+it arrived, which ClipMux keeps so it can encode again; and the **encoded
+files**, the encrypted HLS renditions viewers play. A fresh install keeps
+both on this server's disk. You can add buckets, choose which one new
+uploads go to, and move existing videos there. Apps see none of this: their
+API calls and playback URLs stay the same.
+
+## Before you start
+
+- An owner account on the dashboard.
+- For R2: a Cloudflare account with R2 enabled.
+- For any other bucket: an S3-compatible service (AWS S3, or Garage or
+  SeaweedFS that you run), a bucket, and keys that can read, write, list and
+  delete in it and set its CORS rules.
+
+## Where each part goes
+
+| Part | Where it goes |
+| --- | --- |
+| Upload | The **default** storage on the Storage page, chosen when the video is created. |
+| Encoded files | The default storage too, beside the upload. With [Cloudflare edge delivery](/docs/self-host/delivery/cloudflare) connected, the delivery bucket in R2 instead, so the edge can serve them. |
+
+Each video remembers where its parts are. Changing the default, or
+connecting Cloudflare, changes where new videos go; existing videos stay
+where they are, and keep playing at the same URLs, until you move them.
+
+## The kinds of storage
+
+- **This server's disk.** Always there, and the default on a fresh install.
+  Files live in the app's data volume. Browsers upload to the public URL,
+  under `/_storage/`, with URLs ClipMux signs for each part.
+- **An S3-compatible bucket.** Browsers upload parts straight to the
+  bucket with presigned URLs, so uploads don't pass through your server.
+- **Cloudflare R2.** An S3-compatible bucket that ClipMux sets up from one
+  Cloudflare token.
+
+<LeavesYourServers>
+  With a bucket as storage, the bucket's provider holds the uploads exactly
+  as they arrived (not encrypted), and, when it is also where encoded files
+  go, the encoded files, which are AES-128 encrypted. ClipMux never sends
+  the content keys to the provider.
+</LeavesYourServers>
+
+## Add an R2 bucket
+
+<Steps>
+<Step>
+
+### Create a token
+
+On **Storage**, choose **Add R2 bucket**. The dialog links to Cloudflare's
+token page with the permission it needs already chosen: **Workers R2
+Storage: Edit**, and nothing else. Create the token and paste it into **API
+token**. If it reaches more than one account, choose the **Account**.
+
+</Step>
+<Step>
+
+### Choose the bucket
+
+Pick an existing bucket or name a new one; ClipMux creates it if it doesn't
+exist (`clipmux-media` by default). Tick **Use it for new uploads** to make
+it the default now.
+
+</Step>
+<Step>
+
+### Check and add
+
+ClipMux derives the bucket's S3 keys from the token, checks them with a test
+write, read, list and delete, sets the bucket's CORS rules, and saves it.
+Each step's result shows in the dialog.
+
+</Step>
+</Steps>
+
+The keys derive from the token, so keep the token active in Cloudflare:
+revoking or rolling it cuts ClipMux off from the bucket. To renew the keys
+with a new token, add the same bucket again. This doesn't change how videos
+are delivered; for edge delivery, see
+[Cloudflare edge delivery](/docs/self-host/delivery/cloudflare), which can
+reuse the same bucket.
+
+The same call through the API is `POST /v1/storage/r2`. R2 buckets in a
+jurisdiction such as the EU need `CLIPMUX_R2_ENDPOINT` set to that
+jurisdiction's endpoint.
+
+## Add S3-compatible storage
+
+On **Storage**, choose **Add S3 storage** and fill in:
+
+- **Endpoint**: the service's S3 endpoint, for example
+  `https://s3.eu-central-1.amazonaws.com`.
+- **Bucket**, and **Region** if the service needs one.
+- **Access key ID** and **Secret access key**.
+- **Public endpoint**: only when browsers must reach the bucket at another
+  address than the one ClipMux uses, for example when ClipMux reaches a
+  Garage bucket on a private network.
+
+**Check and add** saves it only after a test write, read, list and delete
+pass and ClipMux has set the bucket's CORS rules, so browsers on any origin
+can upload parts and read the `ETag` of each. The presigned URL is what
+authorises an upload, so the rule doesn't check the origin. A new store
+isn't the default until you choose **Use for new uploads**.
+
+Through the API, this is `POST /v1/storage`. Keys are sealed with the
+secrets key in Postgres and never returned.
+
+## Choose the default
+
+**Use for new uploads** on any store, this server's disk included, makes it
+the default (`POST /v1/storage/{id}/default`). New videos go there from then
+on. Existing videos stay where they are until you move them.
+
+## Move the library
+
+When some videos have a part away from where the settings now put it, the
+Storage page says how many keep their upload on another storage, and offers
+**Move them to** the default. The Delivery page does the same for encoded
+files. Either button moves both parts of every such video:
+
+- the upload goes to the default storage;
+- the encoded files go to where encoded files now belong;
+- a part already in place is skipped, and the video's playback routes are
+  published again.
+
+Encrypted files move as they are, and playback URLs don't change, so videos
+keep playing during and after the move. Each video is a `move` job: progress
+shows on **Jobs**, and a failed move is listed there. Moves run inside the
+server, never on an encoder, because they need storage keys.
+
+Through the API, `GET /v1/storage/moves` counts the videos that have a part
+elsewhere and the moves running, done and failed, and
+`POST /v1/storage/moves` queues a move for each video that needs one and has
+no other job running.
+
+## Rotate an S3 store's keys
+
+Create new keys at the provider, then choose **Rotate keys** on the store
+and paste them (`PUT /v1/storage/{id}/credentials`). ClipMux runs the same
+checks with the new keys and keeps the old ones until they pass. Then delete
+the old keys at the provider. For an R2 bucket, add the same bucket again
+with a new token instead. This server's disk has no keys.
+
+## Remove a store
+
+**Remove** (`DELETE /v1/storage/{id}`) forgets a store and its keys. The
+files in the bucket stay where they are. ClipMux refuses to remove:
+
+- this server's disk;
+- the default store: choose another default first;
+- the Cloudflare delivery bucket: disconnect Cloudflare first;
+- a store that still holds any part of a video: move the library first. A
+  deleted video counts until its files are gone.
+
+## What ClipMux doesn't do
+
+- It doesn't set a lifecycle rule on your bucket. An upload abandoned
+  midway can leave its parts in the bucket if aborting it fails; a lifecycle
+  rule that aborts incomplete multipart uploads after a few days cleans them
+  up.
+- It doesn't copy or replicate a bucket for backup. See
+  [Back up and restore](/docs/self-host/operate/backups).
+
+## Check it works
+
+- The store shows on **Storage** with **Default** next to it, and a count
+  of videos.
+- Upload a short video from **Upload**. It reaches **Ready**, and the
+  default store's count goes up by one.
+- If **Check and add** fails, the failed step says why: usually the
+  endpoint, the bucket name or the keys, or keys that can't set CORS.
+- If uploads to a bucket fail in the browser but the store was added, the
+  browser can't reach the endpoint: set **Public endpoint**.
+
+## Next
+
+- [Cloudflare edge delivery](/docs/self-host/delivery/cloudflare)
+- [Back up and restore](/docs/self-host/operate/backups)
+- [Management API](/docs/reference/management-api)

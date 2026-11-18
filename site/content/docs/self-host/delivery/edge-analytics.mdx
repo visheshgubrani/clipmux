@@ -1,0 +1,110 @@
+---
+title: Edge analytics
+description: Bring the playback the Cloudflare Worker counts into ClipMux's Analytics with a second, read-only token.
+---
+
+With Cloudflare delivery, the Worker answers viewers instead of your server,
+so your server no longer sees those plays. The Worker counts them itself,
+the same way built-in delivery does, and writes the counts to Analytics
+Engine in your Cloudflare account. Connecting edge analytics lets ClipMux
+pull those counts back, so views, watch time, bandwidth and unique viewers
+in **Analytics** include playback at the edge.
+
+## Before you start
+
+- [Cloudflare edge delivery](/docs/self-host/delivery/cloudflare), connected.
+- Access to the Cloudflare account the Worker runs in, to create a token.
+
+## What the Worker counts
+
+The Worker counts what built-in delivery counts: a view per generated master
+playlist, 6 seconds of watch time per audio segment, and the bytes of every
+response it serves. It writes one data point per counted response to the
+Analytics Engine dataset `clipmux_delivery`.
+
+A data point holds the project, app, video and playback ID, the kind of
+file, the views, watch seconds and bytes, and a viewer key: an HMAC of the
+token's `vid` under the project's analytics key, never the `vid` itself. No
+IP address, User-Agent, referrer or token is written. Dashboard previews and
+the setup test aren't counted; share links are.
+
+## Connect edge analytics
+
+<Steps>
+<Step>
+
+### Create a read-only token
+
+On **Delivery**, in the **Edge analytics** card, choose
+**Create token on Cloudflare**. The form opens with only
+**Account Analytics: Read** chosen. Create the token on the account the
+Worker runs in. It can't change anything.
+
+</Step>
+<Step>
+
+### Paste it
+
+Paste it into **Read-only API token** and choose
+**Connect edge analytics**. ClipMux checks it with one query and keeps it
+sealed with the secrets key. It's never returned.
+
+</Step>
+</Steps>
+
+Over the API, the same step is `POST /v1/cloudflare/analytics` with
+`{"token": "…"}`. It answers `409 not_connected` without Cloudflare
+delivery, and `400 token_rejected` for a token Cloudflare refuses.
+
+## How counts are pulled
+
+- The server pulls every 5 minutes.
+- Each pull recomputes from an hour before the last one and replaces those
+  hours, so points that arrive late still count and nothing counts twice.
+- A first connect starts 13 days back and catches up a day per pull, so
+  recent plays show up within about an hour.
+- Pasting a new token keeps the place the pulls have reached.
+- Disconnecting forgets the token. Counts already pulled stay in Analytics.
+
+`GET /v1/cloudflare/analytics` returns how far the pulls have reached
+(`pulled_through`), the last pull's time and its error, if any.
+
+## What's sampled
+
+Analytics Engine samples data points, even a single viewer's burst of
+requests. ClipMux weights views, watch time and bytes back up, so edge
+counts are close estimates rather than exact. Points that are sampled out
+take their viewer keys with them, so edge unique viewers can read low.
+
+Other limits:
+
+- ClipMux pulls only the last 13 days. If pulls stop for longer than that,
+  the gap is lost.
+- The Worker counts a response's bytes from its `Content-Length`, so a
+  viewer who stops a segment partway counts it whole at the edge.
+- Data points and queries count against Analytics Engine's allowance on
+  Workers Paid. A viewer-hour writes about 1,200 data points, one per
+  request. See
+  [Analytics Engine pricing](https://developers.cloudflare.com/analytics/analytics-engine/pricing/).
+- A Worker deployed by an older ClipMux counts at the edge only after it's
+  redeployed. **Delivery** offers that as "A newer Worker is available".
+
+## Check it works
+
+Play a video through the media hostname, wait 5 minutes, and look at the
+**Edge analytics** card on **Delivery**.
+
+- It shows **Connected** and no error: pulls are running. The plays show in
+  **Analytics** once the pull covers their hour.
+- "The last pull failed", with the reason: if the token was revoked, choose
+  **Replace token** and paste
+  a new one.
+- **Analytics** still says playback through Cloudflare isn't counted: no
+  token is connected. `collecting.edge` in `GET /v1/analytics` says
+  `not_connected`.
+
+## Next
+
+- [Views, watch time and unique viewers](/docs/build/analytics)
+- [Cloudflare edge delivery](/docs/self-host/delivery/cloudflare)
+- [Retention](/docs/self-host/operate/retention)

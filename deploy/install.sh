@@ -131,7 +131,8 @@ main() {
 
   Secrets key:  $key
   Store this off the host, with your database backups. Without it, the
-  stored secrets and every video are lost (docs/operations.md, Backups).
+  stored secrets and every video are lost; see
+  https://clipmux.com/docs/self-host/operate/backups
   It is also in $dir/.env.
 
   Upgrade:      run this installer again

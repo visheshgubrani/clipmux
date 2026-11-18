@@ -1,0 +1,5 @@
+{
+  "title": "Captions and AI",
+  "icon": "Sparkles",
+  "pages": ["whisper", "speech-apis", "chapters-llm"]
+}

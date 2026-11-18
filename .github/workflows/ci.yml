@@ -59,3 +59,14 @@ jobs:
       - name: Build the site and run its docs lints
         run: pnpm --filter @clipmux/site run build && pnpm --filter @clipmux/site run lint:docs
       - run: pnpm lint
+
+  snippets:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: site/snippets/go/go.mod
+      - name: The docs' Python, Go and PHP snippets against the vector files
+        run: site/snippets/test.sh

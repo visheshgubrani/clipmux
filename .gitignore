@@ -24,3 +24,7 @@ deploy/modal/media.test
 
 # The binary go build ./cmd/clipmux writes at the root.
 /clipmux
+
+# The docs' snippet dependencies (site/snippets/test.sh installs them).
+site/snippets/php/vendor/
+__pycache__/

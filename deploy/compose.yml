@@ -19,6 +19,8 @@ services:
       DATABASE_URL: postgres://clipmux:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in deploy/.env}@postgres:5432/clipmux?sslmode=disable
       # Seals the secrets kept in Postgres; back it up with the database.
       CLIPMUX_SECRETS_KEY: ${CLIPMUX_SECRETS_KEY:?set CLIPMUX_SECRETS_KEY in deploy/.env}
+      # Only while rotating the secrets key: the old key, until reseal-secrets.
+      CLIPMUX_SECRETS_KEY_PREVIOUS: ${CLIPMUX_SECRETS_KEY_PREVIOUS:-}
       # Empty: chosen at first boot in the dashboard. Set: pinned.
       CLIPMUX_PUBLIC_URL: ${CLIPMUX_PUBLIC_URL:-}
       CLIPMUX_MEDIA_URL: ${CLIPMUX_MEDIA_URL:-}
@@ -26,6 +28,8 @@ services:
       CLIPMUX_TRUSTED_PROXIES: 172.16.0.0/12,192.168.0.0/16,10.0.0.0/8
       # The setup test reaches the public hostnames through Caddy.
       CLIPMUX_SELF_DIAL: caddy
+      # false: no built-in worker; encode on Modal, RunPod or a PC instead.
+      CLIPMUX_BUILTIN_WORKER: ${CLIPMUX_BUILTIN_WORKER:-true}
       # One JSON object per line, for whatever collects container logs.
       CLIPMUX_LOG_FORMAT: json
       # Prometheus metrics on the compose network only (port 9090 is never

@@ -1,0 +1,210 @@
+---
+title: "@clipmux/uploader"
+description: The upload element, its attributes, events and styling, and the headless ClipMuxUpload class.
+icon: CloudUpload
+---
+
+`@clipmux/uploader` uploads a file from the browser to ClipMux in parts,
+straight to storage, and resumes from what storage already holds. It
+registers `<clipmux-uploader>`, a drop zone with progress, Cancel and Retry,
+and exports `ClipMuxUpload`, the same without the UI. The browser never holds
+an API key: your backend creates the upload and hands it over.
+
+- Version 0.5.0, MIT licensed. The ClipMux server is AGPL-3.0; this package
+  is MIT so your app can embed it.
+- No dependencies.
+
+For how to use it, see [Upload from the browser](/docs/build/upload/browser)
+and [Headless uploads and Uppy](/docs/build/upload/headless-and-uppy).
+
+## Install
+
+<Tabs items={['npm', 'pnpm']}>
+<Tab value="npm">
+
+```bash
+npm i @clipmux/uploader
+```
+
+</Tab>
+<Tab value="pnpm">
+
+```bash
+pnpm add @clipmux/uploader
+```
+
+</Tab>
+</Tabs>
+
+## Entry points
+
+| Import | What it has |
+| --- | --- |
+| `@clipmux/uploader/element` | Registers `<clipmux-uploader>` and exports `ClipMuxUploaderElement` and its event types |
+| `@clipmux/uploader` | `ClipMuxUpload`, `ClipMuxUploadError`, `rememberUpload`, `planParts` and their types |
+| `@clipmux/uploader/react` | Types only: adds `<clipmux-uploader>` to React's JSX, with no React dependency |
+
+## The element
+
+```html
+<script type="module">import '@clipmux/uploader/element'</script>
+<clipmux-uploader create-url="/api/clipmux/upload" accept="video/*" max-size="5000000000"></clipmux-uploader>
+```
+
+When the viewer chooses or drops a file, the element sends `POST` with
+`{"size", "name", "type"}` to `create-url`, sending the page's cookies when
+that URL is on the same origin. Your backend checks the user, creates the
+upload with its API key, and answers with it plus `endpoint`, the ClipMux
+URL. `clipmuxHandler`'s `upload` route does exactly that. The upload is
+remembered in `localStorage` until it completes, so choosing the same file
+after a reload resumes it.
+
+### Attributes
+
+| Attribute | Value |
+| --- | --- |
+| `create-url` | Your backend's route that creates the upload |
+| `accept` | As on `<input type=file>`, for example `video/*,.mkv`; dropped files are checked too |
+| `max-size` | The largest file accepted, in bytes |
+| `state` | Set by the element: `idle`, `uploading`, `done` or `error`, for styling |
+
+### Properties and methods
+
+| Member | Does |
+| --- | --- |
+| `options` | Further `ClipMuxUpload` options for each upload, such as `concurrency`, `endpoint` or `store` |
+| `state` | The state, as the attribute. Read-only |
+| `file` | The file being uploaded, or `null`. Read-only |
+| `asset` | The video once the upload completes, or `null`. Read-only |
+| `upload(file)` | Uploads a file, as choosing or dropping it does. Resolves with the video, or `null` |
+| `retry()` | Tries the last failed upload again, from what storage holds |
+| `cancel()` | Stops the upload for good and tells ClipMux |
+
+### Events
+
+They bubble and are typed on `HTMLElementEventMap`.
+
+| Event | `detail` |
+| --- | --- |
+| `clipmux-progress` | `{ bytesUploaded, bytesTotal, partsDone, partsTotal }` |
+| `clipmux-uploaded` | `{ asset }`: the video, `processing`. Your webhook hears when it's ready |
+| `clipmux-error` | `{ code, message, status, error }` |
+
+`code` is `file_too_large`, `file_type_rejected`, `create_denied` (a `401` or
+`403` from `create-url`), or a `ClipMuxUploadError` code.
+
+### Styling
+
+- Parts: `dropzone`, `label`, `button`, `progress`, `bar`, `status`,
+  `cancel` and `retry`, as in `clipmux-uploader::part(bar) { … }`.
+- Custom properties: `--clipmux-uploader-accent`, `--clipmux-uploader-border`,
+  `--clipmux-uploader-radius`, `--clipmux-uploader-background`,
+  `--clipmux-uploader-color` and `--clipmux-uploader-font`.
+- The default slot replaces the drop zone's text.
+
+### React
+
+```tsx
+import type {} from '@clipmux/uploader/react'
+
+<clipmux-uploader create-url="/api/clipmux/upload" onclipmux-uploaded={(e) => save(e.detail.asset.id)} />
+```
+
+The import types the attributes, `options` and the `onclipmux-*` handlers,
+for React 18 or 19.
+
+## ClipMuxUpload
+
+The upload without the element.
+
+```ts
+import { ClipMuxUpload } from '@clipmux/uploader'
+
+const asset = await new ClipMuxUpload(file, { createUrl: '/api/clipmux/upload' }).start()
+```
+
+`new ClipMuxUpload(file, options)` needs `upload` or `createUrl`.
+
+<TypeTable
+  type={{
+    upload: { type: 'CreatedUpload', description: 'What POST /v1/uploads returned to your backend: upload_id, upload_token, part_size, part_count, and optionally asset_id and endpoint.' },
+    createUrl: { type: 'string', description: "Instead of upload: your backend's route that creates it. start() sends {size, name, type} there and uses the answer, which must carry endpoint unless that option is set." },
+    endpoint: { type: 'string', description: "ClipMux's public URL, for example https://video.example.com. Optional when the upload carries endpoint." },
+    store: { type: 'UploadStore | null', description: 'Where a createUrl upload is remembered until it completes, so a reload resumes it; null turns it off.', default: 'localStorage' },
+    concurrency: { type: 'number', description: 'Parts in flight at once.', default: '4' },
+    maxAttempts: { type: 'number', description: 'Tries per request before giving up.', default: '6' },
+    onProgress: { type: '(progress: Progress) => void', description: 'Called as bytes are sent.' },
+    signal: { type: 'AbortSignal', description: 'Aborts the upload.' },
+    fetch: { type: 'typeof fetch', description: 'The fetch to use.', default: 'globalThis.fetch' },
+  }}
+/>
+
+| Member | Does |
+| --- | --- |
+| `start()` | Uploads what storage doesn't hold yet and completes the upload. Resolves with the video, `processing`. After a rejection, calling it again retries from what storage holds |
+| `pause()` | Stops sending; parts already stored stay |
+| `resume()` | Continues after `pause()` |
+| `cancel()` | Stops for good and tells ClipMux to cancel the upload |
+| `upload` | The upload in use, or `null` until `start()` has one |
+
+How it behaves:
+
+- Parts are the upload's `part_size`, which the server chooses.
+- After a reload, `start()` asks ClipMux which parts are stored and sends
+  the rest.
+- Retries honour `Retry-After`, and an offline browser waits for `online`.
+  Part uploads retry network errors, 5xx, 408 and 429; the calls to ClipMux
+  and to `createUrl` retry network errors, 5xx and 429. A 4xx such as
+  `413 too_large` fails at once.
+- A failure rejects with a `ClipMuxUploadError` and leaves the upload
+  resumable for 24 hours.
+- With `createUrl`, a remembered upload that has expired or was cancelled is
+  replaced by a new one.
+- Storage must expose the `ETag` header to the page. ClipMux's own storage
+  does, and adding a bucket in the dashboard sets its CORS.
+
+## Other exports
+
+| Export | Does |
+| --- | --- |
+| `ClipMuxUploadError` | The error a failed upload rejects with: `code`, `status` (`0` without an answer) and `retryable` |
+| `rememberUpload(store)` | Remembers an upload per file in a store such as `localStorage`: `{ save(file, upload), load(file), forget(file) }`. It keeps only the upload's ID, token, part layout and endpoint |
+| `planParts(size, partSize)` | Splits a size into parts, `{ number, start, end }[]` |
+
+Types: `CreatedUpload`, `Asset`, `Progress`, `UploadOptions`, `UploadStore`,
+`PlannedPart` and `PutPart`.
+
+With your own backend route and `rememberUpload`:
+
+```ts
+import { ClipMuxUpload, rememberUpload } from '@clipmux/uploader'
+
+const memory = rememberUpload(localStorage)
+const upload = memory.load(file) ?? (await createUploadOnMyBackend(file.size))
+memory.save(file, upload)
+
+const asset = await new ClipMuxUpload(file, {
+  endpoint: 'https://video.example.com',
+  upload,
+  onProgress: (p) => console.log(p.bytesUploaded / p.bytesTotal),
+}).start()
+memory.forget(file)
+```
+
+## Content-Security-Policy
+
+A page with the uploader must allow, besides its own origin:
+
+- `connect-src`: the ClipMux URL, which signs and completes parts, and the
+  storage bucket's origin, which receives them. With files on the server's
+  own disk, that is the ClipMux URL too.
+- `style-src`: `'unsafe-inline'`, for the element's styles.
+
+`npx @clipmux/node doctor` prints the exact origins, from `GET /v1/app`
+(`public_url` and `upload_origins`).
+
+## Next
+
+- [Upload from the browser](/docs/build/upload/browser)
+- [Headless uploads and Uppy](/docs/build/upload/headless-and-uppy)
+- [Choose renditions](/docs/build/upload/renditions)

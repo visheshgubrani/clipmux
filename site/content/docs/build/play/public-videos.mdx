@@ -1,0 +1,165 @@
+---
+title: Public videos
+description: Give a video a public playback ID so anyone with its URL can watch it, with no token.
+---
+
+A video plays through its playback IDs. A **signed** ID, the default, plays
+only with a token your backend signs. A **public** ID plays for anyone who
+has its URL: a marketing video, a trailer, a page with no sign-in. The video
+is still encrypted on disk and in transit, but a public ID hands out its key
+to every request.
+
+A video can have both: a signed ID for your members and a public one for
+everyone else. Revoking one ID leaves the others playing.
+
+## Before you start
+
+- An API key with `assets:write` (the default scopes include it), or the
+  `@clipmux/node` client.
+- A video, or a file to upload.
+
+## Make a video public
+
+### At upload
+
+Ask for a public ID when you create the upload:
+
+<Tabs items={['Node', 'curl']}>
+<Tab value="Node">
+
+```ts
+// In clipmuxHandler's upload callback
+return { passthrough: 'lesson_42', playback_policy: 'public' }
+
+// Or with the client
+const upload = await clipmux.uploads.create({ size, passthrough: 'lesson_42', playback_policy: 'public' })
+```
+
+</Tab>
+<Tab value="curl">
+
+```bash
+curl -s https://video.example.com/v1/uploads \
+  -H "Authorization: Bearer $CLIPMUX_API_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"size": 10485760, "passthrough": "lesson_42", "playback_policy": "public"}'
+```
+
+</Tab>
+</Tabs>
+
+`playback_policy` is also accepted by `POST /v1/assets` when you import a
+URL. From the command line:
+
+```bash
+npx @clipmux/node upload trailer.mp4 --public
+CLIPMUX_API_KEY=cmx_… clipmux push --server https://video.example.com --policy public trailer.mp4
+```
+
+### On an existing video
+
+Add a public ID to a video that has a signed one, with
+`POST /v1/assets/{id}/playback-ids`:
+
+<Tabs items={['Node', 'curl']}>
+<Tab value="Node">
+
+```ts
+const pid = await clipmux.playbackIds.create('ast_…', { policy: 'public' })
+// { id: 'pid_…', policy: 'public', playable: true, status: 'active' }
+```
+
+</Tab>
+<Tab value="curl">
+
+```bash
+curl -s https://video.example.com/v1/assets/ast_…/playback-ids \
+  -H "Authorization: Bearer $CLIPMUX_API_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"policy": "public"}'
+```
+
+</Tab>
+</Tabs>
+
+`playable` is `false` until the video has finished encoding. A video can
+have up to 1000 playback IDs (`409 too_many_playback_ids`).
+
+## Play it
+
+A public ID's URLs start with `/p/` and carry no token:
+
+```txt
+https://media.example.com/p/{playback_id}/master.m3u8
+https://media.example.com/p/{playback_id}/poster.jpg
+https://media.example.com/p/{playback_id}/tracks/{track_id}.vtt
+```
+
+The media origin is `base_url` on the video, or from `GET /v1/app`. In your
+pages, give `<clipmux-player>` the media origin and the ID, and no token:
+
+```html
+<script type="module">
+  import '@clipmux/player/element'
+</script>
+<clipmux-player base-url="https://media.example.com" playback-id="pid_…"></clipmux-player>
+```
+
+Any HLS player plays the `master.m3u8` URL as it is; see
+[Other players and native apps](/docs/build/play/other-players). ClipMux has
+no embed page or iframe: you put the player in your own page.
+
+## Caching
+
+Public bytes may sit in shared caches, such as a CDN in front of your media
+origin:
+
+| URL | `Cache-Control` |
+| --- | --- |
+| `master.m3u8` | `no-store`. It's generated on each request. |
+| Segments, rendition playlists and init files | `public, max-age=31536000, immutable`. Their paths change when the video is re-encoded. |
+| `poster.jpg` | `public, max-age=300` |
+| `tracks/{track_id}.vtt` | `public, max-age=31536000, immutable` |
+| `key/…` (the content key) | `no-store` |
+
+Signed IDs send `private` instead of `public`, so their bytes stay out of
+shared caches.
+
+## Stop a public video
+
+Revoke the public ID, and its URLs stop working. The video's other IDs keep
+playing:
+
+```ts
+await clipmux.playbackIds.delete('ast_…', 'pid_…')
+```
+
+`DELETE /v1/assets/{id}/playback-ids/{pid}` answers `202 revoking` while the
+ID is unpublished and `200 revoked` once it is gone. The master playlist is
+never cached, so a revoked ID can't start playing again.
+
+## Free previews: a signed ID with an open token
+
+To let anyone watch for a while, such as a free lesson, you don't need a
+public ID. Keep the signed ID, and have your backend sign a token for every
+visitor without an access check. You can stop it at any time in your own
+code, and a URL someone copies dies with its token. A public ID's URL
+works until you revoke the ID.
+
+## Check it works
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' https://media.example.com/p/pid_…/master.m3u8
+```
+
+- `200`: the ID is public and the video is ready.
+- `403 denied`: the ID is signed. Use a `/v/{token}/…` URL, or add a public
+  ID.
+- `404`: the ID was revoked or doesn't exist, or the video isn't ready yet.
+
+## Next
+
+- [Posters and thumbnails](/docs/build/play/posters-and-thumbnails)
+- [Share links](/docs/build/play/share-links): one private link per
+  recipient, which you can revoke
+- [Playback IDs and tokens](/docs/build/concepts/playback-ids-and-tokens)

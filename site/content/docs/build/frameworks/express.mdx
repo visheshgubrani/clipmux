@@ -1,0 +1,128 @@
+---
+title: Express
+description: Mount the ClipMux handler in an Express app with toNodeListener, before any body parser.
+---
+
+`clipmuxHandler` is a Fetch handler: it takes a `Request` and returns a
+`Response`. `toNodeListener` from `@clipmux/node/express` adapts it to
+Node's `(req, res, next)` shape, so one Express route answers the uploader,
+the player and ClipMux's webhooks.
+
+## Before you start
+
+- An Express app on Node 20.19 or later.
+- The packages, and your app connected with `init`, which writes the
+  `CLIPMUX_*` settings to `.env.local` (or `.env`, if you have one and no
+  `.env.local`):
+
+<Tabs items={['npm', 'pnpm']}>
+<Tab value="npm">
+
+```bash
+npm i @clipmux/node @clipmux/uploader @clipmux/player
+npx @clipmux/node init --server https://video.example.com
+```
+
+</Tab>
+<Tab value="pnpm">
+
+```bash
+pnpm add @clipmux/node @clipmux/uploader @clipmux/player
+pnpm dlx @clipmux/node init --server https://video.example.com
+```
+
+</Tab>
+</Tabs>
+
+`new ClipMux()` reads the settings from `process.env`, so load the env file
+before the handler runs, for example with `node --env-file=.env.local`.
+
+## Mount the route
+
+```ts
+import { clipmuxHandler } from '@clipmux/node/handlers'
+import { toNodeListener } from '@clipmux/node/express'
+app.post('/api/clipmux/:action', toNodeListener(clipmuxHandler({ … }))) // before express.json()
+```
+
+The `{ … }` holds your `upload`, `playback` and `asset` callbacks, exactly as
+in the [quickstart](/docs/build/quickstart)'s route file. The route answers
+POSTs to `/api/clipmux/upload`, `/api/clipmux/playback` and
+`/api/clipmux/webhook`.
+
+<Warning>
+  Mount it before `express.json()`. The webhook's signature covers the raw
+  body, and a body another middleware already parsed can't be checked. If
+  the route must come later, give it `express.raw({ type: '*/*' })`. A body
+  parsed into an object is refused with an error that says so.
+</Warning>
+
+Each callback gets a Fetch `Request`, not Express's `req`. Read cookies and
+headers from `req.headers`, and query parameters from `new URL(req.url)`.
+The handler reads the body itself: the upload's `file` and the player's
+`playbackId` are in the callback's second argument.
+
+An error the adapter can't turn into a response goes to Express's `next`,
+so your error middleware sees it.
+
+## Add the elements
+
+In any page your app serves, load the two elements and point them at the
+route:
+
+```html
+<script type="module">
+  import '@clipmux/uploader/element'
+  import '@clipmux/player/element'
+</script>
+<clipmux-uploader create-url="/api/clipmux/upload?lesson=42"></clipmux-uploader>
+<clipmux-player playback-id="pid_…" session-url="/api/clipmux/playback"></clipmux-player>
+```
+
+The bare imports need a bundler, or an import map that points
+`@clipmux/uploader/element` and `@clipmux/player/element` at the files in
+`node_modules`.
+
+## Fastify and plain node:http
+
+The same listener runs wherever Node's request and response objects are.
+On plain `node:http`, route to it yourself:
+
+```ts title="server.ts"
+import { createServer } from 'node:http'
+import { clipmuxHandler } from '@clipmux/node/handlers'
+import { toNodeListener } from '@clipmux/node/express'
+
+const clipmux = toNodeListener(clipmuxHandler({ /* upload, playback, asset */ }))
+
+createServer((req, res) => {
+  if (req.url?.startsWith('/api/clipmux/')) return clipmux(req, res)
+  res.statusCode = 404
+  res.end()
+}).listen(3000)
+```
+
+In Fastify, pass it the raw request and response, `request.raw` and
+`reply.raw`. The listener reads the body from the raw request, so Fastify
+must not have read it first.
+
+## Check it works
+
+```bash
+npx @clipmux/node doctor
+npx @clipmux/node listen --forward-to localhost:3000/api/clipmux/webhook
+```
+
+`doctor` ends with `✓ Ready.` Upload a file from your page; when it's
+encoded, `listen` prints `✓ video.asset.ready ast_… → 200`.
+
+- `listen` shows `500`, and your server logs `the request body was already
+  parsed`: the route is after `express.json()`.
+- `listen` shows `400`: the secret is wrong, or the body was changed before
+  the handler read it.
+
+## Next
+
+- [Receive webhooks](/docs/build/webhooks)
+- [Add the player](/docs/build/play/player)
+- [Production checklist](/docs/build/going-live/production-checklist)

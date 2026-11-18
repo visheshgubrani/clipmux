@@ -1,20 +1,47 @@
 ---
 title: Reference
-description: The integration API, webhook events, errors, limits, environment variables and the command line.
+icon: Compass
+nav: Overview
+description: The integration API, webhook events, errors, limits, settings, the command line and the SDKs.
 ---
 
-- [API reference](/docs/reference/api): every route of the integration API,
-  with its parameters, an example and its errors.
-- [Webhook events](/docs/reference/webhooks): the events your endpoints
-  receive, their headers, and how to verify them.
-- [Errors](/docs/reference/errors): every error code, and what to do.
-- [Limits and defaults](/docs/reference/limits): rate limits, sizes and token
-  lifetimes.
+<Cards>
+  <Card title="API reference" href="/docs/reference/api">
+    Every route of the integration API, with its parameters, an example and
+    its errors.
+  </Card>
+  <Card title="Webhook events" href="/docs/reference/webhooks">
+    The events your endpoints receive, their headers, and how to verify them.
+  </Card>
+  <Card title="Errors" href="/docs/reference/errors">
+    Every error code, and what to do.
+  </Card>
+  <Card title="Limits and defaults" href="/docs/reference/limits">
+    Rate limits, sizes and token lifetimes.
+  </Card>
+</Cards>
+
+## The server
+
 - [Environment variables](/docs/reference/configuration): every setting of
   the server, the worker, the CLI and your app's backend.
 - [Command line](/docs/reference/cli): `clipmux` and `npx @clipmux/node`.
-- [Changelog](/docs/reference/changelog): what changed in each release.
+- [Management API](/docs/reference/management-api): the routes the dashboard
+  uses, for scripting a server. They may change between releases.
+
+## The packages
+
+- [@clipmux/node](/docs/reference/sdks/node): the server SDK, route handlers
+  and CLI.
+- [@clipmux/player](/docs/reference/sdks/player): the `<clipmux-player>`
+  element.
+- [@clipmux/uploader](/docs/reference/sdks/uploader): the
+  `<clipmux-uploader>` element and the headless uploader.
+
+## Releases
+
+[Changelog](/docs/reference/changelog): what changed in each release.
 
 The integration API is also described as OpenAPI 3.1, which every ClipMux
-instance serves at `/openapi.json` without a credential. This site's copy is
+server serves at `/openapi.json` without a credential. This site's copy is
 at [/openapi.json](/openapi.json).

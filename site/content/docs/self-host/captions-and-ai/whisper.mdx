@@ -1,0 +1,119 @@
+---
+title: Transcribe with whisper.cpp
+description: Make subtitles and transcripts on the machines that encode your videos, with a pinned whisper.cpp model and no speech API.
+---
+
+By default, ClipMux makes subtitles where your videos are encoded: the
+built-in worker on your server, a PC you own, or a Modal or RunPod machine.
+The worker runs whisper.cpp on the video's audio, inside the same sandbox as
+ffmpeg, and sends the transcript back to the server. No speech API is
+involved, and the dashboard's **Captions & AI** page calls this option
+**Where videos are encoded**.
+
+This page covers how a worker decides whether, and on what, it transcribes,
+the model it uses, and how fast it is.
+
+## Before you start
+
+- A worker that encodes your videos: the built-in worker, a
+  [PC you own](/docs/self-host/encoding/your-pc), or
+  [Modal](/docs/self-host/encoding/modal) or
+  [RunPod](/docs/self-host/encoding/runpod).
+- Uploads that ask for subtitles. See
+  [Subtitles and transcripts](/docs/build/captions/subtitles).
+
+<Note>
+  On Modal or RunPod, transcription runs on the provider's machine, which
+  already has the video for encoding. The audio doesn't go anywhere the
+  video hasn't.
+</Note>
+
+## Choose how a worker transcribes
+
+`CLIPMUX_SPEECH` (or `clipmux worker --speech`) sets it. serve passes its
+value to the built-in worker.
+
+| Mode | What the worker does |
+| --- | --- |
+| `auto` | The default. Tries CUDA on an NVIDIA card, then Vulkan on any GPU, then the CPU if it has at least 4 cores and 6 GiB of memory. |
+| `cuda` | CUDA only. |
+| `vulkan` | Vulkan only. |
+| `cpu` | The CPU only, whatever its size. |
+| `off` | Doesn't transcribe. |
+
+At start, the worker proves each candidate with a real transcription under
+the sandbox, and uses the first that passes. A GPU passes only if whisper.cpp
+reports that it actually ran on it, so a GPU that silently falls back to the
+CPU fails its probe and the next candidate is tried. The worker's log says
+which backend it chose, or why it won't transcribe.
+
+On the CPU, whisper gets half the logical CPUs, leaving the rest to the
+encoder.
+
+### Where CUDA is available
+
+- **The amd64 image** carries whisper.cpp with CUDA, built for cards from the
+  T4 through the A10G, RTX A4000 and A5000, L4 and L40S, with PTX for newer
+  ones. This is the image the built-in worker, Modal and RunPod run.
+- **arm64 images** have no CUDA.
+- **The PC agent tarball** leaves CUDA out (about 1 GB), so a PC's NVIDIA card
+  uses Vulkan, or the CPU if its driver offers no Vulkan.
+- **Modal** offers no Vulkan device, so CUDA is the only GPU path there.
+
+## The model
+
+Every worker uses the same pinned model:
+
+- `ggml-large-v3-turbo-q8_0`, whisper large-v3-turbo quantized to 8 bits;
+- Silero VAD, which skips the silence between speech.
+
+Together they are about 0.9 GB. The image has them baked in, at
+`/usr/share/clipmux/models` (`CLIPMUX_BAKED_MODELS_DIR`), so a Modal or
+RunPod machine downloads nothing. A worker without them, such as a PC agent,
+downloads them once from Hugging Face, checks each against its pinned
+SHA-256, and keeps them in `CLIPMUX_MODELS_DIR` across restarts.
+
+whisper.cpp detects the language of each video on its own. A video gets one
+subtitles track, in one language.
+
+## How fast it is
+
+Speeds are given as a real-time factor: the time to transcribe divided by
+the length of the audio. Lower is faster; 0.25 means an hour of audio takes
+15 minutes.
+
+| Where | Backend | Measured |
+| --- | --- | --- |
+| A 6-core desktop CPU, 6 threads | CPU | 0.40 on 2 minutes of English speech |
+| Modal, NVIDIA T4 | CUDA | 0.14 on a 20-minute English video |
+| Modal, NVIDIA L4 | CUDA | 0.23 on a 54-minute Hindi lecture |
+| Modal, NVIDIA T4 | CUDA | 0.30 on a 67-minute Hindi lecture |
+
+On an AMD RX 6600 XT over Vulkan, under the sandbox, a short test clip took
+2.7 seconds against 22.8 seconds on the CPU. Short clips pay a fixed cost:
+whisper works in 30-second windows, so an 11-second clip takes about 22
+seconds on the CPU.
+
+## Check it works
+
+On a PC agent, `clipmux worker doctor` runs the same speech probe the worker
+does and prints the result:
+
+- `speech` with a ✓: whisper ran the model on the named backend.
+- A note that the model isn't downloaded yet: the worker downloads it at
+  start.
+- A note that there's no `whisper-cli`: this worker won't transcribe.
+- `speech` with a ✗: every candidate failed its probe; the line names each
+  failure.
+
+For any worker, upload a short video that asks for subtitles, and open the
+**Captions & chapters** tab on its page in the dashboard. Run
+`clipmux admin setup-test --wait` on the server while a worker that can
+transcribe is online, and it checks subtitles too.
+
+## Next
+
+- [Use a speech API](/docs/self-host/captions-and-ai/speech-apis), as the
+  fallback or instead
+- [Choose an LLM for chapters](/docs/self-host/captions-and-ai/chapters-llm)
+- [Encoding performance](/docs/self-host/encoding/performance)

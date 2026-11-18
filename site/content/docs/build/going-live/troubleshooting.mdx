@@ -1,0 +1,93 @@
+---
+title: Troubleshooting
+description: What each error from the SDK, the handler, the player and the uploader means, and what to do about it.
+icon: LifeBuoy
+---
+
+Start with `doctor`. It checks the server, the API key and its scopes, the
+signing key and the webhook secret, and says which line to fix:
+
+```bash
+npx @clipmux/node doctor
+```
+
+Every error from ClipMux has a stable `code`. A failed SDK call throws a
+`ClipMuxError` with `status`, `code` and `details`, and its message says what
+to do next. Every code is in [Errors](/docs/reference/errors); the common
+ones are below.
+
+## Settings and keys
+
+| Symptom | Cause and fix |
+| --- | --- |
+| `ClipMuxConfigError` naming a variable | That setting is missing where your server runs. Run `init`, or set the variable in your host's settings. On Cloudflare Workers, pass `clipmux: new ClipMux({ env })`. |
+| `401 unauthorized` | The API key is wrong or revoked. Run `doctor`. |
+| `403 insufficient_scope` | The key lacks the scope the call needs. Create a key with the default scopes (`uploads:write`, `assets:read`, `assets:write`), or with `analytics:read` for analytics. |
+| `500 clipmux_misconfigured` in the browser | The handler's key or app is wrong. Your server logged the cause; run `doctor` there. |
+| `502 clipmux_unavailable` in the browser | ClipMux couldn't be reached, or failed. The elements retry by themselves. |
+| `429 rate_limited` | Too many requests. Wait `Retry-After` seconds; the SDK already did, and retried. |
+| `409 public_url_required` when making a key | The server's public URL is still `localhost`. The owner sets it in the dashboard first. |
+
+## Uploads
+
+| Symptom | Cause and fix |
+| --- | --- |
+| The uploader fails at once with `create_denied` | Your `upload` callback returned `null`, or your route answered `401` or `403`. |
+| `413 too_large` | The file is larger than the server or its storage allows. |
+| Parts fail with a CORS or CSP error in the console | Your page's `connect-src` doesn't allow the storage origin. Add the origins `doctor` prints. |
+| `upload_not_active` | The idempotency key belongs to an upload that has finished. Create the upload with a new key. |
+| The video stays `waiting_upload` | The browser never finished sending. An idle upload stays open for 24 hours; after that, delete the video. |
+| `ERR_PNPM_…` about a minimum release age on install | pnpm 10 refuses packages newer than its `minimumReleaseAge`. Keep the `minimumReleaseAgeExclude` entry `pnpm add` wrote to `pnpm-workspace.yaml`, and commit it. |
+
+## Processing
+
+| Symptom | Cause and fix |
+| --- | --- |
+| `409 asset_not_ready` | The video is still processing. Wait for `video.asset.ready` before the call. |
+| `409 job_active` | Another job is changing the video; `job_id` names it. Wait, or pass `supersede: true`. |
+| The video ends `errored` | Its `error_code` says why; see [Errors](/docs/reference/errors). |
+| A chapters track always ends `errored` with `llm_not_connected` | No LLM is connected for chapters. The owner connects one under **Captions & AI**; then ask again for existing videos with `tracks.create(id, { kind: 'chapters' })`. Until then, show nothing rather than an error. |
+| `409 chapters_not_connected` | The same, refused up front. |
+| `409 subtitles_not_ready` | Chapters need ready subtitles. Ask for subtitles first. |
+
+## Webhooks
+
+| Symptom | Cause and fix |
+| --- | --- |
+| `bad_signature` | The secret is wrong, or the body was parsed and re-serialized before it was checked. In Express, mount the route before `express.json()`. |
+| `stale` | Your server's clock is more than 5 minutes off. Fix its time sync. |
+| `missing_header` | Something in front of your app stripped the `X-Webhook-*` headers, or the request isn't from ClipMux. |
+| Nothing arrives in development | The server can't reach your laptop. Run [listen](/docs/build/webhooks/listen). |
+| Nothing arrives in production | Open **Deliveries** on the endpoint in the dashboard. Each try shows its HTTP status, or `timeout` (your handler took over 10 seconds) or `connection_failed`. |
+| The endpoint shows **Paused after N failures** | It failed 5 times in a row, so ClipMux is backing off. Fix the handler; it catches up. See [Retries](/docs/build/webhooks/retries). |
+| `doctor` warns the secret is a local one | `CLIPMUX_WEBHOOK_SECRET` is the `whsec_local_…` that `init` writes for `listen`. In production, use your registered endpoint's secret. |
+
+## Playback
+
+| Symptom | Cause and fix |
+| --- | --- |
+| `401 token_expired` | Normal. The player gets a new token by itself. In another player, sign a new one. |
+| `403 denied` from delivery | The token is malformed, for another playback ID, or signed with another app's key or a revoked one. Check `CLIPMUX_SIGNING_KID` with `doctor`. An expired token is `401`, not `403`. |
+| `clipmux-denied` fires | Your `playback` callback returned `null`, your session route answered `401` or `403`, or delivery answered `403`. Show your sign-in or enrol state. |
+| `clipmux-error` with `status: 404` | The playback ID was revoked or never existed, or the video isn't ready. Show that the video was removed. |
+| `clipmux-error` with `status: 0` | A network or media error. Check the browser console. |
+| Playback stops after about 15 minutes on older iPhones | Safari before 17.1 plays HLS itself and can't renew tokens. Pass `native` through to `playback.token` or `playback.session`, so the token outlives the session. |
+| Requests blocked with a Content-Security-Policy error | Add the media origin to `connect-src`, `media-src` (with `blob:`) and `img-src`, and `'unsafe-inline'` to `style-src`. `doctor` prints them. |
+| The player is unstyled or blank | The element never loaded: import `@clipmux/player/element` in the browser. In React, import it inside `useEffect`. |
+| TypeScript errors inside Video.js's types | Keep `"skipLibCheck": true` in `tsconfig.json`. |
+| No subtitles in the captions menu | The subtitles track isn't `ready` yet, or wasn't asked for. See [Subtitles and transcripts](/docs/build/captions/subtitles). |
+| No chapters on the time slider | With `getToken`, set `chapters-track` to the ready chapters track's ID. With `session-url`, the session must list the track: pass the asset in your `playback` callback's answer. |
+
+## Still stuck
+
+Collect the failing request's method, path, status and error `code`, the
+output of `doctor` (it prints no secrets), and your SDK versions, and open
+an issue on [GitHub](https://github.com/visheshgubrani/clipmux/issues).
+Leave tokens, keys and signed URLs out.
+
+## Next
+
+- [Errors](/docs/reference/errors)
+- [Production checklist](/docs/build/going-live/production-checklist)
+- [Server troubleshooting](/docs/self-host/operate/troubleshooting), for the
+  server's owner

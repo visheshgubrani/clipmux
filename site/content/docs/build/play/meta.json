@@ -1,0 +1,12 @@
+{
+  "title": "Play",
+  "icon": "Play",
+  "pages": [
+    "player",
+    "sign-tokens",
+    "public-videos",
+    "posters-and-thumbnails",
+    "other-players",
+    "share-links"
+  ]
+}

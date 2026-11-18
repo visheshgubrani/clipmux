@@ -3,19 +3,67 @@ title: Introduction
 description: ClipMux is self-hosted video infrastructure, an open-source alternative to Mux and Cloudflare Stream.
 ---
 
-Any app uploads a video, gets a playback ID, and streams it to every device as
-encrypted HLS: from your own storage, encoded on your own GPU (or one you rent
-by the minute), behind playback tokens your backend signs.
+import { Bot, Code, Server } from 'lucide-react'
 
-ClipMux is one Go binary and Postgres. Storage, encoding and delivery each sit
-behind an adapter, so you can move from a disk to R2, or from your server to a
-cloud GPU, and the API your apps call doesn't change.
+ClipMux lets any app upload a video, get a playback ID, and stream it to every
+device as encrypted HLS: from your own storage, encoded on your own GPU or one
+you rent by the minute, behind playback tokens your backend signs.
+
+It's one Go binary and Postgres. Storage, encoding and delivery each sit behind
+an adapter. You can move from a disk to R2, or from your server to a cloud GPU,
+and the API your apps call stays the same.
 
 ## Choose a path
 
-- **Run a server.** Install ClipMux on a Linux machine with Docker, then
-  connect storage, encoding and delivery. Start at [Self-host](/docs/self-host).
-- **Add video to an app.** Uploads, webhooks and signed playback with the Node
-  SDK, or the REST API from any language. Start at [Build](/docs/build).
-- **Hand it to a coding agent.** Every page here is written so an agent can
-  follow it as well as a person can.
+<Cards>
+  <Card icon={<Code />} title="Add video to an app" href="/docs/build">
+    Uploads, webhooks and private playback with the Node SDK, or the REST API
+    from any language.
+  </Card>
+  <Card icon={<Server />} title="Run a server" href="/docs/self-host">
+    Install ClipMux on a Linux machine with Docker, then connect storage,
+    encoding and delivery.
+  </Card>
+  <Card icon={<Bot />} title="Hand it to a coding agent" href="/docs/build/ai-and-agents">
+    Point your agent at `clipmux.com/agents.md`. Every page here is also plain
+    Markdown.
+  </Card>
+</Cards>
+
+## Start here
+
+<Cards>
+  <Card title="Quickstart" href="/docs/build/quickstart">
+    Add uploads and playback to a Next.js app in four steps.
+  </Card>
+  <Card title="Install with one line" href="/docs/self-host/install">
+    One command on a Linux server with Docker.
+  </Card>
+  <Card title="How ClipMux works" href="/docs/build/concepts/how-it-works">
+    Videos, playback IDs, tokens and tracks.
+  </Card>
+  <Card title="API reference" href="/docs/reference/api">
+    Every route of the integration API, with an example.
+  </Card>
+</Cards>
+
+## What ClipMux does
+
+- **Uploads that resume.** Browsers send parts straight to storage, and a
+  dropped connection picks up where it left off.
+- **Encoding up to 4K,** on the server's GPU or CPU, a PC you own, or a cloud
+  GPU on Modal or RunPod under a monthly spend limit.
+- **Encrypted HLS,** with keys derived when a signed viewer asks, never stored.
+- **Subtitles and chapters,** from whisper.cpp on your own machines, or a
+  speech API and an LLM you choose.
+- **Apps, keys and webhooks,** so each app has its own credentials.
+- **Share links and analytics:** views, watch time and unique viewers.
+
+And what it doesn't: it isn't DRM, it runs as a single replica, and it doesn't
+do live streaming. [Limitations](/docs/self-host/limitations) has the full
+list.
+
+## Licence
+
+The server is AGPL-3.0. The packages your app embeds, `@clipmux/node`,
+`@clipmux/player` and `@clipmux/uploader`, are MIT.

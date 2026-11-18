@@ -1,0 +1,66 @@
+---
+title: What encryption does and doesn't do
+description: Every video is stored and streamed as AES-128 encrypted HLS, which protects your storage but is not DRM.
+icon: Lock
+---
+
+Every output ClipMux writes is encrypted. That keeps your stored videos
+useless to anyone who gets at the bucket or the disk, and makes a leaked
+segment URL worthless on its own. It does not stop a viewer who may watch a
+video from saving it. This page says plainly where the line is.
+
+## What it does
+
+- **Every segment is encrypted with AES-128**, the standard HLS encryption
+  that every HLS player supports. You turn nothing on.
+- **Storage holds only ciphertext.** Segments, and subtitles and chapters
+  files, are encrypted at rest. A leaked bucket, stolen storage credentials
+  or a copied disk exposes no playable output.
+- **The key is handed out behind the token.** Each media playlist names its
+  key by a URL that carries the same token as the segments. Delivery answers
+  only a request that passes the same checks: a `v` token for that playback
+  ID, or a public playback ID. A `t` (poster-only) token can't fetch it, and
+  the answer is never cached.
+- **Keys are derived, not stored.** Each output's key is derived on request
+  from the server's content key secret, the video's ID and the output's ID.
+  There is no table of keys to leak, and a token for one video can't fetch
+  another video's key.
+- **Each output has its own key.** A re-encode brings a new key, so a leaked
+  key exposes one version of one video.
+- **The secret is sealed.** The content key secret is stored in Postgres,
+  encrypted with a key held outside it. A worker that encodes a video
+  receives only the key for the output it writes.
+
+## What it doesn't do
+
+- **It is not DRM.** Anyone with a valid token can fetch the key, and common
+  download tools do that automatically. A viewer you let watch a video can
+  save it, and anyone can record their screen. ClipMux has no Widevine,
+  FairPlay or PlayReady, and no licence server.
+- **It doesn't replace tokens.** Encryption is a layer behind access
+  control. Who may watch is decided by your backend when it signs a token,
+  and by revoking playback IDs. A public playback ID serves its key to
+  anyone, by design.
+- **It doesn't encrypt the source.** The file you upload is kept as
+  uploaded, in the same storage, so it can be encoded again. Protect the
+  bucket or disk as you would any copy of your videos. See
+  [Where videos are stored](/docs/self-host/storage).
+
+To limit what a leaked token can do, keep tokens short and pass a `vid`
+claim, so analytics can show who watched. See
+[Playback IDs and tokens](/docs/build/concepts/playback-ids-and-tokens).
+
+## If the secret leaks
+
+The server's owner rotates the content key secret, and re-encodes the
+videos that matter. New outputs use the new secret; old outputs keep playing
+with the version they were made with until they are encoded again. Losing
+the secret, or the key that seals it, makes every output unplayable, so it
+belongs in backups. See [Rotate keys and secrets](/docs/self-host/operate/rotate-secrets)
+and [Back up and restore](/docs/self-host/operate/backups).
+
+## Next
+
+- [Security model](/docs/self-host/security-model)
+- [Sign playback tokens](/docs/build/play/sign-tokens)
+- [Limitations](/docs/self-host/limitations)

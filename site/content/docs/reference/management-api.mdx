@@ -1,0 +1,695 @@
+---
+title: Management API
+icon: Wrench
+description: The owner routes the dashboard calls to set up the server, manage apps and keys, and run the library.
+---
+
+<Warning>
+  These are the routes the dashboard uses. They need the owner's session
+  cookie, no API key can reach them, and they may change between releases.
+  To integrate an app, use the [integration API](/docs/reference/api)
+  instead.
+</Warning>
+
+The dashboard is a client of these routes, with no private path into the
+server. This page lists every one, so you can see what the dashboard can do
+and script your own server from a signed-in browser if you need to.
+
+## Authentication
+
+- **The session cookie.** Signing in (`POST /v1/session`) sets
+  `__Host-clipmux_session` when the public URL is `https`, or
+  `clipmux_session` when it isn't. The cookie is `HttpOnly` and
+  `SameSite=Strict`. A session lasts 30 days, and ends after 7 days without
+  use.
+- **No cookie, or an ended session**, is `401 unauthorized`.
+- **Cross-site requests.** A request that changes state and comes from
+  another site is `403 cross_origin`.
+- **The integration API as one app.** The same session also reaches the
+  integration API, acting as one app: the app the `ClipMux-App: app_…`
+  header names, or the built-in Dashboard app without it. An unknown app is
+  `404 not_found`.
+- **Requests and errors** are JSON, as in the integration API; see
+  [Errors](/docs/reference/errors). A route for a feature this server
+  doesn't run answers `404`.
+
+## Setup and session
+
+### Setup state
+
+`GET /v1/setup`
+
+Needs no session: the first-boot wizard calls it before an owner exists.
+Returns `{owner_exists, urls: {public_url, media_url, confirmed, pinned}, keys_allowed, setup_test}`.
+`setup_test` is `{id, status}` of the latest setup test, or `null`.
+
+### Create the owner
+
+`POST /v1/setup/owner`
+
+Body `{setup_token, email, password}`. The setup token is printed in the
+server log on first boot. Returns `201 {email}` and signs the owner in.
+
+- `403 invalid_setup_token`: the token is wrong. Five wrong tokens from one
+  address are `429` with `Retry-After`.
+- `400 weak_password`: a password is 12 to 1024 characters.
+- `400 invalid_request`: the email isn't an address.
+- `409 registration_closed`: an owner already exists.
+
+### Sign in, check the session, sign out
+
+`POST /v1/session` · `GET /v1/session` · `DELETE /v1/session`
+
+- `POST /v1/session`: body `{email, password}`, plus `code` (from the
+  authenticator) or `recovery_code` once two-factor sign-in is on. Returns
+  `{email}` and sets the cookie.
+- `GET /v1/session`: `{email, totp_enabled}`.
+- `DELETE /v1/session`: `204`, and the cookie is cleared.
+
+Errors on sign-in:
+
+- `401 invalid_credentials`: wrong email or password.
+- `401 totp_required`: two-factor sign-in is on and no code was sent.
+- `401 invalid_code`: the code is wrong or was already used. It counts as a
+  failed sign-in.
+- `429 too_many_attempts`, with `Retry-After`: 5 failed sign-ins from one
+  address, or 20 overall, in 15 minutes. A browser the owner has signed in
+  from before skips the overall limit.
+
+### Change the password
+
+`PUT /v1/session/password`
+
+Body `{current_password, new_password}`. Returns `204`. Every other session
+ends; this one stays signed in.
+
+- `400 weak_password`: the new password isn't 12 to 1024 characters.
+- `401 invalid_credentials`: the current password is wrong. It counts as a
+  failed sign-in.
+
+### Two-factor sign-in
+
+`POST /v1/session/totp` · `POST /v1/session/totp/enable` · `POST /v1/session/totp/disable`
+
+- `POST /v1/session/totp`: body `{password}`. Returns
+  `201 {secret, otpauth_url}`, a new authenticator secret waiting for a code.
+- `POST /v1/session/totp/enable`: body `{code}`. Returns
+  `{enabled: true, recovery_codes}`, ten recovery codes shown only here.
+  Every other session ends. `409 totp_not_started` without the step above.
+- `POST /v1/session/totp/disable`: body `{password}`. Returns
+  `{enabled: false}`.
+
+An owner locked out of their authenticator runs `clipmux admin reset-totp`
+on the host; see [Command line](/docs/reference/cli).
+
+## Settings
+
+### URLs
+
+`PUT /v1/settings/urls`
+
+Body `{public_url, media_url?}`. Returns `{urls, keys_allowed}`.
+`409 pinned` when `CLIPMUX_PUBLIC_URL` sets them; `400 invalid_request` for
+a URL the server refuses.
+
+### Routing
+
+`GET /v1/settings/routing` · `PUT /v1/settings/routing`
+
+`GET` returns
+`{primary_executor, fallback_executor, queue_age_fallback_minutes, builtin_worker: {last_seen_at, online}, providers_ready}`.
+`providers_ready` lists the providers (`modal`, `runpod`) that are connected
+and have passed a setup test.
+
+`PUT` takes `{primary_executor, fallback_executor?, queue_age_fallback_minutes?}`
+and returns the routing as `GET` does.
+
+- `primary_executor`: `workers`, `agents`, `builtin`, `modal` or `runpod`.
+- `fallback_executor`: `null`, `builtin`, `modal` or `runpod`. `builtin`
+  can't back up `builtin` or `workers`, which already include it, and a
+  provider can't back up itself.
+- `queue_age_fallback_minutes`: 1 to 1440, and only with a fallback.
+- `400 invalid_request` for a choice outside these rules.
+- `409 executor_not_connected` for a provider that isn't connected or hasn't
+  passed its setup test.
+
+A provider's passing connect test sets routing itself: that provider as
+primary, and `builtin` as fallback when the server runs the built-in worker.
+
+### Speech
+
+`GET /v1/settings/speech` · `PUT /v1/settings/speech`
+
+`GET` returns `{mode, connection: {base_url, model, has_key, verified_at} | null}`.
+The key is never returned. `mode` is where transcriptions run:
+
+- `local`: whisper.cpp on the server's own workers.
+- `api`: every transcription goes to the connected speech API.
+- `local_then_api`: the speech API, when no worker that can transcribe is
+  online or after the queue-age setting.
+
+`PUT` takes `{mode}` and returns the speech settings. `api` and
+`local_then_api` are `409 speech_not_connected` until a speech API is
+connected. Queued transcriptions move to match.
+
+### Connect a speech API
+
+`POST /v1/settings/speech/connect` · `DELETE /v1/settings/speech/connect`
+
+<LeavesYourServers>
+  Once a mode uses the connected speech API, each video's audio goes to
+  that API's server.
+</LeavesYourServers>
+
+`POST` takes `{base_url, model, api_key?}`, for any OpenAI-compatible
+`/audio/transcriptions` API with `verbose_json` timestamps. The key may be
+empty for a server that needs none. Returns `{connected, steps}`, each step
+`{name, ok, detail?}`: `credentials` (`GET {base_url}/models`),
+`transcription` (a short sample of speech, sent as transcriptions send
+audio), and `saved`.
+
+`DELETE` forgets the connection, returns the mode to `local`, and returns the
+speech settings. `404` when none is connected.
+
+### List a speech API's models
+
+`POST /v1/settings/speech/models`
+
+Body `{base_url, api_key?}`. Returns `{listed, data: [{id}]}`: the models the
+API lists at `GET {base_url}/models`, sorted. `listed` is `false` for an API
+without that route. Nothing is saved. `400 key_rejected` when the API refuses
+the key; `502 models_unavailable` for any other failure.
+
+### Chapters LLM
+
+`GET /v1/settings/chapters`
+
+Returns `{connection: {provider, base_url?, model, response_format?, has_key, verified_at} | null}`.
+The key is never returned.
+
+### Connect a chapters LLM
+
+`POST /v1/settings/chapters/connect` · `DELETE /v1/settings/chapters/connect`
+
+<LeavesYourServers>
+  Whenever chapters are made, the video's transcript text goes to the
+  connected provider.
+</LeavesYourServers>
+
+`POST` takes `{provider, base_url?, model?, api_key?}`:
+
+- `openai_compatible`: any `/chat/completions` API. Needs `base_url` and
+  `model`; the key may be empty for a server that needs none.
+- `anthropic`: Claude through Anthropic's API. Needs `api_key`; `model`
+  defaults to `claude-opus-5-5`.
+
+Returns `{connected, steps}`: `credentials`, `structured_output` (chapters of
+a fixed sample transcript), and `saved`.
+
+`DELETE` forgets the connection and returns the chapters settings. Chapters
+already queued end `llm_not_connected`; ready ones keep playing. `404` when
+none is connected.
+
+### List a chapters LLM's models
+
+`POST /v1/settings/chapters/models`
+
+Body `{provider, base_url?, api_key?}`. Returns `{listed, data: [{id, name?}]}`.
+`openai_compatible` needs `base_url`; `anthropic` needs `api_key`. Errors as
+for speech models.
+
+### Rotate the content key secret
+
+`POST /v1/content-keys/rotate`
+
+Body `{cloudflare_token?}`. Adds a content key secret version that new
+outputs use; existing outputs keep theirs, so nothing stops playing. Returns
+`{version, usable, current, steps}`.
+
+With Cloudflare delivery the token is required (`409 cloudflare_token_required`):
+the Worker is redeployed with the new version before any output uses it. If
+that fails, the response is `502` with the steps, and the new version stays
+unused until you rotate again.
+
+## Executors
+
+### List providers
+
+`GET /v1/executors`
+
+Returns `{data: [{kind, connected, verified, verified_at?, config, max_concurrent, monthly_limit_cents, rate_cents_per_hour, disk_bytes, month_cents, billed_cents?, billed_through?, machines, backoff_until?}]}`:
+every provider ever connected, with this month's spend. `month_cents` is the
+provider's own bill up to `billed_through` plus an estimate since, or the
+estimate alone where there is no bill.
+
+### Connect RunPod
+
+`POST /v1/executors/runpod/connect`
+
+<LeavesYourServers>
+  For each encode on RunPod, the job's source video goes to a RunPod
+  machine, which uploads the encoded files back to your storage.
+</LeavesYourServers>
+
+Body
+`{api_key, image?, registry_username?, registry_password?, gpu_type_ids?, disk_gb?, max_concurrent?, monthly_limit_cents?, rate_cents_per_hour?}`.
+A monthly limit left out is 5000 cents ($50). Returns
+`{connected, steps: [{name, ok, detail?}]}`, stopping at the first failed
+step. Connecting again replaces the key. `400 invalid_request` for a setting
+it refuses.
+
+### Connect Modal
+
+`POST /v1/executors/modal/connect`
+
+<LeavesYourServers>
+  For each encode on Modal, the job's source video goes to a Modal
+  sandbox, which uploads the encoded files back to your storage.
+</LeavesYourServers>
+
+Body
+`{token_id, token_secret, environment?, image?, registry_username?, registry_password?, gpu?, cpu?, memory_mib?, disk_gb?, max_concurrent?, monthly_limit_cents?, rate_cents_per_hour?}`.
+`gpu` is a comma-separated list such as `L4,T4`. Defaults and the response
+are as for RunPod.
+
+### Approve in the browser instead of pasting a key
+
+`POST /v1/executors/runpod/authorize` · `POST /v1/executors/modal/authorize`
+
+Body: the matching `connect` body without `api_key` or `token_id` and
+`token_secret`. Returns `201 {id, url, code?, expires_at, status: "pending"}`.
+Open `url`, the provider's own page (Modal shows `code`).
+
+- `400 invalid_request`: the settings are checked before the approval starts.
+- `429 too_many_approvals`: three approvals are already waiting.
+- `502 approval_unavailable`: the provider won't start one; paste a key
+  instead.
+
+Waiting approvals are kept in memory, so a server restart means starting
+again.
+
+### Poll an approval
+
+`GET /v1/executors/{kind}/authorize/{id}`
+
+Checks the approval once. Returns
+`{id, expires_at, status, result?}`, where `status` is `pending`, `approved`,
+`denied`, `expired` or `shown`. `shown` means the provider put the key on
+its own page for you to paste instead. Once approved, the provider's
+`connect` runs with the credentials it issued, which never reach the
+browser, and `result` is its `{connected, steps}`. A settled approval gives
+every later poll the same answer. `404 not_found` once it has expired.
+
+### List GPUs
+
+`POST /v1/executors/runpod/gpus` · `GET /v1/executors/modal/gpus`
+
+Both return `{data: [{id, name, memory_gb, cents_per_hour, recommended?}]}`.
+RunPod's takes `{api_key}`, lists the Secure Cloud GPUs whose NVENC the
+worker can use, from RunPod's catalog, and doesn't keep the key
+(`400 key_rejected`). Modal's lists its NVENC GPUs at Modal's published
+prices for a default sandbox, with the ones chosen by default marked
+`default`.
+
+### Disconnect a provider
+
+`DELETE /v1/executors/{kind}`
+
+`204`. Routing that named the provider moves back to `builtin` as primary,
+or to no fallback. `404` when it isn't connected; `409 machines_running`
+while one of its machines may still run.
+
+## Apps and keys
+
+### Apps
+
+`GET /v1/apps` · `POST /v1/apps`
+
+`GET` returns `{data: [{id, name, builtin, disabled, created_at}]}`. `POST`
+takes `{name}` (1 to 100 characters) and returns `201` the app.
+`409 name_taken` when another app has the name.
+
+### Disable or enable an app
+
+`POST /v1/apps/{id}/disable` · `POST /v1/apps/{id}/enable`
+
+Returns the app. A disabled app's API keys, upload tokens and playback stop.
+`409 builtin_app`: the Dashboard app can't be disabled.
+
+### API keys
+
+`GET /v1/apps/{id}/api-keys` · `POST /v1/apps/{id}/api-keys` · `DELETE /v1/api-keys/{id}`
+
+- `GET`: `{data: [{id, name, scopes, created_at, last_used_at?, revoked_at?}]}`.
+- `POST`: body `{name?, scopes?, local?}`. Returns
+  `201 {id, name, scopes, created_at, key}`; `key`, the secret, is in this
+  response only. `name` is at most 100 characters, `default` when blank.
+  `scopes` default to `uploads:write`, `assets:read` and `assets:write`;
+  `analytics:read` is given only when asked for.
+- `DELETE`: `204`, and the key stops working.
+
+Errors on create:
+
+- `400 invalid_request`: an unknown scope, or a name over 100 characters.
+- `409 public_url_required`: the public URL is loopback. Send `local: true`
+  to confirm the key is for apps on the same machine.
+- `409 builtin_app`: the Dashboard app takes no keys.
+
+### Credentials in one step
+
+`POST /v1/apps/{id}/credentials`
+
+Body `{webhook_url?, local?}`. Returns `201` the app's credentials, made
+together and shown once:
+`{url, app_id, app_name, api_key_id, api_key, signing_kid, signing_key, webhook_endpoint_id?, webhook_secret?, env}`.
+That is a new API key, a new signing key (`signing_key` is its PKCS #8 PEM),
+and with `webhook_url` a new webhook endpoint and its secret. `env` is the
+same values as a `.env` block.
+
+- `400 invalid_request`: the webhook URL is refused, and nothing is created.
+- `409 public_url_required`: as for API keys.
+- `409 builtin_app`: the Dashboard app.
+
+### Signing keys
+
+`GET /v1/apps/{id}/signing-keys` · `POST /v1/apps/{id}/signing-keys` · `DELETE /v1/signing-keys/{id}`
+
+- `GET`: `{data: [{kid, created_at, retired_at?, revoked_at?}]}`.
+- `POST`: `201 {kid, private_key_pem}`. The private key is in this response
+  only.
+- `DELETE`: `204`. Tokens signed with the key stop playing.
+
+## App pairings
+
+These are the owner's side of `npx @clipmux/node init`, which the
+`/connect` page shows. The routes the CLI calls are in the
+[App pairing API](/docs/reference/api/app-pairing).
+
+### Read a pairing
+
+`GET /v1/app-pairings/{code}`
+
+Returns `{status, name, hostname, client, ip?, app_id?, expires_at}`.
+`status` is `pending`, `approved`, `denied`, `consumed` or `expired`.
+`404 pairing_not_found`.
+
+### Approve or deny a pairing
+
+`POST /v1/app-pairings/{code}/approve` · `POST /v1/app-pairings/{code}/deny`
+
+Approve takes `{app_id | new_app_name, webhook_url?, local?}` and returns the
+pairing, `approved`. Its credentials wait, sealed, for the CLI's next poll.
+
+- `400 invalid_request`: send exactly one of `app_id` and `new_app_name`.
+- `404 not_found`: an unknown app.
+- `409 name_taken`, `409 public_url_required`, `409 builtin_app`: as above.
+
+Deny returns the pairing, `denied`, and the CLI stops. A pairing already
+decided or expired is returned as it is.
+
+## Webhook endpoints and deliveries
+
+### Endpoints
+
+`GET /v1/apps/{id}/webhook-endpoints` · `POST /v1/apps/{id}/webhook-endpoints` · `DELETE /v1/webhook-endpoints/{id}`
+
+- `GET`:
+  `{data: [{id, url, created_at, disabled_at?, consecutive_failures, skipped_until?, pending_secret_since?}]}`.
+  After 5 failed tries in a row an endpoint is skipped for a minute,
+  doubling up to an hour, without spending its deliveries' tries.
+- `POST`: body `{url}`. Returns `201 {id, url, created_at, secret}`; the
+  `whsec_…` secret is in this response only. `400 invalid_request` for a
+  refused URL.
+- `DELETE`: `204`, and the endpoint gets no more deliveries.
+
+### Rotate an endpoint's secret
+
+`POST /v1/webhook-endpoints/{id}/secret` · `POST /v1/webhook-endpoints/{id}/secret/activate`
+
+- The first returns `201 {secret, active: false}`: a new secret, shown once.
+  Deliveries stay signed with the old one until you activate it.
+- `activate` returns `{active: true}`: deliveries are signed with the new
+  secret from the next try. `409 no_pending_secret` without a new secret.
+
+See [Retries, redelivery and secret rotation](/docs/build/webhooks/retries).
+
+### Deliveries
+
+`GET /v1/webhook-endpoints/{id}/deliveries`
+
+The latest 100:
+`{data: [{id, event_id, event_type, status, attempts, last_status?, last_error?, created_at, finished_at?, next_attempt_at?}]}`.
+
+### Redeliver
+
+`POST /v1/webhook-deliveries/{id}/redeliver`
+
+Returns `202 {id, endpoint_id, status: "pending"}`: a delivery that gave up
+(`failed`) is tried again for a fresh 24 hours. `409 not_redeliverable`
+otherwise.
+
+## Library and jobs
+
+### Library
+
+`GET /v1/library` · `GET /v1/library/counts`
+
+`GET /v1/library` takes `app_id`, `status`, `q`, `include_deleted`, `cursor`
+and `limit` (1 to 100, default 50). It lists every app's videos, newest
+first: `{data: [asset + poster_url], next_cursor?}`.
+
+- Deleted videos appear only with `include_deleted=true` or `status=deleted`.
+- `q` (at most 255 bytes) is an exact asset ID, or text a title or
+  passthrough contains, ignoring case.
+- `poster_url` is a ready-to-use poster URL, signed for one hour when the
+  playback ID is signed, or `null` until a playback ID is playable.
+- `400 invalid_cursor`, `400 invalid_request`.
+
+`GET /v1/library/counts` takes `app_id` and returns
+`{ready, processing, errored, waiting_upload}`.
+
+### Preview a video
+
+`POST /v1/assets/{id}/preview-token`
+
+Returns `{playback_id, token, url, expires_at}`: a one-hour `v` token signed
+with the server's internal key, and the `master.m3u8` URL it plays. Plays
+with it don't count in analytics. `409 no_playback_id` when the video has no
+active playback ID.
+
+### Setup test
+
+`POST /v1/setup-test` · `GET /v1/setup-test/latest`
+
+A setup test sends a sample clip through the configured path as an app's
+video would go: uploaded through the public URL, encoded by a worker, and
+played through the media URL, checking that private playback and encryption
+work.
+
+- `POST` queues one, or returns the one already queued: `202` the test.
+- `GET …/latest` returns the latest test, or `404` before the first.
+
+A test is
+`{id, status, trigger, executor?, asset_id?, checks: [{name, ok, detail?}], created_at, finished_at?}`,
+with `status` `queued`, `running`, `passed` or `failed`.
+
+### Jobs
+
+`GET /v1/jobs` · `GET /v1/jobs/{id}`
+
+`GET /v1/jobs` takes `status`, `asset_id`, `agent_id`, `cursor` and `limit`
+(1 to 100, default 50), and lists jobs across the library, newest first:
+`{data: [job], next_cursor?}`. `GET /v1/jobs/{id}` returns one job.
+
+A job is
+`{id, asset_id, app_id, passthrough?, kind, status, phase?, progress?, pinned_agent_id?, lost_count, failed_count, error_code?, routed_to?, route_reason?, created_at, started_at?, finished_at?, attempts}`.
+
+- `routed_to` is where a media job is routed: `workers`, `agents`,
+  `builtin`, `modal` or `runpod`.
+- `route_reason` is why: `pinned`, `primary`, `primary_offline`,
+  `queue_age`, `no_fallback`, `fallback_refused`, `fallback_offline`,
+  `fallback_limit`, `primary_limit` or `setup_test`.
+- Each attempt is
+  `{id, number, executor, route_reason?, agent_id?, agent_name?, status, failure_kind?, error_code?, phase?, progress?, encoder?, started_at, finished_at?, last_heartbeat_at?}`,
+  and keeps the reason it ran where it did.
+
+## Cloudflare
+
+<LeavesYourServers>
+  Connecting Cloudflare sends your Cloudflare API token to Cloudflare's API
+  from your server. With Cloudflare delivery, viewers fetch encoded files
+  and content keys from your Worker, in your Cloudflare account, and the
+  encoded files are stored in your R2 bucket.
+</LeavesYourServers>
+
+### Status
+
+`GET /v1/cloudflare`
+
+Returns
+`{connected, hostname?, bucket?, account_id?, worker_version?, current_version, needs_redeploy, storage_ok, token_url, r2_token_url, analytics_token_url}`.
+The `*_url` fields open Cloudflare's create-token form with the permissions
+Connect, R2 storage and edge analytics need already chosen.
+
+### Inspect a token
+
+`POST /v1/cloudflare/inspect`
+
+Body `{token, account_id?}`. Returns
+`{accounts: [{id, name}], account_id?, zones?, buckets?, workers_paid, unreadable?}`:
+what the token reaches. With several accounts and none named, only
+`accounts` is filled. `unreadable` names what it couldn't list. Changes
+nothing and keeps nothing. `400 token_rejected`.
+
+### Connect and disconnect
+
+`POST /v1/cloudflare/connect` · `DELETE /v1/cloudflare`
+
+- `POST` takes `{token, hostname, bucket?, account_id?}` and returns
+  `{connected, steps: [{name, ok, detail?}]}`, stopping at the first failed
+  step. Each step is safe to repeat. The bucket is created if it's missing,
+  and new videos' encoded files go to it. The token is used for this
+  request only.
+- `DELETE` moves delivery back to built-in and returns
+  `{disconnected, steps}`: `media_url`, `delivery`, `routes`, `forgotten`
+  and `setup_test`. The R2 bucket stays a storage config; the Worker and its
+  domain stay in your Cloudflare account. `404 not_connected`;
+  `409 pinned` while `CLIPMUX_MEDIA_URL` names the Worker.
+
+See [Cloudflare edge delivery](/docs/self-host/delivery/cloudflare).
+
+### Edge analytics
+
+`GET /v1/cloudflare/analytics` · `POST /v1/cloudflare/analytics` · `DELETE /v1/cloudflare/analytics`
+
+- `GET`: `{connected, account_id?, pulled_through?, last_pull_at?, last_error?}`.
+  `pulled_through` is how far the server has pulled the Worker's counts.
+- `POST`: body `{token}`, a second Cloudflare token with only
+  **Account Analytics: Read**. Returns the status. `409 not_connected`
+  without Cloudflare delivery; `400 token_rejected`.
+- `DELETE`: `204`. The token is forgotten; counts already pulled stay.
+  `404 not_connected`.
+
+See [Edge analytics](/docs/self-host/delivery/edge-analytics).
+
+## Storage
+
+Credentials are never returned.
+
+### List and add storage
+
+`GET /v1/storage` · `POST /v1/storage`
+
+- `GET`:
+  `{data: [{id, kind, bucket?, endpoint?, public_endpoint?, region?, default, asset_count, cloudflare_delivery, created_at}]}`.
+  `kind` is `fs`, `r2` or `s3`. `asset_count` counts videos whose source or
+  encoded files are on it, deleted ones aside. `cloudflare_delivery` marks
+  the bucket the Worker reads.
+- `POST`: body
+  `{endpoint, bucket, access_key_id, secret_access_key, region?, public_endpoint?}`.
+  Returns `201` the config, `kind: "s3"`, not the default. It's saved only
+  after a test write, read, list and delete pass and CORS for browser
+  uploads is set: otherwise `400 storage_check_failed` with the store's
+  reason. `public_endpoint` is where browsers send upload parts, when it
+  differs from `endpoint`.
+
+### Add an R2 bucket
+
+`POST /v1/storage/r2`
+
+Body `{token, bucket?, account_id?, default?}`. Returns `{connected, steps}`:
+`token`, `account`, `bucket` (created if missing), `storage` (keys made from
+the token and checked as above), and `default` when asked. Delivery doesn't
+change. The token needs only **Workers R2 Storage: Edit**.
+
+### Rotate a bucket's credentials
+
+`PUT /v1/storage/{id}/credentials`
+
+Body `{access_key_id, secret_access_key}`. Returns `204` once the new keys
+pass the same checks; the old ones work until then. `400 storage_check_failed`;
+`409 builtin_storage` for this server's disk.
+
+### Choose the default
+
+`POST /v1/storage/{id}/default`
+
+New uploads go to this storage, this server's disk included. Returns the
+storage list. Existing videos stay where they are until moved.
+
+### Remove storage
+
+`DELETE /v1/storage/{id}`
+
+`204`; the config is no longer listed and its credentials are dropped.
+
+- `409 builtin_storage`: this server's disk can't be removed.
+- `409 storage_default`: make another storage the default first.
+- `409 cloudflare_delivery`: disconnect Cloudflare first.
+- `409 storage_in_use`, with `asset_count` and `active_moves`: videos still
+  have files here; move the library first.
+
+### Move the library
+
+`GET /v1/storage/moves` · `POST /v1/storage/moves`
+
+- `GET`:
+  `{default_storage_id, default_kind, media_storage_id, uploads_elsewhere, media_elsewhere, active, moved, failed}`.
+  `uploads_elsewhere` counts videos whose source isn't on the default
+  storage; `media_elsewhere` those whose encoded files aren't on
+  `media_storage_id`.
+- `POST`: queues a move job for every video with files away from where they
+  belong and no active job. Returns `202 {queued}`.
+
+See [Where videos are stored](/docs/self-host/storage).
+
+## PC agents
+
+### Agents
+
+`GET /v1/agents` · `PATCH /v1/agents/{id}` · `DELETE /v1/agents/{id}`
+
+- `GET`:
+  `{data: [{id, name, status, scope, online, sandboxed, hostname, platform, last_ip?, last_seen_at, capabilities, created_at, revoked_at?}]}`.
+- `PATCH`: body `{name?, scope?}`, `scope` being `all` or `local`. Returns the
+  agent. `400 invalid_name`, `400 invalid_scope`.
+- `DELETE`: revokes the agent. Its key stops working and its running
+  attempts are stopped and queued again. Returns
+  `{agent, fenced_attempts, current_outputs}`. Revoking twice is harmless.
+
+### Re-encode an agent's outputs
+
+`POST /v1/agents/{id}/reencode`
+
+Queues a re-encode of every ready video whose current output the agent
+encoded, for after you revoke a PC you no longer trust. Returns
+`202 {queued: [asset_id], skipped: {asset_id: error_code}}`; a video whose
+source stays on that PC can't be re-encoded elsewhere and is skipped.
+
+### Pair an agent
+
+`POST /v1/agents/pairings` · `GET /v1/agents/pairings/{code}`
+
+- `POST`: body `{name?}` (at most 100 characters). Returns
+  `201 {code, expires_at, server, command, docker_command, install_command}`:
+  a one-time code the owner has already approved, valid for 15 minutes,
+  and the commands that use it.
+- `GET`:
+  `{status, agent_started, name, hostname, platform, ip?, agent_id?, expires_at}`.
+  `status` is `pending`, `approved`, `denied`, `consumed` (an agent holds
+  its key) or `expired`.
+
+### Approve or deny an agent's code
+
+`POST /v1/agents/pairings/{code}/approve` · `POST /v1/agents/pairings/{code}/deny`
+
+Decides a code that `clipmux worker --server URL` is showing on a PC.
+Returns the pairing.
+
+See [Encode on a PC you own](/docs/self-host/encoding/your-pc).
+
+## Next
+
+- [API reference](/docs/reference/api), the routes your app calls
+- [A tour of the dashboard](/docs/self-host/dashboard)
+- [Command line](/docs/reference/cli), for the host-side `clipmux admin` commands

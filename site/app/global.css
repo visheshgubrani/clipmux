@@ -48,6 +48,14 @@
   --color-fd-ring: var(--tally-text);
 }
 
+/* The docs fill the window: the sidebar sits against the left edge at every
+   width, and the article is centred in what's left (D134). Fumadocs'
+   default centres a 97rem layout, which left an empty band beside the
+   sidebar on wide screens. */
+:root {
+  --fd-layout-width: 100vw;
+}
+
 .dark #nd-sidebar {
   --color-fd-muted: var(--muted);
   --color-fd-secondary: var(--muted);

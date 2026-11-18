@@ -1,5 +1,7 @@
 # @clipmux/uploader
 
+The docs: [Upload from the browser](https://clipmux.com/docs/build/upload/browser) and the [reference](https://clipmux.com/docs/reference/sdks/uploader).
+
 Uploads a file to ClipMux in parts, straight to storage, resuming from what
 storage already holds. No dependencies.
 
@@ -77,7 +79,7 @@ memory.forget(file)
 - With `createUrl`, a remembered upload that has expired or was cancelled is
   replaced by a new one; `store: null` turns the memory off.
 
-Uppy users can map its `@uppy/aws-s3` callbacks to the same endpoints instead (docs/api.md).
+There is no Uppy plugin; for your own UI, use `ClipMuxUpload` headless ([Headless uploads](https://clipmux.com/docs/build/upload/headless-and-uppy)).
 
 ## Your backend: creating the upload and hearing when it's ready
 
@@ -109,23 +111,10 @@ export async function createUpload(size: number, lessonId: string) {
 ```
 
 When the video is ready, ClipMux sends `video.asset.ready` to your webhook
-endpoint. Verify the signature over the raw body before trusting it, then
-re-fetch the asset (`GET /v1/assets/{id}`) rather than relying on the body:
-
-```ts
-import { createHmac, timingSafeEqual } from 'node:crypto'
-
-export function verifyWebhook(raw: string, headers: Headers, secret: string): boolean {
-  const ts = headers.get('X-Webhook-Timestamp') ?? ''
-  const sig = headers.get('X-Webhook-Signature') ?? ''
-  if (Math.abs(Date.now() / 1000 - Number(ts)) > 300) return false
-  const want = `sha256=${createHmac('sha256', secret).update(`${ts}.${raw}`).digest('hex')}`
-  return sig.length === want.length && timingSafeEqual(Buffer.from(sig), Buffer.from(want))
-}
-```
-
-Delivery is at least once: dedupe on `X-Webhook-Id`. Every route and field is
-in [docs/api.md](https://github.com/visheshgubrani/clipmux/blob/main/docs/api.md).
+endpoint. Verify it with `@clipmux/node` (`clipmux.webhooks.verify`, or
+`clipmuxHandler`, which does it for you), or with the tested snippets for other
+languages in [Verify webhook signatures](https://clipmux.com/docs/build/webhooks/verify-signatures).
+Every route and field is in the [API reference](https://clipmux.com/docs/reference/api).
 
 ## Content-Security-Policy
 

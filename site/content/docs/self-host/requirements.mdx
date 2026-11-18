@@ -1,0 +1,111 @@
+---
+title: Requirements and sizing
+description: The server, disk, memory and DNS names ClipMux needs, and how to size them for your library.
+icon: Gauge
+---
+
+ClipMux runs on one Linux server with Docker. This page lists what that
+server needs before you install, what the installer checks for you, and how
+to size the disk and memory for the videos you expect.
+
+## The server
+
+| Need | Why |
+| --- | --- |
+| Linux on amd64 or arm64 | The images are built for those two architectures. The installer refuses any other. |
+| Docker with the Compose v2 plugin (`docker compose`) | The stack is a Compose project. Run the installer as root, or as a user in the `docker` group. |
+| Ports 80 and 443 free | The bundled Caddy serves HTTP and HTTPS on them, and gets a certificate for each of your hostnames. If another proxy already owns them, see [Behind your own reverse proxy](/docs/self-host/install-options/reverse-proxy). |
+| A kernel with Landlock (5.13 or later, enabled in the kernel's LSM list) | The built-in encoder confines ffmpeg with Landlock and seccomp. Without Landlock it doesn't start, and uploads wait in `processing` until another encoder takes them. |
+
+Most current distributions' kernels have Landlock on. If yours doesn't, you
+can still run ClipMux and encode on [Modal](/docs/self-host/encoding/modal),
+[RunPod](/docs/self-host/encoding/runpod) or a
+[PC you own](/docs/self-host/encoding/your-pc).
+
+## Two DNS names
+
+Point two hostnames at the server before you finish setup, for example:
+
+- `video.example.com`, the **public URL**: the dashboard, the API, and where
+  browsers send uploads when videos are stored on this server.
+- `media.example.com`, the **media URL**: where viewers' players fetch
+  video.
+
+Put the media hostname on a different registrable domain from the public
+URL if you can (`example-media.com` rather than `media.example.com`), so a
+hostile stored file can never reach the dashboard's cookies. You can leave
+the media URL blank to serve playback from the public URL, but that is for
+trying ClipMux out, not for production.
+
+If you'll encode on Modal or RunPod, the public URL must be reachable from
+the internet: their machines call your server for each job.
+
+## What the installer checks
+
+Before it downloads anything, the installer checks:
+
+- that `docker compose` works and Docker answers;
+- the machine's architecture;
+- free disk space, in the install directory and in Docker's own directory
+  (usually `/var/lib/docker`): it stops below **4 GiB**, and warns below
+  **20 GiB**;
+- on a first install, that ports 80 and 443 (or the ports you chose) are
+  free, when `ss` is there to ask.
+
+## Disk
+
+Everything ClipMux keeps on the server lives in Docker volumes: Postgres,
+and the data volume, which holds videos stored on this server and the
+encoder's scratch space. Plan for three things:
+
+- **The originals.** ClipMux keeps every upload as it arrived, so it can
+  encode it again.
+- **The encoded files.** The renditions' video bitrates add up to about
+  10.3 Mbit/s for a 1080p source and 38 Mbit/s for a 4K one, and real files
+  come in under that. Measured on lectures: 67 minutes of 1080p made 5.2 GB
+  of encoded files, and 54 minutes of 4K made 5.9 GB.
+- **Room to encode.** An encode needs about three times the source's size
+  free in the encoder's scratch space while it runs.
+
+If you store videos in a bucket instead, only the scratch space stays on
+the server. See [Where videos are stored](/docs/self-host/storage).
+
+## CPU or GPU
+
+The built-in encoder uses the server's GPU when Docker gives the container
+one: NVIDIA through NVENC, AMD and Intel through VAAPI. Otherwise it encodes
+on the CPU with libx264. Encoding runs at idle priority, so the API and
+playback stay responsive while it works, but a CPU encode of a long or 4K
+video takes a long time. Each media tool is limited to 8 GiB of memory by
+default (`CLIPMUX_TOOL_MEMORY_MB`).
+
+A small VPS can hand encoding to a cloud GPU or a PC instead. See
+[Encode on this server](/docs/self-host/encoding/this-server) for passing a
+GPU into the container, and
+[Encoding performance](/docs/self-host/encoding/performance) for measured
+times.
+
+## Memory for subtitles
+
+Subtitles come from whisper.cpp, which runs inside the encoder. Its model
+(large-v3-turbo, quantised) is about 0.9 GB and is already in the image, so
+nothing is downloaded. With `CLIPMUX_SPEECH` left at `auto`, the encoder
+transcribes on a GPU when one passes its test, and otherwise on the CPU only
+when the machine has at least 4 cores and 6 GiB of memory. On a smaller
+server, subtitles need a
+[speech API](/docs/self-host/captions-and-ai/speech-apis) or another
+encoder.
+
+## One server process
+
+ClipMux supports one `serve` process. Rate limits, sign-in limits, the setup
+token and several caches live in that process's memory, so a second replica
+behind a load balancer would not share them. To grow, move work off the
+server: storage to a bucket, encoding to a cloud GPU, playback to
+Cloudflare.
+
+## Next
+
+- [Install with one line](/docs/self-host/install)
+- [Where videos are stored](/docs/self-host/storage)
+- [Encode on this server](/docs/self-host/encoding/this-server)

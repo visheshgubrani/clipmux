@@ -1,0 +1,163 @@
+---
+title: Chapters
+description: Split a video into named chapters, written by an LLM from its transcript, and mark them on the player's time slider.
+---
+
+Chapters split a video into named parts, such as "Setting up" and
+"Deploying", that the player marks on its time slider. ClipMux writes them
+from the video's transcript with an LLM that the server's owner connected.
+The model only picks where each chapter starts and names it; ClipMux works
+out every time from the transcript itself.
+
+<LeavesYourServers>
+  Each time chapters are made, the video's transcript text is sent to the
+  LLM provider the server's owner connected, such as OpenAI or Anthropic.
+  No audio or video is sent. With a model on the owner's own network, such
+  as Ollama, nothing leaves their machines.
+</LeavesYourServers>
+
+## Before you start
+
+- An LLM connected on the ClipMux server, under **Captions & AI** in the
+  dashboard. See [Choose an LLM for chapters](/docs/self-host/captions-and-ai/chapters-llm).
+- An API key with `assets:write`, which the default scopes include.
+- A video with speech. Chapters are made from its subtitles, so a video
+  with no audio can't have them.
+
+## Ask for chapters
+
+### At upload
+
+```ts title="app/api/clipmux/[action]/route.ts"
+async upload(req, { file }) {
+  return { passthrough: 'lesson_42', title: file.name, generate: { chapters: true } }
+},
+```
+
+`generate: { chapters: true }` asks for subtitles too. Once the video is
+ready, ClipMux transcribes it, then makes chapters from the transcript. If
+no LLM is connected by then, the chapters track ends `errored` with
+`llm_not_connected`; the video and its subtitles are unaffected.
+
+### For a video you already have
+
+```ts
+const { track } = await clipmux.tracks.create('ast_…', { kind: 'chapters' })
+```
+
+`POST /v1/assets/{id}/tracks` with `{"kind": "chapters"}` answers `202`. A
+video that has chapters keeps them until the new ones are ready. It
+refuses with `409` and:
+
+| Code | Meaning |
+| --- | --- |
+| `subtitles_not_ready` | Chapters need ready subtitles. Ask for subtitles first, or wait for them. |
+| `chapters_not_connected` | No LLM is connected for chapters on the server. |
+| `asset_not_ready` | The video is still processing. |
+| `job_active` | Another job is changing this video. Wait, or send `"supersede": true` to cancel a chapters job that's running. |
+
+## What you get
+
+A chapters track has `kind: "chapters"` and the same statuses and webhooks
+as subtitles: `preparing`, then `ready` with `video.asset.track.ready`, or
+`errored` with `video.asset.track.errored`.
+
+- Between 1 and 10 chapters, as few as the content needs.
+- Titles of up to 100 characters, on one line, in the transcript's
+  language.
+- The first chapter starts at 0, each one ends where the next starts, and
+  the last ends at the end of the video.
+
+Read them as JSON, in milliseconds, from the track:
+
+```ts
+const track = await clipmux.tracks.get('ast_…', 'trk_…')
+// track.chapters: [{ start_ms: 0, end_ms: 95400, title: 'Setting up' }, …]
+```
+
+`GET /v1/assets/{id}/tracks/{track_id}` includes `chapters` once the track is
+ready.
+
+The same chapters are a WebVTT file, one numbered cue per chapter with its title
+as the cue text, at the track's sidecar URL:
+
+```txt
+https://media.example.com/v/{token}/{playback_id}/tracks/{track_id}.vtt
+```
+
+```txt title="trk_….vtt"
+WEBVTT
+X-TIMESTAMP-MAP=MPEGTS:0,LOCAL:00:00:00.000
+
+1
+00:00:00.000 --> 00:01:35.400
+Setting up
+
+2
+00:01:35.400 --> 00:04:12.000
+Deploying
+```
+
+## Show them in the player
+
+With `session-url`, `<clipmux-player>` finds the first ready chapters track
+in the session and marks it on the time slider by itself. Otherwise, name
+the track:
+
+```html
+<clipmux-player base-url="https://media.example.com" playback-id="pid_…" chapters-track="trk_…"></clipmux-player>
+```
+
+Chapters are never listed in the HLS playlist, so the player fetches the
+VTT itself, with the playback token. When it has them, it fires
+`clipmux-chapters` and sets `player.chapters`, in seconds:
+
+```ts
+player.addEventListener('clipmux-chapters', (e) => {
+  for (const c of e.detail.chapters) console.log(c.startTime, c.endTime, c.title)
+})
+```
+
+To list chapters in your own page or another player, fetch the VTT and read
+it with `parseChapters` from `@clipmux/player`:
+
+```ts
+import { parseChapters } from '@clipmux/player'
+
+const chapters = parseChapters(await (await fetch(vttUrl)).text())
+// [{ startTime: 0, endTime: 95.4, title: 'Setting up' }, …]
+```
+
+## When chapters fail
+
+An `errored` chapters track's `error_code` is one of:
+
+| Code | Meaning |
+| --- | --- |
+| `llm_not_connected` | No LLM is connected for chapters. Show nothing rather than an error; once the owner connects one, ask again with `POST /v1/assets/{id}/tracks`. |
+| `subtitles_failed` | The subtitles chapters are made from failed. |
+| `llm_unavailable` | The model kept failing, through three tries. |
+| `model_rejected` | The provider refused the request. The owner should check the key and model. |
+| `model_refused` | The model declined to write chapters for this transcript. |
+| `invalid_model_output` | The model's chapters were still invalid after one corrective re-prompt. |
+| `transcript_too_large` | The transcript makes a prompt over 512 KB. It is never cut short. |
+
+Videos made before an LLM was connected don't get chapters by themselves:
+ask for them again.
+
+## Check it works
+
+```bash
+curl -s https://video.example.com/v1/assets/ast_…/tracks/trk_… \
+  -H "Authorization: Bearer $CLIPMUX_API_KEY"
+```
+
+A `ready` track with a `chapters` list means it worked, and the player's
+time slider shows the chapter marks. An `errored` track names its reason in
+`error_code`, above.
+
+## Next
+
+- [Subtitles and transcripts](/docs/build/captions/subtitles)
+- [Add the player](/docs/build/play/player)
+- [Choose an LLM for chapters](/docs/self-host/captions-and-ai/chapters-llm)

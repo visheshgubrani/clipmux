@@ -1,0 +1,116 @@
+---
+title: Use a speech API
+description: Send transcriptions to an OpenAI-compatible speech API, always or only when no worker of yours can transcribe.
+---
+
+Instead of transcribing on your own workers, ClipMux can send a video's
+audio to a speech API and make subtitles from what it returns. Any API
+that speaks OpenAI's `/audio/transcriptions` with `verbose_json` timestamps
+works: OpenAI's `whisper-1`, Groq's `whisper-large-v3-turbo`, or a server on
+your own network such as Speaches.
+
+You can use it for every video, or only as a fallback when none of your
+workers can transcribe.
+
+<LeavesYourServers>
+  Once a mode uses the API, the audio of every video transcribed through it
+  goes to the provider you connect. Connecting also sends it an 11-second
+  public-domain speech sample. A server on your own network keeps the audio
+  with you.
+</LeavesYourServers>
+
+## Before you start
+
+- The API's base URL, such as `https://api.groq.com/openai/v1`.
+- An API key, unless it's a server that needs none.
+- The model name, such as `whisper-large-v3-turbo`.
+
+## Connect a speech API
+
+<Steps>
+<Step>
+
+### Open the form
+
+In the dashboard, open **Captions & AI**. Under **Subtitles**, choose
+**Connect a speech API**.
+
+</Step>
+<Step>
+
+### Fill it in
+
+Enter the **Speech API URL** and, if it needs one, the **Speech API key**.
+Once the URL is in, **Speech model** lists the models the API offers; pick
+one or type its name.
+
+</Step>
+<Step>
+
+### Connect
+
+Choose **Connect**. ClipMux runs three steps and shows each one:
+
+1. `credentials`: lists the API's models at `{base_url}/models`.
+2. `transcription`: transcribes the 11-second sample, sent exactly as real
+   transcriptions send audio, so an API that won't take the format fails
+   here rather than on a video.
+3. `saved`: keeps the connection, with its key sealed by the secrets key.
+
+A failed step leaves any earlier connection as it was.
+
+</Step>
+</Steps>
+
+Over the API, the same is `POST /v1/settings/speech/connect` with
+`{"base_url": "…", "model": "…", "api_key": "…"}`. The key is never
+returned.
+
+## Choose when it's used
+
+| Mode | In the dashboard | Where transcriptions go |
+| --- | --- | --- |
+| `local` | **Where videos are encoded** | whisper.cpp on your own workers. The API isn't used. |
+| `local_then_api` | **Where videos are encoded**, with **If no machine can transcribe, use the speech API** ticked | Your workers, and the API when no worker that can transcribe is online, or when a transcription has waited past the queue-age setting under routing. |
+| `api` | **A speech API** | Every transcription goes to the API. |
+
+Over the API, set it with `PUT /v1/settings/speech` and `{"mode": "api"}`.
+`api` and `local_then_api` answer `409 speech_not_connected` until an API
+is connected. Transcriptions already queued move to match the new mode.
+
+To stop using the API, choose **Disconnect**, or call
+`DELETE /v1/settings/speech/connect`. The mode goes back to `local`.
+
+## What to know
+
+- **No spend cap or estimate.** Every transcription sent is billed by the
+  provider, at its prices. ClipMux doesn't count the cost or stop at a limit.
+- **Audio goes in chunks** of at most 24 MiB, about 25 minutes, cut at
+  segment boundaries without overlap. A word spoken across a boundary can
+  be split or lost.
+- **One at a time.** The server sends one transcription to the API at a
+  time, so a burst of uploads in `api` mode queues behind it.
+- **Timing comes from the provider.** Word times are whatever the API
+  returns; without word times, a cue holds a sentence.
+- **Retries.** Rate limits, timeouts and server errors are retried a few
+  times, then the transcription goes back to the queue. Any other refusal
+  fails the track, and the reason shows on it.
+- **Private addresses are allowed.** The URL isn't filtered for private
+  addresses, so a server on your network works.
+
+## Check it works
+
+Connect itself is the check: the `transcription` step ran the sample through
+the API. Then upload a short video that asks for subtitles in `api` mode,
+and open the **Captions & chapters** tab on its page in the dashboard.
+
+- `speech_not_connected` when choosing a mode: connect an API first.
+- `credentials` fails: the URL or the key is wrong.
+- `transcription` fails: the API refused the audio format or the model, or
+  doesn't return `verbose_json` with timestamps.
+
+## Next
+
+- [Transcribe with whisper.cpp](/docs/self-host/captions-and-ai/whisper)
+- [Choose an LLM for chapters](/docs/self-host/captions-and-ai/chapters-llm)
+- [Subtitles and transcripts](/docs/build/captions/subtitles)

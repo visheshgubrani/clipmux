@@ -1,6 +1,25 @@
 {
   "title": "Self-host",
   "description": "Run ClipMux on your own server",
+  "icon": "Server",
   "root": true,
-  "pages": ["index"]
+  "pages": [
+    "---Get started---",
+    "index",
+    "requirements",
+    "install",
+    "first-run",
+    "dashboard",
+    "---Configure---",
+    "install-options",
+    "storage",
+    "encoding",
+    "delivery",
+    "captions-and-ai",
+    "---Operate---",
+    "...operate",
+    "---Security---",
+    "security-model",
+    "limitations"
+  ]
 }

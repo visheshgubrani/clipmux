@@ -1,5 +1,7 @@
 # @clipmux/node
 
+The docs: the [quickstart](https://clipmux.com/docs/build/quickstart) and the [reference](https://clipmux.com/docs/reference/sdks/node).
+
 The server SDK for [ClipMux](https://github.com/visheshgubrani/clipmux), the
 self-hosted alternative to Mux. Your backend uses it to create uploads, read
 assets, sign playback tokens and verify webhooks. It also ships drop-in route

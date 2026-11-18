@@ -1,0 +1,135 @@
+---
+title: Upload from the command line
+description: Push files and whole folders from a terminal, with the server's clipmux binary or with npx @clipmux/node from your app's project.
+---
+
+Two commands upload from a terminal. `npx @clipmux/node upload` runs in your
+app's project and uses the credentials `init` wrote, which makes it the
+quick way to test an integration. `clipmux push` is the server's own binary:
+it walks folders, resumes an interrupted push, and with `--local` encodes on
+a PC you own without uploading the file.
+
+Both send the file in 32 MiB parts straight to storage, through the same
+upload API a browser uses.
+
+## Before you start
+
+- For `npx @clipmux/node upload`: Node 20.19 or later, and an env file
+  from `npx @clipmux/node init` with `CLIPMUX_URL` and `CLIPMUX_API_KEY`.
+- For `clipmux push`: the `clipmux` binary, your server's URL, and an API
+  key with `uploads:write` (and `assets:read` for `--wait`). For `--local`,
+  a PC connected as a worker; see
+  [Encode on a PC you own](/docs/self-host/encoding/your-pc).
+
+## npx @clipmux/node upload
+
+```bash
+npx @clipmux/node upload lesson-42.mp4 --passthrough lesson_42 --wait
+```
+
+```txt
+  0%
+  10%
+  …
+✓ uploaded lesson-42.mp4: asset ast_… (processing)
+Waiting until it is ready…
+✓ ready: 1830.4 s, playback ID pid_…
+```
+
+| Flag | What it does |
+| --- | --- |
+| `--passthrough REF` | Your own ID for the video. |
+| `--title TITLE` | The video's title. Default: the file's name. |
+| `--renditions LIST` | The rungs to encode, comma separated, for example `1080p,480p`. Default: every rung up to the source. |
+| `--public` | Make a public playback ID instead of a private (`signed`) one. |
+| `--wait` | Wait until the video is ready, and print its duration and playback ID. |
+| `--env-file FILE` | Where to read the credentials. Default: `.env.local`, or `.env` if it exists. |
+
+It uploads one file per run.
+
+## clipmux push
+
+The API key comes from `CLIPMUX_API_KEY`, never from a flag, so it doesn't
+show in a process listing. The server URL comes from `--server` or
+`CLIPMUX_SERVER`.
+
+```bash
+export CLIPMUX_API_KEY=cmx_…
+clipmux push --server https://video.example.com --passthrough lesson_42 lesson-42.mp4
+```
+
+| Flag | Default | What it does |
+| --- | --- | --- |
+| `--server URL` | `CLIPMUX_SERVER` | Your server's public URL. |
+| `--policy POLICY` | `signed` | `signed` for a private video, `public` for a public one. |
+| `--passthrough REF` | | Your own ID for the video. One file only. |
+| `--renditions LIST` | every rung up to the source | The rungs to encode, comma separated, for example `1080p,480p`. |
+| `--wait` | `false` | Wait until each video is ready. Needs an API key. |
+| `--quiet` | `false` | Don't print the progress lines. |
+| `--local` | `false` | Keep the files on this PC: its worker encodes them and uploads only the outputs. |
+| `--upload-source` | `false` | With `--local`: once a video is encoded, also upload its file, so any worker can encode it again. |
+
+### Folders
+
+Give it folders as well as files. It walks each folder, skips folders whose
+names start with a dot, and picks up files with these extensions: `.mp4`,
+`.m4v`, `.mov`, `.mkv`, `.webm`, `.avi`, `.mxf`, `.ts`, `.mts`, `.m2ts`,
+`.flv`, `.wmv`, `.mpg`, `.mpeg`, `.ogv` and `.3gp`.
+
+```bash
+clipmux push --server https://video.example.com ./course/
+```
+
+`--passthrough` names one video, so push files one at a time to set it.
+
+### Resuming
+
+If a push is interrupted, run the same command again: it resumes where it
+stopped. Pushing a file that has already finished creates nothing new.
+`clipmux push` keeps what it needs for this in your user cache folder, or in
+`CLIPMUX_PUSH_STATE_DIR`.
+
+### Output
+
+Progress goes to standard error, one line per file. Standard output gets one
+tab-separated line per video: its asset ID, its playback ID, its status and
+the file's path, so you can pipe it into other tools.
+
+```txt
+ast_…	pid_…	processing	course/lesson-42.mp4
+```
+
+The exit code is `0` when every file went through, `1` if any failed or
+ended `errored`, and `2` for a usage mistake.
+
+### --local
+
+With `--local`, the file never leaves the PC. The PC's connected worker
+encodes it in place and uploads only the encrypted outputs. With an API key
+the key's app owns the video; without one, it becomes the server owner's
+own upload, as from the dashboard, and `--server` isn't needed.
+
+Such a video can be encoded again only on that PC, because its source is
+there. Add `--upload-source` to upload the file once it is encoded, so any
+worker can re-encode it later.
+
+## Check it works
+
+The last line of `npx @clipmux/node upload --wait` names the playback ID,
+and `clipmux push --wait` prints `ready` as the status. Without `--wait`,
+your webhook receives `video.asset.ready` when encoding is done.
+
+- `unauthorized`: the API key is wrong or revoked.
+- `insufficient_scope`: the key lacks `uploads:write`, or `assets:read` for
+  `--wait`.
+- `too_large`: the file is over the server's upload limit.
+- `clipmux push: needs --server and CLIPMUX_API_KEY (or --local), and at least one file`:
+  set both, or use `--local`.
+- `no video files found`: the folder has no file with one of the extensions
+  above.
+
+## Next
+
+- [Command line reference](/docs/reference/cli)
+- [Link videos to your records](/docs/build/upload/passthrough)
+- [Choose renditions](/docs/build/upload/renditions)

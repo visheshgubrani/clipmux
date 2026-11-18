@@ -1,0 +1,242 @@
+---
+title: Upload from the browser
+description: Add a drop zone that sends a file straight to storage in resumable parts, with your backend deciding who may upload.
+---
+
+`<clipmux-uploader>` is a drop zone with a file button, a progress bar,
+Cancel and Retry. It asks your backend to create the upload, sends the file
+in parts straight to storage (not through your server), resumes after a
+dropped connection or a reload, and tells you when the upload is complete.
+The browser never holds an API key.
+
+It comes from `@clipmux/uploader`, which has no dependencies.
+
+## Before you start
+
+- A backend route that creates uploads. With `@clipmux/node`, that is the
+  `upload` callback of `clipmuxHandler` from the
+  [quickstart](/docs/build/quickstart); to write your own, see
+  [Your backend route](#your-backend-route) below.
+- The package:
+
+<Tabs items={['npm', 'pnpm']}>
+<Tab value="npm">
+
+```bash
+npm i @clipmux/uploader
+```
+
+</Tab>
+<Tab value="pnpm">
+
+```bash
+pnpm add @clipmux/uploader
+```
+
+</Tab>
+</Tabs>
+
+## Add the element
+
+```html
+<script type="module">
+  import '@clipmux/uploader/element'
+</script>
+<clipmux-uploader create-url="/api/clipmux/upload?lesson=42" accept="video/*" max-size="5000000000"></clipmux-uploader>
+```
+
+```ts
+const uploader = document.querySelector('clipmux-uploader')!
+uploader.addEventListener('clipmux-uploaded', (e) => {
+  console.log(e.detail.asset.id) // processing: your webhook hears when it's ready
+})
+```
+
+When someone chooses or drops a file, the element POSTs
+`{"size", "name", "type"}` as JSON to `create-url`, with the page's cookies,
+so your backend can check who is asking. Put your own IDs in the URL, as
+`?lesson=42` does here.
+
+### Attributes
+
+| Attribute | What it does |
+| --- | --- |
+| `create-url` | Your backend's route that creates the upload. Required. |
+| `accept` | The files it takes, as on `<input type=file>`, for example `video/*,.mkv`. Dropped files are checked too. |
+| `max-size` | The largest file, in bytes. A larger one fails with `file_too_large` before anything is sent. |
+| `state` | Set by the element, for styling: `idle`, `uploading`, `done` or `error`. |
+
+The element also has a few properties and methods:
+
+- `options` takes further upload options: `concurrency` (parts in flight,
+  default 4), `maxAttempts` (tries per request, default 6), and `store`
+  (where an unfinished upload is remembered, `localStorage` by default;
+  `null` turns that off).
+- `upload(file)` uploads a file as choosing it does; `retry()` tries the
+  last failed upload again; `cancel()` stops it for good and tells ClipMux.
+- `state`, `file` and `asset` read the current state, the file and, once
+  complete, the video.
+
+### Events
+
+Each event bubbles and is typed.
+
+| Event | `detail` |
+| --- | --- |
+| `clipmux-progress` | `{ bytesUploaded, bytesTotal, partsDone, partsTotal }` |
+| `clipmux-uploaded` | `{ asset }`: the video, now `processing`. |
+| `clipmux-error` | `{ code, message, status, error }` |
+
+`clipmux-error`'s `code` is one of:
+
+- `file_type_rejected`: the file doesn't match `accept`.
+- `file_too_large`: the file is over `max-size`.
+- `create_denied`: `create-url` answered `401` or `403`, for example because
+  your `upload` callback returned `null`.
+- An error code from ClipMux or storage, such as `too_large` (the file is
+  over the server's upload limit), or `network` when the connection kept
+  failing.
+
+## Resume and retry
+
+- The file goes in parts of the upload's `part_size` (32 MiB), up to four at
+  a time.
+- Requests retry by themselves with backoff, honour `Retry-After`, and wait
+  while the browser is offline. A `4xx` such as `413 too_large` fails at
+  once.
+- After a failure, Retry continues from what storage already holds.
+- The upload is remembered in `localStorage`, keyed by the file's name,
+  size and modification time, until it completes. Choosing the same file
+  after a reload, or in a new tab, resumes it. If the remembered upload has
+  expired or been cancelled, the element creates a new one.
+- An unfinished upload stays resumable for 24 hours. Cancel ends it for
+  good: the video becomes `errored` with `upload_cancelled`.
+
+## Style it
+
+- **Parts:** `dropzone`, `label`, `button`, `progress`, `bar`, `status`,
+  `cancel` and `retry`.
+- **Custom properties:** `--clipmux-uploader-accent`, `--clipmux-uploader-border`,
+  `--clipmux-uploader-radius`, `--clipmux-uploader-background`,
+  `--clipmux-uploader-color` and `--clipmux-uploader-font`.
+- **Slot:** the default slot replaces the drop zone's text, "Drop a video
+  here, or".
+
+```css
+clipmux-uploader {
+  --clipmux-uploader-accent: #0f766e;
+  --clipmux-uploader-radius: 4px;
+}
+clipmux-uploader::part(bar) {
+  transition: none;
+}
+clipmux-uploader[state='error']::part(status) {
+  color: #b91c1c;
+}
+```
+
+```html
+<clipmux-uploader create-url="/api/clipmux/upload">Drop your lesson video, or</clipmux-uploader>
+```
+
+## React
+
+Import the JSX types once, and load the element in the browser only:
+
+```tsx title="app/lessons/[id]/uploader.tsx"
+'use client'
+import type {} from '@clipmux/uploader/react' // JSX types only
+import { useEffect } from 'react'
+
+export function LessonUploader({ lessonId }: { lessonId: string }) {
+  useEffect(() => {
+    import('@clipmux/uploader/element')
+  }, [])
+  return (
+    <clipmux-uploader
+      create-url={`/api/clipmux/upload?lesson=${lessonId}`}
+      accept="video/*"
+      onclipmux-uploaded={(e) => console.log(e.detail.asset.id)}
+    />
+  )
+}
+```
+
+The types cover the attributes, `options` and the three `onclipmux-…`
+events; React itself is not a dependency. React 19 passes the
+`onclipmux-…` props to the element as event listeners. On React 18, add the
+listeners with a ref and `addEventListener`.
+
+## Your backend route
+
+The element needs `create-url` to answer with the created upload plus
+`endpoint`, your ClipMux server's URL. With `clipmuxHandler`, the `upload`
+callback returns how to create it, or `null` to refuse:
+
+```ts
+async upload(req, { file }) {
+  await requireInstructor(req) // your own check
+  const lesson = new URL(req.url).searchParams.get('lesson')
+  return { passthrough: `lesson_${lesson}`, title: file.name }
+}
+```
+
+It may also return `playback_policy`, `generate` and `renditions`.
+
+To write the route yourself, check access, call `POST /v1/uploads` with your
+API key, and answer with the body. `clipmux.uploads.create` returns it with
+`endpoint` already added:
+
+```ts
+const upload = await clipmux.uploads.create({ size, passthrough: 'lesson_42' })
+return Response.json(upload)
+```
+
+Without the SDK, add `endpoint` yourself:
+
+```ts
+const res = await fetch(`${process.env.CLIPMUX_URL}/v1/uploads`, {
+  method: 'POST',
+  headers: { Authorization: `Bearer ${process.env.CLIPMUX_API_KEY}`, 'Content-Type': 'application/json' },
+  body: JSON.stringify({ size, passthrough: 'lesson_42' }),
+})
+return Response.json({ ...(await res.json()), endpoint: process.env.CLIPMUX_URL })
+```
+
+`size` comes from the element's request body. The upload token in the answer
+reaches only that one upload.
+
+## Content-Security-Policy
+
+A page with the uploader must allow, besides its own origin:
+
+- `connect-src`: your ClipMux server's URL, and the storage origins the
+  parts go to (`upload_origins` from `GET /v1/app`; the server's own URL
+  when it stores files on its own disk);
+- `style-src 'unsafe-inline'`, for the element's styles.
+
+`npx @clipmux/node doctor` prints the exact origins. Storage must also
+expose the `ETag` header to the page; ClipMux sets that up on its own disk
+and on the buckets it connects.
+
+## Check it works
+
+Choose a short video. The bar fills, the status reads "Uploaded" and the
+`clipmux-uploaded` event fires with a video in `processing`. Then your
+webhook receives `video.asset.ready`.
+
+- `create_denied`: your route refused, or the browser sent no session
+  cookie. Check `create-url` is on your own origin.
+- `create_invalid`: your route answered without an upload. It must return
+  the body of `POST /v1/uploads`, with `endpoint`.
+- `etag_not_exposed`: storage doesn't expose `ETag` to the page; fix the
+  bucket's CORS rules.
+- A request blocked in the console: the Content-Security-Policy is missing an
+  origin. Run `doctor`.
+
+## Next
+
+- [Headless uploads and Uppy](/docs/build/upload/headless-and-uppy): your own
+  upload UI
+- [Link videos to your records](/docs/build/upload/passthrough)
+- [@clipmux/uploader reference](/docs/reference/sdks/uploader)

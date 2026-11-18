@@ -1,0 +1,126 @@
+---
+title: Upgrade and uninstall
+description: Move ClipMux to a new release, pin or roll back a version, or remove it from the server.
+---
+
+An install from the one-line installer upgrades by running the installer
+again. Your data, keys, sessions and settings stay where they are: only the
+release in `.env` changes, and the app brings the database up to date when
+it starts.
+
+## Before you start
+
+- An install made with [the one-line installer](/docs/self-host/install).
+  For other setups, see
+  [Install from source with Compose](/docs/self-host/install-options/compose-from-source)
+  and [Behind your own reverse proxy](/docs/self-host/install-options/reverse-proxy).
+- A fresh [backup](/docs/self-host/operate/backups) of Postgres, and the
+  secrets key stored off the server. An upgrade can't be undone past a
+  database migration without one.
+
+## Upgrade
+
+```bash
+curl -fsSL https://clipmux.com/install.sh | sudo sh
+```
+
+On a server that already has `/opt/clipmux/.env`, the installer:
+
+1. Downloads the release's `compose.yml` and `Caddyfile` and checks them
+   against its `SHA256SUMS`, as on a first install.
+2. Changes `CLIPMUX_VERSION` in `.env` and leaves every other line alone,
+   including your ports and any URLs you pinned.
+3. Pulls the new image and restarts the stack, waiting for it to become
+   healthy.
+4. Prints `ClipMux upgraded from vA to vB`.
+
+It doesn't check the ports again, and it prints no setup token.
+
+If you installed with `--dir`, pass the same `--dir` again.
+
+### Install a given release
+
+```bash
+curl -fsSL https://clipmux.com/install.sh | sudo sh -s -- --version v1.0.0
+```
+
+`--version` installs that release, newer or older than the current one.
+Going back to an older release works only if no database migration has run
+since; see below.
+
+### What happens at boot
+
+- **Migrations.** The app applies new database migrations when it starts,
+  holding a lock so two processes never migrate at once.
+  `clipmux admin migrate status` lists what the database has.
+- **A database newer than the app.** An older release refuses to start
+  against a database a newer one migrated, with `schema_newer` in its log.
+  Run the newer release, or roll the database back first with it (below).
+- **Stopping drains.** When the old container stops, the app stops handing
+  out jobs, lets the built-in encoder hand its job back, and finishes
+  requests in flight, within compose's 40-second grace period. Uploads
+  resume and players retry, so nothing is lost.
+- **Cloud GPUs follow.** Unless you set `CLIPMUX_WORKER_IMAGE`, Modal and
+  RunPod machines run the new release's image from the next job.
+- **Cloudflare.** With Cloudflare delivery, the Delivery page says when the
+  Worker needs redeploying for the new release.
+
+### Roll back past a migration
+
+While the newer release is still running, roll the database back to the
+older release's newest migration, which `migrate status` showed before you
+upgraded:
+
+```bash
+cd /opt/clipmux
+sudo docker compose exec app clipmux admin migrate down-to VERSION --yes
+```
+
+Then install the older release with `--version`. Rolling back can lose
+whatever the newer migrations added, which is why the backup comes first.
+
+## Uninstall
+
+```bash
+curl -fsSL https://clipmux.com/install.sh | sudo sh -s -- --uninstall
+```
+
+This stops and removes the containers. The Docker volumes (your videos,
+Postgres and Caddy's certificates) and `/opt/clipmux/.env` stay, so running
+the installer again brings the same instance back.
+
+### Delete everything
+
+<Warning>
+  `--purge` deletes every video, the database, every key and setting, and
+  `/opt/clipmux` with the secrets key in it. It can't be undone. Videos you
+  stored in your own buckets stay in those buckets, but without the
+  database and the secrets key, the encoded ones can't be played.
+</Warning>
+
+```bash
+curl -fsSL https://clipmux.com/install.sh | sudo sh -s -- --uninstall --purge
+```
+
+## Check it works
+
+```bash
+cd /opt/clipmux
+sudo docker compose exec app clipmux version
+sudo docker compose exec app clipmux admin migrate status
+```
+
+`clipmux version` names the new release. If the installer stopped with
+`ClipMux didn't become healthy`, the app's last log lines are printed above
+the error: `schema_newer` means the database is ahead of this release, and a
+secrets key that opens nothing means `.env` holds a different key from the
+one the database was sealed with.
+
+After `--uninstall`, `docker ps` lists no ClipMux containers, and
+`docker volume ls` still lists its volumes until you `--purge`.
+
+## Next
+
+- [Back up and restore](/docs/self-host/operate/backups)
+- [Changelog](/docs/reference/changelog)
+- [Troubleshooting](/docs/self-host/operate/troubleshooting)

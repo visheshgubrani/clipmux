@@ -1,0 +1,110 @@
+---
+title: Playback IDs and tokens
+description: How a viewer reaches a video through a playback ID, why a private one needs a token your backend signs, and what revoking either does.
+icon: KeyRound
+---
+
+A viewer never sees a video's `ast_…` ID. They play a **playback ID**, and
+for a private video they also need a **token**: proof, signed by your
+backend, that your app let this viewer watch this video for a while.
+
+## Playback IDs
+
+A playback ID, `pid_…`, is the handle in a playback URL:
+
+```txt
+https://media.example.com/v/{token}/{playback_id}/master.m3u8   private
+https://media.example.com/p/{playback_id}/master.m3u8           public
+```
+
+- **Private or public.** Its `policy` is `signed` (plays only with a token)
+  or `public` (plays for anyone with the URL). A new video gets one
+  playback ID with the `playback_policy` you asked for, `signed` by default.
+- **Several per video.** Add one with `POST /v1/assets/{id}/playback-ids`,
+  up to 1000 per video. A video can have private and public IDs at once,
+  for example a public one for a trailer page and a private one for paying
+  viewers. Share links each make their own private ID.
+- **Revocable one at a time.** `DELETE /v1/assets/{id}/playback-ids/{pid}`
+  stops that ID; the video's other IDs keep playing.
+- **Cheap.** A playback ID points at the video, not at files, so adding or
+  revoking one copies or moves nothing.
+
+Each playback ID in the asset has a `status` (`active`, `revoking`,
+`revoked`) and `playable`, which is `false` until the video has an output
+and again once the ID is revoked.
+
+### What revoking does, and how fast
+
+The revoke call answers `200` with `revoked` once the ID is unpublished, or
+`202` with `revoking` while ClipMux is still unpublishing it. After that,
+every request for the ID answers `404`, including from players that are
+already watching, and existing tokens for it stop working.
+
+With built-in delivery, a revoked ID stops at once. With
+[Cloudflare edge delivery](/docs/self-host/delivery/cloudflare), the edge
+caches route records for up to 60 seconds, so a revoked ID stops within a
+minute.
+
+To stop everything for a video, delete it: its playback stops at once.
+
+## Tokens
+
+A token is an ES256 JWT that your backend signs with your app's signing key.
+It goes in the URL path, so every playlist, segment and key URL the player
+follows carries it without any player hooks.
+
+| Claim | Meaning |
+| --- | --- |
+| `sub` | The playback ID it is for. A token for one ID can't play another. |
+| `aud` | `v` plays the video: playlists, segments, tracks, the poster and the decryption key. `t` fetches only the poster, so a catalogue can show posters for videos a viewer can't play yet. |
+| `iat`, `exp` | Issued and expiry times, in whole seconds. |
+| `vid` | Optional. A stable ID for the viewer, used to count unique viewers. ClipMux stores only a keyed hash of it. |
+
+The header's `kid` names the signing key. A token signed by another app's
+key is refused, even for a valid playback ID.
+
+### Lifetime
+
+`exp - iat` may be at most `max_token_lifetime_seconds`, from `GET /v1/app`:
+7 days unless the server's owner changed it. A token issued more than 60
+seconds in the future is refused too.
+
+Keep tokens short and let the player renew them: `<clipmux-player>` asks
+your backend for a new token when the old one expires, and resumes where it
+was. Players ClipMux doesn't control, such as iOS before 17.1 and
+AirPlay, can't renew mid-video, so sign their tokens for longer. See
+[Sign playback tokens](/docs/build/play/sign-tokens).
+
+When a token is refused, delivery says why:
+
+- `401 token_expired`: `exp` has passed. Get a new token.
+- `403 denied`: the signature, key, playback ID, audience or lifetime is
+  wrong. A new token signed the same way won't help.
+- `404`: the playback ID doesn't exist, is revoked, or its video has no
+  output yet.
+
+### Why signing is local
+
+ClipMux keeps only your signing key's public half. Your backend signs with
+the private half, on its own, after your own code has decided the viewer may
+watch, and delivery checks the signature when the player asks. So there is
+no call to ClipMux per play, ClipMux never needs to know who your users
+are, and playback keeps working if your backend can't reach the API.
+
+### Revoking and rotating signing keys
+
+- **Revoking** a signing key ends every token it signed: built-in delivery
+  refuses them at once, the Cloudflare edge within a minute. Do this if the
+  private key leaks.
+- **Rotating** adds a new key and retires the old ones once the longest
+  token they may have signed has expired, so no viewer is cut off. Use
+  `clipmux admin rotate-signing-key --app NAME` on the server.
+
+`GET /v1/app` lists the keys that still verify tokens, newest first, in
+`signing_keys`. See [Rotate keys and secrets](/docs/self-host/operate/rotate-secrets).
+
+## Next
+
+- [Sign playback tokens](/docs/build/play/sign-tokens)
+- [Public videos](/docs/build/play/public-videos)
+- [Share links](/docs/build/play/share-links)

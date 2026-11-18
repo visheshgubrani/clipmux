@@ -1,4 +1,4 @@
-# Alerts for one ClipMux install (docs/operations.md, "Monitoring").
+# Alerts for one ClipMux install (https://clipmux.com/docs/self-host/operate/monitoring).
 # Check with: promtool check rules deploy/prometheus/alerts.yml
 groups:
   - name: clipmux

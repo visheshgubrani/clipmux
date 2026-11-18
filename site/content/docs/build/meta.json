@@ -1,6 +1,28 @@
 {
   "title": "Build",
   "description": "Add video to your app",
+  "icon": "Code",
   "root": true,
-  "pages": ["index"]
+  "pages": [
+    "---Get started---",
+    "index",
+    "quickstart",
+    "first-video",
+    "ai-and-agents",
+    "---Concepts---",
+    "...concepts",
+    "---Guides---",
+    "upload",
+    "play",
+    "captions",
+    "webhooks",
+    "analytics",
+    "frameworks",
+    "---Go live---",
+    "...going-live",
+    "---Agent resources---",
+    "external:[FileText][agents.md](/agents.md)",
+    "external:[FileText][llms.txt](/llms.txt)",
+    "external:[Braces][openapi.json](/openapi.json)"
+  ]
 }

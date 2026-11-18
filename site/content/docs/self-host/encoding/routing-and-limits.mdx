@@ -1,0 +1,122 @@
+---
+title: Routing, fallback and spend limits
+description: How ClipMux decides where each job runs, when it uses the fallback, and how cloud GPU spend is held under its limit.
+---
+
+Each job goes to one **primary** encoder, with an optional **fallback**
+that takes over when the primary can't. ClipMux decides again for every
+queued job as things change, and the **Jobs** page shows where each job was
+sent and why. Cloud GPUs carry two limits, machines at once and spend per
+month, which ClipMux checks before it starts a machine.
+
+## Before you start
+
+- An owner account on the dashboard.
+- For a cloud GPU as primary: Modal or RunPod connected, with its setup
+  test passed. See [Encode on Modal](/docs/self-host/encoding/modal) and
+  [Encode on RunPod](/docs/self-host/encoding/runpod).
+
+## Choose the primary and the fallback
+
+On **Encoding**, choose where new videos encode:
+
+- **This server**: the built-in encoder is the primary, with no fallback.
+- **Modal** or **RunPod**, once it shows **Ready**: the cloud GPU is the
+  primary. Tick **If Modal can't start a machine, encode on this server
+  instead** (or RunPod) to make this server the fallback.
+
+A cloud GPU becomes the primary by itself when its connect test passes,
+with this server as the fallback when the server runs the built-in encoder.
+
+The API takes more choices than the page offers
+(`PUT /v1/settings/routing`, with the owner's session):
+
+| Field | Values |
+| --- | --- |
+| `primary_executor` | `builtin` (this server), `workers` (this server and PCs), `agents` (PCs only), `modal`, `runpod` |
+| `fallback_executor` | `builtin`, or none. It can't be part of the primary. |
+| `queue_age_fallback_minutes` | 1 to 1440, or none. Needs a fallback. |
+
+A fresh install's primary is `workers`, so a paired PC shares jobs with this
+server. Saving a choice on **Encoding** turns queue-age fallback off again.
+
+## When a job goes to the fallback
+
+| Condition | What happens |
+| --- | --- |
+| The primary can take the job | It runs on the primary. |
+| The primary has had no encoder online for 60 seconds | It goes to the fallback. |
+| The primary is a cloud GPU whose machines' disk is too small for the source (three times its size) | It goes to the fallback. |
+| Queue-age fallback is on and the job has waited longer than that | It goes to the fallback. |
+| An attempt fails for a reason that isn't the file's (a network error, a full disk, a lost lease) | It's retried, on the fallback if the primary is still offline. |
+| An attempt fails in a way that may be the file's fault | It never goes to the fallback, so a broken file can't run up a cloud bill. A source that can't be encoded marks the video `errored`. |
+| The video's source lives on a PC | It waits for that PC, with no fallback. |
+
+## Route reasons on Jobs
+
+A queued job says where it's routed and why; an attempt says why it ran
+where it did.
+
+| Reason | What it means |
+| --- | --- |
+| `primary` | The primary could take it. |
+| `primary_offline` | Sent to the fallback: the primary was offline. |
+| `queue_age` | Sent to the fallback: it waited too long for the primary. |
+| `pinned` | Its PC holds the file, so only that PC can run it. |
+| `no_fallback` | Waiting: the primary is offline and there is no fallback. |
+| `fallback_refused` | Waiting: an earlier attempt on this video failed, so it stays off the fallback. |
+| `fallback_offline` | Waiting: the primary and the fallback are both offline. |
+| `fallback_limit` | Waiting: the primary is offline and the fallback is at its machine or spend limit. |
+| `primary_limit` | Waiting: the primary is a cloud GPU at its machine or spend limit. |
+| `setup_test` | A setup test's sample, which runs only on the encoder its test names. |
+
+## Spend limits
+
+Each cloud GPU has a **monthly limit** ($50 unless you change it) and a
+**rate** per machine-hour, which defaults to the dearest GPU you chose.
+ClipMux counts spend per calendar month, in UTC:
+
+- A machine costs its rate from when it was started until it was stopped.
+- **Before a machine starts, its job reserves an estimated run**: one hour
+  per 4 GiB of source, at least 15 minutes and at most 6 h 15 min. A source
+  of unknown size, such as an import from a URL, counts as one hour. The
+  reservation counts until the machine stops, so the limit holds before any
+  machine has run long enough to show its cost.
+- A machine starts only if this month's spend plus the job's reservation
+  fits under the limit, and fewer machines than the limit are running.
+- For Modal, ClipMux reads Modal's own bill, which replaces the estimate up
+  to the last hour it covers. RunPod's spend stays the estimate.
+
+**Encoding** shows this month's spend against the limit, and how many
+machines are running.
+
+### At the limit
+
+- A machine that is already running isn't stopped. Its job finishes, so a
+  month can end a little over the limit.
+- New jobs wait for the cloud GPU (`primary_limit`). The fallback doesn't
+  take them, unless you set queue-age fallback, which sends a job to the
+  fallback once it has waited that long.
+- If the cloud GPU is the fallback, jobs wait for the primary
+  (`fallback_limit`).
+- After failed machine starts, ClipMux backs off from the provider for a
+  while; **Encoding** shows until when.
+
+Raise the limit with **Connect again** on **Encoding**, or let the month
+roll over.
+
+## Check it works
+
+- Upload a video and open **Jobs**: the job says where it's routed and why,
+  and its attempt shows where it ran.
+- `GET /v1/settings/routing` returns the primary, the fallback, the
+  queue-age setting, whether the built-in encoder is online, and which cloud
+  GPUs are ready.
+- A job stuck on `no_fallback` or `fallback_offline` needs an encoder online:
+  check **This server** shows **Online** on **Encoding**.
+
+## Next
+
+- [Encode on Modal](/docs/self-host/encoding/modal)
+- [Encoding performance](/docs/self-host/encoding/performance)
+- [Troubleshooting](/docs/self-host/operate/troubleshooting)

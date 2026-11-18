@@ -1,0 +1,133 @@
+---
+title: Choose an LLM for chapters
+description: Connect Claude or any OpenAI-compatible chat API, including a keyless server on your own network, to title a video's chapters from its transcript.
+---
+
+ClipMux makes chapters by giving a video's transcript to an LLM, which
+splits it into sections and titles each one. You connect the LLM once, as
+the owner. Until you do, uploads that ask for chapters get none, and their
+chapters track ends `llm_not_connected`.
+
+Two kinds of provider work:
+
+- **Claude**, through Anthropic's own API. The default model is
+  `claude-opus-5-5`.
+- **Any OpenAI-compatible `/chat/completions` API**: OpenAI, Ollama, vLLM,
+  Groq or OpenRouter. A server on your own network that needs no key works
+  too.
+
+<LeavesYourServers>
+  Every time chapters are made, the transcript's text goes to the LLM
+  provider you connect, never the video or its audio. Connecting also sends
+  it a short sample transcript. A server on your own network keeps the text
+  with you.
+</LeavesYourServers>
+
+## Before you start
+
+- Subtitles working, since chapters are made from the transcript. See
+  [Transcribe with whisper.cpp](/docs/self-host/captions-and-ai/whisper) or
+  [Use a speech API](/docs/self-host/captions-and-ai/speech-apis).
+- For Claude: an Anthropic API key.
+- For an OpenAI-compatible API: its base URL, such as
+  `https://api.openai.com/v1` or `http://ollama.lan:11434/v1`, a model name,
+  and a key if it needs one.
+
+## Connect an LLM
+
+<Steps>
+<Step>
+
+### Open the form
+
+In the dashboard, open **Captions & AI**. Under **Chapters**, choose
+**Connect an LLM**.
+
+</Step>
+<Step>
+
+### Choose the provider
+
+Under **LLM provider**, choose **Claude (Anthropic)** or
+**OpenAI-compatible**. For an OpenAI-compatible API, enter the
+**LLM API URL**.
+
+</Step>
+<Step>
+
+### Add the key and the model
+
+Enter the **LLM API key**; for an OpenAI-compatible server that needs none,
+leave it empty. **LLM model** lists the provider's models once the key (for
+Claude) or the URL is in. For Claude it lists the current models, newest
+first; leave it empty for `claude-opus-5-5`. An OpenAI-compatible API needs
+a model.
+
+</Step>
+<Step>
+
+### Connect
+
+Choose **Connect**. ClipMux runs three steps and shows each one:
+
+1. `credentials`: lists the API's models at `{base_url}/models`, or for
+   Claude, reads the chosen model, which proves the key and the model name.
+2. `structured_output`: makes chapters of a fixed three-segment transcript.
+   An OpenAI-compatible server without strict JSON schemas falls back to
+   JSON mode, and ClipMux remembers which worked.
+3. `saved`: keeps the connection, with its key sealed by the secrets key.
+
+A failed step leaves any earlier connection as it was.
+
+</Step>
+</Steps>
+
+Over the API, the same is `POST /v1/settings/chapters/connect`:
+
+```json
+{ "provider": "anthropic", "api_key": "…" }
+```
+
+```json
+{ "provider": "openai_compatible", "base_url": "http://ollama.lan:11434/v1", "model": "llama3.3" }
+```
+
+The key is never returned. `GET /v1/settings/chapters` shows the provider,
+URL and model.
+
+To stop, choose **Disconnect**, or call
+`DELETE /v1/settings/chapters/connect`. Chapters already made keep playing;
+chapters still queued end `llm_not_connected`.
+
+## What to know
+
+- **No spend estimate.** Each video's chapters are billed by the provider at
+  its prices. ClipMux doesn't estimate or cap the cost.
+- **A Claude refusal is final.** There is no fallback to another model.
+- **Failures retry twice.** A rate limit, an overloaded provider or a network
+  error is retried after 30 seconds and again after 2 minutes; the third
+  failure ends the track `llm_unavailable`.
+- **The transcript is data, not instructions.** It goes to the model as
+  delimited text under a strict schema, and every chapter boundary is
+  checked locally. The worst a hostile transcript can do is name its own
+  chapters.
+- **Private addresses are allowed.** The URL isn't filtered for private
+  addresses, so Ollama on your network works.
+
+## Check it works
+
+Connect itself is the check: the `structured_output` step made chapters of
+a sample, and its detail lists their titles. Then upload a short video that
+asks for chapters, and open the **Captions & chapters** tab on its page in
+the dashboard.
+
+- `credentials` fails: the URL, the key or the model name is wrong.
+- `structured_output` fails: the model couldn't return chapters in JSON.
+- Chapters end `llm_not_connected`: no LLM was connected when they were
+  made.
+
+## Next
+
+- [Chapters](/docs/build/captions/chapters), for your app
+- [Use a speech API](/docs/self-host/captions-and-ai/speech-apis)
+- [Limitations](/docs/self-host/limitations)

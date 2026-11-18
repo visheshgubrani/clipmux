@@ -1,0 +1,76 @@
+---
+title: How ClipMux works
+description: The handful of objects an app works with, from the app and its keys to the video, its outputs, playback IDs and tracks.
+icon: Boxes
+---
+
+An app talks to ClipMux about a few objects. Once you know what each one is
+and which ones change, the API reads plainly: a video holds one playable
+output at a time, playback IDs are the handles viewers use, and an upload is
+how a file arrives.
+
+## Video and asset
+
+These docs say **video**. The API says **asset**: the routes are
+`/v1/assets`, the IDs are `ast_…`, and webhook events start with
+`video.asset.`. They are the same thing. The rest of these docs use "asset"
+only where the API does.
+
+## The objects
+
+| Object | ID | What it is |
+| --- | --- | --- |
+| App | `app_…` | One integration, such as a course site or a marketing site. It owns its API keys (`cmx_…`), its signing keys, its webhook endpoints and the videos it creates. |
+| Video (asset) | `ast_…` | The video as the API sees it: its `status`, its `version`, your `passthrough`, its `title`, and the source file it was made from. |
+| Output | | One encoded, encrypted set of HLS files for a video: the renditions, the audio, the playlists and the poster. An output never changes once written. You never address one directly. |
+| Playback ID | `pid_…` | The handle in a playback URL. Private (`signed`) or public, several per video, each revocable on its own. |
+| Track | `trk_…` | A subtitles or chapters track, made from the video after it is ready. |
+| Upload | `upl_…` | One file on its way into storage, in 32 MiB parts. It fills one video's source, and expires after 24 hours idle. |
+
+The ClipMux server's owner manages apps, keys and webhook endpoints in the
+dashboard. The dashboard's own uploads go to a built-in Dashboard app unless
+the owner picks another, and the dashboard sees every app's videos.
+
+## How they relate
+
+1. Your backend creates an **upload** with its app's API key. The **video**
+   exists at once, in `waiting_upload`, with one **playback ID**.
+2. The browser sends the file's parts straight to storage with the upload
+   token, and completes the upload. The file becomes the video's source.
+3. A worker encodes the source into a new **output**. When the output is
+   written, the video points at it and becomes `ready`.
+4. A viewer plays a **playback ID**. Delivery follows the playback ID to its
+   video, and the video to its current output.
+5. **Tracks** are made from the ready video if you asked for them. Subtitles
+   play inside the same playlist; each track is also a WebVTT file.
+
+A video points at one current output. A re-encode writes a new output beside
+the old one, and the pointer moves only once the new one is complete, so
+viewers never see a half-written video. That pointer is the only thing that
+moves: playback IDs never point at files, so adding or revoking one moves no
+files, and a cached segment never goes stale.
+
+Each output has its own encryption key, so a re-encode brings a new key too.
+See [What encryption does and doesn't do](/docs/build/concepts/encryption).
+
+## Where the work happens
+
+- **The server**, `clipmux serve`, holds the objects in Postgres and answers
+  the API. It is one Go binary.
+- **Workers** encode. They run on the server itself, on a PC you own, or on
+  Modal or RunPod. A worker gets URLs signed for one job, never storage
+  credentials.
+- **Storage** holds sources and outputs: the server's own disk, or an
+  S3-compatible bucket such as R2.
+- **Delivery** serves playlists, segments and keys to viewers: the server's
+  built-in handler, or a Cloudflare Worker at the edge.
+
+Running these is the server owner's job; see
+[Self-host ClipMux](/docs/self-host). An app sees only the API, the media
+origin (`base_url`) and its webhooks.
+
+## Next
+
+- [A video's lifecycle](/docs/build/concepts/lifecycle)
+- [Playback IDs and tokens](/docs/build/concepts/playback-ids-and-tokens)
+- [Architecture overview](/docs/resources/architecture)

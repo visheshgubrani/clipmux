@@ -9,6 +9,11 @@ export const TABS = [
   { slug: 'build', title: 'Build', about: 'Adding uploads, webhooks and signed playback to an app.' },
   { slug: 'self-host', title: 'Self-host', about: 'Installing and running a ClipMux server.' },
   { slug: 'reference', title: 'Reference', about: 'The API, webhooks, errors, limits, settings and CLI.' },
+  {
+    slug: 'resources',
+    title: 'Resources',
+    about: 'Migrating from Mux or Cloudflare Stream, the architecture, the FAQ and the project.',
+  },
 ] as const
 
 export const SUMMARY =

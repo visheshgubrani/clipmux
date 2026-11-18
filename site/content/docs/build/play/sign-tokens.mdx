@@ -1,0 +1,152 @@
+---
+title: Sign playback tokens
+description: Let your backend decide who watches a private video, with a token it signs itself.
+---
+
+A private video plays only with a token: a short JWT that your backend signs
+with your app's signing key after it has decided the viewer may watch. Signing
+is local. Your backend makes no call to ClipMux per play, and ClipMux checks
+the signature when the player asks for the video.
+
+If you use `clipmuxHandler` and `<clipmux-player session-url>` from the
+[quickstart](/docs/build/quickstart), this already happens: your `playback`
+callback decides, and the handler signs. Read on to sign tokens yourself, for
+your own route, another player or another language.
+
+## Before you start
+
+- A video with a **signed** playback ID. Uploads are signed unless you ask
+  for `playback_policy: "public"`.
+- Your app's signing key, as `CLIPMUX_SIGNING_KID` (the key's ID) and
+  `CLIPMUX_SIGNING_KEY` (a P-256 private key in PEM).
+  `npx @clipmux/node init` writes both. You can also create one under
+  **Apps & API** in the dashboard, or with `clipmux admin create-signing-key`
+  on the server.
+- The media origin, `base_url`, from `GET /v1/app`, for example
+  `https://media.example.com`.
+
+<Warning>
+  The signing key is a secret. Keep it on your server, never in browser code,
+  and never in a log.
+</Warning>
+
+## What a token holds
+
+A token is an ES256 JWT. Its header names the key, and its claims name the
+video, what the token may fetch, and for how long.
+
+| Part | Field | Value |
+| --- | --- | --- |
+| Header | `alg` | `ES256` |
+| Header | `kid` | Your `CLIPMUX_SIGNING_KID` |
+| Claims | `sub` | The playback ID, `pid_…` |
+| Claims | `aud` | `v` to play the video, its tracks and its poster; `t` for the poster only |
+| Claims | `iat`, `exp` | Issued and expiry times, in whole Unix seconds |
+| Claims | `vid` | Optional. A stable ID for the viewer, which counts unique viewers. ClipMux stores only a keyed hash of it |
+
+`exp - iat` may be at most `max_token_lifetime_seconds` from `GET /v1/app`,
+which is 7 days by default. Keep tokens short, 15 minutes for a player that
+renews them, and let the player ask again.
+
+## Sign a token
+
+<Steps>
+<Step>
+
+### Check access
+
+Decide in your own code, from your own session, whether this person may watch
+this video. ClipMux has no idea who your users are. If the answer is no,
+don't sign anything.
+
+</Step>
+<Step>
+
+### Sign
+
+<Tabs items={['Node', 'Python', 'Go', 'PHP']}>
+<Tab value="Node">
+
+```ts title="playback.ts"
+import { ClipMux } from '@clipmux/node'
+
+const clipmux = new ClipMux() // reads the CLIPMUX_* settings
+
+const token = await clipmux.playback.token('pid_…', {
+  viewerId: user.id, // optional
+  expiresIn: '15m', // the default
+})
+```
+
+`{ audience: 'poster' }` signs a poster-only token.
+
+</Tab>
+<Tab value="Python">
+
+<include cwd lang="python" meta='title="playback_token.py"'>snippets/python/playback_token.py</include>
+
+</Tab>
+<Tab value="Go">
+
+<include cwd lang="go" meta='title="playback_token.go"'>snippets/go/playback_token.go</include>
+
+</Tab>
+<Tab value="PHP">
+
+<include cwd lang="php" meta='title="playback_token.php"'>snippets/php/playback_token.php</include>
+
+</Tab>
+</Tabs>
+
+Any ES256 JWT library works in other languages: put `kid` in the header and
+the claims above in the body.
+
+</Step>
+<Step>
+
+### Play
+
+Give the player the token, or build the URL yourself:
+
+```txt
+https://media.example.com/v/{token}/{playback_id}/master.m3u8
+https://media.example.com/v/{token}/{playback_id}/poster.jpg
+```
+
+With `<clipmux-player>`, set `getToken` so the player asks your backend each
+time it needs a fresh token. See [Add the player](/docs/build/play/player).
+
+</Step>
+</Steps>
+
+## Check it works
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' \
+  "https://media.example.com/v/$TOKEN/pid_…/master.m3u8"
+```
+
+- `200`: the token is good.
+- `401` with `token_expired`: the token's `exp` has passed. Sign a new one;
+  the player does this by itself.
+- `403` with `denied`: the signature, the key, the playback ID or the
+  audience is wrong, or the key was revoked. Stop, and check the `kid`
+  matches the key you signed with.
+- `404`: the playback ID was revoked, or doesn't exist.
+
+## Safari and AirPlay
+
+iOS before 17.1 and AirPlay play HLS themselves and can't renew a token
+mid-video. `<clipmux-player>` tells your backend when it plays natively:
+`native: true` in the session request, or in `getToken`'s argument. Sign
+those tokens for longer. The Node SDK does it for you with
+`playback.token(id, { native: true, durationSeconds })`: the larger of twice
+the video's duration and 4 hours, or 12 hours without a duration, within the
+maximum.
+
+## Next
+
+- [Add the player](/docs/build/play/player)
+- [Posters and thumbnails](/docs/build/play/posters-and-thumbnails)
+- [Playback IDs and tokens](/docs/build/concepts/playback-ids-and-tokens),
+  the concepts behind them

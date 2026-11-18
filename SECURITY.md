@@ -27,7 +27,8 @@ advisory unless you ask us not to.
 In scope: everything in this repository, which is the `clipmux` binary
 (serve, the built-in worker, PC agents, `push`, `listen`, `admin`), the
 image and agent tarball as released, the Cloudflare Worker (`worker/`),
-`@clipmux/player`, `@clipmux/uploader`, and the installers in `deploy/`.
+`@clipmux/node`, `@clipmux/player`, `@clipmux/uploader`, and the installers in
+`deploy/`.
 
 Out of scope: a deployment's own configuration (a leaked key, a public
 bucket, a disabled sandbox), vulnerabilities in Cloudflare, RunPod, Modal or

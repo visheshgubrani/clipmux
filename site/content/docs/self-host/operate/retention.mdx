@@ -1,0 +1,73 @@
+---
+title: Retention
+description: What ClipMux keeps, for how long, and how to prune it by hand.
+icon: Clock
+---
+
+Every hour, the server deletes what nothing can use any more: old rows in
+Postgres, and stored files no video plays from. Each window follows from
+another rule, such as how far back `clipmux listen --since` reaches, so they
+are fixed rather than settings. Nothing here deletes a video you haven't
+deleted.
+
+## What's kept, and for how long
+
+| What | Kept for |
+| --- | --- |
+| Retired outputs, after a re-encode | The longer of 7 days and the maximum token lifetime, plus an hour, so a viewer mid-session finishes first |
+| Files of a failed or replaced encoding attempt | 30 minutes |
+| Stored files under an output that its manifest doesn't list | Checked 16 minutes after the output is committed, then deleted |
+| Output folders no record accounts for | Swept continuously, 500 videos an hour |
+| This server's disk: staging files and abandoned multipart uploads | 24 hours and 7 days |
+| Idempotency keys | 24 hours |
+| Dashboard sessions | Until they expire, or after 7 days idle |
+| Pairing codes, expired or used | 24 hours |
+| Webhook deliveries and events, which `GET /v1/events` and `clipmux listen --since` read | 30 days after they finish |
+| Other finished outbox rows | 7 days |
+| Setup tests | The newest 20 |
+| Analytics, hourly, for the 24-hour range | 14 days |
+| Analytics, daily, and viewer keys | 180 days. There are no lifetime totals. |
+| Share links | Kept, with their state. An expired link's playback ID is revoked within a minute. |
+| Jobs, attempts and dispatches | Kept, as history and spend |
+
+Route publications, key publications and machine stops are never given up
+on, because giving up would leave a revocation unpublished or a paid machine
+running.
+
+<Note>
+  On R2 or S3, a multipart upload whose abort failed is left to a lifecycle
+  rule on the bucket. Connecting a bucket doesn't set one; add it at your
+  provider.
+</Note>
+
+## Prune by hand
+
+`clipmux admin prune` runs the same deletion now and prints what went.
+
+```bash
+cd /opt/clipmux
+docker compose exec app clipmux admin prune --dry-run
+```
+
+| Flag | What it does |
+| --- | --- |
+| `--dry-run` | Counts what would go, inside a transaction it rolls back, so the counts are exact and nothing changes. |
+| `--files` | Also deletes stored files past their windows: retired outputs, replaced attempts' files, orphaned output folders, and this server's disk's leftovers. |
+
+`clipmux admin outbox` lists route publications, wakes and stops still
+pending after an hour. `clipmux admin outbox --retry ID` makes one due at
+once.
+
+## Check it works
+
+`clipmux admin prune --dry-run` counts what the next hourly pass would
+delete. On a server that has run for a while, the counts stay small. If they
+keep growing, the passes are failing: the `retention` and `file_retention`
+loops report errors in the log and in `clipmux_sweeper_errors_total` (see
+[Monitoring](/docs/self-host/operate/monitoring)).
+
+## Next
+
+- [Back up and restore](/docs/self-host/operate/backups)
+- [Limits and defaults](/docs/reference/limits)
+- [Monitoring](/docs/self-host/operate/monitoring)

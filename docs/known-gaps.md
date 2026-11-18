@@ -245,8 +245,11 @@ when you introduce or discover it; remove it when it is closed.
   replica: with several serve replicas, any one worker's calls keep "the
   server" online. A job barred from the fallback because its file failed
   waits for the primary without a bound, shown as `fallback_refused`.
-- The content key secret can't be rotated; when it can, rotation must
-  redeploy the Worker's ring through Connect before new outputs use it.
+- The content key secret rotates (`POST /v1/content-keys/rotate`, Settings'
+  Content encryption key), but only new encodes use the new version; existing
+  outputs keep theirs until they are re-encoded one by one, and nothing
+  re-encodes a library in bulk. With Cloudflare delivery it needs a token,
+  since the Worker is redeployed with the new version before any output uses it.
 - Subtitles, transcripts and chapters exist (Phase 5, D076–D084) and meet
   the LMS's needs by contract test (D085); the cutover itself is the next
   step (plans/lms-migration.md). What they don't do yet: uploaded caption
@@ -365,6 +368,7 @@ when you introduce or discover it; remove it when it is closed.
 - Safari's native HLS with `getToken({ native })` (D126) is checked by
   reading the code and in Chrome with `native: false`; the Safari suite
   runs on the owner's Mac, not in this release's CI.
+- **No agent skills yet (T17).** The landing page and the docs point agents at `/agents.md`, `llms.txt` and the Markdown twins; `npx skills add visheshgubrani/clipmux` comes back to the landing page's Agents section, and the skills' stable docs anchors get a lint, when the skills exist (D134).
 
 ## Found by the first live integration (Edural, 2026-11-15; docs/integration.md)
 

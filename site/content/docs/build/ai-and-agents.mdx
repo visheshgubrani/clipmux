@@ -1,0 +1,107 @@
+---
+title: AI and agents
+description: Point a coding agent at the files that teach it ClipMux, from a one-line prompt to every page as Markdown.
+icon: Bot
+---
+
+A coding agent can add ClipMux to your app if it reads the right file first.
+These docs publish one written for that job, plus every page as Markdown and
+the API as an OpenAPI spec, so the agent works from the same facts you do
+instead of guessing.
+
+## Start with one prompt
+
+Paste this into Claude Code, Cursor, Codex or any agent that can fetch a URL,
+from your app's project:
+
+```txt
+Read https://clipmux.com/agents.md, then add ClipMux uploads, webhooks and signed playback to this app.
+```
+
+`https://clipmux.com/agents.md` is the onboarding guide for agents. It
+gives the rules (no secret in browser code, no hand-rolled HMAC or JWT code,
+access decided in your own callbacks), the steps from
+`npx @clipmux/node init` to `doctor`, and a table of error codes with their
+fixes. It also links to the docs index, the Build docs in full,
+Troubleshooting and the OpenAPI spec.
+
+The guide's body is the `AGENTS.md` that ships inside the `@clipmux/node`
+package, so an agent that has already installed the SDK finds the same text
+at `node_modules/@clipmux/node/AGENTS.md`, matching the installed version.
+
+`init` asks the ClipMux server's owner to approve the app in the
+dashboard, so the agent will ask you to open an approval link. It writes
+the credentials to `.env.local` without printing them, and the guide tells
+the agent never to print or log them either.
+
+## The docs as Markdown
+
+| URL | What it holds |
+| --- | --- |
+| `https://clipmux.com/llms.txt` | The index, in the llms.txt format: every page's title, its one-line description and a link to its Markdown. |
+| `https://clipmux.com/llms-full.txt` | Every page in one file. |
+| `https://clipmux.com/docs/build/llms-full.txt` | The Build tab in one file: integrating an app. |
+| `https://clipmux.com/docs/self-host/llms-full.txt` | The Self-host tab in one file: installing and running a server. |
+| `https://clipmux.com/docs/reference/llms-full.txt` | The Reference tab: the API, webhooks, errors, limits, settings and CLI. |
+| `https://clipmux.com/docs/resources/llms-full.txt` | The Resources tab: migrating, the architecture, the FAQ. |
+
+Every page is also served as Markdown at its own URL plus `.md`. This page,
+for example, is at `https://clipmux.com/docs/build/ai-and-agents.md`, and the
+introduction at `https://clipmux.com/docs.md`.
+
+For an agent with a small context, point it at the tab it needs rather than
+`llms-full.txt`: an app integration needs only the Build tab.
+
+## Page actions
+
+Each page has two buttons under its title and description:
+
+- **Copy page** copies the page's Markdown, to paste into any chat.
+- **Open in** opens the page's Markdown (**View as Markdown**), starts a chat
+  in **Claude**, **ChatGPT** or **Cursor** that is told to read the page and
+  help you with ClipMux, or opens the page's source on GitHub
+  (**Edit on GitHub**).
+
+<LeavesYourServers>
+  Open in Claude, ChatGPT or Cursor sends that service a prompt naming the
+  page's public URL, and nothing else. What you then type into the chat goes
+  to that service under its own terms.
+</LeavesYourServers>
+
+## The OpenAPI spec
+
+The integration API, the delivery URLs and the webhooks are described as
+OpenAPI 3.1 at `https://clipmux.com/openapi.json`. Every ClipMux server
+also serves its own copy at `GET /openapi.json`, with no credential, so an
+agent can read the spec of the exact version you run:
+
+```bash
+curl -s https://video.example.com/openapi.json | jq '.info.version, (.paths | keys)'
+```
+
+Use it to generate a client in another language, or to let an agent check
+a request before it sends one. The routes the dashboard uses with the
+owner's session are not in it; see the
+[Management API](/docs/reference/management-api).
+
+## Check it works
+
+Ask the agent to run, once it has finished:
+
+```bash
+npx @clipmux/node doctor
+```
+
+It must end with `✓ Ready.` If it doesn't, each line names the credential or
+setting that failed. Then upload a test file:
+
+```bash
+npx @clipmux/node upload sample.mp4 --passthrough lesson_42 --wait
+```
+
+## Next
+
+- [Quickstart](/docs/build/quickstart): the steps the agent follows, for a
+  person
+- [Troubleshooting](/docs/build/going-live/troubleshooting)
+- [API reference](/docs/reference/api)

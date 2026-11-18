@@ -1,4 +1,4 @@
-.PHONY: db-up db-down test test-db run build web worker worker-check site site-check site-deploy fmt lint sqlc sqlc-check
+.PHONY: db-up db-down test test-db run build web worker worker-check site site-check site-deploy snippets-test fmt lint sqlc sqlc-check
 
 COMPOSE := docker compose -f deploy/compose.dev.yml
 
@@ -48,11 +48,17 @@ site:
 # the Markdown twins) with their tests, and Biome.
 site-check:
 	pnpm install --frozen-lockfile
+	pnpm --filter './packages/*' run build
 	pnpm --filter @clipmux/site run typecheck
 	pnpm --filter @clipmux/site run build
 	pnpm --filter @clipmux/site run test
 	pnpm --filter @clipmux/site run lint:docs
 	pnpm exec biome ci site
+
+# The docs' Python, Go and PHP snippets against the vector files (PHP in a
+# container when it isn't installed).
+snippets-test:
+	site/snippets/test.sh
 
 # Builds and checks the site, then uploads it to SITE_HOST as a new release.
 # The host's Caddy serves it with deploy/site/clipmux.com.caddy.

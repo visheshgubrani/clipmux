@@ -55,8 +55,9 @@ const yaml = (s) => JSON.stringify(s)
 const ref = (s) => (s?.$ref ? spec.components.schemas[s.$ref.split('/').pop()] : s)
 const refName = (s) => s?.$ref?.split('/').pop()
 
-function frontmatter(title, description, source) {
-  return `---\ntitle: ${yaml(title)}\ndescription: ${yaml(description)}\nsource: ${yaml(source)}\n---\n\n`
+function frontmatter(title, description, source, icon) {
+  const iconLine = icon ? `icon: ${icon}\n` : ''
+  return `---\ntitle: ${yaml(title)}\ndescription: ${yaml(description)}\nsource: ${yaml(source)}\n${iconLine}---\n\n`
 }
 
 export function typeOf(s) {
@@ -256,7 +257,7 @@ function generateApi() {
   writeFileSync(join(dir, 'index.mdx'), index)
   writeFileSync(
     join(dir, 'meta.json'),
-    `${JSON.stringify({ title: 'API reference', pages: ['index', ...tagPages.map((p) => p.page)] }, null, 2)}\n`,
+    `${JSON.stringify({ title: 'API reference', icon: 'Braces', pages: ['index', ...tagPages.map((p) => p.page)] }, null, 2)}\n`,
   )
   return ops
 }
@@ -270,6 +271,7 @@ function generateWebhooks() {
       'Webhook events',
       "Every event your app's webhook endpoints receive, with its headers and an example body.",
       'internal/openapi/openapi.json',
+      'Webhook',
     ),
     "Each app's endpoints receive its videos' events as a `POST` with a JSON body. Any 2xx is success; redirects are not followed. Delivery is at least once and unordered, and retries back off for 24 hours; after that, catch up with `GET /v1/assets?updated_since=`.",
     '## Headers',
@@ -324,6 +326,7 @@ function generateErrors(ops) {
       'Errors',
       'Every error code the API returns, what it means and what to do.',
       'site/data/errors.json',
+      'TriangleAlert',
     ),
     'Every error is JSON, `{"error": {"code": "snake_case", "message": "…", …details}}`. Act on `code`; `message` is for people and may change. Retry only what says to: a 4xx other than 409 `idempotency_in_progress` and 429 fails the same way again.',
   ]
@@ -373,6 +376,7 @@ function generateChangelog() {
       'Changelog',
       'What changed in each release of the server and the npm packages.',
       'CHANGELOG.md',
+      'History',
     ) + body,
   )
 }

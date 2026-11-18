@@ -1,0 +1,162 @@
+---
+title: Verify webhook signatures
+description: Check that a webhook came from your ClipMux server and wasn't changed or replayed, in Node, Python, Go or PHP.
+---
+
+Anyone can POST to your webhook URL. Before you trust an event, check its
+signature: an HMAC of the timestamp and the body, keyed with your webhook
+secret. `clipmuxHandler` and `clipmux.webhooks.verify` do this for you. This
+page explains the scheme, and gives tested code for backends in Python, Go
+and PHP.
+
+## Before you start
+
+- Your endpoint's secret, `whsec_…`, as `CLIPMUX_WEBHOOK_SECRET`. It's
+  shown once, when the endpoint is made.
+- Your framework's raw request body: the bytes exactly as they arrived.
+
+## The scheme
+
+Every delivery carries these headers:
+
+```http
+POST /api/clipmux/webhook
+Content-Type: application/json
+X-Webhook-Event: video.asset.ready
+X-Webhook-Id: evt_…
+X-Webhook-Timestamp: 1800000000
+X-Webhook-Signature: sha256=2efc953e06016fe9b4da70ab219f4420b381a8d5ad1a9f253f9e31da718a15d1
+```
+
+To verify one:
+
+1. Read `X-Webhook-Timestamp` and `X-Webhook-Signature`. If either is
+   missing, refuse it.
+2. Check the timestamp is whole Unix seconds within 300 seconds of your
+   clock, either way. This stops an old delivery being replayed.
+3. Compute HMAC-SHA256 over `{timestamp}.{raw body}`: the timestamp as it
+   appears in the header, a full stop, then the body's bytes. Key it with
+   the whole secret, `whsec_` prefix included, as bytes.
+4. Compare `sha256=` followed by the lowercase hex of that HMAC with the
+   header, in constant time.
+
+If any step fails, answer `400` and ignore the body. If they pass, parse
+the body as JSON.
+
+The timestamp is fresh on every try, so a retried delivery has a new
+timestamp and signature but the same `X-Webhook-Id`.
+
+## The raw body
+
+The signature covers the body byte for byte. Parse it and serialize it
+again, and spacing or key order changes, so the signature no longer
+matches. Read the raw body before anything parses it:
+
+- **Next.js, Hono, Bun, Deno, Workers:** `await req.text()` or
+  `await req.arrayBuffer()` on the `Request`.
+- **Express:** mount the webhook route before `express.json()`, or give it
+  `express.raw({ type: '*/*' })`. A route after `express.json()` gets an
+  object, and the signature can't match.
+- **PHP:** `file_get_contents('php://input')`.
+
+## Verify
+
+<Tabs items={['Node', 'Python', 'Go', 'PHP']}>
+<Tab value="Node">
+
+```ts title="webhook.ts"
+import { ClipMux, WebhookVerificationError } from '@clipmux/node'
+
+const clipmux = new ClipMux() // reads CLIPMUX_WEBHOOK_SECRET
+
+export async function POST(req: Request) {
+  try {
+    const event = await clipmux.webhooks.verify(await req.text(), req.headers)
+    // event.type, event.data.id, …
+  } catch (err) {
+    if (err instanceof WebhookVerificationError) return new Response(err.reason, { status: 400 })
+    throw err
+  }
+  return new Response(null, { status: 200 })
+}
+```
+
+`verify` takes the body as a string, `Uint8Array` or `ArrayBuffer`, and the
+headers as a `Headers` object or a Node headers record. It throws a
+`WebhookVerificationError` whose `reason` is `missing_header`, `stale`,
+`bad_signature` or `invalid_body`. `verifyWebhook(secret, rawBody, headers)`
+is the same without a client.
+
+</Tab>
+<Tab value="Python">
+
+<include cwd lang="python" meta='title="verify_webhook.py"'>snippets/python/verify_webhook.py</include>
+
+Pass the raw body as bytes, such as `request.get_data()` in Flask or
+`await request.body()` in FastAPI, and the request's headers.
+
+</Tab>
+<Tab value="Go">
+
+<include cwd lang="go" meta='title="verify_webhook.go"'>snippets/go/verify_webhook.go</include>
+
+Read the body with `io.ReadAll(r.Body)`, call
+`VerifyWebhook(secret, body, r.Header, time.Now())`, and unmarshal the body
+only when it returns `nil`.
+
+</Tab>
+<Tab value="PHP">
+
+<include cwd lang="php" meta='title="verify_webhook.php"'>snippets/php/verify_webhook.php</include>
+
+Call it with `file_get_contents('php://input')` and the
+`X-Webhook-Timestamp` and `X-Webhook-Signature` headers, which PHP puts in
+`$_SERVER['HTTP_X_WEBHOOK_TIMESTAMP']` and
+`$_SERVER['HTTP_X_WEBHOOK_SIGNATURE']`.
+
+</Tab>
+</Tabs>
+
+Don't write your own if one of these fits: the comparison must be constant
+time, and the timestamp check matters as much as the HMAC.
+
+## Test against the vectors
+
+ClipMux publishes test vectors, the cases its own server, Node SDK and the
+snippets above are tested against:
+[`internal/webhooks/testdata/vectors.json`](https://github.com/visheshgubrani/clipmux/blob/main/internal/webhooks/testdata/vectors.json).
+Each case gives a `secret`, a clock (`now`), a `body` and the `headers`,
+with whether it should verify (`valid`) and, when not, the `reason`. Run
+your verifier over every case with your clock set to `now`; it must give
+the same answers.
+
+## During a secret rotation
+
+While you rotate a secret, deliveries are signed with the old secret until
+you activate the new one, then with the new one. Your verifier should accept
+either for that time: try the new secret, and if the signature doesn't
+match, try the old one. See
+[Retries, redelivery and secret rotation](/docs/build/webhooks/retries).
+
+## Check it works
+
+Forward real events to your handler with `listen`, which signs them with
+your `CLIPMUX_WEBHOOK_SECRET`:
+
+```bash
+npx @clipmux/node listen --forward-to localhost:3000/api/clipmux/webhook --since 10m
+```
+
+Each forwarded event prints your handler's status. `200` means it verified.
+`400` means it didn't:
+
+- `bad_signature`: the handler's secret isn't the one `listen` signs with,
+  or the body was parsed before you verified it.
+- `stale`: your machine's clock is more than 5 minutes off.
+- `missing_header`: a proxy in front of your app dropped the headers.
+
+## Next
+
+- [Receive webhooks](/docs/build/webhooks)
+- [Develop locally with listen](/docs/build/webhooks/listen)
+- [Webhook events](/docs/reference/webhooks)

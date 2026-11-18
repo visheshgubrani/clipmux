@@ -1,0 +1,5 @@
+{
+  "title": "Upload",
+  "icon": "Upload",
+  "pages": ["index", "browser", "headless-and-uppy", "from-url", "command-line", "renditions", "passthrough"]
+}

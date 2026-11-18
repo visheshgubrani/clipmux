@@ -1,6 +1,22 @@
 {
   "title": "Reference",
   "description": "API, webhooks, errors, CLI and settings",
+  "icon": "BookOpen",
   "root": true,
-  "pages": ["index", "api", "webhooks", "errors", "limits", "configuration", "cli", "changelog"]
+  "pages": [
+    "index",
+    "---Integration API---",
+    "api",
+    "webhooks",
+    "errors",
+    "limits",
+    "---Server---",
+    "configuration",
+    "cli",
+    "management-api",
+    "---SDKs---",
+    "...sdks",
+    "---Releases---",
+    "changelog"
+  ]
 }

@@ -1,0 +1,75 @@
+---
+title: Security policy
+description: How to report a vulnerability privately, what is in scope, and what ClipMux defends.
+icon: ShieldCheck
+---
+
+ClipMux holds storage credentials, content keys, signing keys and webhook
+secrets for the people who run it, and plays media to the public. Please
+report vulnerabilities privately.
+
+## Report a vulnerability
+
+Don't open a public issue, discussion or pull request. Use GitHub's private
+vulnerability reporting: on
+[visheshgubrani/clipmux](https://github.com/visheshgubrani/clipmux), open
+**Security**, then **Report a vulnerability**. Include what you can of:
+
+- the version (`clipmux version`) or commit, and how it is deployed:
+  Compose, the agent installer, a serverless provider, Cloudflare delivery;
+- a minimal reproduction: requests, files, configuration;
+- what an attacker gains;
+- a fix, if you have one.
+
+You'll get an acknowledgement within 3 days and an update at least every 7
+days until it is resolved. Please give us 90 days, or until a fixed release
+ships if that is sooner, before disclosing. We credit reporters in the
+advisory unless you ask us not to.
+
+## Scope
+
+In scope: everything in the repository. That is the `clipmux` binary
+(serve, the built-in worker, PC agents, `push`, `listen`, `admin`), the
+image and agent tarball as released, the Cloudflare Worker (`worker/`),
+`@clipmux/node`, `@clipmux/player`, `@clipmux/uploader`, and the installers in `deploy/`. A
+vulnerable dependency we ship is in scope.
+
+Out of scope: a deployment's own configuration (a leaked key, a public
+bucket, a disabled sandbox), vulnerabilities in Cloudflare, RunPod, Modal or
+another provider's platform, and denial of service by sheer volume.
+
+## What we defend
+
+The threat model is the "Threats and controls" table in
+[docs/architecture.md](https://github.com/visheshgubrani/clipmux/blob/main/docs/architecture.md),
+and
+[docs/security-review.md](https://github.com/visheshgubrani/clipmux/blob/main/docs/security-review.md)
+records its latest review against the code. In short:
+
+- **Playback** uses ES256 JWTs per app, checked on every request. Route
+  records default-deny, and segments are AES-128 encrypted with keys served
+  only to valid tokens.
+- **Workers are untrusted.** Executors hold no storage credentials: they get
+  short-lived signed URLs for names that pass a path grammar, playlists are
+  checked at commit, and delivery serves only allowed file types. FFmpeg,
+  ffprobe, the packager and whisper.cpp run sandboxed (seccomp, rlimits,
+  `no_new_privs`, and Landlock where the kernel has it).
+- **Secrets at rest**, such as storage and provider credentials, signing
+  keys, webhook secrets, the content key secret, TOTP secrets and AI keys,
+  are sealed in Postgres with a key held outside it, and can be rotated.
+- **Logs** never hold Authorization headers, tokens, presigned URLs, content
+  keys or secrets.
+
+[docs/known-gaps.md](https://github.com/visheshgubrani/clipmux/blob/main/docs/known-gaps.md)
+lists the limitations we know of and accept for now. A report that one of
+them is worse than it says is welcome.
+
+## Supported versions
+
+The latest release gets security fixes. Before v1.0.0, only `main`.
+
+## Next
+
+- [Security model](/docs/self-host/security-model)
+- [Security checklist](/docs/self-host/operate/security-checklist)
+- [Rotate keys and secrets](/docs/self-host/operate/rotate-secrets)

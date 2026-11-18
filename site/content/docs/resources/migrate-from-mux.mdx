@@ -1,0 +1,182 @@
+---
+title: Migrate from Mux
+description: Map what you use in Mux to ClipMux, see what ClipMux doesn't have, and move an app across step by step.
+icon: ArrowRightLeft
+---
+
+ClipMux has the same shape as Mux Video: a video gets one or more playback
+IDs, your backend signs a JWT for private playback, browsers upload straight
+to storage, and webhooks tell you when a video is ready. The difference is
+that you run it: one server and Postgres, with your own storage and,
+optionally, your own Cloudflare account and GPUs.
+
+This page maps the two, lists what ClipMux doesn't do, and moves an app
+across without downtime: new uploads go to ClipMux while old videos keep
+playing from Mux until they are imported.
+
+## Concept map
+
+| Mux | ClipMux | What changes |
+| --- | --- | --- |
+| Asset | Video, `ast_…` (`asset` in the API) | The status is `waiting_upload`, `processing`, `ready`, `errored` or `deleted` |
+| Playback ID, `public` or `signed` policy | Playback ID, `pid_…`, `public` or `signed` policy | The same idea. A video can have several, and revoking one stops it at once |
+| `passthrough` | `passthrough` | The same: your own reference, returned on the video and its webhooks. Find videos by it with `GET /v1/assets?passthrough=` |
+| Direct upload (create it at `/video/v1/uploads`, then `PUT` the file to its URL) | Upload (`POST /v1/uploads`), then parts sent straight to storage | Uploads are multipart and resumable. `@clipmux/uploader` does it in the browser |
+| Asset from a URL (an asset created with an input URL) | `POST /v1/assets` with `url` | The server fetches the file from a public http(s) URL |
+| Signing key, RS256 JWT | Signing key, ES256 JWT (P-256) | Signing stays local in your backend |
+| JWT `aud`: `v` video, `t` thumbnail, `g` GIF, `s` storyboard, `d` DRM licence | JWT `aud`: `v` video, its tracks and poster; `t` poster only | Only `v` and `t` exist |
+| Token in the query, `stream.mux.com/{playback_id}.m3u8?token=…` | Token in the path, `https://media.example.com/v/{token}/{playback_id}/master.m3u8` | Public videos are `/p/{playback_id}/master.m3u8` |
+| Thumbnails, GIFs and storyboards | One poster per video, `…/{playback_id}/poster.jpg` | No size or time parameters |
+| `Mux-Signature: t=…,v1=…`, HMAC-SHA256 of `timestamp.body` | `X-Webhook-Timestamp` and `X-Webhook-Signature: sha256=…`, HMAC-SHA256 of `timestamp.body` | The same construction in other headers. Dedupe on `X-Webhook-Id` |
+| Mux Data | Views, watch time and unique viewers, counted at delivery | No player beacon, no quality-of-experience metrics |
+
+### Webhook events
+
+| Mux | ClipMux |
+| --- | --- |
+| `video.asset.created` | No event; the upload or import response is the video |
+| `video.asset.ready` | `video.asset.ready` |
+| `video.asset.errored` | `video.asset.errored` |
+| `video.asset.updated` | `video.asset.updated` |
+| `video.asset.deleted` | `video.asset.deleted` |
+| `video.asset.track.*` | `video.asset.track.ready`, `video.asset.track.errored`, `video.asset.track.deleted` |
+| `video.upload.*` | No events; a cancelled upload makes the video `errored` with `upload_cancelled` |
+| None | `video.asset.reencode_failed`: a re-encode failed, and the current version keeps playing |
+
+The full list, with payloads, is in [Webhook events](/docs/reference/webhooks).
+
+## What ClipMux doesn't have
+
+- **Live streaming.** ClipMux is video on demand only; there is no RTMP
+  ingest.
+- **DRM.** Videos are AES-128 encrypted HLS, which protects your storage
+  but isn't DRM: anyone with a valid token can fetch the key. See
+  [What encryption does and doesn't do](/docs/build/concepts/encryption).
+- **MP4 downloads.** Playback is HLS only.
+- **Thumbnails, GIFs and storyboards.** There is one poster per video, with
+  no time or size parameters, and no animated or storyboard images.
+- **Mux Data's depth.** Analytics are views, watch time, bytes and unique
+  viewers, counted from what delivery serves.
+- **A hosted service.** You run the server, its database and backups. See
+  [Requirements and sizing](/docs/self-host/requirements).
+
+## Move an app
+
+<Steps>
+<Step>
+
+### Create the app in ClipMux
+
+[Install a server](/docs/self-host/install), then connect your app. From the
+app's project:
+
+```bash
+npx @clipmux/node init --server https://video.example.com
+```
+
+The owner approves it in the dashboard, and the API key, signing key and
+webhook secret go to `.env.local`. Keep your Mux credentials until the move
+is done.
+
+</Step>
+<Step>
+
+### Store which service each video is on
+
+Add a column to your own records, such as `provider`, set to `mux` for every
+existing video. Your pages pick the player and the token signing by it
+while both run.
+
+</Step>
+<Step>
+
+### Send new uploads to ClipMux
+
+Point your upload route at ClipMux, with the same `passthrough` you gave
+Mux:
+
+```ts
+const upload = await clipmux.uploads.create({ size, passthrough: 'lesson_42' })
+```
+
+In the browser, replace UpChunk or your Mux upload code with
+`<clipmux-uploader>` or `ClipMuxUpload`. See
+[Upload from the browser](/docs/build/upload/browser).
+
+</Step>
+<Step>
+
+### Receive ClipMux webhooks
+
+Add a webhook route that verifies ClipMux's signature and handles
+`video.asset.ready`, matching the video to your record by `passthrough`.
+Keep the Mux webhook route until the last Mux video is gone. See
+[Receive webhooks](/docs/build/webhooks).
+
+</Step>
+<Step>
+
+### Switch token signing
+
+For ClipMux videos, sign an ES256 token with your ClipMux signing key, with
+`sub` the ClipMux playback ID and `aud` `v`:
+
+```ts
+const token = await clipmux.playback.token('pid_…', { viewerId: user.id })
+```
+
+Mux's RS256 keys don't work with ClipMux, and a Mux `aud` of `g`, `s` or `d`
+has no equivalent. See [Sign playback tokens](/docs/build/play/sign-tokens).
+
+</Step>
+<Step>
+
+### Switch the player
+
+For ClipMux videos, use `<clipmux-player>` with a `session-url`, or give
+another HLS player the ClipMux URL, which carries the token in its path
+rather than in `?token=`. See [Add the player](/docs/build/play/player).
+
+</Step>
+<Step>
+
+### Import your existing videos
+
+For each Mux video, give ClipMux a URL it can fetch the original from, with
+your existing `passthrough`:
+
+```bash
+curl https://video.example.com/v1/assets \
+  -H "Authorization: Bearer cmx_…" \
+  -H "Content-Type: application/json" \
+  -d '{"url": "https://files.example.com/lesson-42.mp4", "passthrough": "lesson_42"}'
+```
+
+The URL must be public http(s), with no credentials in it. When
+`video.asset.ready` arrives, store the new playback ID and set the record's
+`provider` to `clipmux`. See [Import from a URL](/docs/build/upload/from-url).
+
+</Step>
+<Step>
+
+### Retire Mux
+
+Once every record says `clipmux`, remove the Mux player, token signing and
+webhook route, and delete the videos from Mux.
+
+</Step>
+</Steps>
+
+## Check it works
+
+- `npx @clipmux/node doctor` passes every check.
+- A new upload reaches `ready`, your webhook route logs `video.asset.ready`,
+  and the video plays for a signed-in viewer.
+- An imported video plays from ClipMux with its old `passthrough`, which
+  `GET /v1/assets?passthrough=lesson_42` finds.
+
+## Next
+
+- [Quickstart](/docs/build/quickstart)
+- [How ClipMux works](/docs/build/concepts/how-it-works)
+- [Limitations](/docs/self-host/limitations)
