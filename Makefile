@@ -1,4 +1,4 @@
-.PHONY: db-up db-down test test-db run build web worker worker-check site site-check fmt lint sqlc sqlc-check
+.PHONY: db-up db-down test test-db run build web worker worker-check site site-check site-deploy fmt lint sqlc sqlc-check
 
 COMPOSE := docker compose -f deploy/compose.dev.yml
 
@@ -53,6 +53,13 @@ site-check:
 	pnpm --filter @clipmux/site run test
 	pnpm --filter @clipmux/site run lint:docs
 	pnpm exec biome ci site
+
+# Builds and checks the site, then uploads it to SITE_HOST as a new release.
+# The host's Caddy serves it with deploy/site/clipmux.com.caddy.
+#   SITE_HOST=root@host SITE_SSH="ssh -i ~/.ssh/key" make site-deploy
+site-deploy: site-check
+	test -n "$(SITE_HOST)" || { echo "set SITE_HOST=user@host"; exit 1; }
+	sh deploy/site/deploy.sh "$(SITE_HOST)"
 
 build: web
 	go build -o bin/clipmux ./cmd/clipmux

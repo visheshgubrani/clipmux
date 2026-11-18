@@ -1,10 +1,14 @@
-# Every pull request: one lean job (Actions minutes are metered). gofmt, vet
-# and the Go tests against Postgres, then the TypeScript typecheck and tests.
-# Media tests skip without ffmpeg/packager here; run them locally. Everything
-# heavier runs by hand or on release tags; see .github/README.md.
+# Every pull request and every push to main: the Go suite against Postgres,
+# then the TypeScript packages and the site. The repository is public, so
+# fork pull requests run here with a read-only token and no secrets. Media
+# tests skip without ffmpeg and the packager; run them locally. The heavier
+# suites (exit, Safari, providers, installers) run only by hand; see
+# .github/README.md.
 name: CI
 on:
   pull_request:
+  push:
+    branches: [main]
   workflow_dispatch:
 permissions:
   contents: read
@@ -12,7 +16,7 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 jobs:
-  test:
+  go:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     services:
@@ -38,10 +42,20 @@ jobs:
         run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
       - run: go vet ./...
       - run: go test -timeout 15m ./...
+
+  web:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
           node-version-file: .node-version
           cache: pnpm
-      - name: TypeScript
-        run: pnpm install --frozen-lockfile && pnpm typecheck && pnpm test
+      - run: pnpm install --frozen-lockfile
+      - name: Typecheck and test the packages, dashboard, Worker and site
+        run: pnpm typecheck && pnpm test
+      - name: Build the site and run its docs lints
+        run: pnpm --filter @clipmux/site run build && pnpm --filter @clipmux/site run lint:docs
+      - run: pnpm lint

@@ -11,6 +11,7 @@
       "!site/out",
       "!site/.source",
       "!site/next-env.d.ts",
+      "!site/data/github.json",
       "!**/dist",
       "!**/*.gen.ts",
       "!**/node_modules",

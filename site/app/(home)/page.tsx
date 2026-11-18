@@ -11,7 +11,7 @@ import { StackEditor, type Track } from '@/components/landing/stack-editor'
 import { type Chapter, Timeline } from '@/components/landing/timeline'
 import demo from '@/data/demo.json'
 import { darkTheme, lightTheme } from '@/lib/code-theme'
-import { formatStars, starCount } from '@/lib/github'
+import { formatStars, stars } from '@/lib/github'
 import { INSTALL_COMMAND, REPO_URL, SITE_URL } from '@/lib/site'
 import './landing.css'
 
@@ -281,7 +281,6 @@ function Section({
 }
 
 export default async function Home() {
-  const stars = await starCount()
   const stepCode: StepCode = {}
   const install = await code(
     'npm i @clipmux/node @clipmux/uploader @clipmux/player\nnpx @clipmux/node init --server https://video.example.com',

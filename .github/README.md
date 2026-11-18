@@ -1,17 +1,18 @@
 # What CI runs, and when
 
-Hosted Actions minutes are metered, so CI is deliberately lean: one job on
-every pull request, everything else by hand or on a release tag. There is no
-GPU workflow and nothing runs on a schedule.
+The repository is public, so CI stays simple and safe for fork pull
+requests: one workflow on every pull request and every push to main, with a
+read-only token and no secrets. The release workflows run on a `v*` tag;
+everything heavier runs only by hand. Nothing runs on a schedule, and no
+workflow uses a self-hosted runner.
 
 | Workflow | Runs on | When |
 | --- | --- | --- |
-| `ci.yml`: gofmt, vet, Go tests against Postgres, TypeScript typecheck and tests | hosted Linux | every pull request, by hand |
-| `site.yml`: the clipmux.com build (`site/`): typecheck, `next build`, Biome | hosted Linux | pull requests touching `site/`, the OpenAPI spec, `CHANGELOG.md` or a package README; by hand |
+| `ci.yml`: gofmt, vet and Go tests against Postgres (`go`); TypeScript typecheck and tests, the clipmux.com build with its docs lints, and Biome (`web`) | hosted Linux | every pull request and push to main; by hand |
 | `image.yml`: the image under compose, the setup test, pushes `sha-{commit}` | hosted Linux | by hand (pushes from main); `v*` tags |
 | `agent.yml`: the amd64 and arm64 agent tarballs | hosted Linux | by hand; `v*` tags |
-| `exit.yml`: the Phase 1–5 exit tests, Chromium and ExoPlayer | hosted Linux | by hand (`soak` for 30 minutes); `v*` tags |
-| `exit-safari.yml`: Safari | hosted macOS (10×) | by hand; `v*` tags |
+| `exit.yml`: the Phase 1–5 exit tests, Chromium and ExoPlayer | hosted Linux | by hand (`soak` for 30 minutes), before a release |
+| `exit-safari.yml`: Safari | hosted macOS | by hand, before a release |
 | `install.yml`: the installers end to end on two local release candidates | hosted Linux | by hand |
 | `release.yml`: npm publish of the `@clipmux` packages (player, uploader, and the SDK `@clipmux/node`) | hosted Linux | `v*` tags; by hand (a dry run by default) |
 | `exit-llm.yml`: real OpenAI and Claude | hosted Linux | by hand, only while `REAL_LLM` is `true` |

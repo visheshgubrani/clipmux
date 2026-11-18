@@ -1,10 +1,8 @@
-# The Phase 1 exit test in Safari. macOS minutes cost 10x on a private
-# repository, so this runs by hand (on PRs that touch playback) and on tags.
+# The Phase 1 exit test in Safari, by hand: on pull requests that touch
+# playback, and before a release.
 name: Exit test (Safari)
 on:
   workflow_dispatch:
-  push:
-    tags: ["v*"]
 permissions:
   contents: read
 concurrency:
