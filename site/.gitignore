@@ -1,0 +1,11 @@
+/.next/
+/out/
+/.source/
+next-env.d.ts
+*.tsbuildinfo
+# Generated from their sources by scripts/generate-reference.mjs.
+/content/docs/reference/api/
+/content/docs/reference/webhooks.mdx
+/content/docs/reference/errors.mdx
+/content/docs/reference/changelog.mdx
+/public/screenshots/

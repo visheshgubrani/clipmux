@@ -1,4 +1,4 @@
-.PHONY: db-up db-down test test-db run build web worker worker-check fmt lint sqlc sqlc-check
+.PHONY: db-up db-down test test-db run build web worker worker-check site site-check fmt lint sqlc sqlc-check
 
 COMPOSE := docker compose -f deploy/compose.dev.yml
 
@@ -37,6 +37,22 @@ worker:
 
 worker-check: worker
 	git diff --exit-code internal/cloudflare/worker.js
+
+# clipmux.com: the landing page and the docs (site/, D133).
+site:
+	pnpm install --frozen-lockfile
+	pnpm --filter @clipmux/site run dev
+
+# The typecheck, the static build, the docs lints (frontmatter, internal IDs,
+# routes against the OpenAPI spec, settings, links and anchors, llms.txt and
+# the Markdown twins) with their tests, and Biome.
+site-check:
+	pnpm install --frozen-lockfile
+	pnpm --filter @clipmux/site run typecheck
+	pnpm --filter @clipmux/site run build
+	pnpm --filter @clipmux/site run test
+	pnpm --filter @clipmux/site run lint:docs
+	pnpm exec biome ci site
 
 build: web
 	go build -o bin/clipmux ./cmd/clipmux

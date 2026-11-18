@@ -7,6 +7,7 @@ GPU workflow and nothing runs on a schedule.
 | Workflow | Runs on | When |
 | --- | --- | --- |
 | `ci.yml`: gofmt, vet, Go tests against Postgres, TypeScript typecheck and tests | hosted Linux | every pull request, by hand |
+| `site.yml`: the clipmux.com build (`site/`): typecheck, `next build`, Biome | hosted Linux | pull requests touching `site/`, the OpenAPI spec, `CHANGELOG.md` or a package README; by hand |
 | `image.yml`: the image under compose, the setup test, pushes `sha-{commit}` | hosted Linux | by hand (pushes from main); `v*` tags |
 | `agent.yml`: the amd64 and arm64 agent tarballs | hosted Linux | by hand; `v*` tags |
 | `exit.yml`: the Phase 1–5 exit tests, Chromium and ExoPlayer | hosted Linux | by hand (`soak` for 30 minutes); `v*` tags |

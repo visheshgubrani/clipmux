@@ -1,0 +1,1003 @@
+/* The landing page (D133), ported from the signed-off mock. Everything is
+   scoped under .landing so the docs never see it. Colours are the tokens in
+   app/tokens.css; the only literals are on the black poster, which is black
+   in both themes. Layout: one left-aligned 1200px column; a sticky chapter
+   track whose playhead follows scroll; rows, never cards. */
+
+.landing {
+  --col: 1200px;
+  --nav-h: 56px;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  background: var(--canvas);
+  color: var(--ink);
+  font-size: 17px;
+  line-height: 1.55;
+}
+.landing a {
+  color: var(--tally-text);
+  text-underline-offset: 3px;
+}
+.landing h1,
+.landing h2,
+.landing h3 {
+  text-wrap: balance;
+}
+.landing code {
+  font-family: var(--mono);
+}
+
+.landing .wrap {
+  max-width: calc(var(--col) + 80px);
+  margin: 0 auto;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+@media (min-width: 900px) {
+  .landing .wrap {
+    padding-left: max(40px, env(safe-area-inset-left, 0px));
+    padding-right: max(40px, env(safe-area-inset-right, 0px));
+  }
+}
+
+/* Nav */
+.landing .top {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  background: var(--canvas);
+}
+.landing .nav {
+  height: var(--nav-h);
+  display: flex;
+  align-items: center;
+  gap: 28px;
+}
+.landing .brand {
+  color: var(--ink);
+  text-decoration: none;
+}
+.landing .navlinks {
+  display: flex;
+  gap: 22px;
+  font-size: 15px;
+}
+.landing .navlinks a {
+  color: var(--ink);
+  text-decoration: none;
+}
+.landing .navlinks a:hover {
+  color: var(--tally-text);
+}
+.landing .spacer {
+  flex: 1;
+}
+.landing .gh {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+  color: var(--graphite);
+  text-decoration: none;
+  font-variant-numeric: tabular-nums;
+}
+.landing .gh svg {
+  width: 16px;
+  height: 16px;
+  fill: currentColor;
+}
+.landing .btn {
+  display: inline-flex;
+  align-items: center;
+  height: 38px;
+  padding: 0 16px;
+  border-radius: 8px;
+  font-size: 15px;
+  font-weight: 550;
+  text-decoration: none;
+  cursor: pointer;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+.landing .btn-primary {
+  background: var(--tally);
+  color: var(--on-tally);
+}
+.landing .btn-primary:hover {
+  filter: brightness(1.08);
+}
+.landing .btn-quiet {
+  color: var(--ink);
+  border-color: var(--input);
+}
+.landing .btn-quiet:hover {
+  border-color: var(--graphite);
+}
+@media (max-width: 720px) {
+  .landing .navlinks a:not(.keep),
+  .landing .gh {
+    display: none;
+  }
+  .landing .nav {
+    gap: 16px;
+  }
+}
+
+/* The chapter track */
+.landing .timeline {
+  height: 34px;
+  position: relative;
+  border-bottom: 1px solid var(--hairline);
+}
+.landing .track {
+  position: absolute;
+  inset: 0;
+}
+.landing .track::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 4px;
+  margin-top: -2px;
+  background: var(--hairline);
+  border-radius: 2px;
+}
+.landing .played {
+  position: absolute;
+  left: 0;
+  top: 50%;
+  height: 4px;
+  margin-top: -2px;
+  background: var(--graphite);
+  opacity: 0.45;
+  border-radius: 2px;
+}
+.landing .marker {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  transform: translateX(-1px);
+  font-size: 12px;
+  color: var(--graphite);
+  text-decoration: none;
+}
+.landing .marker::before {
+  content: "";
+  width: 2px;
+  height: 12px;
+  background: var(--canvas);
+}
+.landing .marker span {
+  background: var(--canvas);
+  padding: 0 6px 0 4px;
+  position: relative;
+  top: -10px;
+  line-height: 1;
+}
+.landing .marker.end {
+  flex-direction: row-reverse;
+  transform: translateX(calc(-100% + 1px));
+}
+.landing .marker.end span {
+  padding: 0 4px 0 6px;
+}
+.landing .marker.on span {
+  color: var(--ink);
+}
+.landing .marker:hover span {
+  color: var(--tally-text);
+}
+.landing .playhead {
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--tally-text);
+}
+.landing .playhead::after {
+  content: "";
+  position: absolute;
+  left: -4px;
+  top: 50%;
+  margin-top: -5px;
+  width: 10px;
+  height: 10px;
+  border-radius: 1px;
+  background: var(--tally-text);
+}
+@media (max-width: 720px) {
+  .landing .marker span {
+    display: none;
+  }
+  .landing .timeline {
+    height: 18px;
+  }
+}
+
+/* Sections */
+.landing section.chapter {
+  border-bottom: 1px solid var(--hairline);
+}
+.landing section.chapter > .wrap {
+  padding-block: 88px;
+}
+@media (max-width: 720px) {
+  .landing section.chapter > .wrap {
+    padding-block: 56px;
+  }
+}
+.landing .h2 {
+  font-size: clamp(30px, 4vw, 40px);
+  font-weight: 650;
+  font-stretch: 118%;
+  line-height: 1.08;
+  letter-spacing: -0.01em;
+  max-width: 22ch;
+}
+.landing .lede {
+  color: var(--graphite);
+  max-width: 60ch;
+  margin-top: 14px;
+}
+.landing .sec-head {
+  margin-bottom: 44px;
+}
+
+/* Hero */
+.landing section.chapter.hero > .wrap {
+  padding-block: 72px 88px;
+}
+.landing .hero h1 {
+  font-size: clamp(36px, 9.6vw, 116px);
+  max-width: 11ch;
+}
+.landing .hero .sub {
+  font-size: clamp(18px, 1.6vw, 21px);
+  color: var(--graphite);
+  max-width: 52ch;
+  margin-top: 28px;
+  line-height: 1.45;
+}
+.landing .hero .sub b {
+  color: var(--ink);
+  font-weight: 500;
+}
+.landing .install {
+  margin-top: 36px;
+  display: grid;
+  gap: 10px;
+  max-width: 640px;
+}
+.landing .req {
+  font-size: 14px;
+  color: var(--graphite);
+}
+.landing .ctas {
+  display: flex;
+  gap: 10px;
+  margin-top: 22px;
+  flex-wrap: wrap;
+}
+
+/* The poster: black in both themes */
+.landing .poster {
+  margin-top: 64px;
+  background: var(--poster);
+  border-radius: 6px;
+  overflow: hidden;
+  color: #fff;
+}
+.landing .screen {
+  position: relative;
+  aspect-ratio: 16 / 9;
+  max-width: 100%;
+  overflow: hidden;
+}
+.landing .frame {
+  position: absolute;
+  inset: 6% 9% 12%;
+  display: grid;
+  place-items: center;
+}
+.landing .frame img {
+  position: absolute;
+  max-width: 100%;
+  max-height: 100%;
+  width: auto;
+  height: auto;
+  border-radius: 4px;
+  opacity: 0;
+  transition: opacity 0.5s ease;
+}
+.landing .frame img.on {
+  opacity: 1;
+}
+.landing .cue {
+  position: absolute;
+  left: 50%;
+  bottom: 13%;
+  transform: translateX(-50%);
+  background: rgb(0 0 0 / 0.78);
+  color: #fff;
+  font-size: clamp(13px, 1.6vw, 20px);
+  line-height: 1.35;
+  padding: 4px 12px;
+  border-radius: 3px;
+  max-width: 80%;
+  text-align: center;
+}
+.landing .bigplay {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: 84px;
+  height: 84px;
+  border-radius: 50%;
+  background: rgb(255 255 255 / 0.12);
+  border: 1px solid rgb(255 255 255 / 0.35);
+  color: #fff;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  backdrop-filter: blur(6px);
+}
+.landing .bigplay svg {
+  width: 30px;
+  height: 30px;
+  margin-left: 4px;
+  fill: currentColor;
+}
+.landing .bigplay:hover {
+  background: rgb(255 255 255 / 0.2);
+}
+.landing .controls {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 0 16px 14px;
+  font-size: 13px;
+}
+.landing .controls button {
+  background: none;
+  border: 0;
+  color: #fff;
+  cursor: pointer;
+  padding: 4px;
+  display: grid;
+  place-items: center;
+  font-size: 12px;
+}
+.landing .controls button svg {
+  width: 18px;
+  height: 18px;
+  fill: currentColor;
+}
+.landing .controls :focus-visible {
+  outline-color: #a78bfa;
+}
+.landing .tc {
+  font-variant-numeric: tabular-nums;
+  color: rgb(255 255 255 / 0.75);
+  min-width: 86px;
+}
+.landing .chapters {
+  flex: 1;
+  display: flex;
+  gap: 3px;
+  height: 18px;
+  align-items: center;
+  min-width: 0;
+}
+.landing .controls .chap {
+  position: relative;
+  height: 4px;
+  padding: 0;
+  background: rgb(255 255 255 / 0.22);
+  border-radius: 1px;
+}
+.landing .controls .chap i {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: #a78bfa;
+  border-radius: 1px;
+}
+.landing .controls .chap:hover {
+  height: 6px;
+}
+.landing .chapname {
+  color: rgb(255 255 255 / 0.75);
+  white-space: nowrap;
+  min-width: 9ch;
+}
+.landing .cc[aria-pressed="true"] {
+  box-shadow: inset 0 -2px 0 #a78bfa;
+}
+.landing .controls .cc[aria-pressed="false"] {
+  color: rgb(255 255 255 / 0.5);
+}
+@media (max-width: 560px) {
+  .landing .chapname {
+    display: none;
+  }
+  .landing .tc {
+    min-width: 0;
+  }
+}
+
+.landing .log {
+  margin-top: 28px;
+}
+.landing .log h3 {
+  font-size: 15px;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+.landing .log ol {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.landing .log li {
+  display: grid;
+  grid-template-columns: 56px minmax(0, 15rem) minmax(0, 1fr);
+  gap: 16px;
+  padding: 9px 0;
+  border-top: 1px solid var(--hairline);
+  font-size: 15px;
+  align-items: baseline;
+}
+.landing .log li:last-child {
+  border-bottom: 1px solid var(--hairline);
+}
+.landing .log .t {
+  font-variant-numeric: tabular-nums;
+  color: var(--graphite);
+}
+.landing .log .e code {
+  font-size: 13.5px;
+}
+.landing .log .d {
+  color: var(--graphite);
+}
+.landing .log li.pending {
+  opacity: 0.35;
+}
+.landing .log .note {
+  font-size: 13px;
+  color: var(--graphite);
+  margin-top: 10px;
+}
+@media (max-width: 640px) {
+  .landing .log li {
+    grid-template-columns: 48px minmax(0, 1fr);
+  }
+  .landing .log .d {
+    grid-column: 2;
+  }
+}
+
+/* Code panels: Shiki output on the Screen surface */
+.landing .panel {
+  background: var(--screen);
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  min-width: 0;
+}
+.landing .panel-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  border-bottom: 1px solid var(--hairline);
+  padding: 6px 8px;
+  flex-wrap: wrap;
+}
+.landing .tab {
+  font-size: 13.5px;
+  color: var(--graphite);
+  background: none;
+  border: 0;
+  padding: 6px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.landing .tab[aria-selected="true"] {
+  color: var(--ink);
+  background: var(--canvas);
+}
+.landing .tab:hover {
+  color: var(--ink);
+}
+.landing .filename {
+  margin-left: auto;
+  font-size: 12.5px;
+  color: var(--graphite);
+  font-family: var(--mono);
+  padding-right: 6px;
+}
+.landing .code pre {
+  margin: 0;
+  padding: 18px 20px;
+  overflow-x: auto;
+  font-size: 13.5px;
+  line-height: 1.65;
+  background: transparent;
+}
+
+/* Four steps */
+.landing .steps-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
+  gap: 40px;
+  align-items: start;
+}
+@media (max-width: 900px) {
+  .landing .steps-grid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 24px;
+  }
+}
+.landing .rows,
+.landing .links,
+.landing .reqs {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.landing .step:last-child,
+.landing .feat:last-child {
+  border-bottom: 1px solid var(--hairline);
+}
+.landing .step {
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: 0;
+  border-top: 1px solid var(--hairline);
+  color: var(--ink);
+  padding: 16px 0;
+  cursor: pointer;
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  gap: 8px 12px;
+}
+.landing .step .n {
+  font-variant-numeric: tabular-nums;
+  color: var(--graphite);
+  font-weight: 600;
+}
+.landing .step .ttl {
+  font-weight: 600;
+}
+.landing .step .why {
+  grid-column: 2;
+  color: var(--graphite);
+  font-size: 15px;
+  display: none;
+}
+.landing .step[aria-selected="true"] .n,
+.landing .step[aria-selected="true"] .ttl {
+  color: var(--tally-text);
+}
+.landing .step[aria-selected="true"] .why {
+  display: block;
+}
+.landing .aside {
+  margin-top: 20px;
+  font-size: 15px;
+  color: var(--graphite);
+}
+.landing details.other {
+  margin-top: 18px;
+}
+.landing details.other summary {
+  cursor: pointer;
+  font-size: 15px;
+  color: var(--tally-text);
+}
+.landing details.other .panel {
+  margin-top: 12px;
+}
+
+/* Stack editor */
+.landing fieldset.trk {
+  display: grid;
+  grid-template-columns: 110px minmax(0, 1fr);
+  gap: 16px;
+  align-items: center;
+  margin: 0;
+  border: 0;
+  border-top: 1px solid var(--hairline);
+  min-width: 0;
+  padding: 10px 0;
+}
+.landing fieldset.trk:last-of-type {
+  border-bottom: 1px solid var(--hairline);
+}
+.landing .trk legend {
+  padding: 0;
+  font-size: 15px;
+  font-weight: 600;
+  float: left;
+}
+.landing .clips {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.landing .clip {
+  position: relative;
+}
+.landing .clip input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+.landing .clip span {
+  display: block;
+  padding: 9px 14px;
+  border-radius: 4px;
+  font-size: 14.5px;
+  background: var(--screen);
+  border: 1px solid var(--hairline);
+  border-left: 3px solid var(--input);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.landing .clip input:checked + span {
+  border-color: var(--tally-text);
+  border-left-color: var(--tally-text);
+  box-shadow: inset 0 0 0 1px var(--tally-text);
+}
+.landing .clip input:focus-visible + span {
+  outline: 2px solid var(--tally-text);
+  outline-offset: 2px;
+}
+.landing .clip span:hover {
+  border-color: var(--graphite);
+}
+@media (max-width: 640px) {
+  .landing fieldset.trk {
+    display: block;
+  }
+  .landing .trk legend {
+    float: none;
+    margin-bottom: 8px;
+  }
+}
+.landing .stack-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 7fr) minmax(0, 5fr);
+  gap: 40px;
+  align-items: start;
+  margin-top: 28px;
+}
+@media (max-width: 900px) {
+  .landing .stack-grid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 24px;
+  }
+}
+.landing .desc h3 {
+  font-size: 17px;
+  font-weight: 600;
+}
+.landing .desc p {
+  color: var(--graphite);
+  margin-top: 6px;
+  max-width: 58ch;
+}
+.landing .desc .leaves {
+  margin-top: 14px;
+  font-size: 15px;
+  color: var(--ink);
+  padding-left: 12px;
+  border-left: 2px solid var(--input);
+}
+.landing .desc + .desc {
+  margin-top: 22px;
+}
+.landing .unchanged {
+  margin-left: auto;
+  font-size: 12.5px;
+  color: var(--success);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding-right: 6px;
+}
+.landing .unchanged svg {
+  width: 14px;
+  height: 14px;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 2.5;
+}
+.landing .unchanged.pulse {
+  animation: landing-pulse 0.3s ease;
+}
+@keyframes landing-pulse {
+  50% {
+    transform: scale(1.12);
+  }
+}
+
+/* Security */
+.landing .leak {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 48px;
+}
+.landing .leak .url {
+  font-family: var(--mono);
+  font-size: 13.5px;
+  color: var(--graphite);
+  overflow-x: auto;
+  white-space: nowrap;
+}
+.landing .hex {
+  background: var(--poster);
+  color: #cfcdd8;
+  border-radius: 6px;
+  font-size: 13px;
+  line-height: 1.7;
+  padding: 18px 20px;
+  overflow-x: auto;
+  margin: 0;
+}
+.landing .hex .o {
+  color: #6f6d7a;
+}
+.landing .leak .cap {
+  font-size: 15px;
+  color: var(--graphite);
+  max-width: 64ch;
+}
+.landing .rows li {
+  display: grid;
+  grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
+  gap: 24px;
+  padding: 18px 0;
+  border-top: 1px solid var(--hairline);
+}
+.landing .rows li:last-child {
+  border-bottom: 1px solid var(--hairline);
+}
+.landing .rows h3 {
+  font-size: 17px;
+  font-weight: 600;
+}
+.landing .rows p {
+  color: var(--graphite);
+  font-size: 16px;
+}
+.landing .rows a {
+  font-size: 15px;
+  white-space: nowrap;
+}
+.landing .rows li.honest h3 {
+  color: var(--graphite);
+}
+@media (max-width: 720px) {
+  .landing .rows li {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 4px;
+  }
+}
+
+/* Features */
+.landing .feat-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 4fr) minmax(0, 8fr);
+  gap: 40px;
+  align-items: start;
+}
+@media (max-width: 900px) {
+  .landing .feat-grid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 20px;
+  }
+}
+.landing .feat {
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: 0;
+  border-top: 1px solid var(--hairline);
+  color: var(--ink);
+  padding: 14px 0;
+  cursor: pointer;
+  display: grid;
+  gap: 4px;
+}
+.landing .feat .ttl {
+  font-weight: 600;
+}
+.landing .feat .txt,
+.landing .feat .num {
+  display: none;
+}
+.landing .feat .txt {
+  color: var(--graphite);
+  font-size: 15px;
+}
+.landing .feat .num {
+  font-size: 14px;
+  color: var(--ink);
+  padding-left: 10px;
+  border-left: 2px solid var(--tally-text);
+  margin-top: 6px;
+}
+.landing .feat[aria-selected="true"] .ttl {
+  color: var(--tally-text);
+}
+.landing .feat[aria-selected="true"] .txt,
+.landing .feat[aria-selected="true"] .num {
+  display: block;
+}
+.landing .shot {
+  position: sticky;
+  top: calc(var(--nav-h) + 56px);
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--screen);
+  margin: 0;
+}
+.landing .shot img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+.landing .shot .shot-dark,
+.dark .landing .shot .shot-light {
+  display: none;
+}
+.dark .landing .shot .shot-dark {
+  display: block;
+}
+.landing .shot figcaption {
+  font-size: 13px;
+  color: var(--graphite);
+  padding: 10px 14px;
+  border-top: 1px solid var(--hairline);
+}
+
+/* Agents */
+.landing .agent-grid,
+.landing .close-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 7fr) minmax(0, 5fr);
+  gap: 40px;
+  align-items: start;
+}
+@media (max-width: 900px) {
+  .landing .agent-grid,
+  .landing .close-grid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 24px;
+  }
+}
+.landing .prompt {
+  background: var(--screen);
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  padding: 18px 20px;
+  display: grid;
+  gap: 14px;
+}
+.landing .prompt .label {
+  font-size: 14px;
+  color: var(--graphite);
+}
+.landing .prompt .q {
+  font-size: 18px;
+  line-height: 1.5;
+}
+.landing .prompt .row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.landing .links li {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 0;
+  border-top: 1px solid var(--hairline);
+  font-size: 15px;
+}
+.landing .links li:last-child {
+  border-bottom: 1px solid var(--hairline);
+}
+.landing .links code {
+  font-size: 14px;
+}
+.landing .links span {
+  color: var(--graphite);
+  text-align: right;
+}
+
+/* Install */
+.landing .reqs {
+  margin-top: 18px;
+  display: grid;
+  gap: 6px;
+  color: var(--graphite);
+  font-size: 15px;
+}
+.landing .reqs li::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 1px;
+  background: var(--success);
+  margin-right: 10px;
+  vertical-align: middle;
+}
+.landing .facts p {
+  padding: 14px 0;
+  border-top: 1px solid var(--hairline);
+  font-size: 16px;
+}
+.landing .facts p:last-child {
+  border-bottom: 1px solid var(--hairline);
+}
+.landing .facts span {
+  color: var(--graphite);
+}
+
+/* Footer */
+.landing footer .wrap {
+  padding-block: 40px 56px;
+  display: flex;
+  gap: 28px;
+  flex-wrap: wrap;
+  align-items: center;
+  font-size: 14px;
+  color: var(--graphite);
+}
+.landing footer nav {
+  display: flex;
+  gap: 20px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.landing footer a {
+  color: var(--graphite);
+  text-decoration: none;
+}
+.landing footer a:hover {
+  color: var(--ink);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .landing .frame img {
+    transition: none;
+  }
+  .landing .unchanged.pulse {
+    animation: none;
+  }
+}
+
+/* Fumadocs pads each Shiki line for its own code blocks; the panel pads here. */
+.landing .code .shiki .line {
+  padding-left: 0;
+  padding-right: 0;
+}
+
+/* Chapter jumps land below the sticky nav and track. */
+html:has(.landing) {
+  scroll-padding-top: 100px;
+}
+@media (prefers-reduced-motion: no-preference) {
+  html:has(.landing) {
+    scroll-behavior: smooth;
+  }
+}

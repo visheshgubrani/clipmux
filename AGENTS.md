@@ -36,8 +36,14 @@ anything decided since, and wins over the architecture doc where they differ.
   is written. Shaka Packager must be >= 3.9.1.
 - TypeScript lives only in the dashboard, the packages (`packages/player`,
   `packages/uploader`, `packages/node`, the server SDK), the Cloudflare Worker
-  (`worker/`) and the example apps (`examples/`). The Worker and the Go delivery handler share JSON
+  (`worker/`), the example apps (`examples/`) and the site (`site/`). The Worker and the Go delivery handler share JSON
   test vectors; change both together.
+- `site/` is clipmux.com (D133): the landing page and the docs, Next.js with
+  Fumadocs, built as static files. User-facing docs move into
+  `site/content/docs` as P6-T15.4 and T15.5 port them; `docs/` keeps the internal records (architecture,
+  decisions, plans, design, known gaps). A change in behaviour updates its
+  docs page in the same pull request. The plan is
+  [docs/plans/P6-T15-site.md](docs/plans/P6-T15-site.md).
 
 ## Commands
 
@@ -48,6 +54,7 @@ make test-db                  # same, with TEST_DATABASE_URL pointing at dev Pos
 make run                      # clipmux serve (migrates the dev database on boot)
 make lint                     # gofmt, vet, staticcheck -checks all, govulncheck
 make sqlc / make sqlc-check   # regenerate / verify the generated code in internal/db (runs sqlc in Docker)
+make site / make site-check   # clipmux.com dev server on :8100 / typecheck, build, docs lints, Biome
 gofmt -l .                    # must print nothing
 ```
 

@@ -1,0 +1,146 @@
+---
+title: Command line
+description: The clipmux binary and the npx @clipmux/node commands, with every flag.
+---
+
+There are two command lines. `clipmux` is the server's own binary: it runs
+the server and workers, and administers an instance from its host.
+`npx @clipmux/node` runs inside your app's project, against a server.
+
+## clipmux
+
+```text
+clipmux serve     API, dashboard, scheduler and built-in delivery
+clipmux worker    run a worker (agent mode; --once for serverless)
+clipmux push      upload files through the API
+clipmux listen    forward webhooks to a local URL
+clipmux admin     host-side administration (keys, webhooks, reset-password)
+clipmux version   print the version
+```
+
+Every setting is an environment variable; see
+[Environment variables](/docs/reference/configuration).
+
+### clipmux serve
+
+Runs the API, the dashboard, the scheduler and built-in delivery, and starts
+a worker as its child unless `CLIPMUX_BUILTIN_WORKER=false`. It takes no
+flags. It migrates the database on start, prints a setup token on first
+boot, and on a stop signal drains requests and waits for its loops before it
+exits.
+
+### clipmux worker
+
+Claims and runs media jobs: a PC agent, the built-in worker, or a serverless
+machine.
+
+```text
+clipmux worker --server URL              connect this PC (approve it in the dashboard)
+clipmux worker --server URL --pair CODE  connect with a code from clipmux admin create-pairing
+clipmux worker                           run, once this PC is connected
+clipmux worker doctor [--offline]        check everything this PC needs (--offline: before pairing)
+CLIPMUX_WORKER_KEY=KEY clipmux worker --server URL [--once]
+```
+
+| Flag | Default | What it does |
+| --- | --- | --- |
+| `--server URL` | `CLIPMUX_SERVER`, else `http://127.0.0.1:8080` | The server's public URL. |
+| `--pair CODE` | | Connect this PC with a pairing code from `clipmux admin create-pairing`. |
+| `--name NAME` | the hostname | What to call this PC. |
+| `--once` | `false` | Run at most one job, then exit (serverless). |
+| `--work-dir DIR` | a `clipmux-worker` temporary directory | Scratch space for attempts. |
+| `--encoder MODE` | `CLIPMUX_ENCODER`, else `auto` | The first encoder to try: `auto`, `nvenc`, `vaapi`, `cuda-decode` or `cpu`. The CPU always backs it up. |
+| `--speech MODE` | `CLIPMUX_SPEECH`, else `auto` | Transcribe subtitles: `auto` (a GPU, or a CPU with 4+ cores and 6 GiB), `off`, `cpu`, `vulkan` or `cuda`. |
+| `--sandbox` | `false` | Confine ffmpeg and the packager (Linux). Agents always do, unless `--unsandboxed`. |
+| `--unsandboxed` | `false` | Run an agent's tools unconfined. It then gets only its own local jobs and the owner's uploads. |
+| `--storage-via-server` | `false` | Fetch and upload signed storage URLs through `--server`, as the built-in worker does. |
+
+A connected PC keeps its server and key in `agent.json` under
+`CLIPMUX_AGENT_DIR`, so the key never shows in a process listing.
+
+### clipmux push
+
+Uploads files through the API, resuming an interrupted upload. It reads the
+app's API key from `CLIPMUX_API_KEY`, never from a flag.
+
+```bash
+CLIPMUX_API_KEY=cmx_… clipmux push --server https://video.example.com lesson-42.mp4
+```
+
+| Flag | Default | What it does |
+| --- | --- | --- |
+| `--server URL` | `CLIPMUX_SERVER` | The server's public URL. |
+| `--policy POLICY` | `signed` | The playback policy: `signed` or `public`. |
+| `--passthrough REF` | | Your own reference, returned in webhooks (one file only). |
+| `--renditions LIST` | every rung up to the source | Rungs to encode, comma separated, e.g. `1080p,480p`. |
+| `--wait` | `false` | Wait until each video is ready to play. |
+| `--quiet` | `false` | Print only the asset and playback IDs. |
+| `--local` | `false` | Keep the files on this PC: its agent encodes them and uploads only the outputs. |
+| `--upload-source` | `false` | With `--local`: once encoded, also upload each file, so any worker can re-encode it. |
+
+### clipmux listen
+
+Forwards the app's webhook events to a local URL while you build, signed so
+your handler verifies them unchanged. It reads `CLIPMUX_API_KEY`.
+
+| Flag | Default | What it does |
+| --- | --- | --- |
+| `--server URL` | `CLIPMUX_SERVER`, else `CLIPMUX_URL` | The server's public URL. |
+| `--forward-to URL` | | The local webhook URL, e.g. `localhost:3000/webhooks`. |
+| `--events LIST` | every event | The event types to forward, comma separated. |
+| `--since DURATION` | | Also replay events from this long ago, e.g. `10m`. |
+
+### clipmux admin
+
+Host-side administration, alongside the dashboard. It reads `DATABASE_URL`,
+and where it needs secrets `CLIPMUX_DATA_DIR` or `CLIPMUX_SECRETS_KEY`, the
+same as serve. Each command that makes a secret prints it once.
+
+| Command | What it does |
+| --- | --- |
+| `clipmux admin create-key --app NAME [--name KEY_NAME] [--scopes …] [--allow-loopback]` | Create an API key for the app (and the app, if it doesn't exist). |
+| `clipmux admin create-signing-key --app NAME` | Create a signing key and print its private key; only the public key is kept. |
+| `clipmux admin create-webhook --app NAME --url URL` | Add a webhook endpoint and print its secret. |
+| `clipmux admin create-integration --app NAME [--webhook-url URL] [--allow-loopback]` | All three at once, printed as a `.env` block to append to the backend's env file. |
+| `clipmux admin create-pairing [--app PC-NAME]` | Make a code for `clipmux worker --pair`. |
+| `clipmux admin rotate-signing-key --app NAME` | Create a new signing key and retire the others once the longest token they may have signed has expired. |
+| `clipmux admin list-keys --app NAME` | List the app's API and signing keys. |
+| `clipmux admin revoke-key ID` | End an API key (`cmx_…` ID) or a signing key (`kid_…`) at once. |
+| `clipmux admin setup-test [--wait] [--timeout 20m]` | Put the sample through the configured path; with `--wait`, print the checks and exit 1 unless they all pass. |
+| `clipmux admin reset-password < new-password.txt` | Set the owner's password from stdin and end every dashboard session. |
+| `clipmux admin reset-totp` | Turn off the owner's second factor, for an owner who lost the authenticator and the recovery codes. |
+| `clipmux admin migrate status \| up \| down-to VERSION --yes` | Show, apply or roll back database migrations. |
+| `clipmux admin prune [--dry-run] [--files]` | Delete rows past their retention windows now; `--files` also deletes stored files past theirs. |
+| `clipmux admin reseal-secrets` | Seal every stored secret with the current secrets key, when rotating it. |
+| `clipmux admin outbox [--retry ID]` | List side effects still pending after an hour; `--retry` makes one due at once. |
+
+`create-key` and `create-integration` refuse while the public URL is
+loopback, because signed upload URLs and `base_url` would point at the
+server's own machine; `--allow-loopback` is for local development.
+
+## npx @clipmux/node
+
+The SDK's command line, run in your app's project. Every command takes
+`--env-file FILE`.
+
+| Command | What it does |
+| --- | --- |
+| `npx @clipmux/node init` | Connect this app to a server: the owner approves it in the dashboard, and the credentials go to an env file without being printed. |
+| `npx @clipmux/node doctor` | Check the env file: the server, the API key, the signing key and the webhook secret. |
+| `npx @clipmux/node listen` | Forward this app's webhook events to a local URL, signed with `CLIPMUX_WEBHOOK_SECRET`. |
+| `npx @clipmux/node upload FILE` | Upload a file. |
+
+| Flag | Command | What it does |
+| --- | --- | --- |
+| `--server URL` | `init` | The server's public URL (default `CLIPMUX_URL`). |
+| `--env-file FILE` | every command | Where to read and write (default `.env.local`, or `.env` if it exists). |
+| `--name NAME` | `init` | The name the owner sees (default `package.json`'s name). |
+| `--no-open` | `init` | Print the approval URL instead of opening a browser. |
+| `--forward-to URL` | `listen` | The local URL, e.g. `localhost:3000/api/clipmux/webhook`. |
+| `--events LIST` | `listen` | Only these event types, comma separated. |
+| `--since DURATION` | `listen` | Also replay events from this long ago, e.g. `10m`. |
+| `--passthrough REF` | `upload` | Your own reference. |
+| `--title TITLE` | `upload` | The video's title. |
+| `--renditions LIST` | `upload` | Rungs to encode, e.g. `1080p,480p`. |
+| `--public` | `upload` | Make a public playback ID instead of a signed one. |
+| `--wait` | `upload` | Wait until the video is ready. |

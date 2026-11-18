@@ -1,0 +1,80 @@
+@import "tailwindcss";
+@import "fumadocs-ui/css/neutral.css";
+@import "fumadocs-ui/css/preset.css";
+@import "@fontsource-variable/archivo/wdth.css";
+@import "./tokens.css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --font-sans: "Archivo Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+
+  --color-canvas: var(--canvas);
+  --color-screen: var(--screen);
+  --color-ink: var(--ink);
+  --color-graphite: var(--graphite);
+  --color-hairline: var(--hairline);
+  --color-tally: var(--tally);
+  --color-tally-text: var(--tally-text);
+  --color-on-tally: var(--on-tally);
+  --color-poster: var(--poster);
+
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
+}
+
+/* Fumadocs is themed only through its variables, never by overriding its
+   layout (D133). */
+:root,
+.dark {
+  --color-fd-background: var(--canvas);
+  --color-fd-foreground: var(--ink);
+  --color-fd-muted: var(--muted);
+  --color-fd-muted-foreground: var(--graphite);
+  --color-fd-popover: var(--screen);
+  --color-fd-popover-foreground: var(--ink);
+  --color-fd-card: var(--screen);
+  --color-fd-card-foreground: var(--ink);
+  --color-fd-border: var(--hairline);
+  --color-fd-primary: var(--tally-text);
+  --color-fd-primary-foreground: var(--on-tally);
+  --color-fd-secondary: var(--muted);
+  --color-fd-secondary-foreground: var(--ink);
+  --color-fd-accent: var(--muted);
+  --color-fd-accent-foreground: var(--ink);
+  --color-fd-ring: var(--tally-text);
+}
+
+.dark #nd-sidebar {
+  --color-fd-muted: var(--muted);
+  --color-fd-secondary: var(--muted);
+  --color-fd-muted-foreground: var(--graphite);
+}
+
+html {
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+:focus-visible {
+  outline: 2px solid var(--tally-text);
+  outline-offset: 2px;
+}
+
+/* Page titles are set wide, as in the dashboard. */
+.type-title {
+  font-stretch: 118%;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+/* The landing headline goes to Archivo's widest. */
+.type-display {
+  font-stretch: 125%;
+  font-weight: 750;
+  line-height: 0.93;
+  letter-spacing: -0.025em;
+}

@@ -225,7 +225,7 @@ Order:
 | T12 | **done (D099)** — **Owner routes the pages need:** change password; library search by passthrough and title, with deleted assets filtered on the server (today a page can say "No videos yet." while "More" still shows); disconnect Cloudflare, back to built-in delivery; remove a storage config and rotate its credentials; API key names. Tests on real Postgres; `docs/api.md` updated. | `internal/accounts`, `internal/stores`, known gaps |
 | T13 | **done (D101)**, with an Analytics page whose API is Phase 7 (D100, D102) — **Pages:** next-step cards after the setup test; a Settings page (URLs out of `/setup`, password); the asset page's delete and playback IDs (add, revoke, public or signed) and the library's thumbnails and search; upload choosing the app and the policy; webhooks with the deliveries log, redeliver and two-step secret rotation (D069); Jobs filter controls; Disconnect Cloudflare; storage configs. | known-gaps "Bootstrap" |
 | T14 | **done (D101)** — **Playwright:** Apps, signing keys, webhooks, TOTP, Delivery, Upload and `/workers/connect` (none today), and every suite again at 375 px. | `e2e/web/tests` |
-| T15 | **partial**: the README is done, with screenshots from a demo instance; the docs site is open — **README and the docs site.** A README that says what ClipMux is, with screenshots, the one-liner and links. A docs site (open question 3) with `llms.txt`, from the structure of `~/vod/docs-site`. | `~/vod/docs-site` |
+| T15 | **partial**: the README is done, with screenshots from a demo instance; the docs site and landing page are planned in [P6-T15-site.md](P6-T15-site.md) — **README and the docs site.** A README that says what ClipMux is, with screenshots, the one-liner and links. A docs site (open question 3) with `llms.txt`, from the structure of `~/vod/docs-site`. | `~/vod/docs-site` |
 | T16 | **Integrator docs** (rescoped, D112): the quickstart is the four steps (`init`, one route file, two elements, three callbacks); token signing and webhook verification snippets in Python, Go and PHP under `docs/snippets/`, each tested in CI against both vector files; `docs/api.md` with a request and a response for every route; `llms.txt` and `llms-full.txt` from the docs and the spec (with T15). | `docs/api.md`, D015, D036 |
 | T17 | **Agent skills** `clipmux-integrate` and `clipmux-player` (rescoped, D112): the SDK path, `doctor`, and each error code with what to do; skill-creator evals against `skills/evals/lms-starter` (exit check 7). | — |
 | T18 | **Operator docs** for the release image and the installers: install, upgrade between releases, uninstall, the agent one-liner, and `docs/agents.md` without "until launch". | `docs/operations.md`, `docs/agents.md` |
@@ -255,6 +255,9 @@ Each answer becomes a decision record before the task that needs it.
    `vod`'s site is Next.js. Recommendation: its own repository
    (`visheshgubrani/clipmux-docs`), served from `clipmux.com` once the LMS
    frees it, with `llms.txt` generated from the same Markdown.
+   **Answered (2026-11-18):** `site/` in this repository, Next.js with
+   Fumadocs, serving the landing page and the docs on `clipmux.com`; see
+   [P6-T15-site.md](P6-T15-site.md). Recorded as D133.
 4. **The LMS library's subtitles:** regenerate them with whisper, or build
    `source: uploaded` tracks and import the existing VTTs? (T19; P5 open
    question 10)

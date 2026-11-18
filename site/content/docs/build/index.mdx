@@ -1,0 +1,21 @@
+---
+title: Build with ClipMux
+description: Add uploads, webhooks and signed playback to your app.
+---
+
+With the Node SDK, an app goes from nothing to signed, encrypted playback in
+four steps: connect the app, add one route file, add two elements, and check
+it.
+
+```bash tab="npm"
+npm i @clipmux/node @clipmux/uploader @clipmux/player
+npx @clipmux/node init --server https://video.example.com
+```
+
+```bash tab="pnpm"
+pnpm add @clipmux/node @clipmux/uploader @clipmux/player
+pnpm dlx @clipmux/node init --server https://video.example.com
+```
+
+The browser never sees an API key or a signing key. From any other language,
+call the REST API and sign playback tokens as standard ES256 JWTs.
