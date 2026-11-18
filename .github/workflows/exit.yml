@@ -5,16 +5,14 @@
 # for 30 minutes (P5 check 5); every other run soaks for 60 s.
 name: Exit test
 on:
-  # About an hour of Linux runner and a quarter of one for the emulator, so by
-  # hand (before merging a phase or anything touching playback) and on tags.
+  # About an hour of Linux runner and a quarter of one for the emulator, so
+  # only by hand: before merging a phase, anything touching playback, or a release.
   workflow_dispatch:
     inputs:
       soak:
         description: Soak for 30 minutes instead of 60 s (P5 check 5)
         type: boolean
         default: false
-  push:
-    tags: ["v*"]
 permissions:
   contents: read
 concurrency:

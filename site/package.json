@@ -5,9 +5,9 @@
   "description": "clipmux.com: the landing page and the docs (D133).",
   "type": "module",
   "scripts": {
-    "dev": "node scripts/generate-reference.mjs && node scripts/copy-assets.mjs && next dev --port 8100",
-    "build": "node scripts/generate-reference.mjs && node scripts/copy-assets.mjs && next build && node scripts/postbuild.mjs",
-    "typecheck": "node scripts/generate-reference.mjs && node scripts/copy-assets.mjs && fumadocs-mdx && tsc --noEmit -p tsconfig.json",
+    "dev": "node scripts/generate-reference.mjs && node scripts/prepare-landing.mjs && next dev --port 8100",
+    "build": "node scripts/generate-reference.mjs && node scripts/prepare-landing.mjs && next build && node scripts/postbuild.mjs",
+    "typecheck": "node scripts/generate-reference.mjs && node scripts/prepare-landing.mjs && fumadocs-mdx && tsc --noEmit -p tsconfig.json",
     "postinstall": "fumadocs-mdx",
     "test": "node --test scripts/lint.test.mjs scripts/generate-reference.test.mjs",
     "lint:docs": "node scripts/lint.mjs",

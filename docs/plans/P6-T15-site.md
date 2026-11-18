@@ -81,15 +81,13 @@ The references were for ideas only:
   title and a black poster band.
 - **Workspace.** `site` joins `pnpm-workspace.yaml`, and Biome covers
   `site/**`. `images.unoptimized` keeps `sharp` and its install script out.
-- **Hosting** is Cloudflare Workers static assets on the `clipmux.com` zone,
-  which already exists (D090). `_headers` sets `text/markdown` on `.md`
-  files, and `_redirects` handles the short URLs.
-- **CI** is a path-filtered `site.yml`.
-  - On a pull request touching `site/**`, `internal/openapi/**`,
-    `CHANGELOG.md` or `packages/*/README.md`, it runs build and check.
-  - On `main`, it deploys with wrangler using a scoped
-    `CLOUDFLARE_API_TOKEN`.
-  - Go-only pull requests don't build the site.
+- **Hosting** is the VPS that runs the production instance (changed from
+  Cloudflare Workers static assets in T15.10). Its Caddy serves the static
+  build with `deploy/site/clipmux.com.caddy`, which mirrors `_headers` and
+  `_redirects`; Cloudflare stays in front as the proxy it already was.
+  `make site-deploy` uploads a release and swaps a `current` symlink.
+- **CI** is the `web` job of `ci.yml`, on every pull request and push to
+  `main` (the separate `site.yml` folded in when the repository went public).
 - **Make targets:** `make site` (dev server) and `make site-check` (build
   and every lint below).
 
@@ -670,7 +668,7 @@ Source: README.
 | T15.7 | **Agent surface.** `/agents.md` built from `packages/node/AGENTS.md`; the sidebar's agent group; anchors the skills (T17) use; the agent check (done-criterion 4). |
 | T15.8 | **built**, waiting on open question 1: the hero steps through the dashboard's screens with `site/data/demo.json`'s example events until the demo recording is on production; the security rows link to the Build and Self-host introductions until their pages exist (T15.4–T15.5); the star count is fetched at build and left out while the repository is private — **Landing page.** First the clickable mock in light and dark, signed off by the owner. Then build: the timeline nav, the hero with the live player and `demo.json`, four steps, the track editor, security, features with new screenshots, agents, install; meet the quality floor; OG image. |
 | T15.9 | **Repoint.** README, package READMEs, `docs/` links and the dashboard's help links point at `clipmux.com/docs`; `known-gaps.md` updated. |
-| T15.10 | **Deploy.** Workers static assets on a preview hostname behind Cloudflare Access; `site.yml` deploys on `main`. At T20 `clipmux.com` moves from its redirect to the repository onto the site. |
+| T15.10 | **changed**: the VPS, not Workers static assets. `make site-deploy` and `deploy/site/clipmux.com.caddy`; the first release is uploaded to `/srv/clipmux-site`, and Caddy switches `clipmux.com` from its redirect to the site once the owner approves the change — **Deploy.** Workers static assets on a preview hostname behind Cloudflare Access; `site.yml` deploys on `main`. At T20 `clipmux.com` moves from its redirect to the repository onto the site. |
 
 **Order:**
 - T15.1, then T15.2.
