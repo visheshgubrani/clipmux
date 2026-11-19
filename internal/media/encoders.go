@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -212,9 +213,10 @@ func EncodeArgs(stage Stage, dev string, src Source, input, encDir string, rungs
 		graph += fmt.Sprintf(";[s%d]%s[v%d]", i, scale, i)
 	}
 	args = append(args, "-filter_complex", graph)
+	threads := strconv.Itoa(x264Threads(runtime.NumCPU(), len(rungs)))
 	for i, r := range rungs {
 		args = append(args, "-map", fmt.Sprintf("[v%d]", i))
-		args = append(args, codecArgs(stage.Backend, r, gop)...)
+		args = append(args, codecArgs(stage.Backend, r, gop, threads)...)
 		args = append(args,
 			"-fps_mode", "cfr", "-r", src.FrameRate,
 			"-g", gop,
@@ -226,10 +228,20 @@ func EncodeArgs(stage Stage, dev string, src Source, input, encDir string, rungs
 	return args
 }
 
+// x264Threads is each libx264 encoder's share of the cores: twice the cores
+// over the rungs, from 1 to 4. Left to itself, every encoder sizes its
+// threads from the core count, and the address space they reserve together
+// outgrew the 8 GiB tool limit on a 12-core machine encoding a 4K ladder
+// (bug hunt F21). At 4 per rung a full ladder stays within it on any
+// machine, about 7% slower than unbounded on that one.
+func x264Threads(cpus, rungs int) int {
+	return min(4, max(1, (2*cpus+rungs-1)/rungs))
+}
+
 // codecArgs are each encoder's settings at parity: the ladder's bitrate,
 // maxrate and buffer, high profile, and no keyframes but the forced ones,
-// so every backend cuts segments in the same places.
-func codecArgs(b Backend, r Rung, gop string) []string {
+// so every backend cuts segments in the same places. threads bounds libx264.
+func codecArgs(b Backend, r Rung, gop, threads string) []string {
 	rate := []string{"-b:v", r.Bitrate, "-maxrate", r.Maxrate, "-bufsize", r.Bufsize}
 	switch b {
 	case NVENC:
@@ -239,7 +251,7 @@ func codecArgs(b Backend, r Rung, gop string) []string {
 		return append([]string{"-c:v", "h264_vaapi", "-profile:v", "high", "-rc_mode", "VBR"}, rate...)
 	}
 	return append(append([]string{"-c:v", "libx264", "-preset", "veryfast", "-profile:v", "high"}, rate...),
-		"-keyint_min", gop, "-sc_threshold", "0")
+		"-keyint_min", gop, "-sc_threshold", "0", "-threads", threads)
 }
 
 // gpuDevices are the device nodes a stage's tool may open.
