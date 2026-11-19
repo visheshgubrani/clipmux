@@ -165,7 +165,14 @@ when you introduce or discover it; remove it when it is closed.
   Until v1.0.0, `clipmux.com/install.sh` points at the newest release
   candidate by hand, because `/releases/latest` skips prereleases; each
   new `-rc` moves the redirect in `deploy/site/clipmux.com.caddy`, and
-  launch (P6-T20) points it back at `releases/latest`.
+  launch (P6-T20) points it back at `releases/latest`. The `v1.0.0-rc.1`
+  redirect is in the repository but not yet on the VPS, so until its
+  Caddy is reloaded `clipmux.com/install.sh` still sends
+  `releases/latest/download/install.sh`, a 404, and the one-liner works
+  only from the Release's own URL.
+- The one-line install has passed `toolchain/check_release.sh` on Ubuntu
+  24.04 (amd64), not yet on Debian 12, or end to end on an arm64 server
+  (the arm64 image passes its setup test in `image.yml`) (D136).
 - The installer's setup URL comes from clipmux.com's CDN (Cloudflare's
   `/cdn-cgi/trace`): it moves with the zone, and an IPv6-only server gets
   only its own address. It can't tell whether the cloud firewall lets
@@ -340,8 +347,9 @@ when you introduce or discover it; remove it when it is closed.
   a full Connect has run only against fakes.
 - Pending approvals live in serve's memory: a restart, or a second
   replica, drops them, and the owner starts again.
-- Registry credentials for the worker image are still pasted until the
-  ghcr package is made public (the owner's setting, D136). RunPod keeps a private image's
+- The ghcr package is public since `v1.0.0-rc.1` (D136), so the stock
+  worker image pulls without registry credentials. A private image (a
+  fork's, say) still needs them pasted, and RunPod keeps a private image's
   credentials itself, so after an upgrade it re-pins only a public image
   (D119); a private one runs the old build until RunPod is connected again.
 - Modal's GPU prices are a table in `internal/modal/gpus.go` (D111), copied
