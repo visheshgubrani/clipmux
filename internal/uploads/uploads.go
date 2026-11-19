@@ -338,7 +338,7 @@ func (s *Service) Complete(ctx context.Context, uploadID string, parts []storage
 		default:
 			return errNotActive
 		}
-		if err := s.finishStorage(ctx, up, parts); err != nil {
+		if err := s.finishStorage(ctx, q, up, parts); err != nil {
 			return err
 		}
 		view, err = s.markCompleted(ctx, tx, up)
@@ -348,10 +348,13 @@ func (s *Service) Complete(ctx context.Context, uploadID string, parts []storage
 }
 
 // finishStorage completes the multipart upload, or confirms that a previous
-// attempt already did, and checks the stored size.
-func (s *Service) finishStorage(ctx context.Context, up db.Upload, parts []storage.Part) error {
+// attempt already did, and checks the stored size. It runs inside the
+// caller's transaction and looks the store up through q: a lookup through the
+// pool would need a second connection while holding one, and a burst larger
+// than the pool would wait on itself forever.
+func (s *Service) finishStorage(ctx context.Context, q *db.Queries, up db.Upload, parts []storage.Part) error {
 	key := sourceKey(up.AssetID)
-	store, err := s.stores.SourceFor(ctx, up.AssetID)
+	store, err := s.stores.SourceForIn(ctx, q, up.AssetID)
 	if err != nil {
 		return err
 	}
@@ -428,7 +431,7 @@ func (s *Service) Cancel(ctx context.Context, uploadID string) (assets.View, err
 
 // end aborts the storage upload and errors the asset, with an event.
 func (s *Service) end(ctx context.Context, q *db.Queries, up db.Upload, status, code string) error {
-	store, err := s.stores.SourceFor(ctx, up.AssetID)
+	store, err := s.stores.SourceForIn(ctx, q, up.AssetID)
 	if err != nil {
 		return err
 	}
@@ -513,7 +516,7 @@ func (s *Service) sweepOne(ctx context.Context, id string) (bool, error) {
 		switch {
 		case errors.Is(err, storage.ErrNotFound):
 			// Storage finished it before a crash, or lost it.
-			if err := s.finishStorage(ctx, up, nil); err != nil {
+			if err := s.finishStorage(ctx, q, up, nil); err != nil {
 				done = true
 				return s.end(ctx, q, up, "expired", CodeUploadExpired)
 			}
@@ -527,7 +530,7 @@ func (s *Service) sweepOne(ctx context.Context, id string) (bool, error) {
 			for i, p := range parts {
 				list[i] = storage.Part{Number: p.Number, ETag: p.ETag}
 			}
-			if err := s.finishStorage(ctx, up, list); err != nil {
+			if err := s.finishStorage(ctx, q, up, list); err != nil {
 				return err
 			}
 			done = true

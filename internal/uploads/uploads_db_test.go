@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -40,7 +41,12 @@ type env struct {
 	other    string // a key for another app
 }
 
-func newEnv(t *testing.T) *env {
+func newEnv(t *testing.T) *env { return newEnvWith(t, 0) }
+
+// newEnvWith is newEnv with the service on a pool of at most maxConns
+// connections that resolves each asset's store through the database, as
+// serve does, instead of a fixed store. 0 keeps newEnv's setup.
+func newEnvWith(t *testing.T, maxConns int32) *env {
 	t.Helper()
 	ctx := context.Background()
 	pool := dbtest.New(t)
@@ -57,6 +63,16 @@ func newEnv(t *testing.T) *env {
 		mux.Handle(m+" /_storage/", store.Handler())
 	}
 	svc := uploads.New(pool, stores.Fixed(store))
+	if maxConns > 0 {
+		cfg := pool.Config().Copy()
+		cfg.MaxConns = maxConns
+		small, err := pgxpool.NewWithConfig(ctx, cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(small.Close)
+		svc = uploads.New(small, stores.New(small, nil, store))
+	}
 	svc.MaxSize = 1000
 	svc.Register(mux)
 	assets.New(pool).Register(mux)
@@ -545,6 +561,49 @@ func TestAnUploadCarriesTheRenditionsItChose(t *testing.T) {
 		code, out, _ := e.call("POST", "/v1/uploads", e.key, map[string]any{"size": 10, "renditions": bad}, nil)
 		if code != http.StatusBadRequest || errCode(out) != "invalid_request" {
 			t.Errorf("renditions %v: %d %v, want 400 invalid_request", bad, code, out)
+		}
+	}
+}
+
+// More simultaneous completes and cancels than the pool has connections all
+// finish: none holds its transaction's connection while waiting for another
+// (F12: 11 completes on a 12-connection pool froze serve for good).
+func TestABurstLargerThanThePoolCompletesAndCancels(t *testing.T) {
+	e := newEnvWith(t, 2)
+	type job struct {
+		c    created
+		path string
+		body any
+	}
+	var jobs []job
+	for i := range 4 {
+		c := e.create(8, map[string]any{"passthrough": fmt.Sprintf("burst-%d", i)}, nil)
+		etag := e.put(e.sign(c, 1)[0], "AAAAAAAA")
+		jobs = append(jobs, job{c, "/complete", map[string]any{"parts": []map[string]any{{"part_number": 1, "etag": etag}}}})
+	}
+	for i := range 4 {
+		c := e.create(8, map[string]any{"passthrough": fmt.Sprintf("cancel-%d", i)}, nil)
+		jobs = append(jobs, job{c, "/cancel", map[string]any{}})
+	}
+	client := &http.Client{Timeout: 10 * time.Second}
+	results := make(chan string, len(jobs))
+	for _, j := range jobs {
+		go func() {
+			raw, _ := json.Marshal(j.body)
+			req, _ := http.NewRequest("POST", e.url+"/v1/uploads/"+j.c.UploadID+j.path, bytes.NewReader(raw))
+			req.Header.Set("Authorization", "Bearer "+j.c.Token)
+			res, err := client.Do(req)
+			if err != nil {
+				results <- j.path + ": " + err.Error()
+				return
+			}
+			res.Body.Close()
+			results <- fmt.Sprintf("%s: %d", j.path, res.StatusCode)
+		}()
+	}
+	for range jobs {
+		if r := <-results; !strings.HasSuffix(r, ": 200") {
+			t.Errorf("%s, want 200", r)
 		}
 	}
 }
