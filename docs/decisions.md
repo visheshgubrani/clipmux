@@ -1705,7 +1705,7 @@ Decision:
 - **A cancel in the dashboard deletes the empty video.** `cancel()` now resolves with the asset ClipMux returns, and the dashboard deletes it as that asset's app. The API is unchanged: a cancelled upload's asset is `errored` with `upload_cancelled`, and the dashboard shows such a video, cancelled elsewhere, as a grey Cancelled rather than a red Failed. It still counts under the Failed filter (known-gaps).
 - A cancel while the upload is still being created waits for it and cancels it, so no video is left waiting for 24 hours.
 
-## D136 Releases from a tag: the image, tarballs, binaries and installers on a GitHub Release; npm by trusted publishing — accepted (2026-11-19)
+## D136 Releases from a tag: the image, tarballs, binaries and installers on a GitHub Release; npm with provenance — accepted (2026-11-19)
 P6-T07, and the installer fixes it exposed. Context: clipmux.com showed `curl -fsSL https://clipmux.com/install.sh | sudo sh`, which redirected to `releases/latest/download/install.sh`, a 404. No release or `v*` tag existed, `release.yml` only published npm, and the ghcr package was private.
 Decision:
 - **`release.yml` is the one release workflow** on a `v*` tag. Its jobs:
@@ -1744,4 +1744,19 @@ Decision:
   - actionlint and shellcheck clean.
 - **`toolchain/check_release.sh`** is the clean-VM check for a published release, run as root on a fresh Ubuntu 24.04 or Debian 12 VM with a public address. It installs Docker from Docker's apt repository and runs the one-liner as the landing page shows it. It sets the public and media URLs to sslip.io names of the printed address, so Caddy gets real certificates, which it checks over verified HTTPS. Then it runs the setup test, re-runs the one-liner (keeping the secrets key, the session and an API key), uninstalls, reinstalls on the kept volumes, and purges.
 
-**The `-rc` run:** pending. It waits for the owner to merge, push `v1.0.0-rc.1`, make the ghcr package public, set the npm trusted publishers, and provide clean Ubuntu 24.04 and Debian 12 VMs. Its results are recorded here when it runs.
+**The `-rc` run** (2026-11-19). `v1.0.0-rc.1` was pushed on 8397f8c at 12:37 UTC. It waited for an outage of archive.ubuntu.com and security.ubuntu.com, which reached GitHub's runners too: it had failed `install.yml`, and would fail an amd64 image build that misses the cache.
+- **The workflow** (run 44525579922): gate, cli, both agent tarballs, both images with their setup test, the manifest and the release passed.
+  - The Release is a prerelease with exactly the 13 files.
+  - `SHA256SUMS` verifies, both installers say `version="v1.0.0-rc.1"`, and the image's `clipmux version` prints `v1.0.0-rc.1`.
+  - Build provenance attestations (SLSA v1) exist for the release files, each architecture's image and the index. They were checked through `GET /repos/{repo}/attestations/{digest}`, since the local `gh` had no `attestation` command.
+- **npm** failed on the tag with E404 at the PUT. The provenance was signed, but no trusted publisher was set and no token was passed. The owner chose the token (#29, the npm bullet above). A hand run (44536781658) then published `@clipmux/uploader@0.6.0`, which npm made `latest` with its provenance a few minutes later, while it processed the package. `@clipmux/player` 0.6.0 and `@clipmux/node` 0.1.0 were already published.
+- **ghcr** was made public by the owner: an anonymous pull of `:v1.0.0-rc.1` gets the manifest.
+- **The clean VM: Ubuntu 24.04 passed.** `check_release.sh`, with the Release's own `install.sh` as its URL, passed on a fresh KVM VM (Ubuntu 24.04.5, x86_64, 2 vCPU, 4 GB, Docker 29.10 and Compose v5.8 from Docker's repository) in under four minutes:
+  - `Open:` printed the VM's public address.
+  - Both sslip.io names got Let's Encrypt certificates and answered over verified HTTPS.
+  - The setup test passed. Its speech checks were skipped, as they are below CPU speech's 4 cores and 6 GiB.
+  - The re-run reported an upgrade and kept the secrets key, the owner's session and an API key, and the setup test passed again.
+  - `--uninstall` kept `.env` and the database volume, a reinstall on them kept the session, and `--uninstall --purge` left nothing.
+- **arm64:** the setup-URL lookup was tried on an arm64 VM behind NAT, which has a private own address, and printed the public one. The full check wasn't run there because the VM serves other apps; the arm64 image's setup test in `image.yml` is the arm64 evidence.
+- **The redirect went live** after the Ubuntu run: the two `redir` lines in the VPS's `/etc/caddy/clipmux.conf` (its own copy, which also serves `app.clipmux.com`) were changed to `v1.0.0-rc.1`, validated, and Caddy reloaded. `clipmux.com/install.sh` and `/install-agent.sh` now 302 to the rc's assets, and both say `version="v1.0.0-rc.1"`. Before that they pointed at `releases/latest`, a 404.
+- **Not done yet:** Debian 12.
