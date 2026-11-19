@@ -160,13 +160,22 @@ when you introduce or discover it; remove it when it is closed.
   webhook retention window (D069). `clipmux push` keeps an
   unfinished push's upload token in a 0600 state file under the user's cache
   directory until it completes.
-- The image is ~575 MB and built from source on a cache miss (~20 min). CI
-  pushes it privately to ghcr on main for serverless providers (D058), but
-  it isn't public, so every install builds it until launch.
-  `deploy/install.sh` (D093) is written and tested against images in a
-  local registry, but has no public release to install until P6-T07, and
-  the setup URL it prints is the host's first local address, which behind
-  NAT isn't the one to open.
+- The image is ~575 MB and built from source on a cache miss (~20 min).
+  `release.yml` pushes it as the release tag with attestations (D136).
+  Until v1.0.0, `clipmux.com/install.sh` points at the newest release
+  candidate by hand, because `/releases/latest` skips prereleases; each
+  new `-rc` moves the redirect in `deploy/site/clipmux.com.caddy`, and
+  launch (P6-T20) points it back at `releases/latest`.
+- The installer's setup URL comes from clipmux.com's CDN (Cloudflare's
+  `/cdn-cgi/trace`): it moves with the zone, and an IPv6-only server gets
+  only its own address. It can't tell whether the cloud firewall lets
+  ports 80 and 443 in, so it says to check.
+- A release isn't gated on `exit-safari.yml` (the owner's Mac) or the real
+  provider and LLM suites; a release that isn't a candidate waits only for
+  `ci.yml` and `exit.yml` on its commit. The `clipmux` binaries don't embed
+  the dashboard (they are for `push`, `listen` and `admin`; `serve` from
+  one shows the placeholder page), and they aren't signed or notarised, so
+  macOS quarantines a downloaded one until `xattr -d com.apple.quarantine`.
 - The manual wrangler path has no CLI or dashboard action for switching
   delivery or printing `CONTENT_KEYS` (R2 storage is Storage → Add R2
   bucket, D110); the dashboard Connect flow is the supported path, now
@@ -331,8 +340,8 @@ when you introduce or discover it; remove it when it is closed.
   a full Connect has run only against fakes.
 - Pending approvals live in serve's memory: a restart, or a second
   replica, drops them, and the owner starts again.
-- Registry credentials for the private worker image are still pasted; they
-  go away when the image is public (P6-T07). RunPod keeps a private image's
+- Registry credentials for the worker image are still pasted until the
+  ghcr package is made public (the owner's setting, D136). RunPod keeps a private image's
   credentials itself, so after an upgrade it re-pins only a public image
   (D119); a private one runs the old build until RunPod is connected again.
 - Modal's GPU prices are a table in `internal/modal/gpus.go` (D111), copied
@@ -357,9 +366,10 @@ when you introduce or discover it; remove it when it is closed.
   sealed copy is dropped, so they can't be recovered. The owner revokes
   them on the app's page (the API key is named after the pairing). Revoking
   them automatically at expiry needs a sweep that doesn't exist yet (D113).
-- The npm packages publish without provenance while the repository is
-  private (D125); their `repository` and `homepage` links 404 for outsiders
-  until launch. Trusted publishing and `--provenance` come with P6-T20.
+- npm publishes by trusted publishing with provenance (D136), which needs
+  each package's trusted publisher set on npmjs.com; until the owner does,
+  a publish fails with `ENEEDAUTH`. No publish has run this way yet: the
+  first is the next package version bump.
 - `@clipmux/player`'s element types import Video.js 10.2's declaration
   files, which don't all type-check; an app needs `skipLibCheck: true`.
 - The packages are ESM only. A CommonJS app needs Node ≥ 20.19 (or 22.12)
