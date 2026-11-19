@@ -158,8 +158,10 @@ type Source struct {
 	FPS           float64
 	Duration      float64
 	HasAudio      bool
-	// Codec and PixFmt decide whether a GPU can decode the source.
+	// Codec, PixFmt and Rotation decide whether a GPU can decode the source.
 	Codec, PixFmt string
+	// Rotation is the display matrix's angle in degrees, 0 to 359.
+	Rotation int
 }
 
 // Probe inspects a source with ffprobe.
@@ -202,9 +204,12 @@ func Probe(ctx context.Context, t Tools, path string) (Source, error) {
 			video = true
 			src.Width, src.Height = s.Width, s.Height
 			for _, sd := range s.SideDataList {
-				if r := int(sd.Rotation) % 180; r == 90 || r == -90 {
-					src.Width, src.Height = src.Height, src.Width
+				if r := (int(sd.Rotation)%360 + 360) % 360; r != 0 {
+					src.Rotation = r
 				}
+			}
+			if src.Rotation == 90 || src.Rotation == 270 {
+				src.Width, src.Height = src.Height, src.Width
 			}
 			src.FrameRate, src.FPS = frameRate(s.RFrameRate)
 			src.Codec, src.PixFmt = s.CodecName, s.PixFmt

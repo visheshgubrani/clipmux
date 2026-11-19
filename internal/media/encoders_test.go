@@ -24,6 +24,13 @@ func names(chain []Stage) []string {
 func TestEachGPUTriesItsOwnDecodeThenTheCPUs(t *testing.T) {
 	tenBit := hd
 	tenBit.PixFmt = "yuv420p10le"
+	// A phone's portrait clip: landscape frames and a display matrix. A GPU
+	// decoder hands back unrotated hardware frames that ffmpeg can't
+	// autorotate, so it decodes on the CPU, which rotates.
+	portrait := hd
+	portrait.Width, portrait.Height, portrait.Rotation = 720, 1280, 90
+	upsideDown := hd
+	upsideDown.Rotation = 180
 	cases := []struct {
 		name string
 		hw   Hardware
@@ -35,6 +42,9 @@ func TestEachGPUTriesItsOwnDecodeThenTheCPUs(t *testing.T) {
 		{"NVIDIA without NVENC", Hardware{CUDA: true}, hd, []string{"cuda-decode", "cpu"}},
 		{"AMD or Intel", Hardware{VAAPIDevice: "/dev/dri/renderD128"}, hd, []string{"vaapi", "vaapi-hybrid", "cpu"}},
 		{"10-bit source decodes on the CPU", Hardware{VAAPIDevice: "/dev/dri/renderD128"}, tenBit, []string{"vaapi-hybrid", "cpu"}},
+		{"portrait phone clip on AMD or Intel", Hardware{VAAPIDevice: "/dev/dri/renderD128"}, portrait, []string{"vaapi-hybrid", "cpu"}},
+		{"portrait phone clip on NVIDIA", Hardware{NVENC: true, CUDA: true}, portrait, []string{"nvenc-hybrid", "cpu"}},
+		{"upside-down clip on AMD or Intel", Hardware{VAAPIDevice: "/dev/dri/renderD128"}, upsideDown, []string{"vaapi-hybrid", "cpu"}},
 		{"both GPUs", Hardware{NVENC: true, CUDA: true, VAAPIDevice: "/d"}, hd, []string{"nvenc", "nvenc-hybrid", "vaapi", "vaapi-hybrid", "cpu"}},
 		{"--encoder vaapi first", Hardware{NVENC: true, CUDA: true, VAAPIDevice: "/d", Prefer: VAAPI}, hd, []string{"vaapi", "vaapi-hybrid", "nvenc", "nvenc-hybrid", "cpu"}},
 		{"--encoder cpu", Hardware{NVENC: true, CUDA: true, Prefer: CPU}, hd, []string{"cpu"}},
