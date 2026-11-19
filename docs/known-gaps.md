@@ -99,8 +99,13 @@ when you introduce or discover it; remove it when it is closed.
 - Phase 5 exited in CI (D085); its drills now run on the real binary (D094)
   and `exit-llm.yml` passed on real accounts (D095). Still to run: the
   providers' speech on real RunPod and Modal, and Safari and ExoPlayer
-  showing subtitles. The drain check doesn't yet cover a throttled segment
-  GET or a part PUT finishing.
+  showing subtitles. Those two suites are written (P6-T03) but haven't run:
+  Safari's needs the owner's Mac or `exit-safari.yml`, and ExoPlayer's
+  only compiled, with no emulator where it was written, until `exit.yml`
+  runs it. So P5 open question 8, whether both accept the single-segment
+  WebVTT playlist (which has no `X-TIMESTAMP-MAP`), is still open. The
+  drain check doesn't yet cover a throttled segment GET or a part PUT
+  finishing.
 - Real providers pass the Phase 4 exit (D097), but only as a local run with
   keys in `.env`: `exit-providers.yml` needs the repository secrets and
   `REAL_PROVIDERS` before it runs in CI. A failed real run can leave a

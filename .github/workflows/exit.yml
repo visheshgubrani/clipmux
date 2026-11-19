@@ -1,7 +1,7 @@
 # The exit tests of Phases 1 to 5 (docs/plans/P1-T09-T12.md, T12, and each
 # phase's plan): the real binary, Chromium (hls.js, the Video.js player,
 # subtitles and chapters, the uploader, the dashboard) and ExoPlayer on an
-# Android emulator. Safari runs in exit-safari.yml. A run by hand may soak
+# Android emulator, with its subtitles (P6-T03). Safari runs in exit-safari.yml. A run by hand may soak
 # for 30 minutes (P5 check 5); every other run soaks for 60 s.
 name: Exit test
 on:
