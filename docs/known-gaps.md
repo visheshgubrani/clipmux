@@ -394,3 +394,15 @@ when you introduce or discover it; remove it when it is closed.
 - A video whose upload was cancelled outside the dashboard's dialog shows as
   Cancelled, but the Videos page's Failed filter still counts it:
   `/v1/library/counts` counts by status, and it is `errored`.
+
+## Odd sources (bug hunt 2026-11-18, F5–F11 and F17)
+
+- A source whose frame size changes partway through encodes on the CPU
+  stage: VAAPI's full-GPU and hybrid stages fail when the change makes
+  ffmpeg rebuild the filter graph, so a GPU worker spends one failed attempt
+  per GPU stage before the CPU stage encodes it. NVENC is untested here.
+- A source without a duration in its header is measured by reading every
+  video packet's time (no decoding), which for a long recording is a full
+  read of the file before the encode starts.
+- Clips under 3.5 s are not loudness-normalised.
+

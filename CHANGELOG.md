@@ -92,6 +92,25 @@ Fixed before release:
 
 ### Server fixes
 
+- Sources that failed to encode now do:
+  - OBS and other MPEG-TS recordings whose keyframes are far apart: the
+    poster step seeked to where nothing decodes and threw the finished
+    encode away;
+  - a video of a single frame;
+  - a clip under 3 s whose audio is digital silence (loudness
+    normalisation measured it as NaN; clips that short are no longer
+    normalised);
+  - a declared audio track with no packets (a recorder with a dead mic),
+    which now gives a video-only output;
+  - WebM recorded in the browser with MediaRecorder, whose header has no
+    duration (it's read from the packets);
+  - very tall or very wide frames (400×5000, 8192×700), which no rung fit:
+    the one rendition is scaled until its long side fits 4096.
+- A source whose frame size changes partway through (a stitched capture)
+  kept only the part before the change, and still showed as ready. Every
+  rendition now runs the whole length.
+- An audio file with cover art is refused as having no video, instead of
+  becoming a video a frame long.
 - Concurrent upload completes or cancels no longer freeze the server: each
   held a database connection while waiting for a second, so a burst as large
   as the pool deadlocked it until a restart.

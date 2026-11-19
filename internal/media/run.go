@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os/exec"
 	"path/filepath"
 	"runtime"
@@ -162,6 +163,9 @@ type Source struct {
 	Codec, PixFmt string
 	// Rotation is the display matrix's angle in degrees, 0 to 359.
 	Rotation int
+	// VideoStart is how far the first video frame comes after the file's
+	// start, in seconds; the encode subtracts it so renditions start at zero.
+	VideoStart float64
 }
 
 // Probe inspects a source with ffprobe.
@@ -182,12 +186,17 @@ func Probe(ctx context.Context, t Tools, path string) (Source, error) {
 			Width        int    `json:"width"`
 			Height       int    `json:"height"`
 			RFrameRate   string `json:"r_frame_rate"`
+			StartTime    string `json:"start_time"`
 			SideDataList []struct {
 				Rotation float64 `json:"rotation"`
 			} `json:"side_data_list"`
+			Disposition struct {
+				AttachedPic int `json:"attached_pic"`
+			} `json:"disposition"`
 		} `json:"streams"`
 		Format struct {
-			Duration string `json:"duration"`
+			Duration  string `json:"duration"`
+			StartTime string `json:"start_time"`
 		} `json:"format"`
 	}
 	if err := json.Unmarshal(out.Bytes(), &probe); err != nil {
@@ -198,11 +207,16 @@ func Probe(ctx context.Context, t Tools, path string) (Source, error) {
 	for _, s := range probe.Streams {
 		switch s.CodecType {
 		case "video":
-			if video || s.Width <= 0 || s.Height <= 0 {
+			// An attached picture is an audio file's cover art, not a
+			// video (bug hunt F10).
+			if video || s.Width <= 0 || s.Height <= 0 || s.Disposition.AttachedPic == 1 {
 				continue
 			}
 			video = true
 			src.Width, src.Height = s.Width, s.Height
+			vstart, _ := strconv.ParseFloat(s.StartTime, 64)
+			fstart, _ := strconv.ParseFloat(probe.Format.StartTime, 64)
+			src.VideoStart = max(0, vstart-fstart)
 			for _, sd := range s.SideDataList {
 				if r := (int(sd.Rotation)%360 + 360) % 360; r != 0 {
 					src.Rotation = r
@@ -218,10 +232,49 @@ func Probe(ctx context.Context, t Tools, path string) (Source, error) {
 		}
 	}
 	src.Duration, _ = strconv.ParseFloat(probe.Format.Duration, 64)
-	if !video || src.Duration <= 0 || min(src.Width, src.Height) < 16 {
+	if video && src.Duration <= 0 {
+		// A file written as it was recorded (MediaRecorder's WebM) has no
+		// duration in its header: read it from the packets (F17).
+		d, err := packetSeconds(ctx, t, path)
+		if err != nil {
+			if ctx.Err() != nil {
+				return Source{}, err
+			}
+			return Source{}, fmt.Errorf("%w: %v", ErrUnsupportedSource, err)
+		}
+		src.Duration = d
+	}
+	if !video || src.Duration <= 0 || min(src.Width, src.Height) < 16 ||
+		SelectLadder(src.Width, src.Height, nil)[0].Height < 16 {
 		return Source{}, fmt.Errorf("%w: no usable video stream", ErrUnsupportedSource)
 	}
 	return src, nil
+}
+
+// packetSeconds measures the first video stream from its packets' times,
+// for a source whose header gives no duration. It reads the file without
+// decoding it.
+func packetSeconds(ctx context.Context, t Tools, path string) (float64, error) {
+	var out bytes.Buffer
+	args := append(inputGuard(), "-v", "error", "-select_streams", "v:0",
+		"-show_entries", "packet=pts_time,duration_time", "-of", "csv=p=0", "-i", path)
+	if err := t.run(ctx, t.FFprobe, args, filepath.Dir(path), &out); err != nil {
+		return 0, err
+	}
+	first, end := math.Inf(1), math.Inf(-1)
+	for line := range strings.Lines(out.String()) {
+		pts, dur, _ := strings.Cut(strings.TrimSpace(line), ",")
+		p, err := strconv.ParseFloat(pts, 64)
+		if err != nil {
+			continue // a packet without a time
+		}
+		d, _ := strconv.ParseFloat(dur, 64)
+		first, end = min(first, p), max(end, p+d)
+	}
+	if end <= first {
+		return 0, errors.New("no timed video packets")
+	}
+	return end - first, nil
 }
 
 // frameRate parses an ffprobe rational, falling back to 30 fps for missing

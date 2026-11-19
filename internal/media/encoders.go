@@ -189,7 +189,12 @@ func EncodeArgs(stage Stage, dev string, src Source, input, encDir string, rungs
 	case stage.Backend == VAAPI && !stage.HWDecode:
 		upload = "format=nv12,hwupload,"
 	}
-	graph := fmt.Sprintf("[0:v:0]setpts=PTS-STARTPTS,%ssplit=%d", upload, len(rungs))
+	// Each rendition starts at zero. The offset is a constant from the
+	// probe, not STARTPTS: a frame size change mid-stream reconfigures the
+	// graph, STARTPTS would restart there, and everything after the change
+	// would overlap the start and be dropped (bug hunt F11).
+	start := strconv.FormatFloat(src.VideoStart, 'f', -1, 64)
+	graph := fmt.Sprintf("[0:v:0]setpts=PTS-%s/TB,%ssplit=%d", start, upload, len(rungs))
 	for i := range rungs {
 		graph += fmt.Sprintf("[s%d]", i)
 	}

@@ -75,7 +75,7 @@ func TestEveryBackendKeepsTheLaddersRatesAndKeyframes(t *testing.T) {
 		// every rung on the GPU: four CPU scales of a 4K frame cost more
 		// than its decode.
 		"nvenc-hybrid": {Stage{NVENC, false}, []string{
-			"-init_hw_device cuda=cu -filter_hw_device cu", "[0:v:0]setpts=PTS-STARTPTS,format=yuv420p,hwupload,split=1[s0]",
+			"-init_hw_device cuda=cu -filter_hw_device cu", "[0:v:0]setpts=PTS-0/TB,format=yuv420p,hwupload,split=1[s0]",
 			"[s0]scale_cuda=1280:720:format=yuv420p[v0]", "-c:v h264_nvenc",
 		}},
 		"vaapi": {Stage{VAAPI, true}, []string{
@@ -83,7 +83,7 @@ func TestEveryBackendKeepsTheLaddersRatesAndKeyframes(t *testing.T) {
 			"scale_vaapi=w=1280:h=720:format=nv12", "-c:v h264_vaapi -profile:v high -rc_mode VBR",
 		}},
 		"vaapi-hybrid": {Stage{VAAPI, false}, []string{
-			"-init_hw_device vaapi=va:/dev/dri/renderD128 -filter_hw_device va", "[0:v:0]setpts=PTS-STARTPTS,format=nv12,hwupload,split=1[s0]",
+			"-init_hw_device vaapi=va:/dev/dri/renderD128 -filter_hw_device va", "[0:v:0]setpts=PTS-0/TB,format=nv12,hwupload,split=1[s0]",
 			"[s0]scale_vaapi=w=1280:h=720:format=nv12[v0]", "-c:v h264_vaapi",
 		}},
 		"cuda-decode": {Stage{CUDADecode, true}, []string{"-hwaccel cuda -format_whitelist", "scale=1280:720,format=yuv420p", "-c:v libx264 -preset veryfast", "-keyint_min 180 -sc_threshold 0"}},
