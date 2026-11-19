@@ -9,12 +9,12 @@ workflow uses a self-hosted runner.
 | Workflow | Runs on | When |
 | --- | --- | --- |
 | `ci.yml`: gofmt, vet and Go tests against Postgres (`go`); TypeScript typecheck and tests, the clipmux.com build with its docs lints, and Biome (`web`); the docs' Python, Go and PHP snippets against the vector files (`snippets`) | hosted Linux | every pull request and push to main; by hand |
-| `image.yml`: the image under compose, the setup test, pushes `sha-{commit}` | hosted Linux | by hand (pushes from main); `v*` tags |
-| `agent.yml`: the amd64 and arm64 agent tarballs | hosted Linux | by hand; `v*` tags |
+| `image.yml`: the image under compose, the setup test, pushes `sha-{commit}` (or the tag, from `release.yml`) with attestations | hosted Linux | by hand (pushes from main); called by `release.yml` |
+| `agent.yml`: the amd64 and arm64 agent tarballs | hosted Linux | by hand; called by `release.yml` |
 | `exit.yml`: the Phase 1–5 exit tests, Chromium and ExoPlayer | hosted Linux | by hand (`soak` for 30 minutes), before a release |
 | `exit-safari.yml`: Safari | hosted macOS | by hand, before a release |
 | `install.yml`: the installers end to end on two local release candidates | hosted Linux | by hand |
-| `release.yml`: npm publish of the `@clipmux` packages (player, uploader, and the SDK `@clipmux/node`) | hosted Linux | `v*` tags; by hand (a dry run by default) |
+| `release.yml`: waits for `ci.yml` (and `exit.yml`, unless a `-rc`) on the commit, then the image, the agent tarballs and `clipmux` binaries, the GitHub Release with `SHA256SUMS` and notes from `CHANGELOG.md`, and npm publish of the `@clipmux` packages by trusted publishing (D136) | hosted Linux | `v*` tags; by hand only the npm job (a dry run by default) |
 | `exit-llm.yml`: real OpenAI and Claude | hosted Linux | by hand, only while `REAL_LLM` is `true` |
 | `exit-providers.yml`: real RunPod and Modal | hosted Linux | by hand, only while `REAL_PROVIDERS` is `true` |
 

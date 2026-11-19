@@ -1,17 +1,28 @@
-# Releases (docs/plans/P6-launch.md, "Releases"). On a v* tag, or by hand
-# with dry_run unticked:
+# Releases (docs/plans/P6-launch.md, "Releases"; D136). On a v* tag:
+#   - gate: ci.yml has passed on the tagged commit (it waits for a run still
+#     going), and for a release that isn't a prerelease, exit.yml too.
+#   - image (image.yml): built with VERSION set to the tag, the setup test
+#     under compose on amd64 and arm64, pushed as
+#     ghcr.io/visheshgubrani/clipmux:TAG, plus :latest unless the tag is a
+#     prerelease (vX.Y.Z-rc.N), with build provenance attestations.
+#   - agent (agent.yml): the Linux agent tarballs for amd64 and arm64.
+#   - cli: `clipmux` for linux, darwin and windows on amd64 and arm64.
+#   - release: the GitHub Release with the tarballs, the binaries,
+#     install.sh and install-agent.sh with the tag written in, the operator
+#     compose.yml and Caddyfile, and SHA256SUMS over all of them, each
+#     attested; its notes are the tag's section of CHANGELOG.md. A
+#     prerelease tag makes a prerelease, which /releases/latest skips.
 #   - npm: @clipmux/player, @clipmux/uploader and @clipmux/node, each
 #     published at its own package.json version when npm doesn't have that
 #     version yet (D092). A prerelease version (1.2.0-rc.1) goes to the
 #     `next` dist-tag and never moves `latest`.
-# The image, agent tarballs, CLI binaries, installers and SHA256SUMS on the
-# GitHub Release join this workflow with P6-T07.
+# Run by hand, only the npm job runs, as a dry run unless dry_run is
+# unticked.
 #
-# npm authenticates with the NPM_TOKEN secret: a granular access token with
-# read and write on the @clipmux scope (and 2FA bypass for automation).
-# There is no provenance while the repository is private; npm only attests
-# public sources. Add --provenance back at launch (P6-T20), when the
-# repository goes public and trusted publishing can replace the token.
+# npm authenticates by trusted publishing (OIDC, no token): each package
+# names this repository and release.yml as its trusted publisher on
+# npmjs.com, and every publish carries provenance (D136, replacing D125's
+# token).
 name: Release
 on:
   push:
@@ -28,12 +39,156 @@ concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 jobs:
+  gate:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: The tag names a release and CHANGELOG.md has its section
+        run: |
+          echo "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$' || { echo "::error::$TAG isn't vX.Y.Z or vX.Y.Z-rc.N"; exit 1; }
+          toolchain/release_notes.sh "$TAG" >/dev/null
+      - name: The tagged commit passed CI
+        run: |
+          set -euo pipefail
+          # passed WORKFLOW waits until a run of WORKFLOW on this commit has
+          # finished, and succeeds if one succeeded.
+          passed() {
+            for _ in $(seq 80); do
+              runs=$(gh run list --workflow "$1" --commit "$GITHUB_SHA" --json status,conclusion)
+              if [ "$(jq '[.[] | select(.conclusion == "success")] | length' <<<"$runs")" -gt 0 ]; then
+                echo "$1 passed on $GITHUB_SHA"; return 0
+              fi
+              if [ "$(jq '[.[] | select(.status != "completed")] | length' <<<"$runs")" -eq 0 ]; then
+                echo "::error::$1 hasn't passed on $GITHUB_SHA"; return 1
+              fi
+              sleep 30
+            done
+            echo "::error::$1 is still running on $GITHUB_SHA"; return 1
+          }
+          passed ci.yml
+          case $TAG in
+          *-*) echo "a release candidate runs the exit suites alongside, not before" ;;
+          *) passed exit.yml ;;
+          esac
+  image:
+    needs: gate
+    uses: ./.github/workflows/image.yml
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+  agent:
+    needs: gate
+    uses: ./.github/workflows/agent.yml
+  cli:
+    needs: gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Build clipmux for each platform
+        run: |
+          set -eu
+          mkdir dist
+          for t in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64; do
+            os=${t%/*} arch=${t#*/} ext=
+            [ "$os" = windows ] && ext=.exe
+            GOOS=$os GOARCH=$arch CGO_ENABLED=0 go build -trimpath \
+              -ldflags "-s -w -X main.version=$TAG -X main.workerImage=ghcr.io/visheshgubrani/clipmux:$TAG" \
+              -o "dist/clipmux-$os-$arch$ext" ./cmd/clipmux
+          done
+          test "$(dist/clipmux-linux-amd64 version)" = "$TAG"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: clipmux-cli
+          path: dist/
+          retention-days: 7
+  release:
+    needs: [image, agent, cli]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: clipmux-*
+          path: artifacts
+          merge-multiple: true
+      - name: Assemble the release files
+        run: |
+          set -euo pipefail
+          mkdir release
+          cp artifacts/clipmux-agent-linux-amd64.tar.gz artifacts/clipmux-agent-linux-arm64.tar.gz release/
+          for f in artifacts/clipmux-linux-* artifacts/clipmux-darwin-* artifacts/clipmux-windows-*; do cp "$f" release/; done
+          # Each tarball's own checksum, from the build, must still match.
+          (cd artifacts && sha256sum -c clipmux-agent-linux-amd64.tar.gz.sha256 clipmux-agent-linux-arm64.tar.gz.sha256)
+          cp deploy/compose.release.yml release/compose.yml
+          cp deploy/Caddyfile release/Caddyfile
+          for f in install.sh install-agent.sh; do
+            sed "s/@CLIPMUX_VERSION@/$TAG/" "deploy/$f" > "release/$f"
+            grep -q "version=\"$TAG\"" "release/$f" || { echo "::error::$f didn't take the tag"; exit 1; }
+          done
+          (cd release && sha256sum -- * > SHA256SUMS && cat SHA256SUMS)
+          # Every asset P6's exit check 3 lists, and nothing else.
+          diff <(cd release && printf '%s\n' * | LC_ALL=C sort) - <<'FILES'
+          Caddyfile
+          SHA256SUMS
+          clipmux-agent-linux-amd64.tar.gz
+          clipmux-agent-linux-arm64.tar.gz
+          clipmux-darwin-amd64
+          clipmux-darwin-arm64
+          clipmux-linux-amd64
+          clipmux-linux-arm64
+          clipmux-windows-amd64.exe
+          clipmux-windows-arm64.exe
+          compose.yml
+          install-agent.sh
+          install.sh
+          FILES
+          toolchain/release_notes.sh "$TAG" > notes.md
+      - name: Attest the release files
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: release/*
+      - name: Publish the GitHub Release
+        run: |
+          set -euo pipefail
+          flags=--latest
+          case $TAG in *-*) flags=--prerelease ;; esac
+          gh release create "$TAG" --verify-tag $flags --title "ClipMux $TAG" --notes-file notes.md release/*
+          gh release view "$TAG" --json assets --jq '.assets[].name'
   npm:
+    # After the GitHub Release on a tag; on its own when run by hand.
+    needs: release
+    if: ${{ !cancelled() && (needs.release.result == 'success' || github.event_name == 'workflow_dispatch') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
       contents: read
-      # For trusted publishing and provenance once the repository is public.
+      # Trusted publishing and provenance.
       id-token: write
     steps:
       - uses: actions/checkout@v4
@@ -43,6 +198,11 @@ jobs:
           node-version-file: .node-version
           cache: pnpm
           registry-url: https://registry.npmjs.org
+      - name: npm new enough for trusted publishing (11.5.1)
+        run: |
+          v=$(npm --version)
+          if [ "$(printf '%s\n11.5.1\n' "$v" | sort -V | head -n1)" != 11.5.1 ]; then npm install -g npm@11; fi
+          npm --version
       - name: Build and test the packages
         run: |
           pnpm install --frozen-lockfile
@@ -51,7 +211,6 @@ jobs:
           pnpm --filter './packages/*' run test
       - name: Publish what npm doesn't have yet
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && '1' || '' }}
         run: |
           set -euo pipefail
@@ -87,6 +246,6 @@ jobs:
               echo "would publish $name@$version as $tag"
               (cd "$dir" && npm publish --dry-run --access public --tag "$tag")
             else
-              (cd "$dir" && npm publish --access public --tag "$tag")
+              (cd "$dir" && npm publish --access public --provenance --tag "$tag")
             fi
           done

@@ -17,3 +17,22 @@ func TestInstallCommandNamesTheServersRelease(t *testing.T) {
 		}
 	}
 }
+
+// The Workers page's Docker command (P6-T07) runs the image of the server's
+// own release, so its worker API matches; a CI build runs the sha- image of
+// its commit, which CI pushed, and any other build the latest release.
+func TestDockerCommandPinsTheServersImage(t *testing.T) {
+	const run = `docker run -d --name clipmux-agent --restart unless-stopped --no-healthcheck --user "$(id -u):$(id -g)" ` +
+		`-v "$HOME/.config/clipmux:/var/lib/clipmux-agent" -e CLIPMUX_AGENT_DIR=/var/lib/clipmux-agent `
+	const tail = " worker --server https://video.example.com --pair ABCD2345"
+	for _, c := range []struct{ version, image string }{
+		{"v1.2.3", "ghcr.io/visheshgubrani/clipmux:v1.2.3"},
+		{"v1.3.0-rc.2", "ghcr.io/visheshgubrani/clipmux:v1.3.0-rc.2"},
+		{"0123456789abcdef0123456789abcdef01234567", "ghcr.io/visheshgubrani/clipmux:sha-0123456789abcdef0123456789abcdef01234567"},
+		{"dev", "ghcr.io/visheshgubrani/clipmux:latest"},
+	} {
+		if got, want := dockerCommand(c.version, "https://video.example.com", "ABCD2345"), run+c.image+tail; got != want {
+			t.Errorf("dockerCommand(%q) =\n  %s\nwant\n  %s", c.version, got, want)
+		}
+	}
+}

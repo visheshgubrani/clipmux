@@ -105,10 +105,11 @@ the agent:
 docker run -d --name clipmux-agent --restart unless-stopped --no-healthcheck \
   --user "$(id -u):$(id -g)" \
   -v "$HOME/.config/clipmux:/var/lib/clipmux-agent" -e CLIPMUX_AGENT_DIR=/var/lib/clipmux-agent \
-  ghcr.io/visheshgubrani/clipmux worker --server https://video.example.com --pair ABCD-EFGH
+  ghcr.io/visheshgubrani/clipmux:v1.0.0 worker --server https://video.example.com --pair ABCD-EFGH
 ```
 
-It runs as your user and keeps its connection in `~/.config/clipmux`, where
+The image tag is your server's own release, so the agent speaks its worker
+API. It runs as your user and keeps its connection in `~/.config/clipmux`, where
 a restarted container finds it again. For a GPU, add one of these after
 `docker run`:
 
