@@ -1758,6 +1758,5 @@ Decision:
   - The re-run reported an upgrade and kept the secrets key, the owner's session and an API key, and the setup test passed again.
   - `--uninstall` kept `.env` and the database volume, a reinstall on them kept the session, and `--uninstall --purge` left nothing.
 - **arm64:** the setup-URL lookup was tried on an arm64 VM behind NAT, which has a private own address, and printed the public one. The full check wasn't run there because the VM serves other apps; the arm64 image's setup test in `image.yml` is the arm64 evidence.
-- **Not done yet:**
-  - Debian 12.
-  - Reloading the VPS's Caddy with the redirect. Until then `clipmux.com/install.sh` still points at `releases/latest`, a 404 (known-gaps).
+- **The redirect went live** after the Ubuntu run: the two `redir` lines in the VPS's `/etc/caddy/clipmux.conf` (its own copy, which also serves `app.clipmux.com`) were changed to `v1.0.0-rc.1`, validated, and Caddy reloaded. `clipmux.com/install.sh` and `/install-agent.sh` now 302 to the rc's assets, and both say `version="v1.0.0-rc.1"`. Before that they pointed at `releases/latest`, a 404.
+- **Not done yet:** Debian 12.

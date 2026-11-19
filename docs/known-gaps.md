@@ -165,11 +165,10 @@ when you introduce or discover it; remove it when it is closed.
   Until v1.0.0, `clipmux.com/install.sh` points at the newest release
   candidate by hand, because `/releases/latest` skips prereleases; each
   new `-rc` moves the redirect in `deploy/site/clipmux.com.caddy`, and
-  launch (P6-T20) points it back at `releases/latest`. The `v1.0.0-rc.1`
-  redirect is in the repository but not yet on the VPS, so until its
-  Caddy is reloaded `clipmux.com/install.sh` still sends
-  `releases/latest/download/install.sh`, a 404, and the one-liner works
-  only from the Release's own URL.
+  launch (P6-T20) points it back at `releases/latest`. The VPS's Caddy
+  imports its own copy (`/etc/caddy/clipmux.conf`, which also serves
+  `app.clipmux.com`), so a moved redirect is edited there too and Caddy
+  reloaded.
 - The one-line install has passed `toolchain/check_release.sh` on Ubuntu
   24.04 (amd64), not yet on Debian 12, or end to end on an arm64 server
   (the arm64 image passes its setup test in `image.yml`) (D136).
