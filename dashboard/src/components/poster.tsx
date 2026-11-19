@@ -19,7 +19,15 @@ export function Poster({ asset, className }: { asset: LibraryAsset | Asset; clas
   const [failed, setFailed] = React.useState(false)
   const src = 'poster_url' in asset && asset.poster_url && !failed ? asset.poster_url : null
   const tc = timecode(asset.duration_seconds)
-  const lamp = asset.status === 'errored' ? 'failed' : encoding(asset) ? 'encoding' : null
+  // A cancelled upload is someone's choice, not a failure (D135): a grey lamp.
+  const lamp =
+    asset.status === 'errored'
+      ? asset.error_code === 'upload_cancelled'
+        ? 'cancelled'
+        : 'failed'
+      : encoding(asset)
+        ? 'encoding'
+        : null
   return (
     <div className={cn('relative aspect-video overflow-hidden rounded-md bg-poster', className)}>
       {src && (
@@ -36,9 +44,18 @@ export function Poster({ asset, className }: { asset: LibraryAsset | Asset; clas
         <span className="absolute top-2 left-2 flex items-center gap-1.5 rounded-sm bg-black/70 px-1.5 py-0.5 text-[11px] font-medium text-white">
           <span
             aria-hidden="true"
-            className={cn('size-1.5 rounded-[1px]', lamp === 'failed' ? 'bg-[#f87171]' : 'bg-[#a78bfa]')}
+            className={cn(
+              'size-1.5 rounded-[1px]',
+              lamp === 'failed' ? 'bg-[#f87171]' : lamp === 'cancelled' ? 'bg-white/50' : 'bg-[#a78bfa]',
+            )}
           />
-          {lamp === 'failed' ? 'Failed' : asset.status === 'waiting_upload' ? 'Uploading' : 'Encoding'}
+          {lamp === 'failed'
+            ? 'Failed'
+            : lamp === 'cancelled'
+              ? 'Cancelled'
+              : asset.status === 'waiting_upload'
+                ? 'Uploading'
+                : 'Encoding'}
         </span>
       )}
       {isPublic(asset) && (

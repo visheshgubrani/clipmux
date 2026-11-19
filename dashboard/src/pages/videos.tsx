@@ -287,7 +287,7 @@ function VideoTable({ videos, appNames }: { videos: LibraryAsset[]; appNames: Re
                 </Link>
               </TableCell>
               <TableCell>
-                <AssetStatusBadge status={a.status} />
+                <AssetStatusBadge status={a.status} errorCode={a.error_code} />
               </TableCell>
               <TableCell className="text-muted-foreground">{isPublic(a) ? 'Public' : 'Private'}</TableCell>
               <TableCell className="type-timecode text-muted-foreground">

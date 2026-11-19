@@ -46,6 +46,18 @@ Fixed before release:
 - Installs next to `@types/react` 18 (the optional peer was `>=19`, which
   npm refused).
 
+### @clipmux/uploader 0.6.0
+
+- `create`, a function that creates the upload with your own client, joins
+  `upload` and `createUrl`. Its upload is remembered like a `createUrl` one,
+  and a remembered upload ClipMux has ended is replaced by a new one.
+- `cancel()` resolves with the video ClipMux answered with (`errored`,
+  `upload_cancelled`), or `null`. A cancel while the upload is still being
+  created cancels it once it exists, instead of leaving it waiting.
+- `rememberUpload(store).list()` returns the remembered uploads with their
+  file's name, size and time, so a page can ask for them after a reload.
+  `forget()` takes a `{ name, size, lastModified }` as well as a file.
+
 ### @clipmux/uploader 0.5.0
 
 - A given `upload` without `upload_token` is refused at once instead of
@@ -80,6 +92,22 @@ Fixed before release:
 
 ### Server fixes
 
+- Concurrent upload completes or cancels no longer freeze the server: each
+  held a database connection while waiting for a second, so a burst as large
+  as the pool deadlocked it until a restart.
+- A rotated phone video (portrait, or upside down) no longer comes out
+  sideways or upside down on a full-GPU encode: a rotated source takes the
+  hybrid stage, whose CPU decode applies the rotation.
+- The dashboard can upload a file again after its earlier upload ended on
+  the server (its video deleted, the upload expired or cancelled elsewhere).
+  It kept the dead upload and failed with "the upload is no longer active"
+  every time.
+- The dashboard asks before a page with uploads running is left. After a
+  reload it lists the stopped uploads with how much is stored; adding the
+  file again resumes it, and Discard ends it.
+- Cancelling an upload in the dashboard deletes its empty video instead of
+  leaving it as Failed. A video whose upload was cancelled elsewhere shows as
+  Cancelled.
 - Deleting an asset, or one of its tracks, no longer fails with 500 when a
   track is `errored` (chapters with no LLM connected, say): a deleted track
   drops its `error_code` (found by the first live integration, Edural).

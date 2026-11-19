@@ -47,15 +47,16 @@ continues from what storage holds.
 | `start()` | Uploads what storage doesn't hold yet and completes the upload. Resolves with the video. |
 | `pause()` | Stops sending. Parts already stored stay. |
 | `resume()` | Continues after `pause()`. |
-| `cancel()` | Stops for good and tells ClipMux. The video becomes `errored` with `upload_cancelled`. |
+| `cancel()` | Stops for good and tells ClipMux. The video becomes `errored` with `upload_cancelled`; resolves with it, or `null` when there was no upload yet. |
 | `upload` | The upload in use, once there is one. |
 
 | Option | Default | What it does |
 | --- | --- | --- |
-| `createUrl` | | Your backend route that creates the upload. Give this or `upload`. |
-| `upload` | | An upload your backend already created: the body of `POST /v1/uploads`. |
+| `createUrl` | | Your backend route that creates the upload. Give this, `create` or `upload`. |
+| `create` | | A function that creates the upload your own way and resolves with the body of `POST /v1/uploads`. Remembered like a `createUrl` upload. |
+| `upload` | | An upload your backend already created: the body of `POST /v1/uploads`. Not remembered across a reload. |
 | `endpoint` | the upload's `endpoint` | Your ClipMux server's URL, if the upload doesn't carry it. |
-| `store` | `localStorage` | Where a `createUrl` upload is remembered until it completes; `null` forgets it on reload. |
+| `store` | `localStorage` | Where a `createUrl` or `create` upload is remembered until it completes; `null` forgets it on reload. |
 | `concurrency` | `4` | Parts in flight at once. |
 | `maxAttempts` | `6` | Tries per request before giving up. |
 | `onProgress` | | Called with `{ bytesUploaded, bytesTotal, partsDone, partsTotal }`. |
@@ -69,25 +70,24 @@ A failure rejects with a `ClipMuxUploadError` with `code`, `status` and
 ## With an upload your backend created
 
 If your backend creates the upload some other way, for example as part of
-saving a form, pass the body with `upload` and the server URL with
-`endpoint`. `rememberUpload` keeps it across a reload:
+saving a form, give `create` a function that does it and the server URL
+with `endpoint`:
 
 ```ts
-import { ClipMuxUpload, rememberUpload } from '@clipmux/uploader'
-
-const memory = rememberUpload(localStorage)
-const created = memory.load(file) ?? (await createUploadOnMyBackend(file.size))
-memory.save(file, created)
+import { ClipMuxUpload } from '@clipmux/uploader'
 
 const asset = await new ClipMuxUpload(file, {
-  upload: created,
+  create: () => createUploadOnMyBackend(file.size),
   endpoint: 'https://video.example.com',
 }).start()
-memory.forget(file)
 ```
 
-Only the upload's ID, token and part layout are stored; ClipMux itself knows
-which parts it holds. `clipmux.uploads.create` in `@clipmux/node` returns
+The upload is remembered in `localStorage` until it completes, so choosing
+the same file after a reload resumes it, and one that ClipMux has ended
+(expired, cancelled, its video deleted) is replaced by a new one. Only the
+upload's ID, token and part layout are stored; ClipMux itself knows which
+parts it holds. An upload you already hold goes in as `upload`, without the
+memory. `clipmux.uploads.create` in `@clipmux/node` returns
 the body with `endpoint` added, so the browser needs no other setting.
 
 ## The upload routes, for any client

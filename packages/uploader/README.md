@@ -48,23 +48,21 @@ import { ClipMuxUpload } from '@clipmux/uploader'
 const asset = await new ClipMuxUpload(file, { createUrl: '/api/clipmux/upload' }).start()
 ```
 
-With your own backend route instead:
+With your own way of creating the upload instead:
 
 ```ts
-import { ClipMuxUpload, rememberUpload } from '@clipmux/uploader'
-
-// Your backend called POST /v1/uploads with its API key and returned the body.
-const memory = rememberUpload(localStorage)
-const upload = memory.load(file) ?? (await createUploadOnMyBackend(file.size))
-memory.save(file, upload)
+import { ClipMuxUpload } from '@clipmux/uploader'
 
 const asset = await new ClipMuxUpload(file, {
   endpoint: 'https://video.example.com',
-  upload,
+  // Your backend calls POST /v1/uploads with its API key and returns the body.
+  create: () => createUploadOnMyBackend(file.size),
   onProgress: (p) => console.log(p.bytesUploaded / p.bytesTotal),
 }).start()
-memory.forget(file)
 ```
+
+An upload your backend already created goes in as `upload` instead; it isn't
+remembered across a reload.
 
 - Parts are the upload's `part_size` (32 MiB); up to four are in flight.
 - After a reload, `start()` asks ClipMux which parts are stored and sends the rest.
@@ -74,10 +72,14 @@ memory.forget(file)
   too_large` fails at once.
 - A failure rejects with a `ClipMuxUploadError` (`code`, `status`,
   `retryable`) and leaves the upload resumable for 24 hours. `cancel()` ends
-  it for good.
+  it for good and resolves with the video, `errored` with `upload_cancelled`,
+  or `null` when there was none.
 - Storage must expose the `ETag` header to the page (ClipMux's own storage does).
-- With `createUrl`, a remembered upload that has expired or was cancelled is
-  replaced by a new one; `store: null` turns the memory off.
+- With `createUrl` or `create`, the upload is remembered in `localStorage`
+  until it completes. A remembered upload that ClipMux has ended (expired,
+  cancelled, its video deleted) is replaced by a new one; `store: null` turns
+  the memory off. `rememberUpload(localStorage).list()` names the files whose
+  uploads are remembered, so a page can ask for them again after a reload.
 
 There is no Uppy plugin; for your own UI, use `ClipMuxUpload` headless ([Headless uploads](https://clipmux.com/docs/build/upload/headless-and-uppy)).
 

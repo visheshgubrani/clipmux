@@ -381,3 +381,16 @@ when you introduce or discover it; remove it when it is closed.
   native token is always signed for 12 hours; an app that wants a tighter one
   must re-sign with `playback.token(id, { native, durationSeconds })`. A
   `durationSeconds` option on `session` would remove the second call.
+
+## Dashboard uploads (D135, 2026-11-19)
+
+- A reload stops a dashboard upload until its file is chosen again: a
+  browser can't read a file after a reload without the user picking it.
+  Remembering file handles (the File System Access API) is Chromium-only and
+  asks for permission, so the dashboard lists the stopped uploads instead.
+- That list is every upload this browser remembers that ClipMux still has
+  open, so an upload running in another tab of the same browser shows there
+  too, and Discard would cancel it.
+- A video whose upload was cancelled outside the dashboard's dialog shows as
+  Cancelled, but the Videos page's Failed filter still counts it:
+  `/v1/library/counts` counts by status, and it is `errored`.
