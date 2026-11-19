@@ -3,7 +3,10 @@
 # from the release image, in /opt/clipmux (docs/plans/P6-launch.md,
 # "One-line install").
 #
-#   curl -fsSL https://github.com/visheshgubrani/clipmux/releases/latest/download/install.sh | sudo sh
+#   curl -fsSL https://clipmux.com/install.sh | sudo sh
+#
+# clipmux.com/install.sh redirects to this file on a GitHub Release, where the
+# release workflow has written its tag in.
 #
 # Run again, it upgrades in place: it keeps .env (and so the data, keys and
 # sessions), moves CLIPMUX_VERSION to the new release and pulls.
@@ -18,6 +21,7 @@
 #   CLIPMUX_RELEASE_URL   where the release's files are (default: its GitHub Release)
 #   CLIPMUX_IMAGE         the image without its tag (default: ghcr.io/visheshgubrani/clipmux)
 #   CLIPMUX_HTTP_PORT, CLIPMUX_HTTPS_PORT, CLIPMUX_ADMIN_PORT   host ports, saved on first install
+#   CLIPMUX_TRACE_URL     where the public address is asked (default: clipmux.com's /cdn-cgi/trace)
 #
 # It downloads compose.yml and Caddyfile from the release and checks each
 # against the release's SHA256SUMS; it never runs anything it downloads.
@@ -116,14 +120,16 @@ main() {
 		i=$((i + 1))
 	done
 	port=$(sed -n 's/^CLIPMUX_HTTP_PORT=//p' "$dir/.env")
-	url="http://$(host_address)"
-	[ -z "$port" ] || [ "$port" = 80 ] || url="$url:$port"
+	suffix=
+	[ -z "$port" ] || [ "$port" = 80 ] || suffix=":$port"
+	https=$(sed -n 's/^CLIPMUX_HTTPS_PORT=//p' "$dir/.env")
+	open=$(open_lines "$suffix" "${port:-80} and ${https:-443}")
 	key=$(sed -n 's/^CLIPMUX_SECRETS_KEY=//p' "$dir/.env")
 	cat <<DONE
 
   ClipMux $version is running.
 
-  Open:         $url
+$open
   Setup token:  ${token:-(not found; run: cd $dir && docker compose logs app | grep setup_token)}
 
   Create the owner with the token, then set the public URL and the media
@@ -136,7 +142,7 @@ main() {
   It is also in $dir/.env.
 
   Upgrade:      run this installer again
-  Uninstall:    curl -fsSL https://github.com/$repo/releases/latest/download/install.sh | sudo sh -s -- --uninstall
+  Uninstall:    curl -fsSL https://clipmux.com/install.sh | sudo sh -s -- --uninstall
 
 DONE
 }
@@ -249,10 +255,56 @@ check_ports() {
 	done
 }
 
-host_address() {
-	a=$(hostname -I 2>/dev/null | awk '{print $1}')
-	[ -n "$a" ] || a=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for (i = 1; i < NF; i++) if ($i == "src") print $(i + 1)}')
-	printf '%s\n' "${a:-THIS-HOST}"
+# open_lines SUFFIX PORTS prints where to open the dashboard, each address
+# with SUFFIX (the port), and that PORTS must be reachable. Behind NAT or on a cloud VM the host's own address is private,
+# so the address the internet sees comes first; a home server whose router
+# doesn't forward the ports is reached at its own address instead.
+open_lines() {
+	own=$(own_address)
+	pub=$(public_address)
+	if [ -n "$pub" ] && [ "$pub" != "$own" ]; then
+		say "  Open:         http://$pub$1"
+		[ -z "$own" ] || say "                http://$own$1 from the server's own network"
+	elif [ -n "$own" ]; then
+		say "  Open:         http://$own$1"
+		if [ -z "$pub" ] && private "$own"; then
+			say "                That is a private address: from outside its network, use the"
+			say "                server's public address, or a DNS name that points at it."
+		fi
+	else
+		say "  Open:         http://THIS-SERVER$1 (its public address, or a DNS name that points at it)"
+	fi
+	say "                Ports $2 must be open to it: check the cloud firewall"
+	say "                or security group, if there is one."
+	say ""
+}
+
+# own_address is the address the host reaches the internet from: the
+# source of its default route, not the first of hostname -I, which can be
+# a Docker bridge.
+own_address() {
+	a=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for (i = 1; i < NF; i++) if ($i == "src") {print $(i + 1); exit}}')
+	[ -n "$a" ] || a=$(hostname -I 2>/dev/null | awk '{print $1}')
+	printf '%s\n' "$a"
+}
+
+# public_address is the IPv4 address the internet sees this host at, as
+# reported by clipmux.com's CDN (Cloudflare's trace endpoint, on the host
+# this script came from); empty if it can't be reached in 5 s.
+public_address() {
+	curl -4 -fsS --max-time 5 "${CLIPMUX_TRACE_URL:-https://clipmux.com/cdn-cgi/trace}" 2>/dev/null |
+		sed -n 's/^ip=\([0-9.]*\)$/\1/p' || true
+}
+
+# private says whether an IPv4 address is private, shared (CGNAT),
+# link-local or loopback.
+private() {
+	case $1 in
+	10.* | 127.* | 169.254.* | 192.168.*) return 0 ;;
+	172.1[6-9].* | 172.2[0-9].* | 172.3[01].*) return 0 ;;
+	100.6[4-9].* | 100.[7-9][0-9].* | 100.1[01][0-9].* | 100.12[0-7].*) return 0 ;;
+	esac
+	return 1
 }
 
 remove() {

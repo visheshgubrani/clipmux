@@ -282,7 +282,7 @@ func (s *Service) handleInvite(w http.ResponseWriter, r *http.Request) error {
 	httpjson.Write(w, http.StatusCreated, Invitation{
 		Code: code, ExpiresAt: p.ExpiresAt.Time, Server: server,
 		Command:        "clipmux worker --server " + server + " --pair " + code,
-		DockerCommand:  dockerCommand(server, code),
+		DockerCommand:  dockerCommand(s.Version, server, code),
 		InstallCommand: installCommand(s.Version, server, code),
 	})
 	return nil
@@ -291,12 +291,24 @@ func (s *Service) handleInvite(w http.ResponseWriter, r *http.Request) error {
 // dockerCommand runs the image as an agent: as the host user, keeping its
 // connection in the host's ~/.config/clipmux, so `clipmux push --local` on
 // the host finds the agent's socket. GPUs need one more flag, which the
-// Workers page explains.
-func dockerCommand(server, code string) string {
+// Workers page explains. The image is the server's own version (P6-T07):
+// its release tag, the sha- tag CI pushes for a commit build, or else the
+// latest release.
+func dockerCommand(version, server, code string) string {
+	tag := "latest"
+	switch {
+	case release.MatchString(version):
+		tag = version
+	case commit.MatchString(version):
+		tag = "sha-" + version
+	}
 	return `docker run -d --name clipmux-agent --restart unless-stopped --no-healthcheck --user "$(id -u):$(id -g)" ` +
 		`-v "$HOME/.config/clipmux:/var/lib/clipmux-agent" -e CLIPMUX_AGENT_DIR=/var/lib/clipmux-agent ` +
-		"ghcr.io/visheshgubrani/clipmux worker --server " + server + " --pair " + code
+		"ghcr.io/visheshgubrani/clipmux:" + tag + " worker --server " + server + " --pair " + code
 }
+
+// commit is a full commit hash, the version CI builds stamp (D058).
+var commit = regexp.MustCompile(`^[0-9a-f]{40}$`)
 
 // release is a release tag, vX.Y.Z or vX.Y.Z-rc.N.
 var release = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$`)

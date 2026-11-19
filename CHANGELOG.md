@@ -8,6 +8,23 @@ these.
 
 ## Unreleased
 
+## v1.0.0-rc.1 - 2026-11-19
+
+The first release of the server: the image, the agent tarballs, the
+`clipmux` binaries and the one-line installers, on a GitHub Release.
+
+### Install and upgrade
+
+- `curl -fsSL https://clipmux.com/install.sh | sudo sh` installs ClipMux,
+  Postgres and Caddy in `/opt/clipmux` from
+  `ghcr.io/visheshgubrani/clipmux:v1.0.0-rc.1` (amd64 and arm64). Run it
+  again to upgrade; `--uninstall` keeps the volumes unless `--purge`.
+- The installer prints the address the internet sees the server at (from
+  clipmux.com's CDN), then the server's own address, instead of the first
+  local address, which behind NAT or on a cloud VM is private.
+- The dashboard's Docker command for a PC agent names the server's own
+  image tag (`:v1.0.0-rc.1`), so the agent speaks its worker API.
+
 ### @clipmux/node 0.1.0
 
 The first release: the client, the drop-in handlers, webhook verification

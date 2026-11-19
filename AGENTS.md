@@ -22,7 +22,7 @@ anything decided since, and wins over the architecture doc where they differ.
   (`toolchain/install_packager.sh`); they skip without them, and the lean PR
   CI doesn't install them, so run media and whisper.cpp tests locally (or set
   `CLIPMUX_REQUIRE_MEDIA_TOOLS=1` to make a missing tool a failure). What runs
-  where is in `.github/README.md`.
+  where is in `.github/CI.md`.
 - Adapter boundaries (storage, executor, delivery) keep core logic from
   branching on a vendor; if it needs to, the interface is leaking.
 - The dashboard and CLI are API clients with no private path into the server.

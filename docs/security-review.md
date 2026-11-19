@@ -108,6 +108,6 @@ The whole history was scanned on 2026-11-08: all refs, 99 commits.
 
 Nothing live, so nothing to rotate or scrub. gitleaks runs locally before
 merging, not in CI: the lean pull-request job (74634dc) dropped it, as
-[.github/README.md](../.github/README.md) says. A 51 MB build of the binary
+[.github/CI.md](../.github/CI.md) says. A 51 MB build of the binary
 was committed at the root and removed from the tree on 2026-11-14; it stays
 in history and holds no secret.

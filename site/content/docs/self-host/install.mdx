@@ -25,7 +25,7 @@ curl -fsSL https://clipmux.com/install.sh | sudo sh
 ```
 
 `https://clipmux.com/install.sh` redirects to `install.sh` on the latest
-GitHub release. The script then:
+GitHub release (until v1.0.0, the newest release candidate). The script then:
 
 1. Checks Docker, Compose, the architecture, free disk space and, on a first
    install, that ports 80 and 443 are free.
@@ -68,15 +68,24 @@ Your videos, Postgres and Caddy's certificates live in Docker volumes
   ClipMux v1.0.0 is running.
 
   Open:         http://203.0.113.10
+                http://10.0.0.5 from the server's own network
+                Ports 80 and 443 must be open to it: check the cloud firewall
+                or security group, if there is one.
+
   Setup token:  N4V3…
 
   Secrets key:  v1:…
   Store this off the host, with your database backups.
 ```
 
-- **Open** is the server's first address from `hostname -I`. Behind NAT or
-  on a cloud network, that can be a private address: use the server's public
-  address, or one of your DNS names, instead.
+- **Open** is first the address the internet sees the server at, which the
+  installer asks clipmux.com's CDN for (`https://clipmux.com/cdn-cgi/trace`,
+  the host the script came from), then the server's own address, when the
+  two differ. On a cloud VM or behind NAT the own address is private, so
+  open the first. A home server whose router doesn't forward ports 80 and
+  443 is reached at the second from its own network. If the lookup fails,
+  the installer prints the own address and says when it is private. Your
+  DNS names work as well once they point at the server.
 - **Setup token** creates the owner account. It works for a day; restarting
   the app prints a new one. If the installer couldn't find it, run
   `cd /opt/clipmux && sudo docker compose logs app | grep setup_token`.

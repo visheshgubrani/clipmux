@@ -3,7 +3,7 @@
 # fork pull requests run here with a read-only token and no secrets. Media
 # tests skip without ffmpeg and the packager; run them locally. The heavier
 # suites (exit, Safari, providers, installers) run only by hand; see
-# .github/README.md.
+# .github/CI.md.
 name: CI
 on:
   pull_request:

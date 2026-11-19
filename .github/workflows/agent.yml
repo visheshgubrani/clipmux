@@ -1,12 +1,12 @@
 # The self-contained Linux agent (D061): clipmux with its own FFmpeg,
 # libraries, VAAPI drivers and packager, built natively for amd64 and arm64,
 # checked in a clean container with no FFmpeg of its own, and kept as a
-# workflow artifact. Nothing is published before launch (D005, D006).
+# workflow artifact. On a v* tag release.yml calls it and puts the tarballs
+# on the GitHub Release (P6-T07).
 name: Agent tarball
 on:
   workflow_dispatch:
-  push:
-    tags: ["v*"]
+  workflow_call:
 permissions:
   contents: read
 concurrency:
@@ -30,7 +30,7 @@ jobs:
           context: .
           target: agent
           outputs: type=local,dest=dist
-          build-args: VERSION=${{ github.sha }}
+          build-args: VERSION=${{ github.ref_type == 'tag' && github.ref_name || github.sha }}
           # The image job's cache serves amd64's toolchain stage; each
           # architecture keeps its own as well.
           cache-from: |

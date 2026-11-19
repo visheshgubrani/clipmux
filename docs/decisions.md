@@ -1007,7 +1007,7 @@ P6-T06, carrying out D086 and answering P6 open question 1:
   - `image.yml` and `toolchain/check_agent.sh` fail if either form is missing them.
 - **A DCO, not a CLA** (open question 1). `CONTRIBUTING.md` asks for `git commit -s`. This follows the plan's recommendation: with no CLA, dual licensing later needs every contributor's consent, so the owner should confirm it (or switch to a CLA) before the first outside contribution. Enforcing the sign-off (a DCO app or check) is left for when outside contributions start.
 - **`CODE_OF_CONDUCT.md`** is Contributor Covenant 2.1, from `vod`, reporting through a private GitHub report. **`SECURITY.md`** points at GitHub private vulnerability reporting, with a 3-day acknowledgement and a 90-day window.
-- **The history is clean.** gitleaks v8.28.0 and trufflehog 3.90.8 scanned all 99 commits on every ref, and neither found a live secret ([security-review.md](security-review.md), "History scan"). Every hit is a test vector or the dev SeaweedFS credential; trufflehog verified none. Nothing needed rotating or scrubbing. `.gitleaks.toml` allows exactly those files. (Amended 2026-11-14: the scan was meant to run in `ci.yml` on every pull request, but the lean CI job (74634dc) dropped it; gitleaks runs locally before merging, per `.github/README.md`.)
+- **The history is clean.** gitleaks v8.28.0 and trufflehog 3.90.8 scanned all 99 commits on every ref, and neither found a live secret ([security-review.md](security-review.md), "History scan"). Every hit is a test vector or the dev SeaweedFS credential; trufflehog verified none. Nothing needed rotating or scrubbing. `.gitleaks.toml` allows exactly those files. (Amended 2026-11-14: the scan was meant to run in `ci.yml` on every pull request, but the lean CI job (74634dc) dropped it; gitleaks runs locally before merging, per `.github/CI.md`.)
 - **The threat table was reviewed against the code** ([security-review.md](security-review.md)). Of 31 rows, 22 hold and 9 hold in part; none is missing. Six findings go beyond the table, two of them medium:
   - without Landlock, the built-in worker's tools can read serve's environment;
   - the global sign-in failure limit lets anyone lock the owner out.
@@ -1705,3 +1705,58 @@ Decision:
 - **A cancel in the dashboard deletes the empty video.** `cancel()` now resolves with the asset ClipMux returns, and the dashboard deletes it as that asset's app. The API is unchanged: a cancelled upload's asset is `errored` with `upload_cancelled`, and the dashboard shows such a video, cancelled elsewhere, as a grey Cancelled rather than a red Failed. It still counts under the Failed filter (known-gaps).
 - A cancel while the upload is still being created waits for it and cancels it, so no video is left waiting for 24 hours.
 
+## D136 Releases from a tag: the image, tarballs, binaries and installers on a GitHub Release; npm with provenance — accepted (2026-11-19)
+P6-T07, and the installer fixes it exposed. Context: clipmux.com showed `curl -fsSL https://clipmux.com/install.sh | sudo sh`, which redirected to `releases/latest/download/install.sh`, a 404. No release or `v*` tag existed, `release.yml` only published npm, and the ghcr package was private.
+Decision:
+- **`release.yml` is the one release workflow** on a `v*` tag. Its jobs:
+  - `gate` checks that the tag is `vX.Y.Z` or `vX.Y.Z-rc.N` and that `CHANGELOG.md` has a `## TAG - DATE` section. It then waits for `ci.yml` to pass on the tagged commit, and for a release that isn't a candidate, `exit.yml` as well. A candidate runs the exit suites alongside it.
+  - `image` calls `image.yml` (now `workflow_call`, with no tag trigger of its own). The image is built with `VERSION` and `WORKER_IMAGE` at the tag. The job checks that `clipmux version` prints the tag and runs the setup test under compose on amd64 and arm64. It pushes `:TAG`, plus `:latest` for a release that isn't a prerelease. Each architecture and the index get a build provenance attestation pushed to the registry. Run by hand on main, it pushes `sha-{commit}` as before, now attested too.
+  - `agent` calls `agent.yml`, with `VERSION` at the tag.
+  - `cli` cross-builds `clipmux-{linux,darwin,windows}-{amd64,arm64}` (`.exe` on Windows) with CGO off. The binaries carry the tag and the tag's worker image, and don't embed the dashboard.
+  - `release` assembles the files and checks the list against exactly the 13 that P6 exit check 3 needs:
+    - the tarballs, whose build checksums are rechecked;
+    - the binaries;
+    - `install.sh` and `install-agent.sh`, with `@CLIPMUX_VERSION@` replaced by the tag;
+    - `compose.yml` (from `compose.release.yml`) and `Caddyfile`;
+    - `SHA256SUMS` over all of them.
+
+    It attests every file. Then `gh release create --verify-tag` creates the release, as `--prerelease` for a `-` tag and `--latest` otherwise. The notes come from `toolchain/release_notes.sh`: the tag's CHANGELOG section plus the pinned one-liner.
+  - `npm` runs after `release`. Run by hand, it is the only job, and a dry run by default.
+- **npm publishes with provenance** (`--provenance`, `id-token: write`, npm ≥ 11.5.1), now that the repository is public, as D125 planned for launch. It still authenticates with D125's `NPM_TOKEN`, the owner's choice after the rc run.
+  - npm tries trusted publishing (OIDC) first, so once each package names `visheshgubrani/clipmux` and `release.yml` as its trusted publisher on npmjs.com, the token can be deleted.
+  - npm now warns that tokens which bypass 2FA are being restricted for direct publishing, so trusted publishing is the lasting path.
+- **`clipmux.com/install.sh` before v1.0.0.** `/releases/latest` skips prereleases, so `clipmux.com/install.sh` and `/install-agent.sh` 302 to the newest candidate's assets (`releases/download/v1.0.0-rc.N/…`). The redirect is in `deploy/site/clipmux.com.caddy` and mirrored in `site/public/_redirects`, and moves by hand with each `-rc`. Launch (P6-T20) points both back at `releases/latest/download`. The rejected alternative was marking a candidate as the latest release: a later `v1.1.0-rc.1` would then have to be told apart from a release by hand, and `:latest` would follow it.
+- **The Docker command pins the image** (`internal/agents/http.go`):
+  - a release version gives `:vX.Y.Z`;
+  - a CI build's 40-character commit gives `:sha-{commit}`;
+  - anything else (`dev`) gives `:latest`.
+- **The installer's setup URL.** `install.sh` printed the first address of `hostname -I`. That can be the Docker bridge, and behind NAT or on a cloud VM it is private.
+  - It now asks `https://clipmux.com/cdn-cgi/trace` for the address the internet sees. That is Cloudflare's trace endpoint on the host the script came from, so no third party is involved; the request uses IPv4 and times out after 5 s.
+  - It prints that address first, then the server's own address (the source of its default route) "from the server's own network" when the two differ.
+  - With no answer, it prints the own address and says when it is private.
+  - It always says that the HTTP and HTTPS ports must be open in any cloud firewall.
+  - The uninstall line names `clipmux.com/install.sh`.
+- Tests:
+  - `TestDockerCommandPinsTheServersImage`;
+  - the address cases, run against the script's own functions: public and private, both equal, no answer, nothing at all, and the private ranges including CGNAT;
+  - `release_notes.sh` against an exact tag, a missing tag and a prefix (`rc.1` vs `rc.10`);
+  - the `release` job's assemble step run locally on stub artifacts;
+  - actionlint and shellcheck clean.
+- **`toolchain/check_release.sh`** is the clean-VM check for a published release, run as root on a fresh Ubuntu 24.04 or Debian 12 VM with a public address. It installs Docker from Docker's apt repository and runs the one-liner as the landing page shows it. It sets the public and media URLs to sslip.io names of the printed address, so Caddy gets real certificates, which it checks over verified HTTPS. Then it runs the setup test, re-runs the one-liner (keeping the secrets key, the session and an API key), uninstalls, reinstalls on the kept volumes, and purges.
+
+**The `-rc` run** (2026-11-19). `v1.0.0-rc.1` was pushed on 8397f8c at 12:37 UTC. It waited for an outage of archive.ubuntu.com and security.ubuntu.com, which reached GitHub's runners too: it had failed `install.yml`, and would fail an amd64 image build that misses the cache.
+- **The workflow** (run 44525579922): gate, cli, both agent tarballs, both images with their setup test, the manifest and the release passed.
+  - The Release is a prerelease with exactly the 13 files.
+  - `SHA256SUMS` verifies, both installers say `version="v1.0.0-rc.1"`, and the image's `clipmux version` prints `v1.0.0-rc.1`.
+  - Build provenance attestations (SLSA v1) exist for the release files, each architecture's image and the index. They were checked through `GET /repos/{repo}/attestations/{digest}`, since the local `gh` had no `attestation` command.
+- **npm** failed on the tag with E404 at the PUT. The provenance was signed, but no trusted publisher was set and no token was passed. The owner chose the token (#29, the npm bullet above). A hand run (44536781658) then published `@clipmux/uploader@0.6.0`, which npm made `latest` with its provenance a few minutes later, while it processed the package. `@clipmux/player` 0.6.0 and `@clipmux/node` 0.1.0 were already published.
+- **ghcr** was made public by the owner: an anonymous pull of `:v1.0.0-rc.1` gets the manifest.
+- **The clean VM: Ubuntu 24.04 passed.** `check_release.sh`, with the Release's own `install.sh` as its URL, passed on a fresh KVM VM (Ubuntu 24.04.5, x86_64, 2 vCPU, 4 GB, Docker 29.10 and Compose v5.8 from Docker's repository) in under four minutes:
+  - `Open:` printed the VM's public address.
+  - Both sslip.io names got Let's Encrypt certificates and answered over verified HTTPS.
+  - The setup test passed. Its speech checks were skipped, as they are below CPU speech's 4 cores and 6 GiB.
+  - The re-run reported an upgrade and kept the secrets key, the owner's session and an API key, and the setup test passed again.
+  - `--uninstall` kept `.env` and the database volume, a reinstall on them kept the session, and `--uninstall --purge` left nothing.
+- **arm64:** the setup-URL lookup was tried on an arm64 VM behind NAT, which has a private own address, and printed the public one. The full check wasn't run there because the VM serves other apps; the arm64 image's setup test in `image.yml` is the arm64 evidence.
+- **The redirect went live** after the Ubuntu run: the two `redir` lines in the VPS's `/etc/caddy/clipmux.conf` (its own copy, which also serves `app.clipmux.com`) were changed to `v1.0.0-rc.1`, validated, and Caddy reloaded. `clipmux.com/install.sh` and `/install-agent.sh` now 302 to the rc's assets, and both say `version="v1.0.0-rc.1"`. Before that they pointed at `releases/latest`, a 404.
+- **Not done yet:** Debian 12.
