@@ -14,7 +14,7 @@ workflow uses a self-hosted runner.
 | `exit.yml`: the Phase 1–5 exit tests, Chromium and ExoPlayer | hosted Linux | by hand (`soak` for 30 minutes), before a release |
 | `exit-safari.yml`: Safari | hosted macOS | by hand, before a release |
 | `install.yml`: the installers end to end on two local release candidates | hosted Linux | by hand |
-| `release.yml`: waits for `ci.yml` (and `exit.yml`, unless a `-rc`) on the commit, then the image, the agent tarballs and `clipmux` binaries, the GitHub Release with `SHA256SUMS` and notes from `CHANGELOG.md`, and npm publish of the `@clipmux` packages by trusted publishing (D136) | hosted Linux | `v*` tags; by hand only the npm job (a dry run by default) |
+| `release.yml`: waits for `ci.yml` (and `exit.yml`, unless a `-rc`) on the commit, then the image, the agent tarballs and `clipmux` binaries, the GitHub Release with `SHA256SUMS` and notes from `CHANGELOG.md`, and npm publish of the `@clipmux` packages with provenance (D136) | hosted Linux | `v*` tags; by hand only the npm job (a dry run by default) |
 | `exit-llm.yml`: real OpenAI and Claude | hosted Linux | by hand, only while `REAL_LLM` is `true` |
 | `exit-providers.yml`: real RunPod and Modal | hosted Linux | by hand, only while `REAL_PROVIDERS` is `true` |
 
