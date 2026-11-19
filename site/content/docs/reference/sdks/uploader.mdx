@@ -111,7 +111,9 @@ import type {} from '@clipmux/uploader/react'
 ```
 
 The import types the attributes, `options` and the `onclipmux-*` handlers,
-for React 18 or 19.
+for React 18 or 19. React 19 attaches the handlers only to an element it
+creates in the browser; for a server-rendered one, or on React 18, listen on
+a ref.
 
 ## ClipMuxUpload
 

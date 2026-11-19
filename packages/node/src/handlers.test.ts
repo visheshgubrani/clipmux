@@ -182,6 +182,20 @@ test('playback signs the asked ID for the viewer the callback names', async () =
   assert.deepEqual([c.sub, c.aud, c.vid, c.exp - c.iat], ['pid_b', 'v', 'stu_7', 900])
 })
 
+test('playback signs for the lifetime the callback names, but a native player keeps its long token', async () => {
+  const a = api({
+    'GET /v1/app': () => Response.json({ base_url: 'https://m', max_token_lifetime_seconds: 604800 }),
+  })
+  const h = clipmuxHandler({ clipmux: a.clipmux, playback: () => ({ asset: asset(), expiresIn: '30s' }) })
+  const ttl = async (native: boolean) => {
+    const s = await (await h(post('/x/playback', { playback_id: 'pid_a', native }))).json()
+    const c = JSON.parse(Buffer.from(s.token.split('.')[1], 'base64url').toString())
+    return c.exp - c.iat
+  }
+  assert.equal(await ttl(false), 30)
+  assert.equal(await ttl(true), 4 * 3600)
+})
+
 test("playback with native asks for a token that outlives the video's session", async () => {
   const a = api({
     'GET /v1/app': () => Response.json({ base_url: 'https://m', max_token_lifetime_seconds: 604800 }),

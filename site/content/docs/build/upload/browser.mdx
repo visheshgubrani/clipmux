@@ -164,8 +164,10 @@ export function LessonUploader({ lessonId }: { lessonId: string }) {
 
 The types cover the attributes, `options` and the three `onclipmux-…`
 events; React itself is not a dependency. React 19 passes the
-`onclipmux-…` props to the element as event listeners. On React 18, add the
-listeners with a ref and `addEventListener`.
+`onclipmux-…` props to the element as event listeners when it creates the
+element in the browser, but not when it hydrates server-rendered HTML (a
+Next.js page's first load). There, and on React 18, add the listeners with a
+ref and `addEventListener`.
 
 ## Your backend route
 
