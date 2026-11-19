@@ -207,6 +207,8 @@ export interface Attempt {
   agent_name?: string
   status: string
   error_code?: string
+  /** What the worker said went wrong, at most 1000 characters. */
+  error_message?: string
   phase?: string
   progress?: number
   encoder?: { stage: string; fallbacks?: string[] }

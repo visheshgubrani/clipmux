@@ -27,7 +27,7 @@ import { Preview } from '@/components/preview'
 import { QueryState } from '@/components/query-state'
 import { RenditionPicker, renditionsNote } from '@/components/renditions'
 import { ShareLinks } from '@/components/share-links'
-import { AssetStatusBadge, TrackStatusBadge } from '@/components/status'
+import { AssetStatusBadge, failedVideo, TrackStatusBadge } from '@/components/status'
 import { Alert, AlertAction, AlertDescription } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import {
@@ -135,8 +135,17 @@ function Video({
   onTab: (t: string) => void
 }) {
   const busy = a.status === 'processing' || a.tracks.some((t) => t.status === 'preparing')
-  const jobs = useQuery(q.assetJobs(a.id, busy))
+  const jobs = useQuery({
+    ...q.assetJobs(a.id, busy || a.status === 'errored'),
+    refetchInterval: busy ? 3000 : false,
+  })
   const job = jobs.data?.data.find((j) => j.status === 'running' || j.status === 'queued') ?? null
+  // Why a failed video failed: its latest failed attempt's own words.
+  const reason =
+    a.status === 'errored'
+      ? jobs.data?.data.find((j) => j.status === 'failed')?.attempts.findLast((t) => t.error_message)
+          ?.error_message
+      : undefined
   // The subtitles the player was opened with (null: not opened yet).
   const [playerSubtitles, setPlayerSubtitles] = React.useState<string | null>(null)
   const subtitles = subtitlesKey(a)
@@ -182,15 +191,23 @@ function Video({
                 />
               </div>
             ) : (
-              <div className="flex aspect-video max-w-4xl items-center justify-center rounded-md bg-poster text-sm text-white/70">
-                {a.status === 'errored' && a.error_code === 'upload_cancelled'
-                  ? 'The upload was cancelled.'
-                  : a.status === 'errored'
-                    ? `The encode failed${a.error_code ? ` (${a.error_code})` : ''}. Re-encode to try again.`
+              <>
+                <div className="flex aspect-video max-w-4xl items-center justify-center rounded-md bg-poster px-6 text-center text-sm text-white/70">
+                  {a.status === 'errored'
+                    ? failedVideo(a.error_code).say
                     : deleted
                       ? 'This video was deleted.'
                       : 'The player appears once encoding finishes.'}
-              </div>
+                </div>
+                {reason && (
+                  <div className="mt-3 flex max-w-4xl flex-col gap-1.5">
+                    <p className="text-sm font-medium">What went wrong</p>
+                    <pre className="max-h-48 overflow-auto rounded-md border bg-muted/40 p-3 font-mono text-xs whitespace-pre-wrap">
+                      {reason}
+                    </pre>
+                  </div>
+                )}
+              </>
             )}
             <Details asset={a} />
           </div>
@@ -241,7 +258,13 @@ function Header({ asset: a, app, job }: { asset: Asset; app?: string | undefined
         )}
         <div className="ml-auto flex items-center gap-2">
           {!deleted && (
-            <Button variant="outline" onClick={() => setReencoding(true)} disabled={a.status !== 'ready'}>
+            <Button
+              variant="outline"
+              onClick={() => setReencoding(true)}
+              disabled={
+                !(a.status === 'ready' || (a.status === 'errored' && failedVideo(a.error_code).reencode))
+              }
+            >
               <RotateCwIcon data-icon="inline-start" />
               Re-encode
             </Button>

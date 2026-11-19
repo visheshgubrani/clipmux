@@ -92,6 +92,18 @@ Fixed before release:
 
 ### Server fixes
 
+- An upload larger than about 29 GiB can complete. The complete request
+  was capped at 64 KiB, about 936 parts, and the refusal said "body must be
+  a JSON object". It now takes every part of the largest upload. Any
+  request body over its route's limit answers `413 too_large` with the
+  limit, instead of `400 invalid_request`.
+- A failed video says why. The worker's message, such as ffmpeg's first
+  error lines, is kept on each failed attempt (with URL query strings
+  removed) and shown on the video page and the Jobs page; the management
+  API's attempts carry it as `error_message`. Re-encode is offered on a
+  failed video when there is a source to encode, and the page no longer
+  suggests it for a file ClipMux can't read or an upload that never
+  finished.
 - Sources that failed to encode now do:
   - OBS and other MPEG-TS recordings whose keyframes are far apart: the
     poster step seeked to where nothing decodes and threw the finished

@@ -8,7 +8,9 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"strings"
 	"time"
+	"unicode"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -470,6 +472,32 @@ func (q *Queue) Heartbeat(ctx context.Context, token string, p Progress) (Verdic
 
 var codePattern = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
 
+// urlQuery is a URL's query string, which in a worker's message is usually
+// a presigned URL's signature.
+var urlQuery = regexp.MustCompile(`(https?://[^\s?"']+)\?[^\s"']*`)
+
+// maxFailureMessage is the most of a worker's message an attempt keeps.
+const maxFailureMessage = 1000
+
+// FailureMessage is a worker's failure message as it is stored and shown:
+// no URL query strings (presigned URLs never reach the database or the
+// dashboard), no control characters but newlines and tabs, at most 1000
+// characters. A worker is untrusted, so this is the only form kept.
+func FailureMessage(m string) string {
+	m = urlQuery.ReplaceAllString(m, "$1")
+	m = strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\t' || !unicode.IsControl(r) {
+			return r
+		}
+		return -1
+	}, strings.ToValidUTF8(m, ""))
+	m = strings.TrimSpace(m)
+	if r := []rune(m); len(r) > maxFailureMessage {
+		m = string(r[:maxFailureMessage-1]) + "…"
+	}
+	return m
+}
+
 // Fail records a worker-reported failure. Transient failures retry with
 // backoff until the failure budget is spent; permanent ones end the job.
 func (q *Queue) Fail(ctx context.Context, token string, f Failure) (Verdict, error) {
@@ -487,6 +515,7 @@ func (q *Queue) Fail(ctx context.Context, token string, f Failure) (Verdict, err
 	return q.withLiveAttempt(ctx, token, func(qs *db.Queries, l locked) (Verdict, error) {
 		if err := qs.SetAttemptStatus(ctx, db.SetAttemptStatusParams{
 			ID: l.attempt.ID, Status: "failed", FailureKind: text(kind), ErrorCode: text(code),
+			ErrorMessage: text(FailureMessage(f.Message)),
 		}); err != nil {
 			return Verdict{}, err
 		}

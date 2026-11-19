@@ -61,7 +61,7 @@ INSERT INTO attempts (id, project_id, job_id, asset_id, attempt_number, output_i
                       token_hash, lease_expires_at, worker_info, route_reason, dispatch_id, input_output_id)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now() + make_interval(secs => $13::double precision), $10, $11, $12,
         $14)
-RETURNING id, project_id, job_id, asset_id, attempt_number, output_id, executor, agent_id, status, token_hash, lease_expires_at, phase, progress, worker_info, failure_kind, error_code, started_at, last_heartbeat_at, finished_at, signed_paths, route_reason, dispatch_id, source_multipart_id, source_part_size, input_output_id
+RETURNING id, project_id, job_id, asset_id, attempt_number, output_id, executor, agent_id, status, token_hash, lease_expires_at, phase, progress, worker_info, failure_kind, error_code, started_at, last_heartbeat_at, finished_at, signed_paths, route_reason, dispatch_id, source_multipart_id, source_part_size, input_output_id, error_message
 `
 
 type CreateAttemptParams struct {
@@ -125,6 +125,7 @@ func (q *Queries) CreateAttempt(ctx context.Context, arg CreateAttemptParams) (A
 		&i.SourceMultipartID,
 		&i.SourcePartSize,
 		&i.InputOutputID,
+		&i.ErrorMessage,
 	)
 	return i, err
 }
@@ -306,7 +307,7 @@ func (q *Queries) GetAssetAgentSourceSize(ctx context.Context, id string) (int64
 }
 
 const getAttempt = `-- name: GetAttempt :one
-SELECT id, project_id, job_id, asset_id, attempt_number, output_id, executor, agent_id, status, token_hash, lease_expires_at, phase, progress, worker_info, failure_kind, error_code, started_at, last_heartbeat_at, finished_at, signed_paths, route_reason, dispatch_id, source_multipart_id, source_part_size, input_output_id FROM attempts WHERE id = $1
+SELECT id, project_id, job_id, asset_id, attempt_number, output_id, executor, agent_id, status, token_hash, lease_expires_at, phase, progress, worker_info, failure_kind, error_code, started_at, last_heartbeat_at, finished_at, signed_paths, route_reason, dispatch_id, source_multipart_id, source_part_size, input_output_id, error_message FROM attempts WHERE id = $1
 `
 
 func (q *Queries) GetAttempt(ctx context.Context, id string) (Attempt, error) {
@@ -338,12 +339,13 @@ func (q *Queries) GetAttempt(ctx context.Context, id string) (Attempt, error) {
 		&i.SourceMultipartID,
 		&i.SourcePartSize,
 		&i.InputOutputID,
+		&i.ErrorMessage,
 	)
 	return i, err
 }
 
 const getAttemptByTokenHash = `-- name: GetAttemptByTokenHash :one
-SELECT id, project_id, job_id, asset_id, attempt_number, output_id, executor, agent_id, status, token_hash, lease_expires_at, phase, progress, worker_info, failure_kind, error_code, started_at, last_heartbeat_at, finished_at, signed_paths, route_reason, dispatch_id, source_multipart_id, source_part_size, input_output_id FROM attempts WHERE token_hash = $1
+SELECT id, project_id, job_id, asset_id, attempt_number, output_id, executor, agent_id, status, token_hash, lease_expires_at, phase, progress, worker_info, failure_kind, error_code, started_at, last_heartbeat_at, finished_at, signed_paths, route_reason, dispatch_id, source_multipart_id, source_part_size, input_output_id, error_message FROM attempts WHERE token_hash = $1
 `
 
 func (q *Queries) GetAttemptByTokenHash(ctx context.Context, tokenHash []byte) (Attempt, error) {
@@ -375,6 +377,7 @@ func (q *Queries) GetAttemptByTokenHash(ctx context.Context, tokenHash []byte) (
 		&i.SourceMultipartID,
 		&i.SourcePartSize,
 		&i.InputOutputID,
+		&i.ErrorMessage,
 	)
 	return i, err
 }
@@ -655,7 +658,7 @@ func (q *Queries) LockAsset(ctx context.Context, id string) (Asset, error) {
 }
 
 const lockAttempt = `-- name: LockAttempt :one
-SELECT attempts.id, attempts.project_id, attempts.job_id, attempts.asset_id, attempts.attempt_number, attempts.output_id, attempts.executor, attempts.agent_id, attempts.status, attempts.token_hash, attempts.lease_expires_at, attempts.phase, attempts.progress, attempts.worker_info, attempts.failure_kind, attempts.error_code, attempts.started_at, attempts.last_heartbeat_at, attempts.finished_at, attempts.signed_paths, attempts.route_reason, attempts.dispatch_id, attempts.source_multipart_id, attempts.source_part_size, attempts.input_output_id, (lease_expires_at < now())::boolean AS lease_expired
+SELECT attempts.id, attempts.project_id, attempts.job_id, attempts.asset_id, attempts.attempt_number, attempts.output_id, attempts.executor, attempts.agent_id, attempts.status, attempts.token_hash, attempts.lease_expires_at, attempts.phase, attempts.progress, attempts.worker_info, attempts.failure_kind, attempts.error_code, attempts.started_at, attempts.last_heartbeat_at, attempts.finished_at, attempts.signed_paths, attempts.route_reason, attempts.dispatch_id, attempts.source_multipart_id, attempts.source_part_size, attempts.input_output_id, attempts.error_message, (lease_expires_at < now())::boolean AS lease_expired
 FROM attempts WHERE id = $1 FOR UPDATE
 `
 
@@ -693,6 +696,7 @@ func (q *Queries) LockAttempt(ctx context.Context, id string) (LockAttemptRow, e
 		&i.Attempt.SourceMultipartID,
 		&i.Attempt.SourcePartSize,
 		&i.Attempt.InputOutputID,
+		&i.Attempt.ErrorMessage,
 		&i.LeaseExpired,
 	)
 	return i, err
@@ -1049,16 +1053,17 @@ func (q *Queries) SetAttemptSourceMultipart(ctx context.Context, arg SetAttemptS
 
 const setAttemptStatus = `-- name: SetAttemptStatus :exec
 UPDATE attempts
-SET status = $2, failure_kind = $3, error_code = $4,
+SET status = $2, failure_kind = $3, error_code = $4, error_message = $5,
     finished_at = CASE WHEN $2 IN ('committed', 'failed') THEN now() ELSE finished_at END
 WHERE id = $1
 `
 
 type SetAttemptStatusParams struct {
-	ID          string
-	Status      string
-	FailureKind pgtype.Text
-	ErrorCode   pgtype.Text
+	ID           string
+	Status       string
+	FailureKind  pgtype.Text
+	ErrorCode    pgtype.Text
+	ErrorMessage pgtype.Text
 }
 
 func (q *Queries) SetAttemptStatus(ctx context.Context, arg SetAttemptStatusParams) error {
@@ -1067,6 +1072,7 @@ func (q *Queries) SetAttemptStatus(ctx context.Context, arg SetAttemptStatusPara
 		arg.Status,
 		arg.FailureKind,
 		arg.ErrorCode,
+		arg.ErrorMessage,
 	)
 	return err
 }

@@ -308,7 +308,7 @@ func (q *Queries) ListApps(ctx context.Context, projectID string) ([]App, error)
 
 const listJobAttempts = `-- name: ListJobAttempts :many
 SELECT a.id, a.job_id, a.attempt_number, a.executor, a.route_reason, a.agent_id, coalesce(g.name, '')::text AS agent_name,
-       a.status, a.failure_kind, a.error_code, a.phase, a.progress, a.started_at, a.finished_at,
+       a.status, a.failure_kind, a.error_code, a.error_message, a.phase, a.progress, a.started_at, a.finished_at,
        a.last_heartbeat_at, a.output_id, (o.manifest -> 'encoder')::jsonb AS encoder
 FROM attempts a
 LEFT JOIN agents g ON g.id = a.agent_id
@@ -328,6 +328,7 @@ type ListJobAttemptsRow struct {
 	Status          string
 	FailureKind     pgtype.Text
 	ErrorCode       pgtype.Text
+	ErrorMessage    pgtype.Text
 	Phase           pgtype.Text
 	Progress        pgtype.Float4
 	StartedAt       pgtype.Timestamptz
@@ -359,6 +360,7 @@ func (q *Queries) ListJobAttempts(ctx context.Context, jobIds []string) ([]ListJ
 			&i.Status,
 			&i.FailureKind,
 			&i.ErrorCode,
+			&i.ErrorMessage,
 			&i.Phase,
 			&i.Progress,
 			&i.StartedAt,

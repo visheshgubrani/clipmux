@@ -510,8 +510,10 @@ A job is
   `queue_age`, `no_fallback`, `fallback_refused`, `fallback_offline`,
   `fallback_limit`, `primary_limit` or `setup_test`.
 - Each attempt is
-  `{id, number, executor, route_reason?, agent_id?, agent_name?, status, failure_kind?, error_code?, phase?, progress?, encoder?, started_at, finished_at?, last_heartbeat_at?}`,
-  and keeps the reason it ran where it did.
+  `{id, number, executor, route_reason?, agent_id?, agent_name?, status, failure_kind?, error_code?, error_message?, phase?, progress?, encoder?, started_at, finished_at?, last_heartbeat_at?}`,
+  and keeps the reason it ran where it did. A failed attempt's
+  `error_message` is what its worker said went wrong, such as ffmpeg's first
+  error lines: at most 1000 characters, with any URL's query string removed.
 
 ## Cloudflare
 

@@ -6,6 +6,7 @@ package httpjson
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -33,6 +34,10 @@ func Decode(w http.ResponseWriter, r *http.Request, v any) bool {
 func DecodeLimit(w http.ResponseWriter, r *http.Request, v any, limit int64) bool {
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, limit))
 	if err := dec.Decode(v); err != nil && !errors.Is(err, io.EOF) {
+		if _, big := errors.AsType[*http.MaxBytesError](err); big {
+			Error(w, http.StatusRequestEntityTooLarge, "too_large", fmt.Sprintf("the body is larger than %d bytes", limit))
+			return false
+		}
 		Error(w, http.StatusBadRequest, "invalid_request", "body must be a JSON object")
 		return false
 	}
