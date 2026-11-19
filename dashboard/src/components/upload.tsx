@@ -1,9 +1,16 @@
-import { ClipMuxUpload, type CreatedUpload, rememberUpload } from '@clipmux/uploader'
+import {
+  type Asset,
+  ClipMuxUpload,
+  type CreatedUpload,
+  type RememberedUpload,
+  rememberUpload,
+  type UploadStore,
+} from '@clipmux/uploader'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { CheckIcon, PauseIcon, PlayIcon, UploadIcon, XIcon } from 'lucide-react'
 import * as React from 'react'
 import { Link } from 'react-router'
-import { LADDER, post, type Rung } from '@/api'
+import { del, LADDER, post, type Rung } from '@/api'
 import { RenditionPicker, renditionsBody, renditionsNote, videoShortSide } from '@/components/renditions'
 import { Button } from '@/components/ui/button'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
@@ -28,15 +35,18 @@ import { Input } from '@/components/ui/input'
 import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 import { Progress } from '@/components/ui/progress'
 import { Switch } from '@/components/ui/switch'
+import { toast } from '@/components/ui/toast'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { videoPath } from '@/lib/format'
 import { notify } from '@/lib/notify'
 import { cn } from '@/lib/utils'
 import { q } from '@/queries'
 
-// Upload (docs/design.md): several files at once, each its own ordinary
-// POST /v1/uploads as the chosen app (the Dashboard app by default), sent in
-// parts straight to storage and resumed after a reload.
+// Upload (docs/design.md, D135): several files at once, each its own
+// ordinary POST /v1/uploads as the chosen app (the Dashboard app by
+// default), sent in parts straight to storage. A browser can't read a file
+// again after a reload, so a reload lists the stopped uploads and adding the
+// same file again resumes it.
 
 type State = 'ready' | 'uploading' | 'paused' | 'done' | 'failed' | 'cancelled'
 
@@ -63,20 +73,31 @@ interface Options {
   renditions: Rung[]
 }
 
-const remembered = rememberUpload(
-  (() => {
-    try {
-      return window.localStorage
-    } catch {
-      const m = new Map<string, string>()
-      return {
-        getItem: (k) => m.get(k) ?? null,
-        setItem: (k, v) => void m.set(k, v),
-        removeItem: (k) => void m.delete(k),
-      }
+/** An upload a reload stopped: its file must be added again to go on. */
+interface Stopped extends RememberedUpload {
+  key: string
+  /** The share storage already holds, when ClipMux could say. */
+  progress?: number
+}
+
+// Where the uploader remembers each file's upload until it completes.
+const store: UploadStore = (() => {
+  try {
+    return window.localStorage
+  } catch {
+    const m = new Map<string, string>()
+    return {
+      getItem: (k) => m.get(k) ?? null,
+      setItem: (k, v) => void m.set(k, v),
+      removeItem: (k) => void m.delete(k),
+      get length() {
+        return m.size
+      },
+      key: (i) => [...m.keys()][i] ?? null,
     }
-  })() as Storage,
-)
+  }
+})()
+const remembered = rememberUpload(store)
 
 const titleFrom = (name: string) =>
   name
@@ -84,7 +105,43 @@ const titleFrom = (name: string) =>
     .replace(/[_-]+/g, ' ')
     .trim()
     .slice(0, 200)
-const fileKey = (f: File) => `${f.name}:${f.size}:${f.lastModified}`
+const fileKey = (f: { name: string; size: number; lastModified: number }) =>
+  `${f.name}:${f.size}:${f.lastModified}`
+
+// An upload's own routes, with its token. Not api(): a refused token is a
+// 401 there, which api() would take for the session ending.
+const withToken = (u: CreatedUpload, path: string, init: RequestInit = {}) =>
+  fetch(`${location.origin}/v1/uploads/${encodeURIComponent(u.upload_id)}${path}`, {
+    ...init,
+    headers: { Authorization: `Bearer ${u.upload_token}`, 'Content-Type': 'application/json' },
+  })
+
+// Whether a remembered upload is still open, and how much of it is stored;
+// 'over' when ClipMux has ended it (completed, cancelled, expired, deleted).
+async function check(r: RememberedUpload): Promise<'over' | { progress?: number }> {
+  try {
+    const res = await withToken(r.upload, '/parts')
+    if (res.ok) {
+      const { parts } = (await res.json()) as { parts: { size: number }[] }
+      return { progress: parts.reduce((n, p) => n + p.size, 0) / Math.max(r.size, 1) }
+    }
+    if (res.status < 500 && res.status !== 429) return 'over'
+  } catch {
+    // ClipMux didn't answer: keep it
+  }
+  return {}
+}
+
+// A video whose upload was cancelled here has nothing in it, so it is
+// deleted rather than left in the library (D135).
+async function deleteCancelled(asset: Asset | null): Promise<void> {
+  if (!asset?.id) return
+  try {
+    await del(`/v1/assets/${asset.id}`, typeof asset.app_id === 'string' ? asset.app_id : undefined)
+  } catch (err) {
+    notify.failed("Couldn't remove the cancelled video", err)
+  }
+}
 
 interface UploadAPI {
   open: (files?: File[]) => void
@@ -100,6 +157,7 @@ export function useUpload(): UploadAPI {
 export function UploadProvider({ children }: { children: React.ReactNode }) {
   const [open, setOpen] = React.useState(false)
   const [items, setItems] = React.useState<Item[]>([])
+  const [stopped, setStopped] = React.useState<Stopped[]>([])
   const [opts, setOpts] = React.useState<Options>({
     privacy: 'signed',
     subtitles: false,
@@ -117,6 +175,9 @@ export function UploadProvider({ children }: { children: React.ReactNode }) {
     const videos = files.filter(
       (f) => f.type.startsWith('video/') || /\.(mp4|mov|mkv|webm|m4v|avi|mxf|ts)$/i.test(f.name),
     )
+    // A stopped upload's file is back: Upload resumes it from its memory.
+    const added = new Set(videos.map(fileKey))
+    setStopped((cur) => cur.filter((s) => !added.has(s.key)))
     setItems((cur) => {
       const have = new Set(cur.map((i) => i.key))
       return [
@@ -153,51 +214,103 @@ export function UploadProvider({ children }: { children: React.ReactNode }) {
   const update = (key: string, patch: Partial<Item>) =>
     setItems((cur) => cur.map((i) => (i.key === key ? { ...i, ...patch } : i)))
 
+  const refreshLibrary = () => {
+    void qc.invalidateQueries({ queryKey: ['library'] })
+    void qc.invalidateQueries({ queryKey: ['library-counts'] })
+  }
+
+  // After a reload: the uploads this browser remembers that ClipMux still
+  // has open. Ones it has ended are forgotten, so they start afresh.
+  const checked = React.useRef(false)
+  React.useEffect(() => {
+    if (checked.current) return
+    checked.current = true
+    const found = remembered.list()
+    if (found.length === 0) return
+    void Promise.all(found.map(async (r) => ({ r, now: await check(r) }))).then((results) => {
+      const open: Stopped[] = []
+      for (const { r, now } of results) {
+        if (now === 'over') remembered.forget(r)
+        else open.push({ ...r, key: fileKey(r), ...now })
+      }
+      if (open.length === 0) return
+      setStopped(open)
+      toast.add({
+        title:
+          open.length === 1
+            ? 'An upload stopped when the page reloaded'
+            : `${open.length} uploads stopped when the page reloaded`,
+        description: 'Add the file again to continue where it stopped.',
+        actionProps: { children: 'Show', onClick: () => setOpen(true) },
+      })
+    })
+  }, [])
+
+  // Ends a stopped upload for good: cancelled, its empty video deleted.
+  const discard = async (s: Stopped) => {
+    let res: Response
+    try {
+      res = await withToken(s.upload, '/cancel', { method: 'POST', body: '{}' })
+      if (res.status >= 500) throw new Error(`ClipMux answered HTTP ${res.status}`)
+    } catch (err) {
+      notify.failed(`Couldn't discard ${s.name}`, err)
+      return
+    }
+    // Anything but 2xx means it had already ended.
+    if (res.ok) await deleteCancelled((await res.json().catch(() => null)) as Asset | null)
+    remembered.forget(s)
+    setStopped((cur) => cur.filter((x) => x.key !== s.key))
+    refreshLibrary()
+  }
+
+  const cancel = async (item: Item) => {
+    const asset = await item.upload?.cancel()
+    await deleteCancelled(asset ?? null)
+    refreshLibrary()
+  }
+
   const run = async (item: Item) => {
     update(item.key, { state: 'uploading', progress: 0 })
     try {
       const app = opts.app || undefined
-      let created: CreatedUpload | null = remembered.load(item.file)
-      let assetId: string | undefined
-      if (!created) {
-        const res = await post<CreatedUpload & { asset_id: string }>(
-          '/v1/uploads',
-          {
-            size: item.file.size,
-            playback_policy: opts.privacy,
-            ...(item.title ? { title: item.title } : {}),
-            ...(opts.passthrough && items.length === 1 ? { passthrough: opts.passthrough } : {}),
-            ...(opts.subtitles || opts.chapters
-              ? { generate: { subtitles: opts.subtitles || opts.chapters, chapters: opts.chapters && llm } }
-              : {}),
-            ...renditionsBody(opts.renditions),
-          },
-          app,
-        )
-        created = res
-        assetId = res.asset_id
-        remembered.save(item.file, res)
-      }
       const upload = new ClipMuxUpload(item.file, {
         endpoint: location.origin,
-        upload: created,
+        store,
+        // A remembered upload ClipMux has ended is replaced by a new one.
+        // Not given the signal: creating is quick, and a cancel meanwhile
+        // waits for it, so the new upload is cancelled, not left waiting.
+        create: () =>
+          post<CreatedUpload>(
+            '/v1/uploads',
+            {
+              size: item.file.size,
+              playback_policy: opts.privacy,
+              ...(item.title ? { title: item.title } : {}),
+              ...(opts.passthrough && items.length === 1 ? { passthrough: opts.passthrough } : {}),
+              ...(opts.subtitles || opts.chapters
+                ? { generate: { subtitles: opts.subtitles || opts.chapters, chapters: opts.chapters && llm } }
+                : {}),
+              ...renditionsBody(opts.renditions),
+            },
+            app,
+          ),
         onProgress: (p) => update(item.key, { progress: p.bytesUploaded / p.bytesTotal }),
       })
-      update(item.key, { upload, ...(app ? { appId: app } : {}) })
+      update(item.key, { upload })
       const asset = await upload.start()
-      remembered.forget(item.file)
-      update(item.key, { state: 'done', progress: 1, assetId: asset.id ?? assetId })
-      void qc.invalidateQueries({ queryKey: ['library'] })
-      void qc.invalidateQueries({ queryKey: ['library-counts'] })
+      update(item.key, {
+        state: 'done',
+        progress: 1,
+        assetId: asset.id,
+        // A resumed upload may belong to another app than the one picked now.
+        ...(typeof asset.app_id === 'string' ? { appId: asset.app_id } : app ? { appId: app } : {}),
+      })
+      refreshLibrary()
     } catch (err) {
-      const code = (err as { code?: string }).code
-      if (code === 'cancelled') {
-        remembered.forget(item.file)
+      if ((err as { code?: string }).code === 'cancelled') {
         update(item.key, { state: 'cancelled' })
         return
       }
-      // A remembered upload that ClipMux no longer knows starts again next time.
-      if (code === 'not_found' || code === 'upload_expired') remembered.forget(item.file)
       update(item.key, { state: 'failed', error: (err as Error).message })
       notify.failed(`Couldn't upload ${item.file.name}`, err)
     }
@@ -213,6 +326,14 @@ export function UploadProvider({ children }: { children: React.ReactNode }) {
   }
 
   const active = items.some((i) => i.state === 'uploading' || i.state === 'paused')
+  // Leaving or reloading would stop them: the browser asks first.
+  React.useEffect(() => {
+    if (!active) return
+    const stay = (e: BeforeUnloadEvent) => e.preventDefault()
+    window.addEventListener('beforeunload', stay)
+    return () => window.removeEventListener('beforeunload', stay)
+  }, [active])
+  const shownStopped = stopped.filter((s) => !items.some((i) => i.key === s.key))
   // The largest video's short side, known only when every one was read.
   const maxHeight =
     items.length > 0 && items.every((i) => i.shortSide)
@@ -241,12 +362,41 @@ export function UploadProvider({ children }: { children: React.ReactNode }) {
           <DialogHeader>
             <DialogTitle>Upload videos</DialogTitle>
             <DialogDescription>
-              Uploads keep going if you close this, and resume if you reload.
+              Uploads keep going while this tab is open. After a reload, add the same file again and it picks
+              up where it stopped.
             </DialogDescription>
           </DialogHeader>
           {/* Room on the right for the switches' wider hit areas, which would
               otherwise overflow and let focus scroll the form sideways. */}
           <div className="-mr-3 flex max-h-[60vh] flex-col gap-5 overflow-y-auto pr-3">
+            {shownStopped.length > 0 && (
+              <section aria-labelledby="stopped-label" className="flex flex-col gap-2">
+                <p id="stopped-label" className="text-sm text-muted-foreground">
+                  Stopped by a reload. Add each file again to continue.
+                </p>
+                <ul className="flex flex-col gap-2">
+                  {shownStopped.map((s) => (
+                    <li key={s.key} className="flex items-center gap-2 rounded-lg border border-dashed p-3">
+                      <span className="min-w-0 flex-1 truncate text-sm font-medium">{s.name}</span>
+                      {/* Only finished parts count: bytes in flight at the reload are gone. */}
+                      {!!s.progress && (
+                        <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
+                          {Math.round(s.progress * 100)}% uploaded
+                        </span>
+                      )}
+                      <Button
+                        variant="ghost"
+                        size="xs"
+                        aria-label={`Discard ${s.name}`}
+                        onClick={() => void discard(s)}
+                      >
+                        Discard
+                      </Button>
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            )}
             <Dropzone onFiles={add} compact={items.length > 0} />
             {items.length > 0 && (
               <ul className="flex flex-col gap-2" aria-label="Files">
@@ -264,7 +414,7 @@ export function UploadProvider({ children }: { children: React.ReactNode }) {
                       i.upload?.resume()
                       update(i.key, { state: 'uploading' })
                     }}
-                    onCancel={() => void i.upload?.cancel()}
+                    onCancel={() => void cancel(i)}
                     onOpen={() => close(false)}
                   />
                 ))}

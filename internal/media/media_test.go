@@ -62,6 +62,10 @@ func TestLadderIsCappedAtTheSourcesShortSide(t *testing.T) {
 		// Nothing chosen fits: the largest rung that does.
 		{1280, 720, []string{"2160p", "1080p"}, []string{"720p"}},
 		{426, 240, []string{"1080p"}, []string{"240p"}},
+		// F8: no rung fits 4096 on the long side, so the one rendition is
+		// scaled to fit it: 400×5000 at 326 wide is 4076 tall.
+		{400, 5000, nil, []string{"326p"}},
+		{8192, 700, nil, []string{"350p"}},
 	}
 	for _, c := range cases {
 		if got := labels(SelectLadder(c.w, c.h, c.allowed)); !slices.Equal(got, c.want) {

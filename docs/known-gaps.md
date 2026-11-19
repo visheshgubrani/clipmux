@@ -391,3 +391,28 @@ when you introduce or discover it; remove it when it is closed.
   native token is always signed for 12 hours; an app that wants a tighter one
   must re-sign with `playback.token(id, { native, durationSeconds })`. A
   `durationSeconds` option on `session` would remove the second call.
+
+## Dashboard uploads (D135, 2026-11-19)
+
+- A reload stops a dashboard upload until its file is chosen again: a
+  browser can't read a file after a reload without the user picking it.
+  Remembering file handles (the File System Access API) is Chromium-only and
+  asks for permission, so the dashboard lists the stopped uploads instead.
+- That list is every upload this browser remembers that ClipMux still has
+  open, so an upload running in another tab of the same browser shows there
+  too, and Discard would cancel it.
+- A video whose upload was cancelled outside the dashboard's dialog shows as
+  Cancelled, but the Videos page's Failed filter still counts it:
+  `/v1/library/counts` counts by status, and it is `errored`.
+
+## Odd sources (bug hunt 2026-11-18, F5–F11 and F17)
+
+- A source whose frame size changes partway through encodes on the CPU
+  stage: VAAPI's full-GPU and hybrid stages fail when the change makes
+  ffmpeg rebuild the filter graph, so a GPU worker spends one failed attempt
+  per GPU stage before the CPU stage encodes it. NVENC is untested here.
+- A source without a duration in its header is measured by reading every
+  video packet's time (no decoding), which for a long recording is a full
+  read of the file before the encode starts.
+- Clips under 3.5 s are not loudness-normalised.
+

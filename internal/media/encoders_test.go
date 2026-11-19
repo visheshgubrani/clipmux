@@ -24,6 +24,13 @@ func names(chain []Stage) []string {
 func TestEachGPUTriesItsOwnDecodeThenTheCPUs(t *testing.T) {
 	tenBit := hd
 	tenBit.PixFmt = "yuv420p10le"
+	// A phone's portrait clip: landscape frames and a display matrix. A GPU
+	// decoder hands back unrotated hardware frames that ffmpeg can't
+	// autorotate, so it decodes on the CPU, which rotates.
+	portrait := hd
+	portrait.Width, portrait.Height, portrait.Rotation = 720, 1280, 90
+	upsideDown := hd
+	upsideDown.Rotation = 180
 	cases := []struct {
 		name string
 		hw   Hardware
@@ -35,6 +42,9 @@ func TestEachGPUTriesItsOwnDecodeThenTheCPUs(t *testing.T) {
 		{"NVIDIA without NVENC", Hardware{CUDA: true}, hd, []string{"cuda-decode", "cpu"}},
 		{"AMD or Intel", Hardware{VAAPIDevice: "/dev/dri/renderD128"}, hd, []string{"vaapi", "vaapi-hybrid", "cpu"}},
 		{"10-bit source decodes on the CPU", Hardware{VAAPIDevice: "/dev/dri/renderD128"}, tenBit, []string{"vaapi-hybrid", "cpu"}},
+		{"portrait phone clip on AMD or Intel", Hardware{VAAPIDevice: "/dev/dri/renderD128"}, portrait, []string{"vaapi-hybrid", "cpu"}},
+		{"portrait phone clip on NVIDIA", Hardware{NVENC: true, CUDA: true}, portrait, []string{"nvenc-hybrid", "cpu"}},
+		{"upside-down clip on AMD or Intel", Hardware{VAAPIDevice: "/dev/dri/renderD128"}, upsideDown, []string{"vaapi-hybrid", "cpu"}},
 		{"both GPUs", Hardware{NVENC: true, CUDA: true, VAAPIDevice: "/d"}, hd, []string{"nvenc", "nvenc-hybrid", "vaapi", "vaapi-hybrid", "cpu"}},
 		{"--encoder vaapi first", Hardware{NVENC: true, CUDA: true, VAAPIDevice: "/d", Prefer: VAAPI}, hd, []string{"vaapi", "vaapi-hybrid", "nvenc", "nvenc-hybrid", "cpu"}},
 		{"--encoder cpu", Hardware{NVENC: true, CUDA: true, Prefer: CPU}, hd, []string{"cpu"}},
@@ -65,7 +75,7 @@ func TestEveryBackendKeepsTheLaddersRatesAndKeyframes(t *testing.T) {
 		// every rung on the GPU: four CPU scales of a 4K frame cost more
 		// than its decode.
 		"nvenc-hybrid": {Stage{NVENC, false}, []string{
-			"-init_hw_device cuda=cu -filter_hw_device cu", "[0:v:0]setpts=PTS-STARTPTS,format=yuv420p,hwupload,split=1[s0]",
+			"-init_hw_device cuda=cu -filter_hw_device cu", "[0:v:0]setpts=PTS-0/TB,format=yuv420p,hwupload,split=1[s0]",
 			"[s0]scale_cuda=1280:720:format=yuv420p[v0]", "-c:v h264_nvenc",
 		}},
 		"vaapi": {Stage{VAAPI, true}, []string{
@@ -73,7 +83,7 @@ func TestEveryBackendKeepsTheLaddersRatesAndKeyframes(t *testing.T) {
 			"scale_vaapi=w=1280:h=720:format=nv12", "-c:v h264_vaapi -profile:v high -rc_mode VBR",
 		}},
 		"vaapi-hybrid": {Stage{VAAPI, false}, []string{
-			"-init_hw_device vaapi=va:/dev/dri/renderD128 -filter_hw_device va", "[0:v:0]setpts=PTS-STARTPTS,format=nv12,hwupload,split=1[s0]",
+			"-init_hw_device vaapi=va:/dev/dri/renderD128 -filter_hw_device va", "[0:v:0]setpts=PTS-0/TB,format=nv12,hwupload,split=1[s0]",
 			"[s0]scale_vaapi=w=1280:h=720:format=nv12[v0]", "-c:v h264_vaapi",
 		}},
 		"cuda-decode": {Stage{CUDADecode, true}, []string{"-hwaccel cuda -format_whitelist", "scale=1280:720,format=yuv420p", "-c:v libx264 -preset veryfast", "-keyint_min 180 -sc_threshold 0"}},

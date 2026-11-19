@@ -2,6 +2,7 @@ package media
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/binary"
 	"encoding/hex"
@@ -19,25 +20,64 @@ import (
 	"time"
 )
 
+// loudnormMinSeconds is the shortest audio loudnorm is given: under 3 s it
+// measures a clip of digital silence as NaN, which the AAC encoder refuses
+// (bug hunt F6). A clip that short gains little from normalising anyway.
+const loudnormMinSeconds = 3.5
+
 // AudioArgs encodes the audio rendition: loudness-normalised AAC, 48 kHz stereo.
-func AudioArgs(input, encDir string) []string {
+func AudioArgs(src Source, input, encDir string) []string {
 	args := []string{"-hide_banner", "-nostdin", "-y", "-nostats"}
 	args = append(args, inputGuard()...)
+	filter := "asetpts=PTS-STARTPTS,loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000"
+	if src.Duration < loudnormMinSeconds {
+		filter = "asetpts=PTS-STARTPTS,aresample=48000"
+	}
 	return append(args, "-i", input, "-vn",
-		"-af", "asetpts=PTS-STARTPTS,loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000",
+		"-af", filter,
 		"-c:a", "aac", "-b:a", "128k", "-ac", "2", "-ar", "48000",
 		"-movflags", "+frag_keyframe+empty_moov+default_base_moof",
 		filepath.Join(encDir, "audio.mp4"))
 }
 
-// PosterArgs grabs one frame near the start, at most 720 on the short side.
-func PosterArgs(src Source, input, outDir string) []string {
+// PosterArgs grabs the frame at the given second, at most 720 on the short
+// side. The seek is on the output, so ffmpeg decodes from the start: an
+// input seek into a stream whose keyframes are far apart (an OBS recording
+// in MPEG-TS) can land where nothing decodes (bug hunt F5). Decoding up to a
+// second costs little.
+func PosterArgs(src Source, input, outDir string, at float64) []string {
 	w, h := Rung{Height: min(720, min(src.Width, src.Height)&^1)}.Dimensions(src.Width, src.Height)
-	at := strconv.FormatFloat(min(1, src.Duration/2), 'f', 3, 64)
-	args := []string{"-hide_banner", "-nostdin", "-y", "-ss", at}
+	args := []string{"-hide_banner", "-nostdin", "-y"}
 	args = append(args, inputGuard()...)
-	return append(args, "-i", input, "-frames:v", "1", "-vf", fmt.Sprintf("scale=%d:%d", w, h),
+	args = append(args, "-i", input)
+	if at > 0 {
+		args = append(args, "-ss", strconv.FormatFloat(at, 'f', 3, 64))
+	}
+	return append(args, "-frames:v", "1", "-vf", fmt.Sprintf("scale=%d:%d", w, h),
 		"-q:v", "3", filepath.Join(outDir, "poster.jpg"))
+}
+
+// poster grabs a frame a second in (or halfway through a shorter video),
+// and the first frame when that finds none: a video of one frame, or one
+// whose last frame comes before the halfway point (bug hunt F9).
+func poster(ctx context.Context, t Tools, src Source, input, workDir, outDir string) error {
+	err := t.run(ctx, t.FFmpeg, PosterArgs(src, input, outDir, min(1, src.Duration/2)), workDir, io.Discard)
+	if err != nil && ctx.Err() == nil {
+		err = t.run(ctx, t.FFmpeg, PosterArgs(src, input, outDir, 0), workDir, io.Discard)
+	}
+	return err
+}
+
+// audioPackets counts the packets in an encoded audio rendition.
+func audioPackets(ctx context.Context, t Tools, path string) (int, error) {
+	var out bytes.Buffer
+	args := append(inputGuard(), "-v", "error", "-select_streams", "a:0", "-count_packets",
+		"-show_entries", "stream=nb_read_packets", "-of", "csv=p=0", "-i", path)
+	if err := t.run(ctx, t.FFprobe, args, filepath.Dir(path), &out); err != nil {
+		return 0, err
+	}
+	n, _ := strconv.Atoi(strings.TrimSpace(out.String())) // empty: no audio stream at all
+	return n, nil
 }
 
 const drmLabel = "CLIPMUX"
@@ -109,6 +149,15 @@ func Transcode(ctx context.Context, t Tools, input string, src Source, rendition
 	if err != nil {
 		return Manifest{}, err
 	}
+	if src.HasAudio {
+		// A declared track with no packets (a recorder whose mic was dead)
+		// encodes to an empty rendition: the output is video-only (F7).
+		n, err := audioPackets(ctx, t, filepath.Join(encDir, "audio.mp4"))
+		if err != nil {
+			return Manifest{}, fmt.Errorf("count audio packets: %w", err)
+		}
+		src.HasAudio = n > 0
+	}
 
 	progress("package", 0)
 	start := time.Now()
@@ -142,7 +191,7 @@ func Transcode(ctx context.Context, t Tools, input string, src Source, rendition
 			return Manifest{}, fmt.Errorf("%s: %w", d, err)
 		}
 	}
-	if err := t.run(ctx, t.FFmpeg, PosterArgs(src, input, outDir), workDir, io.Discard); err != nil {
+	if err := poster(ctx, t, src, input, workDir, outDir); err != nil {
 		return Manifest{}, fmt.Errorf("poster: %w", err)
 	}
 
@@ -185,7 +234,7 @@ func encodeVideoAndAudio(ctx context.Context, t Tools, src Source, input, workDi
 	if src.HasAudio {
 		wg.Go(func() {
 			start := time.Now()
-			if err := t.run(ctx, t.FFmpeg, AudioArgs(input, encDir), workDir, io.Discard); err != nil {
+			if err := t.run(ctx, t.FFmpeg, AudioArgs(src, input, encDir), workDir, io.Discard); err != nil {
 				fail(fmt.Errorf("encode audio: %w", err))
 			}
 			took.Audio = time.Since(start)

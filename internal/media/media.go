@@ -81,7 +81,8 @@ func LadderNames() []string {
 // side whose frame fits maxSide, kept to allowed when that names any, in
 // ladder order. When none of allowed fits, the largest rung that does is
 // encoded instead, so a source always gets a rendition. A source smaller
-// than the lowest rung gets one rendition at its own size.
+// than the lowest rung, or too long for any rung to fit, gets one rendition
+// at its own size, scaled down to fit maxSide.
 func SelectLadder(width, height int, allowed []string) []Rung {
 	short := min(width, height)
 	var fits []Rung
@@ -91,8 +92,10 @@ func SelectLadder(width, height int, allowed []string) []Rung {
 		}
 	}
 	if len(fits) == 0 {
+		// One rendition at the source's size, scaled down until its long
+		// side fits too (a 400×5000 sliver is 326 wide, bug hunt F8).
 		low := defaultLadder[len(defaultLadder)-1]
-		low.Height = short &^ 1 // even
+		low.Height = min(short, short*maxSide/max(width, height)) &^ 1 // even
 		return []Rung{low}
 	}
 	if len(allowed) == 0 {

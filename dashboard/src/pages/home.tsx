@@ -59,9 +59,11 @@ export function Home() {
                 <ItemContent>
                   <ItemTitle>{videoName(a)}</ItemTitle>
                   <ItemDescription>
-                    {a.status === 'errored'
-                      ? `Failed: ${a.error_code ?? 'the encode stopped'}`
-                      : `Encoding, added ${ago(a.created_at)}`}
+                    {a.error_code === 'upload_cancelled'
+                      ? 'Upload cancelled'
+                      : a.status === 'errored'
+                        ? `Failed: ${a.error_code ?? 'the encode stopped'}`
+                        : `Encoding, added ${ago(a.created_at)}`}
                   </ItemDescription>
                 </ItemContent>
               </Item>

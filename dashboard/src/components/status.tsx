@@ -11,8 +11,18 @@ const assetWords: Record<AssetStatus, [string, 'success' | 'tally' | 'destructiv
   deleted: ['Deleted', 'secondary'],
 }
 
-export function AssetStatusBadge({ status }: { status: AssetStatus }) {
-  const [word, variant] = assetWords[status] ?? [status, 'secondary']
+export function AssetStatusBadge({
+  status,
+  errorCode,
+}: {
+  status: AssetStatus
+  errorCode?: string | undefined
+}) {
+  // A cancelled upload is someone's choice, not a failure (D135).
+  const [word, variant] =
+    status === 'errored' && errorCode === 'upload_cancelled'
+      ? (['Cancelled', 'secondary'] as const)
+      : (assetWords[status] ?? [status, 'secondary'])
   return <Badge variant={variant}>{word}</Badge>
 }
 

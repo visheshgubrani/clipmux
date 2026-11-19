@@ -125,9 +125,12 @@ func (s Stage) gpu() bool { return s.Backend != CPU }
 
 // hwDecodable is what every GPU here decodes: common codecs in 8-bit 4:2:0.
 // Anything else (10-bit, 4:2:2, ProRes) decodes on the CPU and still
-// encodes on the GPU.
+// encodes on the GPU. So does a rotated source, a phone's portrait clip:
+// ffmpeg autorotates only frames in system memory, and a GPU decoder's
+// frames would come out sideways, squeezed into the rotated size and still
+// tagged with the rotation.
 func hwDecodable(src Source) bool {
-	return slices.Contains([]string{"h264", "hevc", "vp9", "av1", "mpeg2video"}, src.Codec) &&
+	return src.Rotation == 0 && slices.Contains([]string{"h264", "hevc", "vp9", "av1", "mpeg2video"}, src.Codec) &&
 		slices.Contains([]string{"yuv420p", "yuvj420p", "nv12"}, src.PixFmt)
 }
 
@@ -186,7 +189,12 @@ func EncodeArgs(stage Stage, dev string, src Source, input, encDir string, rungs
 	case stage.Backend == VAAPI && !stage.HWDecode:
 		upload = "format=nv12,hwupload,"
 	}
-	graph := fmt.Sprintf("[0:v:0]setpts=PTS-STARTPTS,%ssplit=%d", upload, len(rungs))
+	// Each rendition starts at zero. The offset is a constant from the
+	// probe, not STARTPTS: a frame size change mid-stream reconfigures the
+	// graph, STARTPTS would restart there, and everything after the change
+	// would overlap the start and be dropped (bug hunt F11).
+	start := strconv.FormatFloat(src.VideoStart, 'f', -1, 64)
+	graph := fmt.Sprintf("[0:v:0]setpts=PTS-%s/TB,%ssplit=%d", start, upload, len(rungs))
 	for i := range rungs {
 		graph += fmt.Sprintf("[s%d]", i)
 	}

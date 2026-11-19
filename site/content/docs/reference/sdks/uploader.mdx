@@ -123,14 +123,15 @@ import { ClipMuxUpload } from '@clipmux/uploader'
 const asset = await new ClipMuxUpload(file, { createUrl: '/api/clipmux/upload' }).start()
 ```
 
-`new ClipMuxUpload(file, options)` needs `upload` or `createUrl`.
+`new ClipMuxUpload(file, options)` needs `upload`, `createUrl` or `create`.
 
 <TypeTable
   type={{
     upload: { type: 'CreatedUpload', description: 'What POST /v1/uploads returned to your backend: upload_id, upload_token, part_size, part_count, and optionally asset_id and endpoint.' },
     createUrl: { type: 'string', description: "Instead of upload: your backend's route that creates it. start() sends {size, name, type} there and uses the answer, which must carry endpoint unless that option is set." },
+    create: { type: '(signal: AbortSignal) => Promise<CreatedUpload>', description: 'Instead of upload or createUrl: creates the upload with your own client and resolves with the body of POST /v1/uploads. It owns its retries. The upload is remembered as a createUrl one is.' },
     endpoint: { type: 'string', description: "ClipMux's public URL, for example https://video.example.com. Optional when the upload carries endpoint." },
-    store: { type: 'UploadStore | null', description: 'Where a createUrl upload is remembered until it completes, so a reload resumes it; null turns it off.', default: 'localStorage' },
+    store: { type: 'UploadStore | null', description: 'Where a createUrl or create upload is remembered until it completes, so a reload resumes it; null turns it off.', default: 'localStorage' },
     concurrency: { type: 'number', description: 'Parts in flight at once.', default: '4' },
     maxAttempts: { type: 'number', description: 'Tries per request before giving up.', default: '6' },
     onProgress: { type: '(progress: Progress) => void', description: 'Called as bytes are sent.' },
@@ -144,7 +145,7 @@ const asset = await new ClipMuxUpload(file, { createUrl: '/api/clipmux/upload' }
 | `start()` | Uploads what storage doesn't hold yet and completes the upload. Resolves with the video, `processing`. After a rejection, calling it again retries from what storage holds |
 | `pause()` | Stops sending; parts already stored stay |
 | `resume()` | Continues after `pause()` |
-| `cancel()` | Stops for good and tells ClipMux to cancel the upload |
+| `cancel()` | Stops for good and tells ClipMux to cancel the upload. Resolves with the video, `errored` with `upload_cancelled`, or `null` when there was none. An upload still being created is cancelled once it exists |
 | `upload` | The upload in use, or `null` until `start()` has one |
 
 How it behaves:
@@ -158,8 +159,8 @@ How it behaves:
   `413 too_large` fails at once.
 - A failure rejects with a `ClipMuxUploadError` and leaves the upload
   resumable for 24 hours.
-- With `createUrl`, a remembered upload that has expired or was cancelled is
-  replaced by a new one.
+- With `createUrl` or `create`, a remembered upload that ClipMux has ended
+  (expired, cancelled, its video deleted) is replaced by a new one.
 - Storage must expose the `ETag` header to the page. ClipMux's own storage
   does, and adding a bucket in the dashboard sets its CORS.
 
@@ -168,11 +169,11 @@ How it behaves:
 | Export | Does |
 | --- | --- |
 | `ClipMuxUploadError` | The error a failed upload rejects with: `code`, `status` (`0` without an answer) and `retryable` |
-| `rememberUpload(store)` | Remembers an upload per file in a store such as `localStorage`: `{ save(file, upload), load(file), forget(file) }`. It keeps only the upload's ID, token, part layout and endpoint |
+| `rememberUpload(store)` | Remembers an upload per file in a store such as `localStorage`: `{ save(file, upload), load(file), forget(file), list() }`. It keeps only the upload's ID, token, part layout and endpoint. `list()` returns `{ name, size, lastModified, upload }` for each, when the store has `length` and `key()` |
 | `planParts(size, partSize)` | Splits a size into parts, `{ number, start, end }[]` |
 
 Types: `CreatedUpload`, `Asset`, `Progress`, `UploadOptions`, `UploadStore`,
-`PlannedPart` and `PutPart`.
+`RememberedUpload`, `FileLike`, `PlannedPart` and `PutPart`.
 
 With your own backend route and `rememberUpload`:
 

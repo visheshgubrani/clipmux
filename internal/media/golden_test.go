@@ -250,6 +250,38 @@ func TestProbeRefusesNonVideoAndDisguisedPlaylists(t *testing.T) {
 	}
 }
 
+// A phone stores a portrait clip as landscape frames plus a display matrix.
+// The probe reports the size as displayed and keeps the rotation, which
+// decides how the clip may be decoded.
+func TestProbeReadsTheDisplayRotation(t *testing.T) {
+	tools := testTools(t)
+	ctx := context.Background()
+	dir := t.TempDir()
+	base := filepath.Join(dir, "base.mp4")
+	ffmpeg(t, "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=10:duration=1", "-c:v", "libx264", "-pix_fmt", "yuv420p", base)
+	cases := []struct {
+		rotation             string
+		width, height, angle int
+	}{
+		{"0", 320, 180, 0},
+		{"90", 180, 320, 90},
+		{"180", 320, 180, 180},
+		{"270", 180, 320, 270},
+	}
+	for _, c := range cases {
+		p := filepath.Join(dir, "rot"+c.rotation+".mp4")
+		ffmpeg(t, "-display_rotation:v:0", c.rotation, "-i", base, "-c", "copy", p)
+		src, err := Probe(ctx, tools, p)
+		if err != nil {
+			t.Fatalf("rotation %s: %v", c.rotation, err)
+		}
+		if src.Width != c.width || src.Height != c.height || src.Rotation != c.angle {
+			t.Errorf("rotation %s: %dx%d rotated %d, want %dx%d rotated %d",
+				c.rotation, src.Width, src.Height, src.Rotation, c.width, c.height, c.angle)
+		}
+	}
+}
+
 // testdata/corrupt.mp4 (toolchain/make_corrupt.sh) stands for a file that
 // kills the encoder after the probe let it through. The routing tests and
 // the Phase 4 exit test rely on exactly that, so it is proven here with the

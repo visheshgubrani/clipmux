@@ -298,15 +298,16 @@ test('pause stops sending and resume finishes from what storage holds', async ()
   assert.equal(f.stored.size, 3)
 })
 
-test('cancel aborts and tells ClipMux', async () => {
+test('cancel aborts, tells ClipMux and resolves with the errored asset', async () => {
   const f = fakeClipMux()
   f.state.putGate = new Promise(() => {})
   const up = f.upload()
   const done = up.start()
   await new Promise((r) => setTimeout(r, 10))
-  await up.cancel()
+  const asset = await up.cancel()
   await assert.rejects(done, (e: ClipMuxUploadError) => e.code === 'cancelled')
   assert.ok(f.calls.includes('POST /v1/uploads/upl_1/cancel'))
+  assert.deepEqual(asset, { id: 'ast_1', status: 'errored', version: 2 })
 })
 
 test('progress counts stored bytes', async () => {
@@ -341,6 +342,45 @@ test('rememberUpload keeps only what resuming needs', () => {
   })
   memory.forget(file)
   assert.equal(memory.load(file), null)
+})
+
+test('rememberUpload lists the uploads it holds, a name with colons included', () => {
+  const items = new Map<string, string>()
+  const store: UploadStore = {
+    getItem: (k) => items.get(k) ?? null,
+    setItem: (k, v) => void items.set(k, v),
+    removeItem: (k) => void items.delete(k),
+    get length() {
+      return items.size
+    },
+    key: (i) => [...items.keys()][i] ?? null,
+  }
+  const memory = rememberUpload(store)
+  const file = Object.assign(new Blob(['abc']), { name: 'Lesson 1: intro.mp4', lastModified: 1700000000000 })
+  memory.save(file, { upload_id: 'upl_1', upload_token: 'tok', part_size: 4, part_count: 1 })
+  items.set('theme', 'dark')
+  assert.deepEqual(memory.list(), [
+    {
+      name: 'Lesson 1: intro.mp4',
+      size: 3,
+      lastModified: 1700000000000,
+      upload: { upload_id: 'upl_1', upload_token: 'tok', part_size: 4, part_count: 1 },
+    },
+  ])
+  memory.forget({ name: 'Lesson 1: intro.mp4', size: 3, lastModified: 1700000000000 })
+  assert.deepEqual(memory.list(), [])
+})
+
+test('a store that cannot enumerate its keys lists nothing', () => {
+  const items = new Map<string, string>([
+    ['clipmux:upload:a.mp4:3:1', '{"upload_id":"u","upload_token":"t"}'],
+  ])
+  const memory = rememberUpload({
+    getItem: (k) => items.get(k) ?? null,
+    setItem: (k, v) => void items.set(k, v),
+    removeItem: (k) => void items.delete(k),
+  })
+  assert.deepEqual(memory.list(), [])
 })
 
 test('a pause between parts stops before the next part is sent', async () => {
@@ -489,8 +529,117 @@ test('the backend failing to create is retried with backoff', async () => {
   assert.equal(app.bodies.length, 2)
 })
 
-test('an upload needs upload or createUrl, and an endpoint from somewhere', () => {
-  assert.throws(() => new ClipMuxUpload(new Blob([]), {}), /upload or createUrl/)
+// create: the page creates the upload with its own client (the dashboard
+// with its session), and the upload is remembered as with createUrl.
+function pageCreator(f: ReturnType<typeof fakeClipMux>) {
+  const items = new Map<string, string>()
+  const store: UploadStore = {
+    getItem: (k) => items.get(k) ?? null,
+    setItem: (k, v) => void items.set(k, v),
+    removeItem: (k) => void items.delete(k),
+  }
+  let gate: Promise<void> | null = null
+  const create = async (): Promise<CreatedUpload> => {
+    f.calls.push('create')
+    if (gate) await gate
+    return {
+      upload_id: 'upl_1',
+      upload_token: 'tok',
+      part_size: f.partSize,
+      part_count: planParts(f.size, f.partSize).length,
+      asset_id: 'ast_1',
+    }
+  }
+  const file = new File([f.file], 'lesson.mp4', { type: 'video/mp4', lastModified: 1700000000000 })
+  const upload = (extra: Partial<ConstructorParameters<typeof ClipMuxUpload>[1]> = {}) =>
+    new ClipMuxUpload(file, {
+      endpoint: 'https://video.example.com',
+      ...extra,
+      create,
+      store,
+      fetch: f.fetch,
+      put: f.put,
+      delay: f.delay,
+      random: () => 0,
+      now: f.now,
+      concurrency: 1,
+    })
+  return {
+    items,
+    upload,
+    hold(): () => void {
+      let release!: () => void
+      gate = new Promise((r) => {
+        release = r
+      })
+      return release
+    },
+  }
+}
+
+test('a create upload interrupted after one part resumes after a reload without creating another', async () => {
+  const f = fakeClipMux()
+  const page = pageCreator(f)
+  const first = page.upload({
+    onProgress: (p) => {
+      if (p.partsDone === 1) first.pause() // as a closed tab would
+    },
+  })
+  void first.start()
+  await new Promise((r) => setTimeout(r, 20))
+  assert.equal(page.items.size, 1, 'the created upload is remembered')
+  f.calls.length = 0
+  const asset = await page.upload().start() // the page reloaded
+  assert.equal(asset.id, 'ast_1')
+  assert.deepEqual(
+    f.calls.filter((c) => c.startsWith('PUT') || c === 'create'),
+    ['PUT 2', 'PUT 3'],
+  )
+  assert.equal(page.items.size, 0, 'a completed upload is forgotten')
+})
+
+test('a remembered create upload that is no longer active is replaced by a new one', async () => {
+  const f = fakeClipMux()
+  const page = pageCreator(f)
+  page.items.set(
+    'clipmux:upload:lesson.mp4:10:1700000000000',
+    JSON.stringify({ upload_id: 'upl_old', upload_token: 'tok', part_size: 4, part_count: 3 }),
+  )
+  f.state.listStatus = 409
+  f.state.completeScript.push(409)
+  const asset = await page.upload().start()
+  assert.equal(asset.id, 'ast_1')
+  assert.deepEqual(f.calls.slice(0, 3), [
+    'GET /v1/uploads/upl_old/parts',
+    'POST /v1/uploads/upl_old/complete',
+    'create',
+  ])
+})
+
+test('cancel while the upload is being created cancels it once it exists', async () => {
+  const f = fakeClipMux()
+  const page = pageCreator(f)
+  const release = page.hold()
+  const up = page.upload()
+  const done = up.start()
+  await new Promise((r) => setTimeout(r, 10))
+  const cancelling = up.cancel()
+  release()
+  const asset = await cancelling
+  await assert.rejects(done, (e: ClipMuxUploadError) => e.code === 'cancelled')
+  assert.equal(asset?.id, 'ast_1')
+  assert.deepEqual(f.calls, ['create', 'POST /v1/uploads/upl_1/cancel'])
+  assert.equal(page.items.size, 0, 'nothing is left to resume')
+})
+
+test('cancel before anything was created resolves with null', async () => {
+  const f = fakeClipMux()
+  assert.equal(await pageCreator(f).upload().cancel(), null)
+  assert.deepEqual(f.calls, [])
+})
+
+test('an upload needs upload, createUrl or create, and an endpoint from somewhere', () => {
+  assert.throws(() => new ClipMuxUpload(new Blob([]), {}), /upload, createUrl or create/)
   assert.throws(
     () =>
       new ClipMuxUpload(new Blob([]), {

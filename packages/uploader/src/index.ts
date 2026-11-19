@@ -6,7 +6,8 @@
 //
 // Or give it createUrl, a route of your backend (the @clipmux/node handler's
 // /upload) that creates the upload and answers with it plus endpoint, the
-// ClipMux URL. The upload is then remembered in localStorage, so a reload
+// ClipMux URL; or create, a function that does the same with your own
+// client. The upload is then remembered in localStorage, so a reload
 // resumes it. <clipmux-uploader> (./element.ts) wraps this in a drop zone.
 
 /** The 201 body of POST /v1/uploads, relayed by your backend. */
@@ -58,8 +59,15 @@ export interface UploadOptions {
    */
   createUrl?: string
   /**
-   * Where a createUrl upload is remembered until it completes, so a reload
-   * resumes it: localStorage by default; null to forget on reload.
+   * Instead of upload or createUrl: a function that creates the upload with
+   * your own client (one holding a session, say) and resolves with what
+   * POST /v1/uploads returned. Its upload is remembered as createUrl's is.
+   * It owns its retries; the uploader calls it once per upload it needs.
+   */
+  create?: (signal: AbortSignal) => Promise<CreatedUpload>
+  /**
+   * Where a createUrl or create upload is remembered until it completes, so
+   * a reload resumes it: localStorage by default; null to forget on reload.
    */
   store?: UploadStore | null
   /** Parts in flight at once (default 4). */
@@ -126,6 +134,8 @@ export class ClipMuxUpload {
   #memory: ReturnType<typeof rememberUpload> | null = null
   #fromMemory = false
   #run: AbortController | null = null
+  // The upload being created, which a cancel waits for so it can cancel it.
+  #preparing: Promise<void> | null = null
   #paused = false
   #resumed: (() => void) | null = null
   #cancelled = false
@@ -147,8 +157,9 @@ export class ClipMuxUpload {
     }
     this.#created = null
     if (options.upload) this.#use(options.upload)
-    else if (!options.createUrl) throw new TypeError('ClipMuxUpload needs upload or createUrl')
-    if (options.createUrl) {
+    else if (!options.createUrl && !options.create)
+      throw new TypeError('ClipMuxUpload needs upload, createUrl or create')
+    if (options.createUrl || options.create) {
       const store = options.store === undefined ? defaultStore() : options.store
       this.#memory = store ? rememberUpload(store) : null
     }
@@ -197,7 +208,7 @@ export class ClipMuxUpload {
     }
   }
 
-  // createUrl: the remembered upload of this file, or a new one.
+  // createUrl or create: the remembered upload of this file, or a new one.
   async #prepare(signal: AbortSignal): Promise<void> {
     if (this.#created) return
     const remembered = this.#memory?.load(this.#file)
@@ -205,13 +216,29 @@ export class ClipMuxUpload {
       this.#fromMemory = true
       return this.#use(remembered)
     }
-    const created = await this.#create(signal)
-    this.#use(created)
-    this.#memory?.save(this.#file, created)
+    const creating = (async () => {
+      const created = await this.#create(signal)
+      this.#use(created)
+      this.#memory?.save(this.#file, created)
+    })()
+    this.#preparing = creating
+    try {
+      await creating
+    } finally {
+      this.#preparing = null
+    }
+    // Paused or cancelled while it was being created: stop before any part.
+    if (signal.aborted) throw signal.reason
   }
 
   async #create(signal: AbortSignal): Promise<CreatedUpload> {
-    const { maxAttempts, fetch } = this.#opts
+    const { maxAttempts, fetch, create } = this.#opts
+    if (create) {
+      const created = await create(signal)
+      if (!isCreated(created))
+        throw new ClipMuxUploadError('create_invalid', 'create resolved without an upload')
+      return created
+    }
     const file = this.#file as Blob & { name?: string }
     const body = JSON.stringify({ size: file.size, name: file.name ?? '', type: file.type })
     let last: unknown
@@ -231,8 +258,8 @@ export class ClipMuxUpload {
         continue
       }
       if (res.ok) {
-        const created = (await res.json().catch(() => null)) as CreatedUpload | null
-        if (!created || typeof created.upload_id !== 'string' || typeof created.upload_token !== 'string') {
+        const created: unknown = await res.json().catch(() => null)
+        if (!isCreated(created)) {
           throw new ClipMuxUploadError(
             'create_invalid',
             'the create URL answered without an upload',
@@ -267,13 +294,19 @@ export class ClipMuxUpload {
     this.#resumed = null
   }
 
-  /** Stops for good and tells ClipMux to abort the upload. */
-  async cancel(): Promise<void> {
+  /**
+   * Stops for good and tells ClipMux to abort the upload. Resolves with the
+   * asset ClipMux answered with (errored, upload_cancelled), or null when
+   * there was no upload yet, it had already ended, or ClipMux was unreachable.
+   * An upload still being created is cancelled once it exists.
+   */
+  async cancel(): Promise<Asset | null> {
     this.#cancelled = true
     this.#run?.abort(new ClipMuxUploadError('cancelled', 'the upload was cancelled'))
     this.#resumed?.()
+    await this.#preparing?.catch(() => {})
     this.#memory?.forget(this.#file)
-    if (!this.#created) return
+    if (!this.#created) return null
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
         const res = await this.#opts.fetch(`${this.#api}/cancel`, {
@@ -281,11 +314,13 @@ export class ClipMuxUpload {
           headers: this.#headers(),
           body: '{}',
         })
-        if (res.ok || res.status < 500) return
+        if (res.ok) return (await res.json().catch(() => null)) as Asset | null
+        if (res.status < 500) return null
       } catch {
         // best effort
       }
     }
+    return null
   }
 
   #headers(): Record<string, string> {
@@ -580,6 +615,11 @@ function stale(err: unknown): boolean {
   )
 }
 
+function isCreated(v: unknown): v is CreatedUpload {
+  const c = v as CreatedUpload | null
+  return !!c && typeof c.upload_id === 'string' && typeof c.upload_token === 'string'
+}
+
 function defaultStore(): UploadStore | null {
   try {
     return (globalThis as { localStorage?: UploadStore }).localStorage ?? null
@@ -665,12 +705,34 @@ function defaultPut(f: typeof fetch): PutPart {
     })
 }
 
-/** Where an unfinished upload is remembered across a reload. */
+/**
+ * Where an unfinished upload is remembered across a reload. length and key()
+ * (localStorage has both) let rememberUpload list what it holds.
+ */
 export interface UploadStore {
   getItem(key: string): string | null
   setItem(key: string, value: string): void
   removeItem(key: string): void
+  readonly length?: number
+  key?(index: number): string | null
 }
+
+/** What names a file's remembered upload: a File, or its name, size and time. */
+export interface FileLike {
+  name?: string
+  size: number
+  lastModified?: number
+}
+
+/** A remembered upload, with the file it belongs to. */
+export interface RememberedUpload {
+  name: string
+  size: number
+  lastModified: number
+  upload: CreatedUpload
+}
+
+const MEMORY_KEY = /^clipmux:upload:(.*):(\d+):(\d+)$/s
 
 /**
  * Remembers an upload per file in storage (e.g. localStorage), so a reload
@@ -678,10 +740,17 @@ export interface UploadStore {
  * ClipMux itself knows which parts it holds.
  */
 export function rememberUpload(store: UploadStore) {
-  const key = (file: Blob & { name?: string; lastModified?: number }) =>
-    `clipmux:upload:${file.name ?? ''}:${file.size}:${file.lastModified ?? 0}`
+  const key = (file: FileLike) => `clipmux:upload:${file.name ?? ''}:${file.size}:${file.lastModified ?? 0}`
+  const read = (k: string): CreatedUpload | null => {
+    try {
+      const v: unknown = JSON.parse(store.getItem(k) ?? 'null')
+      return isCreated(v) ? v : null
+    } catch {
+      return null
+    }
+  }
   return {
-    save(file: Blob, upload: CreatedUpload): void {
+    save(file: FileLike, upload: CreatedUpload): void {
       const { upload_id, upload_token, part_size, part_count, endpoint } = upload
       try {
         store.setItem(key(file), JSON.stringify({ upload_id, upload_token, part_size, part_count, endpoint }))
@@ -689,20 +758,32 @@ export function rememberUpload(store: UploadStore) {
         // full or blocked: the upload just won't resume after a reload
       }
     },
-    load(file: Blob): CreatedUpload | null {
-      try {
-        const v = JSON.parse(store.getItem(key(file)) ?? 'null') as CreatedUpload | null
-        return v && typeof v.upload_id === 'string' && typeof v.upload_token === 'string' ? v : null
-      } catch {
-        return null
-      }
+    load(file: FileLike): CreatedUpload | null {
+      return read(key(file))
     },
-    forget(file: Blob): void {
+    forget(file: FileLike): void {
       try {
         store.removeItem(key(file))
       } catch {
         // blocked
       }
+    },
+    /** Every remembered upload, so a page can say which files to add again. */
+    list(): RememberedUpload[] {
+      const out: RememberedUpload[] = []
+      try {
+        const keys: string[] = []
+        for (let i = 0; i < (store.length ?? 0); i++) keys.push(store.key?.(i) ?? '')
+        for (const k of keys) {
+          const m = MEMORY_KEY.exec(k)
+          const upload = m && read(k)
+          if (m && upload)
+            out.push({ name: m[1] ?? '', size: Number(m[2]), lastModified: Number(m[3]), upload })
+        }
+      } catch {
+        // blocked
+      }
+      return out
     },
   }
 }

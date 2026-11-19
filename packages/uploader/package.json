@@ -1,6 +1,6 @@
 {
   "name": "@clipmux/uploader",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Upload files to ClipMux in resumable parts, straight to storage, from code or a drop-in <clipmux-uploader>.",
   "license": "MIT",
   "keywords": [

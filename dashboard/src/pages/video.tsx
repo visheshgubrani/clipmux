@@ -183,11 +183,13 @@ function Video({
               </div>
             ) : (
               <div className="flex aspect-video max-w-4xl items-center justify-center rounded-md bg-poster text-sm text-white/70">
-                {a.status === 'errored'
-                  ? `The encode failed${a.error_code ? ` (${a.error_code})` : ''}. Re-encode to try again.`
-                  : deleted
-                    ? 'This video was deleted.'
-                    : 'The player appears once encoding finishes.'}
+                {a.status === 'errored' && a.error_code === 'upload_cancelled'
+                  ? 'The upload was cancelled.'
+                  : a.status === 'errored'
+                    ? `The encode failed${a.error_code ? ` (${a.error_code})` : ''}. Re-encode to try again.`
+                    : deleted
+                      ? 'This video was deleted.'
+                      : 'The player appears once encoding finishes.'}
               </div>
             )}
             <Details asset={a} />
@@ -283,7 +285,7 @@ function Header({ asset: a, app, job }: { asset: Asset; app?: string | undefined
         </div>
       </div>
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-muted-foreground">
-        <AssetStatusBadge status={a.status} />
+        <AssetStatusBadge status={a.status} errorCode={a.error_code} />
         {!deleted && <span>{isPublic(a) ? 'Public' : 'Private'}</span>}
         {job && a.status === 'processing' && <span data-job-progress>{jobLine(job)}</span>}
       </div>
