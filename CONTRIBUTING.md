@@ -46,7 +46,7 @@ pnpm install && pnpm -r run build   # dashboard, player, uploader, Worker
 The media tests need FFmpeg, ffprobe and Shaka Packager ≥ 3.9.1
 (`toolchain/install_packager.sh`); they skip without them. The real
 whisper.cpp tests need `toolchain/build_whisper.sh` and its models
-(`toolchain/fetch_speech_models.sh`). [.github/README.md](.github/README.md)
+(`toolchain/fetch_speech_models.sh`). [.github/CI.md](.github/CI.md)
 says which suites run where in CI.
 
 ## How changes are made

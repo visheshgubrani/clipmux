@@ -300,7 +300,7 @@ make run                              # clipmux serve on :8080; it prints a setu
 
 The media tests need FFmpeg, ffprobe and Shaka Packager ≥ 3.9.1
 (`toolchain/install_packager.sh`) and skip without them;
-[.github/README.md](.github/README.md) says which suites run where in CI.
+[.github/CI.md](.github/CI.md) says which suites run where in CI.
 
 ```text
 cmd/clipmux/     the single binary
