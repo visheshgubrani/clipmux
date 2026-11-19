@@ -1,6 +1,8 @@
 # Cloudflare static assets: short URLs (P6-T15-site.md, "URL map").
-# The installers are never copied here: they 302 to the latest GitHub
-# release, whose SHA256SUMS they check.
-/install.sh https://github.com/visheshgubrani/clipmux/releases/latest/download/install.sh 302
-/install-agent.sh https://github.com/visheshgubrani/clipmux/releases/latest/download/install-agent.sh 302
+# The installers are never copied here: they 302 to a GitHub release, whose
+# SHA256SUMS they check. Until v1.0.0 that is the newest release candidate,
+# because /releases/latest skips prereleases; at launch (P6-T20) both go
+# back to releases/latest/download (D136).
+/install.sh https://github.com/visheshgubrani/clipmux/releases/download/v1.0.0-rc.1/install.sh 302
+/install-agent.sh https://github.com/visheshgubrani/clipmux/releases/download/v1.0.0-rc.1/install-agent.sh 302
 /github https://github.com/visheshgubrani/clipmux 302

@@ -1696,3 +1696,42 @@ P6-T15.4–T15.7, answering P6-T15-site.md open question 5. The owner found the 
 - **The management API is public,** at `/docs/reference/management-api`, marked "used by the dashboard; may change between releases". `internal/manage/docs_test.go` fails if a route registered in `internal/manage` is missing from the page or the page names one that isn't registered; the docs lint reads its routes from that page. `docs/api.md`'s management table is replaced by a link.
 - **Snippets are files that run.** The Python, Go and PHP token-signing and webhook-verification code lives in `site/snippets/`, is included into pages with `<include>`, and `make snippets-test` (CI's `snippets` job) runs it against both vector files. The landing page reads the same files. The quickstart's TypeScript is in `site/snippets/node/` and compiles against the workspace packages in the site's typecheck.
 - **`/agents.md`** is built from `packages/node/AGENTS.md` with a header linking `llms.txt`, the Build docs in full and the spec. The landing page drops `npx skills add` until the agent skills (T17) exist.
+
+## D136 Releases from a tag: the image, tarballs, binaries and installers on a GitHub Release; npm by trusted publishing — accepted (2026-11-19)
+P6-T07, and the installer fixes it exposed. Context: clipmux.com showed `curl -fsSL https://clipmux.com/install.sh | sudo sh`, which redirected to `releases/latest/download/install.sh`, a 404. No release or `v*` tag existed, `release.yml` only published npm, and the ghcr package was private.
+Decision:
+- **`release.yml` is the one release workflow** on a `v*` tag. Its jobs:
+  - `gate` checks that the tag is `vX.Y.Z` or `vX.Y.Z-rc.N` and that `CHANGELOG.md` has a `## TAG - DATE` section. It then waits for `ci.yml` to pass on the tagged commit, and for a release that isn't a candidate, `exit.yml` as well. A candidate runs the exit suites alongside it.
+  - `image` calls `image.yml` (now `workflow_call`, with no tag trigger of its own). The image is built with `VERSION` and `WORKER_IMAGE` at the tag. The job checks that `clipmux version` prints the tag and runs the setup test under compose on amd64 and arm64. It pushes `:TAG`, plus `:latest` for a release that isn't a prerelease. Each architecture and the index get a build provenance attestation pushed to the registry. Run by hand on main, it pushes `sha-{commit}` as before, now attested too.
+  - `agent` calls `agent.yml`, with `VERSION` at the tag.
+  - `cli` cross-builds `clipmux-{linux,darwin,windows}-{amd64,arm64}` (`.exe` on Windows) with CGO off. The binaries carry the tag and the tag's worker image, and don't embed the dashboard.
+  - `release` assembles the files and checks the list against exactly the 13 that P6 exit check 3 needs:
+    - the tarballs, whose build checksums are rechecked;
+    - the binaries;
+    - `install.sh` and `install-agent.sh`, with `@CLIPMUX_VERSION@` replaced by the tag;
+    - `compose.yml` (from `compose.release.yml`) and `Caddyfile`;
+    - `SHA256SUMS` over all of them.
+
+    It attests every file. Then `gh release create --verify-tag` creates the release, as `--prerelease` for a `-` tag and `--latest` otherwise. The notes come from `toolchain/release_notes.sh`: the tag's CHANGELOG section plus the pinned one-liner.
+  - `npm` runs after `release`. Run by hand, it is the only job, and a dry run by default.
+- **npm by trusted publishing** (the repository is public, as D125 planned for launch). The job sets no `NODE_AUTH_TOKEN`. It authenticates through OIDC (`id-token: write`, npm ≥ 11.5.1) and publishes with `--provenance`. On npmjs.com, each of `@clipmux/player`, `@clipmux/uploader` and `@clipmux/node` names `visheshgubrani/clipmux` and `release.yml` as its trusted publisher, and the `NPM_TOKEN` secret is then deleted. This supersedes D125's token.
+- **`clipmux.com/install.sh` before v1.0.0.** `/releases/latest` skips prereleases, so `clipmux.com/install.sh` and `/install-agent.sh` 302 to the newest candidate's assets (`releases/download/v1.0.0-rc.N/…`). The redirect is in `deploy/site/clipmux.com.caddy` and mirrored in `site/public/_redirects`, and moves by hand with each `-rc`. Launch (P6-T20) points both back at `releases/latest/download`. The rejected alternative was marking a candidate as the latest release: a later `v1.1.0-rc.1` would then have to be told apart from a release by hand, and `:latest` would follow it.
+- **The Docker command pins the image** (`internal/agents/http.go`):
+  - a release version gives `:vX.Y.Z`;
+  - a CI build's 40-character commit gives `:sha-{commit}`;
+  - anything else (`dev`) gives `:latest`.
+- **The installer's setup URL.** `install.sh` printed the first address of `hostname -I`. That can be the Docker bridge, and behind NAT or on a cloud VM it is private.
+  - It now asks `https://clipmux.com/cdn-cgi/trace` for the address the internet sees. That is Cloudflare's trace endpoint on the host the script came from, so no third party is involved; the request uses IPv4 and times out after 5 s.
+  - It prints that address first, then the server's own address (the source of its default route) "from the server's own network" when the two differ.
+  - With no answer, it prints the own address and says when it is private.
+  - It always says that the HTTP and HTTPS ports must be open in any cloud firewall.
+  - The uninstall line names `clipmux.com/install.sh`.
+- Tests:
+  - `TestDockerCommandPinsTheServersImage`;
+  - the address cases, run against the script's own functions: public and private, both equal, no answer, nothing at all, and the private ranges including CGNAT;
+  - `release_notes.sh` against an exact tag, a missing tag and a prefix (`rc.1` vs `rc.10`);
+  - the `release` job's assemble step run locally on stub artifacts;
+  - actionlint and shellcheck clean.
+- **`toolchain/check_release.sh`** is the clean-VM check for a published release, run as root on a fresh Ubuntu 24.04 or Debian 12 VM with a public address. It installs Docker from Docker's apt repository and runs the one-liner as the landing page shows it. It sets the public and media URLs to sslip.io names of the printed address, so Caddy gets real certificates, which it checks over verified HTTPS. Then it runs the setup test, re-runs the one-liner (keeping the secrets key, the session and an API key), uninstalls, reinstalls on the kept volumes, and purges.
+
+**The `-rc` run:** pending. It waits for the owner to merge, push `v1.0.0-rc.1`, make the ghcr package public, set the npm trusted publishers, and provide clean Ubuntu 24.04 and Debian 12 VMs. Its results are recorded here when it runs.
