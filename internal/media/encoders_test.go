@@ -156,6 +156,13 @@ func TestTheCPUsFailureIsFinal(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "(cpu)") {
 		t.Fatalf("err = %v, want the CPU stage's failure", err)
 	}
+	// F21: when every stage fails, the GPU stages' reasons are in the error
+	// too, or nothing ever records them.
+	for _, want := range []string{"vaapi (", "vaapi-hybrid (", "Cannot load h264_vaapi"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("err lacks the earlier stages' failures (%q):\n%v", want, err)
+		}
+	}
 }
 
 func TestACancelledEncodeDoesntFallBack(t *testing.T) {
