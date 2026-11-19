@@ -1760,3 +1760,26 @@ Decision:
 - **arm64:** the setup-URL lookup was tried on an arm64 VM behind NAT, which has a private own address, and printed the public one. The full check wasn't run there because the VM serves other apps; the arm64 image's setup test in `image.yml` is the arm64 evidence.
 - **The redirect went live** after the Ubuntu run: the two `redir` lines in the VPS's `/etc/caddy/clipmux.conf` (its own copy, which also serves `app.clipmux.com`) were changed to `v1.0.0-rc.1`, validated, and Caddy reloaded. `clipmux.com/install.sh` and `/install-agent.sh` now 302 to the rc's assets, and both say `version="v1.0.0-rc.1"`. Before that they pointed at `releases/latest`, a 404.
 - **Not done yet:** Debian 12.
+
+## D137 Several encodes on one PC: encode slots, a fair share, and contention retries alone — proposed (2026-11-20)
+Context: the owner asked whether ten uploads encode at once on a PC that could take them. On a provider they do: each job gets its own machine, up to `max_concurrent` (production runs 10, D132). A PC agent or the built-in worker runs one media job at a time, plus one transcription beside it (`runSpeech`). Inside a job the ladder's rungs already encode in one ffmpeg, and the audio beside the video (`encodeVideoAndAudio`).
+- The server sets no such limit. The claim, routing and schema hold nothing per agent: no current-attempt column, no constraint on attempts per agent, and `route.go`'s "Pull executors always have room; a busy one just doesn't claim". Leases and heartbeats are per attempt, and `FenceAgent` and `ListAgentLiveAttempts` already handle several live attempts per agent. `jobs_one_active_output` keeps parallel jobs on different assets.
+- The limit is the single claim loop in `worker.Run`. While a video uploads, the encoder sits idle.
+- To be built after v1.0.0, once F21's `x264Threads` change has landed, from [plans/parallel-encodes.md](plans/parallel-encodes.md).
+
+Decision:
+- **Encode slots.** `clipmux worker --jobs auto|N` (`CLIPMUX_WORKER_JOBS`, which serve passes to the built-in worker) sets N encode slots. The claim loop takes an in-flight token (at most 2N attempts) and an encode slot, then claims; an empty long-poll gives both back. An attempt holds its slot through download, probe, transcode and packaging, gives it back when `media.Transcode` returns, and uploads and completes outside it.
+  - The worker claims only what it can start at once, so a job it can't start yet stays in the queue for other PCs, queue-age fallback and providers.
+  - Even at N = 1 the next job downloads and encodes while the last one uploads.
+  - `--once` and `RunDispatched` force 1: on a provider, more at once means more machines.
+  - `Run` waits for every attempt it started; on shutdown each is handed back with `worker_stopped`, as today.
+- **A fair share.** `media.Tools` carries the CPUs each encode may use (`NumCPU / N`), which `x264Threads` and `sandbox.CPUBudget` read instead of `runtime.NumCPU()`. Zero means the whole machine, as today.
+- **Contention never demotes a job to a slower encoder.** A stage that fails while another encode was running retries once on the same stage, alone, before `encodeLadder` falls through to the next; a stage that fails alone falls through as today. A machine-wide `sync.RWMutex` from the worker: each stage runs under a read lock, and the retry gives its read lock back and takes the write lock, which waits for the others and blocks new ones. That covers NVENC session caps (a rung is a session; a 4K ladder has 6), VRAM and VAAPI contexts without matching error text or knowing each driver's cap.
+- **Disk is reserved, not counted twice.** The `free_disk_bytes` a claim reports is the measured free space minus what the worker's running attempts may still write: each one's need under `job_claimable_by`'s rule (3 × the declared size for an upload, 2 × for a local source, 1 GiB plus 64 KiB a second for a transcription) less what its directory holds. The media and speech loops share the ledger, as they share `SpeechSlot`.
+- **`auto`**, to be set by measurement (the plan's T1); proposed: 1 slot when the first backend is the CPU, since one x264 ladder already fills every core; 2 on NVENC or VAAPI; never more than `memTotal` over a measured per-slot figure. `--jobs N` takes 1 to 16. The speech slot is unchanged.
+- **Visibility:** the worker logs its slots at start, and each `attempt committed` line (D129) says how many encodes ran beside it.
+
+Consequence:
+- No server, schema, worker API or dashboard change, so a newer agent works with an older server and the reverse.
+- On a CPU-only PC the gain is the upload overlap, not parallel encodes.
+- A "k of N busy" display would need an additive claim field and a place to show it, since the Workers page is gone (D116); it is left open.

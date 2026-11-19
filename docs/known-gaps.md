@@ -423,3 +423,11 @@ when you introduce or discover it; remove it when it is closed.
   read of the file before the encode starts.
 - Clips under 3.5 s are not loudness-normalised.
 
+
+## Encodes on a PC (D137, 2026-11-20)
+
+- A PC agent or the built-in worker encodes one video at a time, plus one
+  transcription beside it, and its encoder sits idle while a video uploads.
+  A provider runs several at once, one machine per job. Encode slots that
+  fix this are planned for after v1.0.0
+  ([plans/parallel-encodes.md](plans/parallel-encodes.md)).
