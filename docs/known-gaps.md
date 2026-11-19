@@ -366,10 +366,10 @@ when you introduce or discover it; remove it when it is closed.
   sealed copy is dropped, so they can't be recovered. The owner revokes
   them on the app's page (the API key is named after the pairing). Revoking
   them automatically at expiry needs a sweep that doesn't exist yet (D113).
-- npm publishes by trusted publishing with provenance (D136), which needs
-  each package's trusted publisher set on npmjs.com; until the owner does,
-  a publish fails with `ENEEDAUTH`. No publish has run this way yet: the
-  first is the next package version bump.
+- npm publishes with provenance but still authenticates with the
+  `NPM_TOKEN` secret, a 2FA-bypass token that npm says it is restricting
+  for direct publishing (D136). Trusted publishing replaces it once each
+  package's trusted publisher is set on npmjs.com.
 - `@clipmux/player`'s element types import Video.js 10.2's declaration
   files, which don't all type-check; an app needs `skipLibCheck: true`.
 - The packages are ESM only. A CommonJS app needs Node ≥ 20.19 (or 22.12)

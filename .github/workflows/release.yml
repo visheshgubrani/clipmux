@@ -19,10 +19,11 @@
 # Run by hand, only the npm job runs, as a dry run unless dry_run is
 # unticked.
 #
-# npm authenticates by trusted publishing (OIDC, no token): each package
-# names this repository and release.yml as its trusted publisher on
-# npmjs.com, and every publish carries provenance (D136, replacing D125's
-# token).
+# npm authenticates with the NPM_TOKEN secret, a granular token with read
+# and write on the @clipmux scope (and 2FA bypass), and every publish carries
+# provenance now that the repository is public (D136). npm tries trusted
+# publishing (OIDC) first, so once each package names this repository and
+# release.yml as its trusted publisher on npmjs.com, the token can go.
 name: Release
 on:
   push:
@@ -188,7 +189,7 @@ jobs:
     timeout-minutes: 20
     permissions:
       contents: read
-      # Trusted publishing and provenance.
+      # Provenance, and trusted publishing once it is set up.
       id-token: write
     steps:
       - uses: actions/checkout@v4
@@ -211,6 +212,7 @@ jobs:
           pnpm --filter './packages/*' run test
       - name: Publish what npm doesn't have yet
         env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && '1' || '' }}
         run: |
           set -euo pipefail

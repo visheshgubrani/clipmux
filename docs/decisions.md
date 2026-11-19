@@ -1722,7 +1722,9 @@ Decision:
 
     It attests every file. Then `gh release create --verify-tag` creates the release, as `--prerelease` for a `-` tag and `--latest` otherwise. The notes come from `toolchain/release_notes.sh`: the tag's CHANGELOG section plus the pinned one-liner.
   - `npm` runs after `release`. Run by hand, it is the only job, and a dry run by default.
-- **npm by trusted publishing** (the repository is public, as D125 planned for launch). The job sets no `NODE_AUTH_TOKEN`. It authenticates through OIDC (`id-token: write`, npm ≥ 11.5.1) and publishes with `--provenance`. On npmjs.com, each of `@clipmux/player`, `@clipmux/uploader` and `@clipmux/node` names `visheshgubrani/clipmux` and `release.yml` as its trusted publisher, and the `NPM_TOKEN` secret is then deleted. This supersedes D125's token.
+- **npm publishes with provenance** (`--provenance`, `id-token: write`, npm ≥ 11.5.1), now that the repository is public, as D125 planned for launch. It still authenticates with D125's `NPM_TOKEN`, the owner's choice after the rc run.
+  - npm tries trusted publishing (OIDC) first, so once each package names `visheshgubrani/clipmux` and `release.yml` as its trusted publisher on npmjs.com, the token can be deleted.
+  - npm now warns that tokens which bypass 2FA are being restricted for direct publishing, so trusted publishing is the lasting path.
 - **`clipmux.com/install.sh` before v1.0.0.** `/releases/latest` skips prereleases, so `clipmux.com/install.sh` and `/install-agent.sh` 302 to the newest candidate's assets (`releases/download/v1.0.0-rc.N/…`). The redirect is in `deploy/site/clipmux.com.caddy` and mirrored in `site/public/_redirects`, and moves by hand with each `-rc`. Launch (P6-T20) points both back at `releases/latest/download`. The rejected alternative was marking a candidate as the latest release: a later `v1.1.0-rc.1` would then have to be told apart from a release by hand, and `:latest` would follow it.
 - **The Docker command pins the image** (`internal/agents/http.go`):
   - a release version gives `:vX.Y.Z`;
