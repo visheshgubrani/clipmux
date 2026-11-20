@@ -1,7 +1,10 @@
-// Package runpodtest is a fake RunPod REST API for tests (D056). It keeps
-// pods and registry auths in memory, checks the bearer key on every call,
-// and records every request. With Start set it also runs each pod, so the
-// Phase 4 exit test can drive serve's real RunPod adapter with local
+// Package runpodtest is a fake RunPod REST API v2 for tests (D056, D139).
+// It keeps pods and registry credentials in memory, checks the bearer key
+// on every call, and records every request. Like RunPod's, it lists pods a
+// page at a time, ignores filters it doesn't know, answers errors in
+// RFC 9457's shape and refuses a pod request with a field RunPod's schema
+// doesn't have. With Start set it also runs each pod, so the Phase 4 exit
+// test can drive serve's real RunPod adapter with local
 // `clipmux worker --once` processes.
 package runpodtest
 
@@ -10,6 +13,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -32,11 +36,22 @@ var Catalogue = []map[string]any{
 	{"id": "NVIDIA RTX A5000", "name": "RTX A5000", "memory": 24, "secure": false, "price": map[string]float64{"community": 0.16}},
 }
 
+// createPodFields are the top-level fields of RunPod's CreatePodRequest
+// (with ContainerConfig's), from its v2 API reference; it rejects any
+// other with a 422.
+var createPodFields = []string{
+	"name", "image", "cloud", "gpu", "cpu", "env", "cmd", "args", "entrypoint", "disk", "ports",
+	"registry", "mounts", "dataCenterIds", "templateId", "globalNetworking", "startJupyter", "startSsh", "queue",
+}
+
+// gpuFields are CreateGpuConfig's.
+var gpuFields = []string{"id", "count", "allowedCudaVersions", "minCudaVersion", "minRamPerGpu", "minVcpuCountPerGpu"}
+
 // Pod is a pod as the fake holds it: what was asked for, and its state.
 type Pod struct {
 	runpod.PodInput
-	ID            string
-	DesiredStatus string
+	ID     string
+	Status string
 }
 
 // Call is one recorded request.
@@ -53,6 +68,11 @@ type Fake struct {
 	Start func(Pod) (stop func())
 	// FailCreates makes the next n pod creations answer 500.
 	FailCreates int
+	// NoCapacity are GPU types the fake has none of: creating a pod on one
+	// answers 400, as RunPod does.
+	NoCapacity map[string]bool
+	// PageSize is how many pods a list page holds; zero is RunPod's 1000.
+	PageSize int
 
 	// GraphQL is where the browser approval runs (D109): unauthenticated,
 	// like RunPod's. Approve or Deny settles a request.
@@ -62,6 +82,7 @@ type Fake struct {
 
 	mu        sync.Mutex
 	pods      map[string]*Pod
+	order     []string // pod IDs, oldest first
 	stops     map[string]func()
 	auths     map[string]string // id → name
 	approvals map[string]string // request id → PENDING, APPROVED, CONSUMED or DENIED
@@ -131,7 +152,7 @@ func New(t *testing.T) *Fake {
 			stop()
 		}
 	})
-	f.URL = srv.URL + "/v1"
+	f.URL = srv.URL + "/v2"
 	f.GraphQL = srv.URL + "/graphql"
 	f.Catalog = srv.URL + "/v2"
 	return f
@@ -143,7 +164,7 @@ func (f *Fake) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Header.Get("Authorization") != "Bearer "+Key {
-		w.WriteHeader(http.StatusUnauthorized)
+		problem(w, http.StatusUnauthorized, "The API key is missing or invalid.")
 		return
 	}
 	var body map[string]any
@@ -153,57 +174,85 @@ func (f *Fake) serve(w http.ResponseWriter, r *http.Request) {
 	f.calls = append(f.calls, Call{Method: r.Method, Path: r.URL.Path, Body: body})
 	f.mu.Unlock()
 
-	if r.URL.Path == "/v2/catalog/gpus" {
-		writeJSON(w, http.StatusOK, map[string]any{"gpus": Catalogue})
-		return
-	}
-	path := strings.TrimPrefix(r.URL.Path, "/v1")
+	path := strings.TrimPrefix(r.URL.Path, "/v2")
 	switch {
+	case r.Method == http.MethodGet && path == "/catalog/gpus":
+		writeJSON(w, http.StatusOK, map[string]any{"gpus": Catalogue})
 	case r.Method == http.MethodPost && path == "/pods":
-		f.create(w, raw)
+		f.create(w, raw, body)
 	case r.Method == http.MethodGet && path == "/pods":
-		f.list(w, r.URL.Query().Get("name"))
+		f.list(w, r.URL.Query().Get("cursor"))
 	case r.Method == http.MethodDelete && strings.HasPrefix(path, "/pods/"):
 		f.delete(w, strings.TrimPrefix(path, "/pods/"))
-	case r.Method == http.MethodPost && path == "/containerregistryauth":
+	case r.Method == http.MethodPost && path == "/registries":
+		name, _ := body["name"].(string)
+		user, _ := body["username"].(string)
+		pass, _ := body["password"].(string)
+		if name == "" || user == "" || pass == "" || len(body) != 3 {
+			problem(w, http.StatusUnprocessableEntity, "The request body is invalid.")
+			return
+		}
 		f.mu.Lock()
 		f.nextID++
-		id := "cra" + strconv.Itoa(f.nextID)
-		f.auths[id], _ = body["name"].(string)
+		id := "reg" + strconv.Itoa(f.nextID)
+		f.auths[id] = name
 		f.mu.Unlock()
-		writeJSON(w, http.StatusOK, map[string]string{"id": id, "name": f.auths[id]})
-	case r.Method == http.MethodDelete && strings.HasPrefix(path, "/containerregistryauth/"):
+		writeJSON(w, http.StatusCreated, map[string]string{"id": id, "name": name})
+	case r.Method == http.MethodDelete && strings.HasPrefix(path, "/registries/"):
 		f.mu.Lock()
-		id := strings.TrimPrefix(path, "/containerregistryauth/")
+		id := strings.TrimPrefix(path, "/registries/")
 		_, ok := f.auths[id]
 		delete(f.auths, id)
 		f.mu.Unlock()
 		if !ok {
-			w.WriteHeader(http.StatusNotFound)
+			problem(w, http.StatusNotFound, "registry not found")
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
 	default:
-		w.WriteHeader(http.StatusNotFound)
+		problem(w, http.StatusNotFound, "no such route")
 	}
 }
 
-func (f *Fake) create(w http.ResponseWriter, raw []byte) {
+func (f *Fake) create(w http.ResponseWriter, raw []byte, body map[string]any) {
+	var unknown []string
+	for k := range body {
+		if !slices.Contains(createPodFields, k) {
+			unknown = append(unknown, "$: additional properties '"+k+"' not allowed")
+		}
+	}
+	gpu, _ := body["gpu"].(map[string]any)
+	for k := range gpu {
+		if !slices.Contains(gpuFields, k) {
+			unknown = append(unknown, "$.gpu: additional properties '"+k+"' not allowed")
+		}
+	}
 	var in runpod.PodInput
-	if err := json.Unmarshal(raw, &in); err != nil {
-		w.WriteHeader(http.StatusBadRequest)
+	switch {
+	case len(unknown) > 0:
+		slices.Sort(unknown)
+		problem(w, http.StatusUnprocessableEntity, "The request body is invalid.", unknown...)
+		return
+	case json.Unmarshal(raw, &in) != nil || in.Name == "" || in.Image == "":
+		problem(w, http.StatusUnprocessableEntity, "The request body is invalid.", "$: name and image are required")
+		return
+	case in.GPU == nil || in.GPU.ID == "":
+		problem(w, http.StatusBadRequest, "Exactly one of gpu or cpu must be set.")
 		return
 	}
 	f.mu.Lock()
 	if f.FailCreates > 0 {
 		f.FailCreates--
 		f.mu.Unlock()
-		w.WriteHeader(http.StatusInternalServerError)
+		problem(w, http.StatusInternalServerError, "Something went wrong.")
 		return
 	}
-	f.nextID++
-	p := &Pod{PodInput: in, ID: "pod" + strconv.Itoa(f.nextID), DesiredStatus: "RUNNING"}
-	f.pods[p.ID] = p
+	if f.NoCapacity[in.GPU.ID] {
+		f.mu.Unlock()
+		problem(w, http.StatusBadRequest, "There are no instances available with the requested specifications.")
+		return
+	}
+	p := f.add(in)
 	start := f.Start
 	f.mu.Unlock()
 	if start != nil {
@@ -212,26 +261,54 @@ func (f *Fake) create(w http.ResponseWriter, raw []byte) {
 		f.stops[p.ID] = stop
 		f.mu.Unlock()
 	}
-	writeJSON(w, http.StatusCreated, map[string]any{"id": p.ID, "name": p.Name, "desiredStatus": p.DesiredStatus})
+	writeJSON(w, http.StatusCreated, map[string]any{"id": p.ID, "name": p.Name, "status": p.Status})
 }
 
-func (f *Fake) list(w http.ResponseWriter, name string) {
+// add holds a new running pod; f.mu is held.
+func (f *Fake) add(in runpod.PodInput) *Pod {
+	f.nextID++
+	p := &Pod{PodInput: in, ID: "pod" + strconv.Itoa(f.nextID), Status: "RUNNING"}
+	f.pods[p.ID] = p
+	f.order = append(f.order, p.ID)
+	return p
+}
+
+// list answers one page, newest first, as RunPod does. The cursor is the
+// offset of the page's first pod.
+func (f *Fake) list(w http.ResponseWriter, cursor string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	out := []map[string]any{}
-	for _, p := range f.pods {
-		if name == "" || p.Name == name {
-			out = append(out, map[string]any{"id": p.ID, "name": p.Name, "desiredStatus": p.DesiredStatus})
+	from := 0
+	if cursor != "" {
+		n, err := strconv.Atoi(strings.TrimPrefix(cursor, "c"))
+		if err != nil || !strings.HasPrefix(cursor, "c") || n < 0 {
+			problem(w, http.StatusUnprocessableEntity, "The cursor is invalid.")
+			return
 		}
+		from = n
 	}
-	writeJSON(w, http.StatusOK, out)
+	size := f.PageSize
+	if size == 0 {
+		size = 1000
+	}
+	out := []map[string]any{}
+	for i := len(f.order) - 1 - from; i >= 0 && len(out) < size; i-- {
+		p := f.pods[f.order[i]]
+		out = append(out, map[string]any{"id": p.ID, "name": p.Name, "status": p.Status})
+	}
+	page := map[string]any{"nextCursor": nil, "hasNextPage": false}
+	if next := from + len(out); next < len(f.order) {
+		page = map[string]any{"nextCursor": "c" + strconv.Itoa(next), "hasNextPage": true}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"pods": out, "pagination": page})
 }
 
 func (f *Fake) delete(w http.ResponseWriter, id string) {
 	f.mu.Lock()
-	p, ok := f.pods[id]
+	_, ok := f.pods[id]
 	if ok {
 		delete(f.pods, id)
+		f.order = slices.DeleteFunc(f.order, func(o string) bool { return o == id })
 	}
 	stop := f.stops[id]
 	delete(f.stops, id)
@@ -239,20 +316,20 @@ func (f *Fake) delete(w http.ResponseWriter, id string) {
 	if stop != nil {
 		stop()
 	}
-	if !ok || p == nil {
-		w.WriteHeader(http.StatusNotFound)
+	if !ok {
+		problem(w, http.StatusNotFound, "pod not found")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// Pods returns the live pods.
+// Pods returns the pods that aren't terminated.
 func (f *Fake) Pods() []Pod {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	out := make([]Pod, 0, len(f.pods))
-	for _, p := range f.pods {
-		out = append(out, *p)
+	for _, id := range f.order {
+		out = append(out, *f.pods[id])
 	}
 	return out
 }
@@ -262,10 +339,17 @@ func (f *Fake) Pods() []Pod {
 func (f *Fake) AddPod(name string) string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.nextID++
-	id := "pod" + strconv.Itoa(f.nextID)
-	f.pods[id] = &Pod{PodInput: runpod.PodInput{Name: name}, ID: id, DesiredStatus: "RUNNING"}
-	return id
+	return f.add(runpod.PodInput{Name: name}).ID
+}
+
+// SetStatus moves a pod to status, such as EXITED when its container
+// stopped or ERROR when it failed.
+func (f *Fake) SetStatus(id, status string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if p, ok := f.pods[id]; ok {
+		p.Status = status
+	}
 }
 
 // Calls returns every request so far.
@@ -275,18 +359,18 @@ func (f *Fake) Calls() []Call {
 	return append([]Call(nil), f.calls...)
 }
 
-// Created counts pod creations, including failed ones.
+// Created counts pod creations, including refused ones.
 func (f *Fake) Created() int {
 	n := 0
 	for _, c := range f.Calls() {
-		if c.Method == http.MethodPost && c.Path == "/v1/pods" {
+		if c.Method == http.MethodPost && c.Path == "/v2/pods" {
 			n++
 		}
 	}
 	return n
 }
 
-// Auths returns the stored registry auths, by ID.
+// Auths returns the stored registry credentials, by ID.
 func (f *Fake) Auths() map[string]string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -295,6 +379,17 @@ func (f *Fake) Auths() map[string]string {
 		out[k] = v
 	}
 	return out
+}
+
+// problem writes an RFC 9457 error, as RunPod's v2 API does.
+func problem(w http.ResponseWriter, status int, detail string, errs ...string) {
+	body := map[string]any{"title": http.StatusText(status), "status": status, "detail": detail}
+	if len(errs) > 0 {
+		body["errors"] = errs
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(body)
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

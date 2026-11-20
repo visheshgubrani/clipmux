@@ -47,7 +47,9 @@ auths.
 
 The dialog then lists the Secure Cloud GPUs whose NVENC the encoder can
 use, each with its price per hour, the **L4** recommended. By default
-ClipMux asks for an L4, RTX A4000 or RTX A5000, whichever has capacity.
+ClipMux asks for an L4, then an RTX A4000, then an RTX A5000, until one
+has capacity; the GPUs you choose are tried in the order the dialog lists
+them.
 RunPod's RTX 4090 hosts refuse NVENC sessions, so they aren't offered.
 
 </Step>
@@ -85,7 +87,7 @@ the browser approval with `POST /v1/executors/runpod/authorize`. See
 
 | Setting | Default | Notes |
 | --- | --- | --- |
-| GPUs | L4, RTX A4000, RTX A5000 | Whichever has capacity. |
+| GPUs | L4, RTX A4000, RTX A5000 | Tried in order until one has capacity. |
 | Disk | 50 GB | A pod takes only sources that fit three times over. Larger ones go to the fallback, if there is one. |
 | Machines at once | 1 | |
 | Monthly limit | $50 | Calendar month, UTC. |

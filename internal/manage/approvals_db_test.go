@@ -74,7 +74,7 @@ func TestConnectRunPodByApprovingInTheBrowser(t *testing.T) {
 	}
 	creates := 0
 	for _, c := range fake.Calls() {
-		if c.Method == "POST" && c.Path == "/v1/containerregistryauth" {
+		if c.Method == "POST" && c.Path == "/v2/registries" {
 			creates++
 		}
 	}

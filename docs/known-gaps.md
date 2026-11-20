@@ -357,6 +357,16 @@ when you introduce or discover it; remove it when it is closed.
   consumed without giving the key to the poller, so for RunPod the flow
   ends in `shown` and the dialog asks for the paste. An approval through to
   a full Connect has run only against fakes.
+- RunPod's browser approval uses its GraphQL API, which RunPod retires in
+  early 2027 (its release notes, 2026-08-18). Before then it must move to
+  whatever v2 offers for issuing a key, or the dialog keeps only the paste.
+- The RunPod executor moved to RunPod's REST API v2 (D139) after v1 was
+  retired on 2026-11-15. Real RunPod has seen only `TestLiveRunPodPods`
+  (listing, a registry credential, one L4 pod started and stopped; passed
+  2026-11-20 in 8 s, leaving no pods or credentials). The setup
+  test encoding on a v2 pod, and a wake falling through to a second GPU
+  type when the first is full, have run only against the fake until
+  `exit-providers.yml` or a Connect on rc.2 runs them.
 - Pending approvals live in serve's memory: a restart, or a second
   replica, drops them, and the owner starts again.
 - The ghcr package is public since `v1.0.0-rc.1` (D136), so the stock

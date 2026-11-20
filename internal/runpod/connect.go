@@ -145,7 +145,7 @@ func (c *Connector) Connect(ctx context.Context, req Request) (dispatch.Result, 
 	}
 
 	step("credentials", func() (string, error) {
-		if _, err := client.ListPods(ctx, "clipmux-connect-check"); err != nil {
+		if _, err := client.ListPods(ctx); err != nil {
 			var api *APIError
 			if errors.As(err, &api) && (api.Status == 401 || api.Status == 403) {
 				return "", errors.New("RunPod refused the API key")
