@@ -3,6 +3,7 @@ package media
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -306,5 +307,48 @@ func TestCPUEncodeArgsCapTheThreads(t *testing.T) {
 	gpu := strings.Join(EncodeArgs(Stage{Backend: NVENC, HWDecode: true}, "", src, "/w/source", "/w/enc", rungs), " ")
 	if strings.Contains(gpu, "-threads") {
 		t.Errorf("GPU encoders take no -threads:\n%s", gpu)
+	}
+}
+
+// F21: a stage that fills the disk isn't the encoder's fault, and the next
+// stage would need the same disk, so the chain stops and says why.
+func TestAFullDiskStopsTheChain(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(t.TempDir(), "ffmpeg")
+	script := "#!/bin/sh\necho 'av_interleaved_write_frame(): No space left on device' >&2\nexit 1\n"
+	if err := os.WriteFile(p, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	tools := Tools{FFmpeg: p, HW: Hardware{NVENC: true, CUDA: true}}
+	used, err := encodeLadder(context.Background(), tools, hd, "/src", dir, dir, SelectLadder(1280, 720, nil), func(string, float64) {})
+	if !errors.Is(err, ErrScratchFull) {
+		t.Fatalf("err = %v, want ErrScratchFull", err)
+	}
+	if !strings.Contains(err.Error(), "(nvenc)") || len(used.Fallbacks) != 0 {
+		t.Fatalf("used = %+v, err = %v; want a stop at the first stage", used, err)
+	}
+}
+
+// ScratchNeed bounds an encode's disk from the ladder's maxrates: the
+// renditions, then the packaged copy beside them. 720p, 600 s, with audio:
+// (3.5M + 1.8M + 1M + 128k) × 600 / 8 = 482.1 MB, twice.
+func TestScratchNeedIsTheLaddersMaxrateTwice(t *testing.T) {
+	cases := []struct {
+		src     Source
+		allowed []string
+		want    int64
+	}{
+		{Source{Width: 1280, Height: 720, Duration: 600, HasAudio: true}, nil, 964_200_000},
+		{Source{Width: 1280, Height: 720, Duration: 600}, nil, 945_000_000},
+		{Source{Width: 1280, Height: 720, Duration: 600}, []string{"360p"}, 150_000_000},
+		// The F21 lecture: 3840×2160, 3264.8 s, every rung, with audio.
+		// (16.8+9.6+6+3.5+1.8+1)M + 128k = 38.828 Mbit/s.
+		{Source{Width: 3840, Height: 2160, Duration: 3264.8, HasAudio: true}, nil, 31_691_413_600},
+	}
+	for _, c := range cases {
+		if got := ScratchNeed(c.src, c.allowed); got != c.want {
+			t.Errorf("ScratchNeed(%dx%d %gs audio=%v, %v) = %d, want %d",
+				c.src.Width, c.src.Height, c.src.Duration, c.src.HasAudio, c.allowed, got, c.want)
+		}
 	}
 }

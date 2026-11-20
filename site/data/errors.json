@@ -48,7 +48,7 @@
     "source_download_failed": "The worker couldn't download the source from storage.",
     "source_changed": "The source in storage changed while it was being processed.",
     "source_missing": "The source is no longer in storage.",
-    "scratch_full": "The worker ran out of disk while encoding.",
+    "scratch_full": "The worker didn't have the disk for the job: it saw before encoding that the ladder wouldn't fit, or the disk filled during the download or encode. The job may move to a fallback.",
     "job_timeout": "The job ran past its time limit.",
     "worker_lost": "The worker stopped answering mid-job, after every retry.",
     "worker_stopped": "The worker was stopped mid-job, after every retry.",

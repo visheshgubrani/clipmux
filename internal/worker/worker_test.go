@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -238,5 +240,24 @@ func TestADispatchedWorkerRetriesUntilItsKeyIsRefused(t *testing.T) {
 	}
 	if calls.Load() != 3 {
 		t.Fatalf("claimed %d times, want 3 (503, 204, 401)", calls.Load())
+	}
+}
+
+func TestAFullDiskIsScratchFullWhereverItHits(t *testing.T) {
+	cases := []struct {
+		err  error
+		want string
+	}{
+		{fmt.Errorf("encode video (vaapi): %w", media.ErrScratchFull), codeScratchFull},
+		{&os.PathError{Op: "write", Path: "/w/source", Err: syscall.ENOSPC}, codeScratchFull},
+		{errors.New("encode video (cpu): ffmpeg: exit status 187"), codeTranscode},
+	}
+	for _, c := range cases {
+		if got := failureCode(c.err, codeTranscode); got != c.want {
+			t.Errorf("failureCode(%v) = %q, want %q", c.err, got, c.want)
+		}
+	}
+	if got := failureCode(errors.New("connection reset"), codeDownload); got != codeDownload {
+		t.Errorf("a download error = %q, want %q", got, codeDownload)
 	}
 }

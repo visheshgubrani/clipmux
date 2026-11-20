@@ -1783,3 +1783,12 @@ Consequence:
 - No server, schema, worker API or dashboard change, so a newer agent works with an older server and the reverse.
 - On a CPU-only PC the gain is the upload overlap, not parallel encodes.
 - A "k of N busy" display would need an additive claim field and a place to show it, since the Workers page is gone (D116); it is left open.
+
+## D138 A full disk is scratch_full, checked before the encode and never handed to the next stage — accepted (2026-11-20)
+Context: bug hunt F21. A 54-minute 4K AV1 lecture (650 MB) failed three attempts of about 50 minutes each as `transcode_failed`. The CPU stage's part, the 8 GiB memory limit, was fixed by sharing the cores among libx264 encoders (e23fad4, at most 4 threads per rung). A rerun on 2026-11-20 through the built-in sandboxed worker passed on VAAPI in 70 minutes (video 59.5, package 5, upload 5.3). Free disk fell from 39 GB to 3.5 GB at its peak, while the bug hunt had had 17–51 GB free. The claim's check allowed three times the upload, 2 GB.
+Decision:
+- **`media.ErrScratchFull`:** a tool whose stderr says "No space left on device" fails with it. `encodeLadder` stops there rather than giving the ladder to the next stage, which would need the same disk.
+- **`media.ScratchNeed(src, renditions)`** bounds an encode's disk: every chosen rung at its maxrate for the whole duration, plus the 128k audio, twice (the renditions, then the packaged copy beside them). For the lecture it is 31.7 GB against about 23 GB used.
+- **The worker checks after probing.** When the free space under the attempt's directory is known and less than the bound, the attempt fails at once with `scratch_full` (`TestAnEncodeThatCantFitIsScratchFullBeforeEncoding`). A free space of 0, meaning unknown, doesn't block.
+- **A full disk is `scratch_full` wherever it hits:** in the download (`ENOSPC`) or in a tool (`failureCode`). Like a failed download, it says nothing about the file, so the job may go to a fallback (D053).
+Consequence: the claim-time rule (three times the upload) is unchanged, so a worker that is too small still claims the job first and hands it back within seconds (known gaps). No schema or worker API change.

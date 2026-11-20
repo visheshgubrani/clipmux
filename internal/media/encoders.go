@@ -228,6 +228,38 @@ func EncodeArgs(stage Stage, dev string, src Source, input, encDir string, rungs
 	return args
 }
 
+// ScratchNeed bounds the disk an encode of src takes beyond its source: each
+// rendition at its maxrate for the whole duration, the 128k audio, and the
+// packaged copy written beside them. allowed is as for SelectLadder. The
+// F21 lecture (4K, 54 min) needed about 23 GB against this bound's 32 GB,
+// while the claim's three-times-the-upload rule allowed 2 GB.
+func ScratchNeed(src Source, allowed []string) int64 {
+	var bits float64
+	for _, r := range SelectLadder(src.Width, src.Height, allowed) {
+		bits += rateBits(r.Maxrate)
+	}
+	if src.HasAudio {
+		bits += rateBits(audioBitrate)
+	}
+	return 2 * int64(math.Round(bits*src.Duration/8))
+}
+
+// rateBits reads an ffmpeg rate such as "16.8M" or "800k" in bits per second.
+func rateBits(rate string) float64 {
+	mult := 1.0
+	switch {
+	case strings.HasSuffix(rate, "M"):
+		mult, rate = 1e6, strings.TrimSuffix(rate, "M")
+	case strings.HasSuffix(rate, "k"):
+		mult, rate = 1e3, strings.TrimSuffix(rate, "k")
+	}
+	v, err := strconv.ParseFloat(rate, 64)
+	if err != nil {
+		panic("media: bad ladder rate " + rate) // the ladder is a literal
+	}
+	return v * mult
+}
+
 // x264Threads is each libx264 encoder's share of the cores: twice the cores
 // over the rungs, from 1 to 4. Left to itself, every encoder sizes its
 // threads from the core count, and the address space they reserve together

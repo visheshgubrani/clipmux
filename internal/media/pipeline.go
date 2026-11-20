@@ -35,7 +35,7 @@ func AudioArgs(src Source, input, encDir string) []string {
 	}
 	return append(args, "-i", input, "-vn",
 		"-af", filter,
-		"-c:a", "aac", "-b:a", "128k", "-ac", "2", "-ar", "48000",
+		"-c:a", "aac", "-b:a", audioBitrate, "-ac", "2", "-ar", "48000",
 		"-movflags", "+frag_keyframe+empty_moov+default_base_moof",
 		filepath.Join(encDir, "audio.mp4"))
 }
@@ -274,6 +274,10 @@ func encodeLadder(ctx context.Context, t Tools, src Source, input, workDir, encD
 		if err == nil {
 			used.Stage = stage.Name()
 			return used, nil
+		}
+		if errors.Is(err, ErrScratchFull) {
+			// The next stage would need the same disk (F21).
+			return used, fmt.Errorf("encode video (%s): %w", stage.Name(), err)
 		}
 		if ctx.Err() != nil || i == len(chain)-1 {
 			err = fmt.Errorf("encode video (%s): %w", stage.Name(), err)

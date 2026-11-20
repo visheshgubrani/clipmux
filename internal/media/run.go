@@ -32,6 +32,13 @@ func inputGuard() []string {
 // no video, or is in a format outside the allowlist.
 var ErrUnsupportedSource = errors.New("media: unsupported or corrupt source")
 
+// ErrScratchFull marks a tool that failed because the work directory's disk
+// filled. It says nothing about the source or the encoder (bug hunt F21).
+var ErrScratchFull = errors.New("media: the work directory's disk is full")
+
+// audioBitrate is the AAC rendition's rate.
+const audioBitrate = "128k"
+
 // Tools are the binaries the pipeline runs.
 type Tools struct {
 	FFmpeg, FFprobe, Packager string
@@ -135,7 +142,11 @@ func (t Tools) runLogged(ctx context.Context, bin string, args []string, dir str
 	cmd.WaitDelay = 5 * time.Second
 	sandbox.DieWithParent(cmd)
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("%s: %w: %s", name, err, strings.TrimSpace(stderr.String()))
+		msg := strings.TrimSpace(stderr.String())
+		if strings.Contains(msg, "No space left on device") {
+			return fmt.Errorf("%s: %w: %w: %s", name, ErrScratchFull, err, msg)
+		}
+		return fmt.Errorf("%s: %w: %s", name, err, msg)
 	}
 	return nil
 }

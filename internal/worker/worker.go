@@ -23,6 +23,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/visheshgubrani/clipmux/internal/logging"
@@ -39,9 +40,12 @@ type Worker struct {
 	Key string
 	// WorkDir holds one directory per attempt, removed when it ends.
 	WorkDir string
-	Tools   media.Tools
-	HTTP    *http.Client
-	Logger  *slog.Logger
+	// DiskFree reports the space free under an attempt's directory; nil
+	// asks the volume (FreeDisk). Tests set it.
+	DiskFree func(dir string) int64
+	Tools    media.Tools
+	HTTP     *http.Client
+	Logger   *slog.Logger
 	// Wait is the claim long-poll; HeartbeatEvery overrides the server's
 	// interval (tests).
 	Wait           time.Duration
@@ -122,6 +126,16 @@ const (
 	// so the job is claimable at once rather than after its lease expires.
 	codeStopped = "worker_stopped"
 )
+
+// failureCode is code, unless err is a full disk: that says nothing about
+// the file, so it is scratch_full, which lets the job go to a fallback
+// (bug hunt F21).
+func failureCode(err error, code string) string {
+	if errors.Is(err, media.ErrScratchFull) || errors.Is(err, syscall.ENOSPC) {
+		return codeScratchFull
+	}
+	return code
+}
 
 // localCode is the failure code for a local source that can't be used.
 func localCode(err error) string {
@@ -459,7 +473,7 @@ func (w *Worker) process(ctx context.Context, job *workerapi.Job, dir string, re
 		source = filepath.Join(dir, "source")
 		start := time.Now()
 		if err := w.download(ctx, job, source); err != nil {
-			return media.Manifest{}, codeDownload, err
+			return media.Manifest{}, failureCode(err, codeDownload), err
 		}
 		ph.since("download", start)
 		tools = w.Tools.In(dir) // confined to this attempt's directory
@@ -473,10 +487,19 @@ func (w *Worker) process(ctx context.Context, job *workerapi.Job, dir string, re
 	if err != nil {
 		return media.Manifest{}, codeTranscode, err
 	}
+	// A ladder that can't fit fails now, not an hour in (F21). Unknown free
+	// space (0) doesn't block.
+	diskFree := w.DiskFree
+	if diskFree == nil {
+		diskFree = FreeDisk
+	}
+	if need, free := media.ScratchNeed(src, job.Renditions), diskFree(dir); free > 0 && free < need {
+		return media.Manifest{}, codeScratchFull, fmt.Errorf("worker: the encode needs up to %d MB of scratch and %d MB is free", need>>20, free>>20)
+	}
 	out := filepath.Join(dir, "out")
 	m, err := media.Transcode(ctx, tools, source, src, job.Renditions, filepath.Join(dir, "work"), out, key, report)
 	if err != nil {
-		return media.Manifest{}, codeTranscode, err
+		return media.Manifest{}, failureCode(err, codeTranscode), err
 	}
 	names := make([]string, 0, len(m.Renditions))
 	for _, r := range m.Renditions {
