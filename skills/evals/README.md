@@ -38,6 +38,9 @@ does.
    npx skills add <path to this checkout, or visheshgubrani/clipmux> --skill '*' -a claude-code -y --copy
    ```
 
+   A branch on GitHub is `visheshgubrani/clipmux#<branch>`; the
+   `…/tree/<branch>` URL form fails when the branch name has a slash.
+
 3. **Run the agent** in that directory with `prompt.md`'s prompt, replacing
    `{{CLIPMUX_URL}}` and `{{APPROVE}}` (`node <checkout>/skills/evals/approve.mjs`).
    Tell it that its ClipMux knowledge comes only from the installed skills,
