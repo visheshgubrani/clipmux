@@ -39,7 +39,7 @@ the video as `GET /v1/assets/{id}` returned it when the event was made.
 Track events add `track: {id, kind, error_code?}`, and re-encode events add
 `job`. Every field is in [Webhook events](/docs/reference/webhooks).
 
-## Handle them with clipmuxHandler
+## Handle them with clipmuxHandler [#handle-them-with-clipmuxhandler]
 
 `clipmuxHandler` from `@clipmux/node/handlers` verifies each request, then
 re-fetches the video, so your code sees its current state rather than the
@@ -93,7 +93,7 @@ async event(event) {
 },
 ```
 
-## Write the handler to be safe
+## Write the handler to be safe [#write-the-handler-to-be-safe]
 
 Delivery is **at least once** and **unordered**. The same event can arrive
 twice, and `video.asset.ready` can arrive after a later
@@ -123,7 +123,7 @@ A video's status on your record:
 Tracks are made after the video is ready, so expect `video.asset.ready`
 first, then `video.asset.track.ready` or `video.asset.track.errored`.
 
-## Catch up on missed events
+## Catch up on missed events [#catch-up-on-missed-events]
 
 If your endpoint is down for longer than the 24 hours of retries, its
 events are dropped. Run a catch-up job, for example every few minutes or at

@@ -455,7 +455,7 @@ export default async function Home() {
         <Section
           id="agents"
           title="Hand it to your coding agent"
-          lede="Every docs page is also plain Markdown, and the SDK ships its own guide for agents."
+          lede="Install the ClipMux skills, or point your agent at the guide the SDK ships. Every docs page is also plain Markdown."
         >
           <div className="agent-grid">
             <div className="grid gap-4">
@@ -467,7 +467,7 @@ export default async function Home() {
                   <CopyButton text={AGENT_PROMPT} />
                 </div>
               </div>
-              {/* Agent skills (npx skills add) join here once they ship; see docs/known-gaps.md. */}
+              <CopyCommand command="npx skills add visheshgubrani/clipmux" />
             </div>
             <ul className="links">
               <li>

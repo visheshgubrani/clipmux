@@ -107,8 +107,13 @@ when you introduce or discover it; remove it when it is closed.
 - Phase 5 exited in CI (D085); its drills now run on the real binary (D094)
   and `exit-llm.yml` passed on real accounts (D095). Still to run: the
   providers' speech on real RunPod and Modal, and Safari and ExoPlayer
-  showing subtitles. The drain check doesn't yet cover a throttled segment
-  GET or a part PUT finishing.
+  showing subtitles. Those two suites are written (P6-T03) but haven't run:
+  Safari's needs the owner's Mac or `exit-safari.yml`, and ExoPlayer's
+  only compiled, with no emulator where it was written, until `exit.yml`
+  runs it. So P5 open question 8, whether both accept the single-segment
+  WebVTT playlist (which has no `X-TIMESTAMP-MAP`), is still open. The
+  drain check doesn't yet cover a throttled segment GET or a part PUT
+  finishing.
 - Real providers pass the Phase 4 exit (D097), but only as a local run with
   keys in `.env`: `exit-providers.yml` needs the repository secrets and
   `REAL_PROVIDERS` before it runs in CI. A failed real run can leave a
@@ -393,7 +398,15 @@ when you introduce or discover it; remove it when it is closed.
 - Safari's native HLS with `getToken({ native })` (D126) is checked by
   reading the code and in Chrome with `native: false`; the Safari suite
   runs on the owner's Mac, not in this release's CI.
-- **No agent skills yet (T17).** The landing page and the docs point agents at `/agents.md`, `llms.txt` and the Markdown twins; `npx skills add visheshgubrani/clipmux` comes back to the landing page's Agents section, and the skills' stable docs anchors get a lint, when the skills exist (D134).
+- **`--env-file FILE` names a flag Node reads itself.** Node 24 (24.21 here)
+  loads any `--env-file` in argv, even after the script name, and exits 9
+  with `node: FILE: not found` before the CLI runs when the file is missing.
+  So `npx @clipmux/node init --env-file new.env` fails unless the file
+  exists; with an existing file it works (Node loads it too, harmlessly).
+  The default (`.env.local`, no flag) is unaffected. The exit-8 suite
+  creates the file first. A fix is a flag Node doesn't know (an alias such
+  as `--env`), found by P6-T28.
+- **The skill evals run by hand (T17).** `skills/evals/lms-starter` is run with a coding agent and the exit-7 check (`skills/evals/README.md`), not in CI: each run is a billed agent session, and its result varies run to run. The plan's "evals run when the API or the packages change" is a release step until a CI job can run an agent. The skills' docs anchors and error list are linted in `make site-check`.
 
 ## Found by the first live integration (Edural, 2026-11-15; docs/integration.md)
 

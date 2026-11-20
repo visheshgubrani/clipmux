@@ -9,6 +9,10 @@ component puts the two elements on your page. This is the setup the
 [quickstart](/docs/build/quickstart) walks through, with the details
 around it.
 
+For a whole app built this way, see
+[`examples/nextjs-lms`](https://github.com/visheshgubrani/clipmux/tree/main/examples/nextjs-lms): a small course site where
+instructors upload, enrolled students watch, and anyone else is refused.
+
 ## Before you start
 
 - A Next.js app with the App Router, on Node 20.19 or later.
@@ -51,7 +55,7 @@ None has the `NEXT_PUBLIC_` prefix, so none reaches the browser. Keep it
 that way, and keep `.env.local` out of git. In production, set the same
 five in your host's secret settings.
 
-## The route file
+## The route file [#the-route-file]
 
 <include cwd lang="ts" meta='title="app/api/clipmux/[action]/route.ts"'>snippets/node/nextjs/route.ts</include>
 

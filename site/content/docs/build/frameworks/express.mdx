@@ -8,6 +8,8 @@ description: Mount the ClipMux handler in an Express app with toNodeListener, be
 Node's `(req, res, next)` shape, so one Express route answers the uploader,
 the player and ClipMux's webhooks.
 
+[`examples/express`](https://github.com/visheshgubrani/clipmux/tree/main/examples/express) is a whole app built this way.
+
 ## Before you start
 
 - An Express app on Node 20.19 or later.
@@ -37,7 +39,7 @@ pnpm dlx @clipmux/node init --server https://video.example.com
 `new ClipMux()` reads the settings from `process.env`, so load the env file
 before the handler runs, for example with `node --env-file=.env.local`.
 
-## Mount the route
+## Mount the route [#mount-the-route]
 
 ```ts
 import { clipmuxHandler } from '@clipmux/node/handlers'

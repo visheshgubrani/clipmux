@@ -155,7 +155,7 @@ safe in an `og:image`.
 | --- | --- |
 | `verify(rawBody, headers, { tolerance? })` | Verifies a webhook against `CLIPMUX_WEBHOOK_SECRET` and returns its event. Pass the raw body as it arrived. `tolerance` is the seconds a timestamp may be off, 300 by default |
 
-## Route handlers
+## Route handlers [#route-handlers]
 
 `clipmuxHandler(options)` returns a Fetch handler, `(req: Request) => Promise<Response>`,
 for three `POST` routes, chosen by the last part of the path:
@@ -186,7 +186,7 @@ export const POST = clipmuxHandler({
   type={{
     clipmux: { type: 'ClipMux', description: 'The client to use. Pass one on Cloudflare Workers, built with new ClipMux({ env }).', default: 'new ClipMux()' },
     upload: { type: '(req, { file: { size, name, type } }) => UploadDecision | null', description: 'Decide whether this request may upload, and how: return the upload body without size (passthrough, title, playback_policy, generate, renditions), or null to refuse. playback_policy defaults to signed.' },
-    playback: { type: '(req, { playbackId, native }) => { viewerId?, asset? } | null', description: 'Decide whether this viewer may watch this playback ID. Return the asset as well to include its tracks and duration.' },
+    playback: { type: '(req, { playbackId, native }) => { viewerId?, asset?, expiresIn? } | null', description: 'Decide whether this viewer may watch this playback ID. Return the asset as well to include its tracks and duration, and expiresIn for a token other than 15 minutes; a native player keeps its long token.' },
     asset: { type: '(asset, event) => void', description: 'A verified webhook, with the video fetched again so it is current. A delivery older than one already handled is skipped. Throw to have ClipMux retry the delivery.' },
     event: { type: '(event) => void', description: 'Every verified webhook event as it arrived, before asset.' },
     onError: { type: '(err, req) => void', description: 'Called with errors the handler turned into a 4xx or 5xx.', default: 'console.error for 5xx' },

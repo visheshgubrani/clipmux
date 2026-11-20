@@ -1,5 +1,6 @@
 # The Phase 1 exit test in Safari, by hand: on pull requests that touch
-# playback, and before a release.
+# playback, and before a release. Native HLS also shows the subtitles track
+# with its cue at its time (P6-T03, P5 check 14 and open question 8).
 name: Exit test (Safari)
 on:
   workflow_dispatch:

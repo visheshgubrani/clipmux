@@ -35,7 +35,7 @@ pnpm add @clipmux/player
 </Tab>
 </Tabs>
 
-## Play with a session URL
+## Play with a session URL [#play-with-a-session-url]
 
 The shortest way is `session-url`. The page needs only the playback ID:
 
@@ -157,7 +157,7 @@ a native one when the browser needs it.
 media events (`timeupdate`, `ended` and so on), to resume where a viewer
 left off or to report progress.
 
-## Events
+## Events [#events]
 
 They bubble, and they are typed on `HTMLElementEventMap`, so
 `player.addEventListener('clipmux-chapters', (e) => e.detail.chapters)`
@@ -175,34 +175,38 @@ enrol state, not an error. A `clipmux-error` with `status: 404` means the
 playback ID was revoked or never existed, so show that the video was
 removed.
 
-## React and Next.js
+## React and Next.js [#react-and-nextjs]
 
 The element needs the DOM and Media Source, so a server render must not load
 it. Import it in an effect, and import the JSX types once:
 
 ```tsx title="app/lessons/[id]/player.tsx"
 'use client'
+import type { ClipMuxPlayerElement } from '@clipmux/player/element' // types only
 import type {} from '@clipmux/player/react' // JSX types only, no React dependency
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 
 export function Player({ playbackId }: { playbackId: string }) {
+  const player = useRef<ClipMuxPlayerElement>(null)
   useEffect(() => {
     import('@clipmux/player/element')
+    const el = player.current
+    const onDenied = () => location.assign('/enrol')
+    el?.addEventListener('clipmux-denied', onDenied)
+    return () => el?.removeEventListener('clipmux-denied', onDenied)
   }, [])
-  return (
-    <clipmux-player
-      playback-id={playbackId}
-      session-url="/api/clipmux/playback"
-      onclipmux-denied={() => location.assign('/enrol')}
-    />
-  )
+  return <clipmux-player ref={player} playback-id={playbackId} session-url="/api/clipmux/playback" />
 }
 ```
 
 `@clipmux/player/react` types the attributes, the `token`, `getToken` and
-`hls` properties and the `onclipmux-*` handlers, for React 18 and 19. React
-19 attaches `onclipmux-denied` as a listener for the event; in React 18, add
-the listener on a ref instead. In Next.js, `router.refresh()` from a `clipmux-denied` handler re-renders the
+`hls` properties and the `onclipmux-*` handlers, for React 18 and 19. The
+listener goes on a ref because React 19 attaches an `onclipmux-denied` prop
+only to an element it creates in the browser, not to one it hydrates from
+server-rendered HTML, which is what a Next.js page's first load does (React
+18 never attaches them).
+[`examples/nextjs-lms`](https://github.com/visheshgubrani/clipmux/blob/main/examples/nextjs-lms/app/lessons/%5Bid%5D/lesson-video.tsx)
+does the same for both elements. In Next.js, `router.refresh()` from a `clipmux-denied` handler re-renders the
 page's locked state.
 
 To set `getToken` from React, wait until the element is defined, then set it
@@ -235,7 +239,7 @@ export function Player({ baseUrl, playbackId }: { baseUrl: string; playbackId: s
 Video.js 10.2's own declaration files don't all type-check, so keep
 `"skipLibCheck": true` in `tsconfig.json`. Most templates have it already.
 
-## Subtitles and chapters
+## Subtitles and chapters [#subtitles-and-chapters]
 
 Subtitles need no attribute. A ready subtitles track is listed in the HLS
 master playlist, so it appears in the player's captions menu, and its files
@@ -268,7 +272,7 @@ clipmux-player {
 
 The player is 16:9 and fills its container's width.
 
-## Content-Security-Policy
+## Content-Security-Policy [#content-security-policy]
 
 A page with the player must allow, besides its own origin:
 

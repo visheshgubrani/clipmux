@@ -4,6 +4,7 @@ packages:
   - dashboard
   - worker
   - site
+  - examples/*
 
 allowBuilds:
   esbuild: false
