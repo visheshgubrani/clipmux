@@ -8,6 +8,17 @@ these.
 
 ## Unreleased
 
+### Fixed
+
+- RunPod: ClipMux now uses RunPod's REST API v2. RunPod retired v1 on
+  2026-11-15, so in rc.1 Connect RunPod failed with `lookup rest.runpod.io
+  … no such host`, and no pod could start. RunPod now places a pod on one
+  GPU type at a time, so the chosen GPUs are tried in order until one has
+  capacity; with none free, the wake waits and tries again (D139).
+- The README's quick start installs from `clipmux.com/install.sh`.
+  `releases/latest/download/install.sh` is a 404 while every release is a
+  prerelease.
+
 ## v1.0.0-rc.1 - 2026-11-19
 
 The first release of the server: the image, the agent tarballs, the

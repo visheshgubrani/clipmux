@@ -3,7 +3,9 @@ package runpod
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 
 	"github.com/visheshgubrani/clipmux/internal/db"
@@ -20,7 +22,8 @@ type Config struct {
 	// ImageChosen is set when the owner entered the image; otherwise it is
 	// this build's, and moves with the server's upgrades (dispatch.Repin).
 	ImageChosen bool `json:"image_chosen,omitempty"`
-	// GPUTypeIDs are the GPU types a pod may get, whichever has capacity.
+	// GPUTypeIDs are the GPU types a pod may get, tried in order until one
+	// has capacity (D139).
 	GPUTypeIDs []string `json:"gpu_type_ids"`
 	// CloudType is SECURE: Community Cloud hosts are strangers' machines,
 	// and a worker sees the plaintext source and the output's key (D056).
@@ -39,11 +42,11 @@ type Secret struct {
 	APIKey string `json:"api_key"`
 }
 
-// DefaultGPUTypes have NVENC, so the worker encodes on the GPU; RunPod
-// picks whichever has capacity. Data-centre cards without NVENC (A100,
-// H100) would encode on the CPU and cost more for it, and so do RunPod's
-// RTX 4090 hosts, which refuse NVENC sessions ("unsupported device") even
-// outside the sandbox (D097). The L4 is proven on a real pod.
+// DefaultGPUTypes have NVENC, so the worker encodes on the GPU; a wake
+// tries them in order until one has capacity. Data-centre cards without
+// NVENC (A100, H100) would encode on the CPU and cost more for it, and so
+// do RunPod's RTX 4090 hosts, which refuse NVENC sessions ("unsupported
+// device") even outside the sandbox (D097). The L4 is proven on a real pod.
 var DefaultGPUTypes = []string{"NVIDIA L4", "NVIDIA RTX A4000", "NVIDIA RTX A5000"}
 
 // Executor starts one pod per dispatch. Pods run `clipmux worker --once`
@@ -82,13 +85,18 @@ func (e *Executor) podName(name string) string {
 	return "clipmux-" + e.cfg.Tag + "-" + strings.TrimPrefix(name, "clipmux-")
 }
 
-func live(p Pod) bool { return p.DesiredStatus != "TERMINATED" }
+// live is a pod that still bills: an EXITED or ERROR pod does until it is
+// terminated, so the reconciler must see it.
+func live(p Pod) bool { return p.Status != "TERMINATED" }
 
 // Wake starts the dispatch's pod, or finds the one a crashed earlier call
-// started under the same name.
+// started under the same name. RunPod places a pod on exactly the GPU type
+// asked for and answers 400 when it has none free, so the chosen types are
+// tried in order; any other answer ends the wake, because a create whose
+// outcome is unknown must not be repeated on another type (D139).
 func (e *Executor) Wake(ctx context.Context, w dispatch.Wake) (string, error) {
 	name := e.podName(w.Name)
-	existing, err := e.client.ListPods(ctx, name)
+	existing, err := e.client.ListPods(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -105,22 +113,30 @@ func (e *Executor) Wake(ctx context.Context, w dispatch.Wake) (string, error) {
 	for k, v := range w.Env {
 		env[k] = v
 	}
-	p, err := e.client.CreatePod(ctx, PodInput{
-		Name:                    name,
-		ImageName:               e.cfg.Image,
-		ComputeType:             "GPU",
-		CloudType:               e.cfg.CloudType,
-		GPUTypeIDs:              e.cfg.GPUTypeIDs,
-		GPUTypePriority:         "availability",
-		GPUCount:                1,
-		Env:                     env,
-		DockerStartCmd:          []string{"worker", "--once"}, // the image's entrypoint is clipmux
-		ContainerDiskInGb:       e.cfg.DiskGB,
-		VolumeInGb:              0,
-		Ports:                   []string{}, // nothing listens; workers only call out
-		ContainerRegistryAuthID: e.cfg.RegistryAuthID,
-	})
-	return p.ID, err
+	gpus := e.cfg.GPUTypeIDs
+	if len(gpus) == 0 {
+		gpus = DefaultGPUTypes
+	}
+	var full error
+	for _, gpu := range gpus {
+		p, err := e.client.CreatePod(ctx, PodInput{
+			Name:     name,
+			Image:    e.cfg.Image,
+			Cloud:    e.cfg.CloudType,
+			GPU:      &PodGPU{ID: gpu, Count: 1},
+			Env:      env,
+			Cmd:      []string{"worker", "--once"}, // the image's entrypoint is clipmux
+			Disk:     e.cfg.DiskGB,
+			Ports:    []string{}, // nothing listens; workers only call out
+			Registry: e.cfg.RegistryAuthID,
+		})
+		var api *APIError
+		if !errors.As(err, &api) || api.Status != http.StatusBadRequest {
+			return p.ID, err
+		}
+		full = err
+	}
+	return "", fmt.Errorf("runpod has no %s free (%w): %w", strings.Join(gpus, ", "), full, dispatch.ErrPreparing)
 }
 
 // Stop terminates a pod.
@@ -131,7 +147,7 @@ func (e *Executor) Stop(ctx context.Context, instanceID string) error {
 // Running lists this install's live pods, named as Wake was asked to name
 // them.
 func (e *Executor) Running(ctx context.Context) ([]dispatch.Instance, error) {
-	pods, err := e.client.ListPods(ctx, "")
+	pods, err := e.client.ListPods(ctx)
 	if err != nil {
 		return nil, err
 	}

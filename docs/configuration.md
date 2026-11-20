@@ -17,6 +17,7 @@ neither page names, or a deployed one the public page doesn't.
 | `CLIPMUX_REQUIRE_S3`, `CLIPMUX_REQUIRE_MEDIA_TOOLS` | In CI: a missing S3 store or media tool fails instead of skipping. |
 | `CLIPMUX_SKIP_SPEECH` | `1` skips the tests that run real whisper.cpp, even under `CLIPMUX_REQUIRE_MEDIA_TOOLS`. CI sets it; run them locally. |
 | `CLIPMUX_LIVE_APPROVAL`, `CLIPMUX_LIVE_APPROVAL_WAIT` | `1` starts a real Modal token flow (D109) and prints the page to open; with `_WAIT` it also waits for you to approve it, which creates a real token in your workspace. |
+| `CLIPMUX_LIVE_RUNPOD`, `CLIPMUX_LIVE_RUNPOD_IMAGE` | `1`, with `RUNPOD_API_KEY`, runs `TestLiveRunPodPods` against RunPod's real v2 API (D139): it lists pods, stores and removes a registry credential, and starts and terminates one pod, which rents a GPU for about a minute. `_IMAGE` picks the pod's image (default the rc.1 release image). |
 | `CLIPMUX_ANALYTICS_SCALE` | `1` runs the analytics scale test: it seeds 180 days of history and fails if a 90-day read takes over 500 ms (P7-T03). About two minutes. |
 | `CLIPMUX_TEST_MODELS_DIR` | Where the speech tests find the pinned whisper and VAD models, by their upstream file names (`toolchain/fetch_speech_models.sh DIR` fetches them). Without it they skip, or fail under `CLIPMUX_REQUIRE_MEDIA_TOOLS`. |
 | `CLIPMUX_E2E` and `CLIPMUX_E2E_*`, `CLIPMUX_FIXTURE_PORT`, `CLIPMUX_GPU_TEST` | The real-binary exit tests and the browser fixture (D033). |

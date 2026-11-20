@@ -83,7 +83,7 @@ and 443 free, and two DNS names pointing at it: one for the dashboard and API,
 one for media.
 
 ```bash
-curl -fsSL https://github.com/visheshgubrani/clipmux/releases/latest/download/install.sh | sudo sh
+curl -fsSL https://clipmux.com/install.sh | sudo sh
 ```
 
 The installer puts ClipMux, Postgres and Caddy in `/opt/clipmux`, generates

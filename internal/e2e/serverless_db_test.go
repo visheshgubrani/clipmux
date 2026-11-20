@@ -144,7 +144,7 @@ func (ps *pods) run(ctx context.Context, p runpodtest.Pod) {
 	if ps.speech && encodePod && ps.brokenFollowOn {
 		env = append(env, "CLIPMUX_WHISPER="+filepath.Join(home, "no-whisper"))
 	}
-	cmd := exec.Command(bin, p.DockerStartCmd...)
+	cmd := exec.Command(bin, p.Cmd...)
 	cmd.Env = env
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	out, err := cmd.StdoutPipe()
