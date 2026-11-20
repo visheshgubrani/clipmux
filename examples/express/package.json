@@ -1,0 +1,25 @@
+{
+  "name": "@clipmux/example-express",
+  "private": true,
+  "license": "MIT",
+  "description": "ClipMux in an Express app: toNodeListener(clipmuxHandler(...)) and the two elements.",
+  "type": "module",
+  "scripts": {
+    "build": "vite build",
+    "start": "node --env-file-if-exists=.env.local server.ts",
+    "dev": "vite build && node --watch --env-file-if-exists=.env.local server.ts",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@clipmux/node": "workspace:*",
+    "@clipmux/player": "workspace:*",
+    "@clipmux/uploader": "workspace:*",
+    "express": "5.2.1"
+  },
+  "devDependencies": {
+    "@types/express": "5.0.6",
+    "@types/node": "24.19.2",
+    "typescript": "7.0.2",
+    "vite": "8.3.5"
+  }
+}

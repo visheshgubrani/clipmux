@@ -68,6 +68,9 @@ jobs:
         run: |
           pnpm exec playwright install --with-deps chromium
           pnpm run test:browser
+      - name: Launch exit check 8 (examples/nextjs-lms, P6-T28)
+        working-directory: e2e/web
+        run: pnpm run test:exit8
       - uses: actions/upload-artifact@v4
         if: failure()
         with:

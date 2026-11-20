@@ -31,6 +31,12 @@ export interface PlaybackDecision {
   viewerId?: string | undefined
   /** The asset, to include its tracks and duration (and a longer native token). */
   asset?: Asset | undefined
+  /**
+   * How long the token lasts, for example `'5m'` or `300`; default 15
+   * minutes. The player asks this route again before it runs out. A native
+   * player can't, so it keeps the long token `playback.session` signs for it.
+   */
+  expiresIn?: number | string | undefined
 }
 
 export interface HandlerOptions {
@@ -190,7 +196,11 @@ export function clipmuxHandler(options: HandlerOptions): (req: Request) => Promi
         throw new Error(`playback(): the asset returned has no active playback ID ${playbackId}`)
       target = { ...decision.asset, playback_ids: ids.map(({ share: _s, ...p }) => p) }
     }
-    const session = await client().playback.session(target, { viewerId: decision.viewerId, native })
+    const session = await client().playback.session(target, {
+      viewerId: decision.viewerId,
+      native,
+      expiresIn: decision.expiresIn,
+    })
     return reply(200, session)
   }
 

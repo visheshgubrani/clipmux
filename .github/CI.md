@@ -11,7 +11,7 @@ workflow uses a self-hosted runner.
 | `ci.yml`: gofmt, vet and Go tests against Postgres (`go`); TypeScript typecheck and tests, the clipmux.com build with its docs lints, and Biome (`web`); the docs' Python, Go and PHP snippets against the vector files (`snippets`) | hosted Linux | every pull request and push to main; by hand |
 | `image.yml`: the image under compose, the setup test, pushes `sha-{commit}` (or the tag, from `release.yml`) with attestations | hosted Linux | by hand (pushes from main); called by `release.yml` |
 | `agent.yml`: the amd64 and arm64 agent tarballs | hosted Linux | by hand; called by `release.yml` |
-| `exit.yml`: the Phase 1–5 exit tests, Chromium and ExoPlayer | hosted Linux | by hand (`soak` for 30 minutes), before a release |
+| `exit.yml`: the Phase 1–5 exit tests, Chromium and ExoPlayer, and launch exit check 8 against `examples/nextjs-lms` | hosted Linux | by hand (`soak` for 30 minutes), before a release |
 | `exit-safari.yml`: Safari | hosted macOS | by hand, before a release |
 | `install.yml`: the installers end to end on two local release candidates | hosted Linux | by hand |
 | `release.yml`: waits for `ci.yml` (and `exit.yml`, unless a `-rc`) on the commit, then the image, the agent tarballs and `clipmux` binaries, the GitHub Release with `SHA256SUMS` and notes from `CHANGELOG.md`, and npm publish of the `@clipmux` packages with provenance (D136) | hosted Linux | `v*` tags; by hand only the npm job (a dry run by default) |
