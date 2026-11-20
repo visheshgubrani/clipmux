@@ -398,7 +398,7 @@ when you introduce or discover it; remove it when it is closed.
   The default (`.env.local`, no flag) is unaffected. The exit-8 suite
   creates the file first. A fix is a flag Node doesn't know (an alias such
   as `--env`), found by P6-T28.
-- **No agent skills yet (T17).** The landing page and the docs point agents at `/agents.md`, `llms.txt` and the Markdown twins; `npx skills add visheshgubrani/clipmux` comes back to the landing page's Agents section, and the skills' stable docs anchors get a lint, when the skills exist (D134).
+- **The skill evals run by hand (T17).** `skills/evals/lms-starter` is run with a coding agent and the exit-7 check (`skills/evals/README.md`), not in CI: each run is a billed agent session, and its result varies run to run. The plan's "evals run when the API or the packages change" is a release step until a CI job can run an agent. The skills' docs anchors and error list are linted in `make site-check`.
 
 ## Found by the first live integration (Edural, 2026-11-15; docs/integration.md)
 

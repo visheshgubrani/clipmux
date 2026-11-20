@@ -106,6 +106,58 @@ export function linkProblems(html, fromFile, resolve, skip = new Set()) {
   return problems
 }
 
+// The agent skills (skills/, T17) link to docs pages and their anchors, so a
+// renamed heading must not break them: each anchor a skill uses is pinned on
+// its heading with `[#id]`, and resolves in the build.
+
+/** The clipmux.com docs links in a skill's Markdown, with their anchors. */
+export function skillLinks(text) {
+  return [...text.matchAll(/https:\/\/clipmux\.com(\/docs[^\s)>`#,]*)(?:#([a-z0-9_-]+))?/g)].map((m) => ({
+    path: m[1].replace(/[.:]$/, ''),
+    anchor: m[2] ?? '',
+  }))
+}
+
+/**
+ * A skill's frontmatter has its directory's name and a description that YAML
+ * reads as one string: unquoted, a `: ` inside it is a parse error, and
+ * `npx skills add` then skips the skill.
+ */
+export function skillFrontmatterProblems(text, dirName) {
+  const fm = /^---\n([\s\S]*?)\n---\n/.exec(text)?.[1]
+  if (fm === undefined) return ['no frontmatter']
+  const problems = []
+  const name = /^name: (.*)$/m.exec(fm)?.[1]
+  if (name !== dirName) problems.push(`name is ${name ?? 'missing'}, not ${dirName}`)
+  const description = /^description: (.*)$/m.exec(fm)?.[1]
+  if (!description) problems.push('no description')
+  else if (!/^".*"$/.test(description) && description.includes(': '))
+    problems.push('the description has ": " and is not quoted')
+  return problems
+}
+
+/** The page's MDX writes the anchor out, so renaming the heading keeps it. */
+export function pinnedAnchorProblems(mdx, anchor) {
+  return mdx.includes(`[#${anchor}]`)
+    ? []
+    : [`anchor #${anchor} is not pinned: write the heading as \`## … [#${anchor}]\``]
+}
+
+/** Every error code the spec returns, and every video and track error_code. */
+export function errorCodeProblems(text, spec, guide) {
+  const codes = new Set([...Object.keys(guide.asset ?? {}), ...Object.keys(guide.track ?? {})])
+  const walk = (v) => {
+    if (Array.isArray(v)) v.forEach(walk)
+    else if (v && typeof v === 'object') {
+      if (v.code?.enum) for (const c of v.code.enum) codes.add(c)
+      Object.values(v).forEach(walk)
+    }
+  }
+  for (const ops of Object.values(spec.paths ?? {}))
+    for (const op of Object.values(ops)) for (const r of Object.values(op?.responses ?? {})) walk(r.content)
+  return [...codes].filter((c) => !text.includes(`\`${c}\``)).map((c) => `no row for ${c}`)
+}
+
 // ---------------------------------------------------------------------------
 
 function walk(dir) {
@@ -148,6 +200,35 @@ function main(contentOnly = false) {
       problems.push(`${name}: ${p}`)
   }
 
+  // The agent skills: pinned anchors, and every error code in the errors list.
+  const skillsDir = join(root, 'skills')
+  const skillFiles = walk(skillsDir).filter(
+    (f) => f.endsWith('.md') && !f.includes(`${join('skills', 'evals')}`),
+  )
+  for (const f of skillFiles.filter((f) => f.endsWith('SKILL.md'))) {
+    const dirName = relative(skillsDir, f).split('/')[0]
+    for (const p of skillFrontmatterProblems(readFileSync(f, 'utf8'), dirName))
+      problems.push(`${relative(root, f)}: ${p}`)
+  }
+  const links = skillFiles.flatMap((f) =>
+    skillLinks(readFileSync(f, 'utf8')).map((l) => ({ ...l, from: relative(root, f) })),
+  )
+  for (const l of links.filter((l) => l.anchor)) {
+    const rel = l.path.replace(/^\/docs\/?/, '')
+    const page = [join(content, `${rel}.mdx`), join(content, rel, 'index.mdx')].find((f) => existsSync(f))
+    if (page)
+      for (const p of pinnedAnchorProblems(readFileSync(page, 'utf8'), l.anchor))
+        problems.push(`${relative(site, page)}: ${p} (${l.from})`)
+  }
+  const guide = JSON.parse(readFileSync(join(site, 'data', 'errors.json'), 'utf8'))
+  const spec = JSON.parse(readFileSync(join(root, 'internal/openapi/openapi.json'), 'utf8'))
+  for (const p of errorCodeProblems(
+    readFileSync(join(skillsDir, 'clipmux-integrate', 'references', 'errors.md'), 'utf8'),
+    spec,
+    guide,
+  ))
+    problems.push(`skills/clipmux-integrate/references/errors.md: ${p}`)
+
   if (contentOnly) {
     if (problems.length) {
       console.error(problems.map((p) => `site lint: ${p}`).join('\n'))
@@ -174,6 +255,15 @@ function main(contentOnly = false) {
   for (const file of htmlFiles)
     problems.push(...linkProblems(readFileSync(file, 'utf8'), relative(out, file), resolve, redirects))
 
+  // Each docs link in the skills resolves in the build, with its anchor.
+  for (const l of links) {
+    const target = resolve(l.path)
+    if (!target) problems.push(`${l.from}: broken link ${SITE_URL}${l.path}`)
+    else if (l.anchor && !target.html?.includes(`id="${l.anchor}"`))
+      problems.push(`${l.from}: missing anchor ${SITE_URL}${l.path}#${l.anchor}`)
+  }
+  const anchors = links.filter((l) => l.anchor).length
+
   problems.push(...llmsProblems(readFileSync(join(out, 'llms.txt'), 'utf8'), exists))
 
   // Every docs page has its Markdown twin.
@@ -187,7 +277,9 @@ function main(contentOnly = false) {
     console.error(problems.map((p) => `site lint: ${p}`).join('\n'))
     process.exit(1)
   }
-  console.log(`site lint: ${htmlFiles.length} pages checked, no problems`)
+  console.log(
+    `site lint: ${htmlFiles.length} pages checked, ${links.length} skill links (${anchors} anchors) resolve, no problems`,
+  )
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) main(process.argv.includes('--content'))

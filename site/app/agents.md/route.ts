@@ -21,6 +21,7 @@ export function GET() {
     `- [Build docs, in full](${SITE_URL}/docs/build/llms-full.txt): integrating an app`,
     `- [Troubleshooting](${SITE_URL}/docs/build/going-live/troubleshooting.md): each error and what to do`,
     `- [OpenAPI spec](${SITE_URL}/openapi.json): the integration API, OpenAPI 3.1`,
+    '- Agent skills, installed with `npx skills add visheshgubrani/clipmux`: `clipmux-integrate` (the backend) and `clipmux-player` (the elements)',
     '',
     '---',
     '',

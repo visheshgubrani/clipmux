@@ -1,6 +1,6 @@
 ---
 title: AI and agents
-description: Point a coding agent at the files that teach it ClipMux, from a one-line prompt to every page as Markdown.
+description: Point a coding agent at the files that teach it ClipMux, from a one-line prompt or the agent skills to every page as Markdown.
 icon: Bot
 ---
 
@@ -33,6 +33,26 @@ at `node_modules/@clipmux/node/AGENTS.md`, matching the installed version.
 dashboard, so the agent will ask you to open an approval link. It writes
 the credentials to `.env.local` without printing them, and the guide tells
 the agent never to print or log them either.
+
+## Install the skills
+
+ClipMux publishes two agent skills, in the `SKILL.md` format that Claude
+Code, Cursor, Codex and other agents load when a task needs them. Install
+them from your app's project:
+
+```bash
+npx skills add visheshgubrani/clipmux
+```
+
+| Skill | What it covers |
+| --- | --- |
+| `clipmux-integrate` | Your backend: `init`, the route file with `clipmuxHandler` (Next.js, Express, the Fetch runtimes), the webhook, signed playback, `passthrough`, subtitles and chapters, `doctor`, and every error code with what to do |
+| `clipmux-player` | Your pages: `<clipmux-uploader>` and `<clipmux-player>` with `session-url`, in React and Next.js or plain HTML |
+
+They are short on purpose and link to these docs for detail, so they stay
+current. The skills and their evals are in
+[`skills/`](https://github.com/visheshgubrani/clipmux/tree/main/skills).
+Then ask the agent to add ClipMux uploads, webhooks and signed playback.
 
 ## The docs as Markdown
 

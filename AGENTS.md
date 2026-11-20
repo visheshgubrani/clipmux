@@ -32,6 +32,12 @@ anything decided since, and wins over the architecture doc where they differ.
 - `internal/webhooks/testdata/vectors.json` is the webhook-signature contract
   for the SDK and the language snippets; regenerate with
   `go test ./internal/webhooks -run TestVectors -update` (D112).
+- `skills/` holds the agent skills (`clipmux-integrate`, `clipmux-player`,
+  P6-T17) that `npx skills add visheshgubrani/clipmux` installs. They link to
+  clipmux.com pages by pinned anchors (`## Heading [#id]`); `make site-check`
+  fails on an unpinned or missing one, and on an API error code missing from
+  `skills/clipmux-integrate/references/errors.md`. Their eval is
+  `skills/evals` (launch exit check 7).
 - `toolchain/versions.env` is the only place a media tool version, URL or digest
   is written. Shaka Packager must be >= 3.9.1.
 - TypeScript lives only in the dashboard, the packages (`packages/player`,
