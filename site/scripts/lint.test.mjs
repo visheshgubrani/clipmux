@@ -2,12 +2,16 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import {
   envProblems,
+  errorCodeProblems,
   frontmatterProblems,
   internalIdProblems,
   linkProblems,
   llmsProblems,
+  pinnedAnchorProblems,
   routeProblems,
   routesIn,
+  skillFrontmatterProblems,
+  skillLinks,
   specRoutes,
 } from './lint.mjs'
 
@@ -83,4 +87,74 @@ test('internal links and anchors resolve; redirects and assets are skipped', () 
     'index.html: missing anchor /docs/build#nope',
     'index.html: broken link /docs/gone',
   ])
+})
+
+test('skill links to the docs are read, with their anchors', () => {
+  assert.deepEqual(
+    skillLinks(
+      'See [x](https://clipmux.com/docs/build/quickstart#connect-the-app), https://clipmux.com/docs/reference/errors#<code>, and `https://clipmux.com/docs`.',
+    ),
+    [
+      { path: '/docs/build/quickstart', anchor: 'connect-the-app' },
+      { path: '/docs/reference/errors', anchor: '' },
+      { path: '/docs', anchor: '' },
+    ],
+  )
+})
+
+test('an anchor a skill uses is pinned on its heading', () => {
+  const page = '## Connect the app [#connect-the-app]\n\n## Check it\n'
+  assert.deepEqual(pinnedAnchorProblems(page, 'connect-the-app'), [])
+  assert.deepEqual(pinnedAnchorProblems(page, 'check-it'), [
+    'anchor #check-it is not pinned: write the heading as `## … [#check-it]`',
+  ])
+})
+
+test('the skill lists every error code', () => {
+  const spec = {
+    paths: {
+      '/v1/x': {
+        post: {
+          responses: {
+            409: {
+              content: {
+                'application/json': {
+                  schema: {
+                    properties: {
+                      error: { properties: { code: { enum: ['job_active', 'asset_not_ready'] } } },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  }
+  const guide = { asset: { transcode_failed: '' }, track: { no_audio: '' } }
+  assert.deepEqual(errorCodeProblems('`job_active` `transcode_failed`, `no_audio`', spec, guide), [
+    'no row for asset_not_ready',
+  ])
+})
+
+test("a skill's frontmatter parses, with its directory's name", () => {
+  assert.deepEqual(
+    skillFrontmatterProblems(
+      '---\nname: clipmux-player\ndescription: "Video: the player."\n---\n',
+      'clipmux-player',
+    ),
+    [],
+  )
+  assert.deepEqual(
+    skillFrontmatterProblems(
+      '---\nname: clipmux-player\ndescription: Video: the player.\n---\n',
+      'clipmux-player',
+    ),
+    ['the description has ": " and is not quoted'],
+  )
+  assert.deepEqual(
+    skillFrontmatterProblems('---\nname: other\ndescription: Plays.\n---\n', 'clipmux-player'),
+    ['name is other, not clipmux-player'],
+  )
 })

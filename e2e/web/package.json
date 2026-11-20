@@ -7,7 +7,8 @@
     "build": "vite build",
     "test:browser": "playwright test",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test:exit8": "pnpm --filter @clipmux/example-nextjs-lms run build && playwright test -c playwright.exit8.config.ts"
+    "test:exit8": "pnpm --filter @clipmux/example-nextjs-lms run build && playwright test -c playwright.exit8.config.ts",
+    "test:exit7": "playwright test -c playwright.exit7.config.ts"
   },
   "dependencies": {
     "@clipmux/node": "workspace:*",

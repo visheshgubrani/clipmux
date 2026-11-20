@@ -155,7 +155,7 @@ safe in an `og:image`.
 | --- | --- |
 | `verify(rawBody, headers, { tolerance? })` | Verifies a webhook against `CLIPMUX_WEBHOOK_SECRET` and returns its event. Pass the raw body as it arrived. `tolerance` is the seconds a timestamp may be off, 300 by default |
 
-## Route handlers
+## Route handlers [#route-handlers]
 
 `clipmuxHandler(options)` returns a Fetch handler, `(req: Request) => Promise<Response>`,
 for three `POST` routes, chosen by the last part of the path:

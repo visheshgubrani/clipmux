@@ -35,7 +35,7 @@ pnpm add @clipmux/player
 </Tab>
 </Tabs>
 
-## Play with a session URL
+## Play with a session URL [#play-with-a-session-url]
 
 The shortest way is `session-url`. The page needs only the playback ID:
 
@@ -157,7 +157,7 @@ a native one when the browser needs it.
 media events (`timeupdate`, `ended` and so on), to resume where a viewer
 left off or to report progress.
 
-## Events
+## Events [#events]
 
 They bubble, and they are typed on `HTMLElementEventMap`, so
 `player.addEventListener('clipmux-chapters', (e) => e.detail.chapters)`
@@ -175,7 +175,7 @@ enrol state, not an error. A `clipmux-error` with `status: 404` means the
 playback ID was revoked or never existed, so show that the video was
 removed.
 
-## React and Next.js
+## React and Next.js [#react-and-nextjs]
 
 The element needs the DOM and Media Source, so a server render must not load
 it. Import it in an effect, and import the JSX types once:
@@ -239,7 +239,7 @@ export function Player({ baseUrl, playbackId }: { baseUrl: string; playbackId: s
 Video.js 10.2's own declaration files don't all type-check, so keep
 `"skipLibCheck": true` in `tsconfig.json`. Most templates have it already.
 
-## Subtitles and chapters
+## Subtitles and chapters [#subtitles-and-chapters]
 
 Subtitles need no attribute. A ready subtitles track is listed in the HLS
 master playlist, so it appears in the player's captions menu, and its files
@@ -272,7 +272,7 @@ clipmux-player {
 
 The player is 16:9 and fills its container's width.
 
-## Content-Security-Policy
+## Content-Security-Policy [#content-security-policy]
 
 A page with the player must allow, besides its own origin:
 

@@ -1,10 +1,9 @@
-import { type ChildProcess, spawn } from 'node:child_process'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
-import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { parseEnv } from 'node:util'
 import { type Browser, expect, type Page, test } from '@playwright/test'
+import { freePort, Run } from '../runner.ts'
 
 // Launch exit check 8 (P6-T28, D112), in examples/nextjs-lms against the
 // real binary: `init` approved through /connect writes the env file, the
@@ -22,65 +21,9 @@ interface Config {
 
 const example = resolve(import.meta.dirname, '../../../examples/nextjs-lms')
 
-/** A command the suite runs, with everything it printed. */
-class Run {
-  readonly proc: ChildProcess
-  output = ''
-  readonly exited: Promise<number | null>
-
-  constructor(cmd: string, args: string[], env: Record<string, string | undefined> = {}) {
-    // Its own process group, so stop() reaches what npx starts as well.
-    this.proc = spawn(cmd, args, { cwd: example, env: { ...process.env, ...env }, detached: true })
-    const add = (b: Buffer) => {
-      this.output += b.toString()
-    }
-    this.proc.stdout?.on('data', add)
-    this.proc.stderr?.on('data', add)
-    this.exited = new Promise((done) => this.proc.on('exit', (code) => done(code)))
-  }
-
-  async waitFor(re: RegExp, timeout = 30_000): Promise<RegExpMatchArray> {
-    let m: RegExpMatchArray | null = null
-    try {
-      await expect.poll(() => (m = this.output.match(re)), { timeout }).not.toBeNull()
-    } catch (err) {
-      throw new Error(`no ${re} in the output:\n${this.output}`, { cause: err })
-    }
-    return m as unknown as RegExpMatchArray
-  }
-
-  async stop(): Promise<number | null> {
-    const group = (signal: NodeJS.Signals) => {
-      try {
-        if (this.proc.pid) process.kill(-this.proc.pid, signal)
-      } catch {
-        // already gone
-      }
-    }
-    if (this.proc.exitCode === null && this.proc.signalCode === null) {
-      group('SIGINT')
-      const killed = setTimeout(() => group('SIGKILL'), 5_000)
-      await this.exited
-      clearTimeout(killed)
-    }
-    return this.exited
-  }
-}
-
 // `npx @clipmux/node …` from the example, as its README says; --no keeps
 // npx from installing anything: the workspace's build is what runs.
-const cli = (args: string[]) => new Run('npx', ['--no', '@clipmux/node', ...args])
-
-function freePort(): Promise<number> {
-  return new Promise((done, fail) => {
-    const s = createServer()
-    s.on('error', fail)
-    s.listen(0, '127.0.0.1', () => {
-      const { port } = s.address() as { port: number }
-      s.close(() => done(port))
-    })
-  })
-}
+const cli = (args: string[]) => new Run(example, 'npx', ['--no', '@clipmux/node', ...args])
 
 /** A browser of one of the example's users, signed in through its header. */
 async function as(browser: Browser, app: string, user: string): Promise<Page> {
@@ -172,6 +115,7 @@ test('the four-step integration works in examples/nextjs-lms', async ({ page, br
 
     // The example starts on the env file init wrote, with 30 s tokens.
     const next = new Run(
+      example,
       'npx',
       ['--no', 'next', 'start', '--port', String(port), '--hostname', '127.0.0.1'],
       {
