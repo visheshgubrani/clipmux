@@ -39,6 +39,18 @@ const kindNames: Record<string, string> = {
   chapters: 'Chapters',
 }
 
+// Jobs serve runs itself; no worker ever claims them, so they have no
+// attempts (internal/lifecycle, internal/chapters).
+const serverKinds = new Set(['delete', 'move', 'chapters'])
+
+// What the expanded row says about a server job that hasn't finished.
+const serverWaits: Record<string, string> = {
+  delete:
+    "Run by the server, no worker needed. The files go once the video's upload links have expired, up to 16 minutes after its last job.",
+  move: "Run by the server, no worker needed. The files move once the video's upload links have expired, up to 16 minutes after its last job.",
+  chapters: 'Run by the server, no worker needed.',
+}
+
 // Why a job is routed where it is (D053, D055).
 const reasons: Record<string, string> = {
   primary: 'the primary',
@@ -60,9 +72,11 @@ function summary(j: Job): string {
   if (j.status === 'running') {
     const a = j.attempts.at(-1)
     const pct = j.progress != null ? `${Math.round(j.progress * 100)}%` : ''
-    return [a ? `On ${where(a)}` : null, j.phase, pct].filter(Boolean).join(', ')
+    const on = a ? `On ${where(a)}` : serverKinds.has(j.kind) ? 'On this server' : null
+    return [on, j.phase, pct].filter(Boolean).join(', ')
   }
   if (j.status === 'queued') {
+    if (serverKinds.has(j.kind)) return 'Waiting for the server'
     if (j.pinned_agent_id) return 'Waiting for its PC'
     if (j.routed_to)
       return `Routed to ${executorNames[j.routed_to] ?? j.routed_to}: ${reasons[j.route_reason ?? ''] ?? j.route_reason}`
@@ -70,7 +84,8 @@ function summary(j: Job): string {
   }
   if (j.status === 'failed') return j.error_code ?? 'Failed'
   const a = j.attempts.at(-1)
-  return a ? `On ${where(a)}` : 'Done by the server, no worker needed'
+  if (a) return `On ${where(a)}`
+  return j.status === 'cancelled' ? 'Cancelled before it ran' : 'Done by the server, no worker needed'
 }
 
 const statuses = [
@@ -275,7 +290,7 @@ function JobRow({ job: j }: { job: Job }) {
           {j.attempts.length === 0 ? (
             <span className="text-muted-foreground">
               {j.status === 'queued' || j.status === 'running'
-                ? 'Not claimed yet.'
+                ? (serverWaits[j.kind] ?? 'Not claimed yet.')
                 : j.status === 'succeeded'
                   ? 'Done by the server, no worker needed.'
                   : 'Never ran on a worker.'}

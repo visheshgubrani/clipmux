@@ -18,6 +18,11 @@ these.
 - The README's quick start installs from `clipmux.com/install.sh`.
   `releases/latest/download/install.sh` is a 404 while every release is a
   prerelease.
+- Dashboard: the jobs page no longer calls a running delete, move or
+  chapters job "Not claimed yet". The server runs those itself, and a
+  delete or move waits until the video's upload links expire, up to 16
+  minutes after its last job. An encode cancelled before it ran no longer
+  reads "Done by the server".
 
 ## v1.0.0-rc.1 - 2026-11-19
 
