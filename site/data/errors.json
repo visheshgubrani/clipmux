@@ -32,7 +32,7 @@
     "size_mismatch": "The stored file's size differs from the `size` the upload declared. Create a new upload with the right size.",
     "idempotency_in_progress": "A request with this Idempotency-Key is still running. Wait a moment and retry with the same key.",
     "idempotency_key_reused": "The Idempotency-Key was used with a different request. Use a new key for a new request.",
-    "too_large": "The file is larger than this instance or its storage allows.",
+    "too_large": "The file is larger than this instance or its storage allows, or a request body is larger than its route accepts.",
     "rate_limited": "Too many requests. Wait `Retry-After` seconds (also `retry_after` in the details), then retry.",
     "too_many_pairings": "Ten pairings are already waiting for the owner. Wait for one to be approved or to expire."
   },
@@ -48,7 +48,7 @@
     "source_download_failed": "The worker couldn't download the source from storage.",
     "source_changed": "The source in storage changed while it was being processed.",
     "source_missing": "The source is no longer in storage.",
-    "scratch_full": "The worker ran out of disk while encoding.",
+    "scratch_full": "The worker didn't have the disk for the job: it saw before encoding that the ladder wouldn't fit, or the disk filled during the download or encode. The job may move to a fallback.",
     "job_timeout": "The job ran past its time limit.",
     "worker_lost": "The worker stopped answering mid-job, after every retry.",
     "worker_stopped": "The worker was stopped mid-job, after every retry.",

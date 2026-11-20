@@ -607,3 +607,24 @@ func TestABurstLargerThanThePoolCompletesAndCancels(t *testing.T) {
 		}
 	}
 }
+
+// F15 (bug hunt 2026-11-18): complete's body was capped at 64 KiB, about
+// 936 parts, so an upload past ~29 GiB could never complete, and the
+// refusal read "body must be a JSON object". Every part of the largest
+// upload fits; a body past that is 413.
+func TestCompleteAcceptsEveryPartOfTheLargestUpload(t *testing.T) {
+	e := newEnv(t)
+	e.svc.MaxSize = partSize * storage.MaxParts
+	c := e.create(partSize*storage.MaxParts, nil, nil)
+	etags := make(map[int]string, storage.MaxParts)
+	for n := 1; n <= storage.MaxParts; n++ {
+		etags[n] = `"e10adc3949ba59abbe56e057f20f883e-1"` // as long as an S3 multipart ETag
+	}
+	if code, out := e.complete(c, etags); code != http.StatusBadRequest || errCode(out) != "invalid_parts" {
+		t.Fatalf("complete with %d parts: %d %v, want 400 invalid_parts (nothing was uploaded)", storage.MaxParts, code, out)
+	}
+	huge := map[string]any{"parts": []map[string]any{{"part_number": 1, "etag": strings.Repeat("x", 4<<20)}}}
+	if code, out, _ := e.call("POST", "/v1/uploads/"+c.UploadID+"/complete", c.Token, huge, nil); code != http.StatusRequestEntityTooLarge || errCode(out) != "too_large" {
+		t.Fatalf("a 4 MiB complete body: %d %v, want 413 too_large", code, out)
+	}
+}

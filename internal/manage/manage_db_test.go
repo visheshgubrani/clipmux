@@ -399,8 +399,10 @@ func TestTheJobsPageShowsWhereEachAttemptRanAndOnWhat(t *testing.T) {
 	r.exec(`INSERT INTO outputs (id, project_id, asset_id, key_version, status) VALUES ('out_a', 'prj_default', 'ast_1', 1, 'writing')`)
 	r.exec(`INSERT INTO outputs (id, project_id, asset_id, key_version, status, manifest) VALUES ('out_b', 'prj_default', 'ast_1', 1, 'committed', '{"encoder": {"stage": "cpu", "fallbacks": ["vaapi"]}}')`)
 	r.exec(`INSERT INTO attempts (id, project_id, job_id, asset_id, attempt_number, output_id, executor, agent_id, status, token_hash, lease_expires_at, route_reason)
-		VALUES ('att_1', 'prj_default', 'job_1', 'ast_1', 1, 'out_a', 'agent', 'agt_pc', 'lost', 'h1', now(), 'primary'),
+		VALUES ('att_1', 'prj_default', 'job_1', 'ast_1', 1, 'out_a', 'agent', 'agt_pc', 'failed', 'h1', now(), 'primary'),
 		       ('att_2', 'prj_default', 'job_1', 'ast_1', 2, 'out_b', 'builtin', NULL, 'running', 'h2', now(), 'primary_offline')`)
+
+	r.exec(`UPDATE attempts SET error_code = 'transcode_failed', error_message = 'x264 [error]: malloc failed' WHERE id = 'att_1'`)
 
 	res := r.call("GET", "/v1/jobs?agent_id=agt_pc", nil, "")
 	if res.status != http.StatusOK || len(res.list) != 1 {
@@ -409,7 +411,7 @@ func TestTheJobsPageShowsWhereEachAttemptRanAndOnWhat(t *testing.T) {
 	job := res.list[0].(map[string]any)
 	attempts := job["attempts"].([]any)
 	first, second := attempts[0].(map[string]any), attempts[1].(map[string]any)
-	if job["lost_count"] != float64(1) || first["agent_name"] != "Studio PC" || first["status"] != "lost" || second["executor"] != "builtin" {
+	if job["lost_count"] != float64(1) || first["agent_name"] != "Studio PC" || first["status"] != "failed" || second["executor"] != "builtin" {
 		t.Fatalf("job = %v", job)
 	}
 	// Why: the job is routed to the server because the PC went away, and
@@ -417,6 +419,10 @@ func TestTheJobsPageShowsWhereEachAttemptRanAndOnWhat(t *testing.T) {
 	if job["routed_to"] != "builtin" || job["route_reason"] != "primary_offline" ||
 		first["route_reason"] != "primary" || second["route_reason"] != "primary_offline" {
 		t.Fatalf("routes: job %v/%v, attempts %v/%v", job["routed_to"], job["route_reason"], first["route_reason"], second["route_reason"])
+	}
+	// What went wrong, as the worker said it (F18).
+	if first["error_message"] != "x264 [error]: malloc failed" || second["error_message"] != nil {
+		t.Fatalf("error messages: %v, %v", first["error_message"], second["error_message"])
 	}
 	if enc := second["encoder"].(map[string]any); enc["stage"] != "cpu" || enc["fallbacks"].([]any)[0] != "vaapi" {
 		t.Fatalf("encoder = %v", second["encoder"])

@@ -53,6 +53,10 @@ const (
 const (
 	maxPartsPerSign = 100
 	maxPassthrough  = 255
+	// maxCompleteBody fits every part of the largest upload: an entry with
+	// an S3 multipart ETag is about 70 bytes, and 200 leaves room for longer
+	// ETags (bug hunt F15: 64 KiB stopped near 936 parts, about 29 GiB).
+	maxCompleteBody = storage.MaxParts * 200
 )
 
 // Service runs uploads against each asset's store.
@@ -672,7 +676,7 @@ func (s *Service) handleComplete(w http.ResponseWriter, r *http.Request) {
 			ETag       string `json:"etag"`
 		} `json:"parts"`
 	}
-	if !httpjson.Decode(w, r, &req) {
+	if !httpjson.DecodeLimit(w, r, &req, maxCompleteBody) {
 		return
 	}
 	parts := make([]storage.Part, len(req.Parts))

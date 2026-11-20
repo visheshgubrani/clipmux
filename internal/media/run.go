@@ -32,6 +32,13 @@ func inputGuard() []string {
 // no video, or is in a format outside the allowlist.
 var ErrUnsupportedSource = errors.New("media: unsupported or corrupt source")
 
+// ErrScratchFull marks a tool that failed because the work directory's disk
+// filled. It says nothing about the source or the encoder (bug hunt F21).
+var ErrScratchFull = errors.New("media: the work directory's disk is full")
+
+// audioBitrate is the AAC rendition's rate.
+const audioBitrate = "128k"
+
 // Tools are the binaries the pipeline runs.
 type Tools struct {
 	FFmpeg, FFprobe, Packager string
@@ -100,7 +107,8 @@ func (t Tools) Versions(ctx context.Context) (ToolVersions, error) {
 
 // run executes a tool with no inherited environment (so no secrets), the
 // given working directory and the caller's deadline, and through the sandbox
-// when there is one. stderr is kept only as a short tail for the error, and
+// when there is one. stderr is kept only as its first error lines and a
+// short tail for the error, and
 // never contains a key because keys go through a flag file.
 func (t Tools) run(ctx context.Context, bin string, args []string, dir string, stdout io.Writer) error {
 	return t.runLogged(ctx, bin, args, dir, stdout, nil)
@@ -126,7 +134,7 @@ func (t Tools) runLogged(ctx context.Context, bin string, args []string, dir str
 	cmd.Env = sandbox.Env(t.Env)
 	cmd.Dir = dir
 	cmd.Stdout = stdout
-	var stderr tail
+	var stderr stderrLog
 	cmd.Stderr = &stderr
 	if log != nil {
 		cmd.Stderr = io.MultiWriter(&stderr, log)
@@ -134,23 +142,89 @@ func (t Tools) runLogged(ctx context.Context, bin string, args []string, dir str
 	cmd.WaitDelay = 5 * time.Second
 	sandbox.DieWithParent(cmd)
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("%s: %w: %s", name, err, strings.TrimSpace(stderr.String()))
+		msg := strings.TrimSpace(stderr.String())
+		if strings.Contains(msg, "No space left on device") {
+			return fmt.Errorf("%s: %w: %w: %s", name, ErrScratchFull, err, msg)
+		}
+		return fmt.Errorf("%s: %w: %s", name, err, msg)
 	}
 	return nil
 }
 
-// tail keeps the last 2 KiB written to it.
-type tail struct{ b []byte }
+// stderrLog keeps what a tool's failure needs: its first few error lines,
+// which usually say why, and the last 2 KiB, which say where it stopped. A
+// tail alone loses the reason when the tool prints pages of statistics on
+// its way out, as six libx264 encoders do.
+type stderrLog struct {
+	tail []byte
+	line []byte // the line being written, up to stderrLineMax bytes
+	errs []string
+}
 
-func (t *tail) Write(p []byte) (int, error) {
-	t.b = append(t.b, p...)
-	if len(t.b) > 2048 {
-		t.b = t.b[len(t.b)-2048:]
+const (
+	stderrTailMax  = 2048
+	stderrErrLines = 8
+	stderrLineMax  = 256
+)
+
+func (s *stderrLog) Write(p []byte) (int, error) {
+	s.tail = append(s.tail, p...)
+	if len(s.tail) > stderrTailMax {
+		s.tail = s.tail[len(s.tail)-stderrTailMax:]
+	}
+	for rest := p; len(rest) > 0 && len(s.errs) < stderrErrLines; {
+		i := bytes.IndexByte(rest, '\n')
+		if i < 0 {
+			s.add(rest)
+			break
+		}
+		s.add(rest[:i])
+		s.endLine()
+		rest = rest[i+1:]
 	}
 	return len(p), nil
 }
 
-func (t *tail) String() string { return string(t.b) }
+func (s *stderrLog) add(p []byte) {
+	s.line = append(s.line, p[:min(len(p), stderrLineMax-len(s.line))]...)
+}
+
+func (s *stderrLog) endLine() {
+	if line := strings.TrimSpace(string(s.line)); isErrorLine(line) {
+		s.errs = append(s.errs, line)
+	}
+	s.line = s.line[:0]
+}
+
+// isErrorLine reports whether an ffmpeg, x264 or packager line reports a
+// failure rather than progress or stream information.
+func isErrorLine(line string) bool {
+	l := strings.ToLower(line)
+	for _, w := range []string{"error", "failed", "cannot", "invalid", "not supported", "unsupported", "denied"} {
+		if strings.Contains(l, w) {
+			return true
+		}
+	}
+	return false
+}
+
+// String is the error lines the tail no longer holds, then the tail.
+func (s *stderrLog) String() string {
+	if len(s.errs) < stderrErrLines && len(s.line) > 0 {
+		s.endLine()
+	}
+	tail := string(s.tail)
+	var head []string
+	for _, e := range s.errs {
+		if !strings.Contains(tail, e) {
+			head = append(head, e)
+		}
+	}
+	if len(head) == 0 {
+		return tail
+	}
+	return strings.Join(head, "\n") + "\n…\n" + tail
+}
 
 // Source is what the pipeline needs to know about an input.
 type Source struct {

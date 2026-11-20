@@ -3,6 +3,7 @@ package media
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -156,6 +157,13 @@ func TestTheCPUsFailureIsFinal(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "(cpu)") {
 		t.Fatalf("err = %v, want the CPU stage's failure", err)
 	}
+	// F21: when every stage fails, the GPU stages' reasons are in the error
+	// too, or nothing ever records them.
+	for _, want := range []string{"vaapi (", "vaapi-hybrid (", "Cannot load h264_vaapi"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("err lacks the earlier stages' failures (%q):\n%v", want, err)
+		}
+	}
 }
 
 func TestACancelledEncodeDoesntFallBack(t *testing.T) {
@@ -264,5 +272,83 @@ func TestAudioEncodesBesideTheVideoAndItsFailureStopsIt(t *testing.T) {
 	}
 	if took := time.Since(start); took > 10*time.Second {
 		t.Fatalf("Transcode took %s: the video kept encoding after the audio failed", took)
+	}
+}
+
+// Bug hunt F21: six libx264 encoders each sized their threads from the core
+// count, and on 12 cores a 4K ladder needed more address space than the 8 GiB
+// tool limit, so the CPU stage failed at frame 0. Each rung now gets its share
+// of the cores, at most 4 threads, so a full ladder stays at 24 threads (which
+// encoded that lecture under 8 GiB) on any machine.
+func TestX264ThreadsShareTheCoresUpToFour(t *testing.T) {
+	cases := []struct{ cpus, rungs, want int }{
+		{12, 6, 4}, // the F21 machine: 2 cores per rung, doubled, at the cap
+		{64, 6, 4}, // a big machine stays at the cap
+		{4, 6, 2},  // 8 threads for 6 rungs: 2 each
+		{2, 6, 1},  // never below one
+		{1, 1, 2},
+		{8, 1, 4},
+		{6, 4, 3},
+	}
+	for _, c := range cases {
+		if got := x264Threads(c.cpus, c.rungs); got != c.want {
+			t.Errorf("x264Threads(%d cpus, %d rungs) = %d, want %d", c.cpus, c.rungs, got, c.want)
+		}
+	}
+}
+
+func TestCPUEncodeArgsCapTheThreads(t *testing.T) {
+	src := Source{Width: 3840, Height: 2160, FrameRate: "30", FPS: 30, Duration: 60}
+	rungs := SelectLadder(src.Width, src.Height, nil)
+	args := strings.Join(EncodeArgs(Stage{Backend: CPU}, "", src, "/w/source", "/w/enc", rungs), " ")
+	if got, want := strings.Count(args, "-sc_threshold 0 -threads "), len(rungs); got != want {
+		t.Errorf("%d of %d libx264 encoders have -threads:\n%s", got, want, args)
+	}
+	gpu := strings.Join(EncodeArgs(Stage{Backend: NVENC, HWDecode: true}, "", src, "/w/source", "/w/enc", rungs), " ")
+	if strings.Contains(gpu, "-threads") {
+		t.Errorf("GPU encoders take no -threads:\n%s", gpu)
+	}
+}
+
+// F21: a stage that fills the disk isn't the encoder's fault, and the next
+// stage would need the same disk, so the chain stops and says why.
+func TestAFullDiskStopsTheChain(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(t.TempDir(), "ffmpeg")
+	script := "#!/bin/sh\necho 'av_interleaved_write_frame(): No space left on device' >&2\nexit 1\n"
+	if err := os.WriteFile(p, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	tools := Tools{FFmpeg: p, HW: Hardware{NVENC: true, CUDA: true}}
+	used, err := encodeLadder(context.Background(), tools, hd, "/src", dir, dir, SelectLadder(1280, 720, nil), func(string, float64) {})
+	if !errors.Is(err, ErrScratchFull) {
+		t.Fatalf("err = %v, want ErrScratchFull", err)
+	}
+	if !strings.Contains(err.Error(), "(nvenc)") || len(used.Fallbacks) != 0 {
+		t.Fatalf("used = %+v, err = %v; want a stop at the first stage", used, err)
+	}
+}
+
+// ScratchNeed bounds an encode's disk from the ladder's maxrates: the
+// renditions, then the packaged copy beside them. 720p, 600 s, with audio:
+// (3.5M + 1.8M + 1M + 128k) × 600 / 8 = 482.1 MB, twice.
+func TestScratchNeedIsTheLaddersMaxrateTwice(t *testing.T) {
+	cases := []struct {
+		src     Source
+		allowed []string
+		want    int64
+	}{
+		{Source{Width: 1280, Height: 720, Duration: 600, HasAudio: true}, nil, 964_200_000},
+		{Source{Width: 1280, Height: 720, Duration: 600}, nil, 945_000_000},
+		{Source{Width: 1280, Height: 720, Duration: 600}, []string{"360p"}, 150_000_000},
+		// The F21 lecture: 3840×2160, 3264.8 s, every rung, with audio.
+		// (16.8+9.6+6+3.5+1.8+1)M + 128k = 38.828 Mbit/s.
+		{Source{Width: 3840, Height: 2160, Duration: 3264.8, HasAudio: true}, nil, 31_691_413_600},
+	}
+	for _, c := range cases {
+		if got := ScratchNeed(c.src, c.allowed); got != c.want {
+			t.Errorf("ScratchNeed(%dx%d %gs audio=%v, %v) = %d, want %d",
+				c.src.Width, c.src.Height, c.src.Duration, c.src.HasAudio, c.allowed, got, c.want)
+		}
 	}
 }

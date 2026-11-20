@@ -35,7 +35,7 @@ func AudioArgs(src Source, input, encDir string) []string {
 	}
 	return append(args, "-i", input, "-vn",
 		"-af", filter,
-		"-c:a", "aac", "-b:a", "128k", "-ac", "2", "-ar", "48000",
+		"-c:a", "aac", "-b:a", audioBitrate, "-ac", "2", "-ar", "48000",
 		"-movflags", "+frag_keyframe+empty_moov+default_base_moof",
 		filepath.Join(encDir, "audio.mp4"))
 }
@@ -256,8 +256,10 @@ func encodeVideoAndAudio(ctx context.Context, t Tools, src Source, input, workDi
 // cancelled context stops the chain early.
 func encodeLadder(ctx context.Context, t Tools, src Source, input, workDir, encDir string, rungs []Rung, progress Progress) (EncoderUsed, error) {
 	var used EncoderUsed
+	var earlier []string // why each stage before this one failed, and when
 	chain := t.HW.Chain(src)
 	for i, stage := range chain {
+		began := time.Now()
 		progress("transcode", 0)
 		pr, pw := io.Pipe()
 		done := make(chan struct{})
@@ -273,9 +275,20 @@ func encodeLadder(ctx context.Context, t Tools, src Source, input, workDir, encD
 			used.Stage = stage.Name()
 			return used, nil
 		}
-		if ctx.Err() != nil || i == len(chain)-1 {
+		if errors.Is(err, ErrScratchFull) {
+			// The next stage would need the same disk (F21).
 			return used, fmt.Errorf("encode video (%s): %w", stage.Name(), err)
 		}
+		if ctx.Err() != nil || i == len(chain)-1 {
+			err = fmt.Errorf("encode video (%s): %w", stage.Name(), err)
+			if len(earlier) > 0 {
+				// The fallback warning is logged only when a later stage
+				// succeeds, so this error is the only record of the others.
+				err = fmt.Errorf("%w; before it, %s", err, strings.Join(earlier, "; "))
+			}
+			return used, err
+		}
+		earlier = append(earlier, fmt.Sprintf("%s (failed after %s): %v", stage.Name(), time.Since(began).Round(time.Second), err))
 		used.Fallbacks = append(used.Fallbacks, stage.Name())
 		if used.Failed == nil {
 			used.Failed = map[string]string{}

@@ -151,6 +151,7 @@ type Attempt struct {
 	SourceMultipartID pgtype.Text
 	SourcePartSize    pgtype.Int8
 	InputOutputID     pgtype.Text
+	ErrorMessage      pgtype.Text
 }
 
 type CloudflareConnection struct {

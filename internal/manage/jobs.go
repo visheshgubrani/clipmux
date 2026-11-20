@@ -23,21 +23,23 @@ import (
 
 // AttemptView is one executor's run of a job.
 type AttemptView struct {
-	ID          string          `json:"id"`
-	Number      int32           `json:"number"`
-	Executor    string          `json:"executor"`
-	RouteReason string          `json:"route_reason,omitempty"`
-	AgentID     string          `json:"agent_id,omitempty"`
-	AgentName   string          `json:"agent_name,omitempty"`
-	Status      string          `json:"status"`
-	Failure     string          `json:"failure_kind,omitempty"`
-	ErrorCode   string          `json:"error_code,omitempty"`
-	Phase       string          `json:"phase,omitempty"`
-	Progress    *float32        `json:"progress,omitempty"`
-	Encoder     json.RawMessage `json:"encoder,omitempty"`
-	StartedAt   time.Time       `json:"started_at"`
-	FinishedAt  *time.Time      `json:"finished_at,omitempty"`
-	LastBeatAt  *time.Time      `json:"last_heartbeat_at,omitempty"`
+	ID          string `json:"id"`
+	Number      int32  `json:"number"`
+	Executor    string `json:"executor"`
+	RouteReason string `json:"route_reason,omitempty"`
+	AgentID     string `json:"agent_id,omitempty"`
+	AgentName   string `json:"agent_name,omitempty"`
+	Status      string `json:"status"`
+	Failure     string `json:"failure_kind,omitempty"`
+	ErrorCode   string `json:"error_code,omitempty"`
+	// ErrorMessage is what the worker said went wrong (queue.FailureMessage).
+	ErrorMessage string          `json:"error_message,omitempty"`
+	Phase        string          `json:"phase,omitempty"`
+	Progress     *float32        `json:"progress,omitempty"`
+	Encoder      json.RawMessage `json:"encoder,omitempty"`
+	StartedAt    time.Time       `json:"started_at"`
+	FinishedAt   *time.Time      `json:"finished_at,omitempty"`
+	LastBeatAt   *time.Time      `json:"last_heartbeat_at,omitempty"`
 }
 
 // JobView is a job with its attempts.
@@ -96,7 +98,7 @@ func (m *API) withAttempts(r *http.Request, jobs []JobView) error {
 	for _, a := range rows {
 		v := AttemptView{
 			ID: a.ID, Number: a.AttemptNumber, Executor: a.Executor, RouteReason: a.RouteReason.String, AgentID: a.AgentID.String, AgentName: a.AgentName,
-			Status: a.Status, Failure: a.FailureKind.String, ErrorCode: a.ErrorCode.String, Phase: a.Phase.String,
+			Status: a.Status, Failure: a.FailureKind.String, ErrorCode: a.ErrorCode.String, ErrorMessage: a.ErrorMessage.String, Phase: a.Phase.String,
 			Progress: optFloat(a.Progress), StartedAt: a.StartedAt.Time, FinishedAt: optTime(a.FinishedAt),
 			LastBeatAt: optTime(a.LastHeartbeatAt),
 		}

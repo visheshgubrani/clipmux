@@ -408,3 +408,28 @@ func m1(t *testing.T, r *rig) {
 		t.Fatalf("unsigned request: %d, want 403", res.StatusCode)
 	}
 }
+
+// F21: an encode that can't fit on the disk fails in seconds as scratch_full,
+// which lets the job go to a fallback, instead of after an hour of encoding
+// as transcode_failed. The clip's 360p ladder needs 2 × (1M + 128k) × 8 s / 8
+// = 2,256,000 bytes.
+func TestAnEncodeThatCantFitIsScratchFullBeforeEncoding(t *testing.T) {
+	r := newRig(t)
+	r.uploaded(t)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	r.worker.DiskFree = func(string) int64 { return 2_000_000 }
+
+	job, err := r.worker.claim(ctx)
+	if err != nil || job == nil {
+		t.Fatalf("claim: %v, %v", job, err)
+	}
+	dir := filepath.Join(r.worker.WorkDir, job.AttemptID)
+	_, code, err := r.worker.process(ctx, job, dir, func(string, float64) {}, &phases{})
+	if code != codeScratchFull || err == nil {
+		t.Fatalf("process = %q, %v; want scratch_full", code, err)
+	}
+	if _, serr := os.Stat(filepath.Join(dir, "work")); !os.IsNotExist(serr) {
+		t.Errorf("the encode started anyway (%v)", serr)
+	}
+}

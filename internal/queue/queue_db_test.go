@@ -7,9 +7,11 @@ package queue_test
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -694,5 +696,38 @@ func TestCommittingALocalEncodeQueuesItsSourceUploadWhenAsked(t *testing.T) {
 	}
 	if status, code, _ := f.assetRow("ast_up"); status != "processing" || code != "" || len(f.events()) != before {
 		t.Fatalf("after a failed upload: asset %s %q, %d new events", status, code, len(f.events())-before)
+	}
+}
+
+// F18 (bug hunt 2026-11-18): a failure's message was dropped, so a failed
+// video could say only "processing_failed". It's kept on the attempt,
+// without control characters, without any URL's query string (a signature),
+// and at most 1000 characters long.
+func TestAFailureKeepsWhatTheWorkerSaid(t *testing.T) {
+	f := newFixture(t)
+	f.enqueue(f.asset("ast_1", false), "transcode")
+	c := f.claim(builtin)
+	msg := "encode video (cpu): ffmpeg: exit status 187: x264 [error]: malloc of size 26453440 failed\x1b[0m\n" +
+		"upload: PUT https://bucket.r2.example/out/seg_1.m4s?X-Amz-Signature=abc123&X-Amz-Credential=KEY failed\n" +
+		strings.Repeat("statistics ", 200)
+	if _, err := f.q.Fail(context.Background(), c.Token, queue.Failure{Code: "transcode_failed", Message: msg}); err != nil {
+		t.Fatal(err)
+	}
+	var got string
+	if err := f.pool.QueryRow(context.Background(), `SELECT error_message FROM attempts WHERE id = $1`, c.Attempt.ID).Scan(&got); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"malloc of size 26453440 failed", "https://bucket.r2.example/out/seg_1.m4s failed"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("message lacks %q:\n%s", want, got)
+		}
+	}
+	for _, leak := range []string{"X-Amz-Signature", "abc123", "KEY", "\x1b"} {
+		if strings.Contains(got, leak) {
+			t.Errorf("message keeps %q:\n%s", leak, got)
+		}
+	}
+	if n := utf8.RuneCountInString(got); n > 1000 {
+		t.Errorf("message is %d characters, want at most 1000", n)
 	}
 }

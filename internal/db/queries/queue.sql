@@ -96,7 +96,7 @@ LIMIT $1;
 
 -- name: SetAttemptStatus :exec
 UPDATE attempts
-SET status = $2, failure_kind = $3, error_code = $4,
+SET status = $2, failure_kind = $3, error_code = $4, error_message = sqlc.narg(error_message),
     finished_at = CASE WHEN $2 IN ('committed', 'failed') THEN now() ELSE finished_at END
 WHERE id = $1;
 

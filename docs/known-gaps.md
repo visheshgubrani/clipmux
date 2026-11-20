@@ -64,6 +64,14 @@ when you introduce or discover it; remove it when it is closed.
   have no sandbox.
 - Imports have no known source size, so the claim's free-disk check passes
   them; a full disk fails the attempt (transient).
+- The claim's free-disk check counts three times the upload, which a 4K
+  ladder far outgrows: the 650 MB F21 lecture needed about 23 GB. The
+  worker checks again after probing, against the ladder's maxrates twice
+  over (`media.ScratchNeed`, 32 GB there), and fails with `scratch_full` in
+  seconds (D138). A worker too small for a job still claims it first, and
+  the bound is generous, so a worker with 25 GB free turns that lecture
+  away. Filesystem storage on the same disk as the scratch directory needs
+  the packaged size again while the upload runs.
 - Agent pairing codes are 8 characters (about 39 bits); wrong codes are
   limited per address and overall (D067), and a code lasts 15 minutes and
   works once. So failures from many addresses can keep pairing refused for
@@ -436,3 +444,11 @@ when you introduce or discover it; remove it when it is closed.
   read of the file before the encode starts.
 - Clips under 3.5 s are not loudness-normalised.
 
+
+## Encodes on a PC (D137, 2026-11-20)
+
+- A PC agent or the built-in worker encodes one video at a time, plus one
+  transcription beside it, and its encoder sits idle while a video uploads.
+  A provider runs several at once, one machine per job. Encode slots that
+  fix this are planned for after v1.0.0
+  ([plans/parallel-encodes.md](plans/parallel-encodes.md)).

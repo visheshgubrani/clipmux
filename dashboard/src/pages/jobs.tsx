@@ -309,6 +309,11 @@ function AttemptLine({ a }: { a: Attempt }) {
           {enc.fallbacks?.length ? ` after ${enc.fallbacks.join(', ')} failed` : ''}
         </span>
       )}
+      {a.error_message && (
+        <span className="mt-1 block max-h-32 overflow-auto rounded-sm bg-muted/40 p-2 font-mono text-xs whitespace-pre-wrap text-muted-foreground">
+          {a.error_message}
+        </span>
+      )}
     </span>
   )
 }
