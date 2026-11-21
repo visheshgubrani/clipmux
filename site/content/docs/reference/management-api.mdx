@@ -253,7 +253,8 @@ estimate alone where there is no bill.
 
 Body
 `{api_key, image?, registry_username?, registry_password?, gpu_type_ids?, disk_gb?, max_concurrent?, monthly_limit_cents?, rate_cents_per_hour?}`.
-A monthly limit left out is 5000 cents ($50). Returns
+A monthly limit left out is 5000 cents ($50), and `max_concurrent` left out
+is 10 machines at once. Returns
 `{connected, steps: [{name, ok, detail?}]}`, stopping at the first failed
 step. Connecting again replaces the key. `400 invalid_request` for a setting
 it refuses.

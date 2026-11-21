@@ -57,10 +57,10 @@ RunPod's RTX 4090 hosts refuse NVENC sessions, so they aren't offered.
 
 ### Check the limits
 
-The dialog shows the limits ClipMux sets: **one machine at a time** and
-**$50 a month**. Choose **Change** to edit them. One machine means a second
-upload waits for the first video's pod to finish, so raise it if videos
-arrive together.
+The dialog shows the limits ClipMux sets: **up to 10 machines at once** and
+**$50 a month**. Choose **Change** to edit them. Each video gets its own
+pod, so a long 4K encode doesn't hold up the uploads behind it, and the
+monthly limit still caps the spend. Set 1 to encode one video at a time.
 
 </Step>
 <Step>
@@ -89,7 +89,7 @@ the browser approval with `POST /v1/executors/runpod/authorize`. See
 | --- | --- | --- |
 | GPUs | L4, RTX A4000, RTX A5000 | Tried in order until one has capacity. |
 | Disk | 50 GB | A pod takes only sources that fit three times over. Larger ones go to the fallback, if there is one. |
-| Machines at once | 1 | |
+| Machines at once | 10 | One per video. The monthly limit still applies. |
 | Monthly limit | $50 | Calendar month, UTC. |
 | Rate | the dearest chosen GPU's Secure Cloud price | |
 

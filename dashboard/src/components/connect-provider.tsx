@@ -15,8 +15,9 @@ import { dollars } from '@/lib/format'
 import { notify } from '@/lib/notify'
 
 // Connect RunPod or Modal (D056, D057, D109, D111). The owner picks GPUs
-// from the provider's own list with prices; the limits default to one
-// machine and $50 a month, and the image and registry wait under Advanced.
+// from the provider's own list with prices; the limits default to ten
+// machines at once and $50 a month (D141), and the image and registry wait
+// under Advanced.
 
 type Kind = 'runpod' | 'modal'
 const names: Record<Kind, string> = { runpod: 'RunPod', modal: 'Modal' }
@@ -233,7 +234,7 @@ export function ConnectProviderDialog({ kind, onClose }: { kind: Kind | null; on
   )
 }
 
-const DEFAULT_LIMITS: Limits = { machines: 1, monthly: 50 }
+const DEFAULT_LIMITS: Limits = { machines: 10, monthly: 50 }
 
 /**
  * Modal: pick GPUs, then approve ClipMux on the page Modal's CLI uses; the

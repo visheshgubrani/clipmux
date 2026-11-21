@@ -289,8 +289,8 @@ func TestConnectRunPodPricesTheChosenGPUs(t *testing.T) {
 		t.Fatalf("connect with defaults = %s %+v, %v", steps(res), res.Steps, err)
 	}
 	row, _, _ := dispatch.Existing(ctx, r.pool, "prj_default", "runpod")
-	if row.MonthlyLimitCents != 5000 || row.RateCentsPerHour != 43 || row.MaxConcurrent != 1 {
-		t.Fatalf("saved limit %d, rate %d, machines %d; want 5000, 43, 1", row.MonthlyLimitCents, row.RateCentsPerHour, row.MaxConcurrent)
+	if row.MonthlyLimitCents != 5000 || row.RateCentsPerHour != 43 || row.MaxConcurrent != 10 {
+		t.Fatalf("saved limit %d, rate %d, machines %d; want 5000, 43, 10", row.MonthlyLimitCents, row.RateCentsPerHour, row.MaxConcurrent)
 	}
 
 	gone := plain

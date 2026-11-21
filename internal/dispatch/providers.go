@@ -30,6 +30,11 @@ import (
 // leaves it alone (D111): a provider is never connected without one.
 const DefaultMonthlyLimitCents = 5000
 
+// DefaultMaxConcurrent is the machines Connect allows at once when the owner
+// leaves it alone (D141): enough that a long video doesn't hold up the
+// uploads behind it, while the monthly limit still bounds the spend.
+const DefaultMaxConcurrent = 10
+
 // Settings are a provider's limits and machine size, as Connect saves them.
 type Settings struct {
 	MaxConcurrent     int32

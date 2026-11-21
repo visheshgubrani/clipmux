@@ -55,7 +55,7 @@ test('the owner connects RunPod, chooses it once checked, and sees why each job 
   await expect(gpus.getByRole('listitem').first()).toContainText('L4')
   await expect(gpus.getByRole('listitem').first()).toContainText('Recommended')
   await expect(gpus.getByRole('listitem').first()).toContainText('$0.43/hr')
-  await expect(form.getByText('One machine at a time, at most $50.00 a month.')).toBeVisible()
+  await expect(form.getByText('Up to 10 machines at once, at most $50.00 a month.')).toBeVisible()
   await form.getByRole('button', { name: 'Advanced' }).click()
   await form.getByLabel('Registry username').fill(cfg.registry_username)
   await form.getByLabel('Registry token').fill(cfg.registry_password)
