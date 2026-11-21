@@ -174,7 +174,11 @@ when you introduce or discover it; remove it when it is closed.
   unfinished push's upload token in a 0600 state file under the user's cache
   directory until it completes.
 - The image is 1.69 GB compressed for amd64 (`v1.0.0-rc.1`), about half of
-  it the speech models (D118), and built from source on a cache miss (~20 min).
+  it the speech models (D118). On a cache miss its tools build from source:
+  rc.1's amd64 toolchain took 33 minutes and a cold one up to an hour, before
+  FFmpeg and whisper.cpp built in parallel (D142). The build cache is a
+  registry cache that doesn't expire, so a miss means a pin or a toolchain
+  script changed.
   `release.yml` pushes it as the release tag with attestations (D136).
   Until v1.0.0, `clipmux.com/install.sh` points at the newest release
   candidate by hand, because `/releases/latest` skips prereleases; each
@@ -379,11 +383,14 @@ when you introduce or discover it; remove it when it is closed.
     downloaded one `Extracting` and `Pull complete`, and the pull ends
     `Downloaded newer image`. A pod on 2026-11-20 downloaded the 708 MB
     toolchain layer and the 811 MB models layer.
-  - Every build changes every layer's digest, even where the content is
-    the same: `v1.0.0-rc.1` (2026-11-19) and the 2026-11-20 build share
-    none, the Ubuntu base and the models included, and neither base layer
-    matches `ubuntu:24.04`'s own. So after an upgrade, a host that ran
-    the old build pulls all 1.7 GB again.
+  - Builds before D142 changed every layer's digest, even where the
+    content was the same (`v1.0.0-rc.1` and the 2026-11-20 build share
+    none), so an upgrade from one of them pulls all 1.7 GB again, once.
+    From D142 on, a release that changes only ClipMux adds its binary's
+    layer (about 17 MB) and a host that ran the previous release pulls
+    just that; a host that never ran ClipMux still pulls the whole image.
+    image.yml warns when a release adds more than it should, and
+    install.yml fails.
 - Pending approvals live in serve's memory: a restart, or a second
   replica, drops them, and the owner starts again.
 - The ghcr package is public since `v1.0.0-rc.1` (D136), so the stock

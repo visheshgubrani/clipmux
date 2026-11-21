@@ -46,11 +46,12 @@ production.
   last reported hour plus an estimate since; for RunPod, an estimate from
   the hourly rate set in Connect. A machine that runs past its reservation
   isn't stopped at the limit, so a month can overshoot by that much.
-- **RunPod may download the worker image for every video.** Each video
-  gets a new pod, and a host that hasn't run this release before pulls the
-  1.7 GB image first. That time counts toward the monthly limit. Modal
-  converts the image once per release and starts every later machine from
-  its copy.
+- **RunPod may download the worker image for a video.** Each video gets a
+  new pod, and a host that has never run ClipMux pulls the 1.7 GB image
+  first. A host that ran an earlier release downloads only what changed,
+  usually ClipMux itself (about 17 MB). That time counts toward the monthly
+  limit. Modal converts the image once per release and starts every later
+  machine from its copy.
 - **The PC agent is command-line only.** The dashboard doesn't list PCs,
   create pairing codes or revoke them. A PC is paired with
   `clipmux worker --server` and approved in the dashboard, or with a code
