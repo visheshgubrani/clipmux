@@ -89,7 +89,9 @@ jobs:
       id-token: write
       attestations: write
   agent:
-    needs: gate
+    # After the image: its build cache then holds this commit's toolchain,
+    # so a toolchain change builds once per architecture, not twice at once.
+    needs: [gate, image]
     uses: ./.github/workflows/agent.yml
   cli:
     needs: gate

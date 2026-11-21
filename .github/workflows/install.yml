@@ -35,8 +35,8 @@ jobs:
           push: true
           tags: ${{ env.REPO }}:v0.0.0-ci.1
           build-args: VERSION=v0.0.0-ci.1
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # Reads the image job's registry cache (D142), never writes it.
+          cache-from: type=registry,ref=ghcr.io/visheshgubrani/clipmux-buildcache:amd64
       - name: Release candidate 2 (only the binary differs)
         uses: docker/build-push-action@v6
         with:
@@ -44,7 +44,10 @@ jobs:
           push: true
           tags: ${{ env.REPO }}:v0.0.0-ci.2
           build-args: VERSION=v0.0.0-ci.2
-          cache-from: type=gha
+          cache-from: type=registry,ref=ghcr.io/visheshgubrani/clipmux-buildcache:amd64
+      # The upgrade a host downloads: only the binary's layer is new (D142).
+      - name: The second candidate adds only the binary's layer
+        run: toolchain/check_layers.sh --strict "$REPO:v0.0.0-ci.1" "$REPO:v0.0.0-ci.2"
       - name: Agent tarball
         uses: docker/build-push-action@v6
         with:
@@ -52,9 +55,7 @@ jobs:
           target: agent
           outputs: type=local,dest=dist
           build-args: VERSION=v0.0.0-ci.1
-          cache-from: |
-            type=gha
-            type=gha,scope=agent-${{ runner.arch }}
+          cache-from: type=registry,ref=ghcr.io/visheshgubrani/clipmux-buildcache:amd64
       - name: Install, pair, upgrade, uninstall
         # As root, as `curl … | sudo sh` runs: the agent becomes a system unit.
         run: sudo --preserve-env=PATH bash toolchain/check_install.sh "$REPO:v0.0.0-ci.1" "$REPO:v0.0.0-ci.2" dist/clipmux-agent-linux-amd64.tar.gz

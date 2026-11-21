@@ -1,0 +1,20 @@
+# The Dockerfile pins its bases by digest (D142), so a new Ubuntu, Node or
+# Go image reaches the clipmux image only through a pull request here, and
+# each one is a deliberate full re-download for every host. The media tools
+# are pinned in toolchain/versions.env and bumped by hand.
+version: 2
+updates:
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      bases:
+        patterns: ["*"]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      actions:
+        patterns: ["*"]

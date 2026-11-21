@@ -213,9 +213,8 @@ whisper.cpp $WHISPER_CPP_VERSION (MIT), built by toolchain/build_whisper.sh.
 Source: $WHISPER_CPP_URL
 sha256: $WHISPER_CPP_SHA256
 Patched with toolchain/whisper-vad-token-times.patch (token times with VAD).
-Models (fetched by workers at run time, not shipped here):
-  $WHISPER_MODEL_NAME  $WHISPER_MODEL_URL (MIT, OpenAI Whisper weights)
-  $WHISPER_VAD_MODEL_NAME  $WHISPER_VAD_MODEL_URL (MIT, Silero VAD)
+The speech models it runs, and their licences: models/NOTICE in the
+licences directory beside this one (toolchain/licenses.sh).
 NOTICE
 
 {

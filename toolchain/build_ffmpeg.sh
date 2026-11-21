@@ -7,9 +7,11 @@
 #   JOBS=8 ./build_ffmpeg.sh /usr/local
 #   ./build_ffmpeg.sh --force /usr/local      # rebuild even if the manifest matches
 #
-# Consumed by:
-#   Dockerfile                 (clipmux image: serve + built-in worker; lands in P1-T10)
-#   the agent download and the Modal/RunPod worker images (Phases 3-4)
+# Consumed by the Dockerfile's ffmpeg stage, whose /usr/local becomes the
+# FFmpeg layer of the clipmux image (serve, the built-in worker, Modal and
+# RunPod) and goes into the agent tarball. It sources only FFmpeg's own pins
+# (the stage gets FFMPEG_* and NV_CODEC_HEADERS_* from versions.env, D142), so
+# a pin of another tool never rebuilds it.
 #
 # Both images get the same bytes and the same configure line, which is the whole
 # point: a rendition produced on a workstation and one produced on Modal must not
@@ -323,11 +325,6 @@ configure error — "Unknown option" — after a full apt install and source
 download. This project targets NVENC and VAAPI, so neither the flag nor the
 headers nor the runtime library are part of the recipe.
 
-Shaka Packager ${SHAKA_VERSION}
-  source:  ${SHAKA_URL}
-  sha256:  ${SHAKA_SHA256}
-  license: Apache-2.0 (fetched separately by the image build, not by this script)
-
 No claim of warranty is made. See the LICENSE files distributed with each
 component.
 NOTICE
@@ -369,9 +366,6 @@ NV_CODEC_HEADERS_VERSION="$NV_CODEC_HEADERS_VERSION" \
 NV_CODEC_HEADERS_SHA="$NV_CODEC_HEADERS_SHA" \
 NV_CODEC_HEADERS_SHA256="$NV_CODEC_HEADERS_SHA256" \
 NV_CODEC_HEADERS_URL="$NV_CODEC_HEADERS_URL" \
-SHAKA_VERSION="$SHAKA_VERSION" \
-SHAKA_SHA256="$SHAKA_SHA256" \
-SHAKA_URL="$SHAKA_URL" \
 CONFIGURE_LINE="$CONFIGURE_LINE" \
 RECIPE_SHA256="$SCRIPT_SHA256" \
 FFNVCODEC_VERSION="$ffnvcodec_version" \
@@ -404,11 +398,6 @@ manifest = {
     "nv_codec_headers_sha256": os.environ["NV_CODEC_HEADERS_SHA256"],
     "nv_codec_headers_url": os.environ["NV_CODEC_HEADERS_URL"],
     "ffnvcodec_pkgconfig_version": os.environ.get("FFNVCODEC_VERSION", ""),
-    "shaka": {
-        "version": os.environ["SHAKA_VERSION"],
-        "sha256": os.environ["SHAKA_SHA256"],
-        "url": os.environ["SHAKA_URL"],
-    },
     "configure": os.environ["CONFIGURE_LINE"],
     "install_prefix": os.environ["PREFIX"],
     "target_arch": platform.machine(),
