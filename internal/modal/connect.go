@@ -127,7 +127,7 @@ func (c *Connector) settings(req Request) (Request, dispatch.Settings, error) {
 		req.DiskGB = 50
 	}
 	if req.MaxConcurrent == 0 {
-		req.MaxConcurrent = 1
+		req.MaxConcurrent = dispatch.DefaultMaxConcurrent
 	}
 	if req.MonthlyLimitCents == 0 {
 		req.MonthlyLimitCents = dispatch.DefaultMonthlyLimitCents

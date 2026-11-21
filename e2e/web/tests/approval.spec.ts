@@ -71,7 +71,7 @@ test('the owner connects Modal by approving it on Modal’s page', async ({ page
   expect(await tab.evaluate(() => window.opener)).toBeNull()
   await expect(form).toContainText('AB12')
   await expect(form.getByText('✓ Credentials')).toBeVisible({ timeout: 15_000 })
-  expect(started).toEqual([{ max_concurrent: 1, monthly_limit_cents: 4000, gpu: 'L4,L40S' }])
+  expect(started).toEqual([{ max_concurrent: 10, monthly_limit_cents: 4000, gpu: 'L4,L40S' }])
   await tab.close()
 
   // Pasting instead: the command Modal shows fills both fields.

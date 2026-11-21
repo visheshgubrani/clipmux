@@ -173,7 +173,8 @@ when you introduce or discover it; remove it when it is closed.
   webhook retention window (D069). `clipmux push` keeps an
   unfinished push's upload token in a 0600 state file under the user's cache
   directory until it completes.
-- The image is ~575 MB and built from source on a cache miss (~20 min).
+- The image is 1.69 GB compressed for amd64 (`v1.0.0-rc.1`), about half of
+  it the speech models (D118), and built from source on a cache miss (~20 min).
   `release.yml` pushes it as the release tag with attestations (D136).
   Until v1.0.0, `clipmux.com/install.sh` points at the newest release
   candidate by hand, because `/releases/latest` skips prereleases; each
@@ -367,6 +368,22 @@ when you introduce or discover it; remove it when it is closed.
   test encoding on a v2 pod, and a wake falling through to a second GPU
   type when the first is full, have run only against the fake until
   `exit-providers.yml` or a Connect on rc.2 runs them.
+- Every RunPod pod is a new container on a host RunPod picks, and that host
+  pulls the worker image (1.69 GB compressed) unless it still has the
+  layers from an earlier pod. ClipMux has no cache there (D140), and the
+  pull counts as spend, which runs from the wake. RunPod's 25–42 s cold
+  starts (D096, D097) were measured before the models were baked in
+  (D118); none has been measured with today's image. Modal converts each
+  image once and starts later sandboxes from its copy.
+  - A pod log shows which: a cached layer says `Already exists`, a
+    downloaded one `Extracting` and `Pull complete`, and the pull ends
+    `Downloaded newer image`. A pod on 2026-11-20 downloaded the 708 MB
+    toolchain layer and the 811 MB models layer.
+  - Every build changes every layer's digest, even where the content is
+    the same: `v1.0.0-rc.1` (2026-11-19) and the 2026-11-20 build share
+    none, the Ubuntu base and the models included, and neither base layer
+    matches `ubuntu:24.04`'s own. So after an upgrade, a host that ran
+    the old build pulls all 1.7 GB again.
 - Pending approvals live in serve's memory: a restart, or a second
   replica, drops them, and the owner starts again.
 - The ghcr package is public since `v1.0.0-rc.1` (D136), so the stock

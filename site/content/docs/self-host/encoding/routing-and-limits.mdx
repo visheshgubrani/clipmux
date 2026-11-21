@@ -93,7 +93,8 @@ machines are running.
 ### At the limit
 
 - A machine that is already running isn't stopped. Its job finishes, so a
-  month can end a little over the limit.
+  month can end over the limit by what the running machines take past
+  their reservations.
 - New jobs wait for the cloud GPU (`primary_limit`). The fallback doesn't
   take them, unless you set queue-age fallback, which sends a job to the
   fallback once it has waited that long.

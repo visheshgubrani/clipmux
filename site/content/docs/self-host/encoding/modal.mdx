@@ -48,10 +48,10 @@ on the machine's CPUs, about four times slower. **L40S** is also offered.
 
 ### Check the limits
 
-The dialog shows the limits ClipMux sets: **one machine at a time** and
-**$50 a month**. Choose **Change** to edit them. One machine means a second
-upload waits for the first video's machine to finish, so raise it if videos
-arrive together.
+The dialog shows the limits ClipMux sets: **up to 10 machines at once** and
+**$50 a month**. Choose **Change** to edit them. Each video gets its own
+machine, so a long 4K encode doesn't hold up the uploads behind it, and the
+monthly limit still caps the spend. Set 1 to encode one video at a time.
 
 </Step>
 <Step>
@@ -96,7 +96,7 @@ the browser approval with `POST /v1/executors/modal/authorize`. See
 | CPU | 4 cores | Per machine. |
 | Memory | 16 GiB | Per machine. |
 | Disk | 50 GB | A machine takes only sources that fit three times over. Larger ones go to the fallback, if there is one. |
-| Machines at once | 1 | |
+| Machines at once | 10 | One per video. The monthly limit still applies. |
 | Monthly limit | $50 | Calendar month, UTC. |
 | Rate | the dearest chosen GPU's price | Includes the machine's CPU and memory, at Modal's published prices. |
 

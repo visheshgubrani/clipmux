@@ -410,8 +410,8 @@ func TestModalPricesTheChosenGPUs(t *testing.T) {
 		t.Fatalf("connect with defaults = %s, %v", stepNames(res), err)
 	}
 	row, _, _ := dispatch.Existing(ctx, c.Pool, "prj_default", "modal")
-	if row.MonthlyLimitCents != 5000 || row.RateCentsPerHour != 112 || row.MaxConcurrent != 1 {
-		t.Fatalf("saved limit %d, rate %d, machines %d; want 5000, 112, 1", row.MonthlyLimitCents, row.RateCentsPerHour, row.MaxConcurrent)
+	if row.MonthlyLimitCents != 5000 || row.RateCentsPerHour != 112 || row.MaxConcurrent != 10 {
+		t.Fatalf("saved limit %d, rate %d, machines %d; want 5000, 112, 10", row.MonthlyLimitCents, row.RateCentsPerHour, row.MaxConcurrent)
 	}
 	plain.GPU = "H100"
 	if _, err := c.Connect(ctx, plain); !errors.Is(err, ErrInvalid) {
