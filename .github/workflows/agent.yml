@@ -17,7 +17,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+        include:
+          - runner: ubuntu-24.04
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
     runs-on: ${{ matrix.runner }}
     # A cold FFmpeg build on arm64 takes most of this.
     timeout-minutes: 120
@@ -31,12 +35,9 @@ jobs:
           target: agent
           outputs: type=local,dest=dist
           build-args: VERSION=${{ github.ref_type == 'tag' && github.ref_name || github.sha }}
-          # The image job's cache serves amd64's toolchain stage; each
-          # architecture keeps its own as well.
-          cache-from: |
-            type=gha
-            type=gha,scope=agent-${{ runner.arch }}
-          cache-to: type=gha,mode=max,scope=agent-${{ runner.arch }}
+          # The image job's registry cache (D142) holds the tool stages the
+          # tarball packs; this job only reads it.
+          cache-from: type=registry,ref=ghcr.io/visheshgubrani/clipmux-buildcache:${{ matrix.arch }}
       - name: Works in a clean Ubuntu 24.04
         run: toolchain/check_agent.sh dist/clipmux-agent-linux-*.tar.gz
       - uses: actions/upload-artifact@v4

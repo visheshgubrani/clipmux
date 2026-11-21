@@ -60,6 +60,15 @@ jobs:
         run: pnpm --filter @clipmux/site run build && pnpm --filter @clipmux/site run lint:docs
       - run: pnpm lint
 
+  dockerfile:
+    # The Dockerfile's own lints (docker build --check): seconds, where
+    # building the image takes up to an hour (image.yml, by hand).
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build --check .
+
   snippets:
     runs-on: ubuntu-24.04
     timeout-minutes: 10

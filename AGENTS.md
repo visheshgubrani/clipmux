@@ -39,7 +39,12 @@ anything decided since, and wins over the architecture doc where they differ.
   `skills/clipmux-integrate/references/errors.md`. Their eval is
   `skills/evals` (launch exit check 7).
 - `toolchain/versions.env` is the only place a media tool version, URL or digest
-  is written. Shaka Packager must be >= 3.9.1.
+  is written. Shaka Packager must be >= 3.9.1. Each pin keeps its tool's
+  prefix: the Dockerfile hands each tool's stage only its own lines (D142).
+- The image's layers stay the same bytes across releases (D142), so hosts
+  download only what changed: bases pinned by digest, one stage per tool keyed
+  on its own pins and scripts (bind mounts, never `COPY toolchain/`), the
+  binary as the last layer. `toolchain/check_layers.sh` checks it.
 - TypeScript lives only in the dashboard, the packages (`packages/player`,
   `packages/uploader`, `packages/node`, the server SDK), the Cloudflare Worker
   (`worker/`), the example apps (`examples/`) and the site (`site/`). The Worker and the Go delivery handler share JSON
