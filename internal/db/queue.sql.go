@@ -205,7 +205,7 @@ func (q *Queries) CreateJob(ctx context.Context, arg CreateJobParams) (Job, erro
 const createOutput = `-- name: CreateOutput :one
 INSERT INTO outputs (id, project_id, asset_id, key_version)
 VALUES ($1, $2, $3, $4)
-RETURNING id, project_id, asset_id, prefix, status, manifest, output_format, key_version, created_at, committed_at, retired_at, purged_at, unlisted_swept_at
+RETURNING id, project_id, asset_id, prefix, status, manifest, output_format, key_version, created_at, committed_at, retired_at, purged_at, unlisted_swept_at, bytes
 `
 
 type CreateOutputParams struct {
@@ -237,6 +237,7 @@ func (q *Queries) CreateOutput(ctx context.Context, arg CreateOutputParams) (Out
 		&i.RetiredAt,
 		&i.PurgedAt,
 		&i.UnlistedSweptAt,
+		&i.Bytes,
 	)
 	return i, err
 }
@@ -627,7 +628,7 @@ func (q *Queries) ListRoutableJobs(ctx context.Context, arg ListRoutableJobsPara
 }
 
 const lockAsset = `-- name: LockAsset :one
-SELECT id, project_id, app_id, status, error_code, version, storage_id, source_uri, agent_source_id, source_kept, current_output_id, passthrough, duration_seconds, created_at, updated_at, deleted_at, title, media_storage_id, renditions FROM assets WHERE id = $1 FOR UPDATE
+SELECT id, project_id, app_id, status, error_code, version, storage_id, source_uri, agent_source_id, source_kept, current_output_id, passthrough, duration_seconds, created_at, updated_at, deleted_at, title, media_storage_id, renditions, source_bytes FROM assets WHERE id = $1 FOR UPDATE
 `
 
 func (q *Queries) LockAsset(ctx context.Context, id string) (Asset, error) {
@@ -653,6 +654,7 @@ func (q *Queries) LockAsset(ctx context.Context, id string) (Asset, error) {
 		&i.Title,
 		&i.MediaStorageID,
 		&i.Renditions,
+		&i.SourceBytes,
 	)
 	return i, err
 }
@@ -948,18 +950,19 @@ func (q *Queries) MarkAssetErrored(ctx context.Context, arg MarkAssetErroredPara
 }
 
 const moveSourceToStorage = `-- name: MoveSourceToStorage :exec
-UPDATE assets SET source_uri = $2, agent_source_id = NULL, source_kept = true WHERE id = $1
+UPDATE assets SET source_uri = $2, source_bytes = $3, agent_source_id = NULL, source_kept = true WHERE id = $1
 `
 
 type MoveSourceToStorageParams struct {
-	ID        string
-	SourceUri pgtype.Text
+	ID          string
+	SourceUri   pgtype.Text
+	SourceBytes int64
 }
 
 // The PC's upload landed: the source is in storage now, and the asset is
 // no longer tied to that PC (D059).
 func (q *Queries) MoveSourceToStorage(ctx context.Context, arg MoveSourceToStorageParams) error {
-	_, err := q.db.Exec(ctx, moveSourceToStorage, arg.ID, arg.SourceUri)
+	_, err := q.db.Exec(ctx, moveSourceToStorage, arg.ID, arg.SourceUri, arg.SourceBytes)
 	return err
 }
 

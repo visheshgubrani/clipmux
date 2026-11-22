@@ -112,7 +112,7 @@ const createImportedAsset = `-- name: CreateImportedAsset :one
 
 INSERT INTO assets (id, project_id, app_id, status, storage_id, media_storage_id, passthrough, title, renditions)
 VALUES ($1, $2, $3, 'processing', $4, coalesce(media_target($2), $4), $5, $6, $7)
-RETURNING id, project_id, app_id, status, error_code, version, storage_id, source_uri, agent_source_id, source_kept, current_output_id, passthrough, duration_seconds, created_at, updated_at, deleted_at, title, media_storage_id, renditions
+RETURNING id, project_id, app_id, status, error_code, version, storage_id, source_uri, agent_source_id, source_kept, current_output_id, passthrough, duration_seconds, created_at, updated_at, deleted_at, title, media_storage_id, renditions, source_bytes
 `
 
 type CreateImportedAssetParams struct {
@@ -157,6 +157,7 @@ func (q *Queries) CreateImportedAsset(ctx context.Context, arg CreateImportedAss
 		&i.Title,
 		&i.MediaStorageID,
 		&i.Renditions,
+		&i.SourceBytes,
 	)
 	return i, err
 }
@@ -179,15 +180,16 @@ func (q *Queries) RetryImportJob(ctx context.Context, arg RetryImportJobParams) 
 }
 
 const setAssetSource = `-- name: SetAssetSource :exec
-UPDATE assets SET source_uri = $2, source_kept = true, updated_at = now() WHERE id = $1
+UPDATE assets SET source_uri = $2, source_bytes = $3, source_kept = true, updated_at = now() WHERE id = $1
 `
 
 type SetAssetSourceParams struct {
-	ID        string
-	SourceUri pgtype.Text
+	ID          string
+	SourceUri   pgtype.Text
+	SourceBytes int64
 }
 
 func (q *Queries) SetAssetSource(ctx context.Context, arg SetAssetSourceParams) error {
-	_, err := q.db.Exec(ctx, setAssetSource, arg.ID, arg.SourceUri)
+	_, err := q.db.Exec(ctx, setAssetSource, arg.ID, arg.SourceUri, arg.SourceBytes)
 	return err
 }

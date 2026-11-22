@@ -180,7 +180,8 @@ func (s *Service) runImport(ctx context.Context, job db.Job) error {
 		return err
 	}
 	key := sourceKey(job.AssetID)
-	if fail := s.fetch(ctx, store, job.ImportUrl.String, key); fail != nil {
+	size, fail := s.fetch(ctx, store, job.ImportUrl.String, key)
+	if fail != nil {
 		// Only the host: the URL's query may be a signature the app handed us.
 		s.Logger.Warn("import failed", "job", job.ID, "host", logging.URLHost(job.ImportUrl.String), "code", fail.code,
 			"permanent", fail.permanent, "err", logging.RedactError(fail.cause))
@@ -200,7 +201,7 @@ func (s *Service) runImport(ctx context.Context, job db.Job) error {
 		if err != nil || j.Status != "running" {
 			return err // cancelled (deleted meanwhile)
 		}
-		if err := qs.SetAssetSource(ctx, db.SetAssetSourceParams{ID: job.AssetID, SourceUri: pgtype.Text{String: key, Valid: true}}); err != nil {
+		if err := qs.SetAssetSource(ctx, db.SetAssetSourceParams{ID: job.AssetID, SourceUri: pgtype.Text{String: key, Valid: true}, SourceBytes: size}); err != nil {
 			return err
 		}
 		if err := qs.SucceedJob(ctx, job.ID); err != nil {
@@ -211,41 +212,41 @@ func (s *Service) runImport(ctx context.Context, job db.Job) error {
 	})
 }
 
-// fetch streams the URL into key, within the upload size limit.
-func (s *Service) fetch(ctx context.Context, store storage.Storage, rawURL, key string) *importFailure {
+// fetch streams the URL into key, within the upload size limit, returning its byte count.
+func (s *Service) fetch(ctx context.Context, store storage.Storage, rawURL, key string) (int64, *importFailure) {
 	ctx, cancel := context.WithTimeout(ctx, s.ImportTimeout)
 	defer cancel()
 	res, err := publicnet.Get(ctx, s.Fetch, rawURL)
 	if errors.Is(err, publicnet.ErrRefused) {
-		return &importFailure{codeImportRefused, true, err}
+		return 0, &importFailure{codeImportRefused, true, err}
 	}
 	if err != nil {
-		return &importFailure{codeImportFailed, false, err}
+		return 0, &importFailure{codeImportFailed, false, err}
 	}
 	defer res.Body.Close()
 	switch {
 	case res.StatusCode >= 500 || res.StatusCode == http.StatusTooManyRequests || res.StatusCode == http.StatusRequestTimeout:
-		return &importFailure{codeImportFailed, false, fmt.Errorf("HTTP %d", res.StatusCode)}
+		return 0, &importFailure{codeImportFailed, false, fmt.Errorf("HTTP %d", res.StatusCode)}
 	case res.StatusCode != http.StatusOK:
-		return &importFailure{codeImportFailed, true, fmt.Errorf("HTTP %d", res.StatusCode)}
+		return 0, &importFailure{codeImportFailed, true, fmt.Errorf("HTTP %d", res.StatusCode)}
 	case res.ContentLength > s.MaxImportSize:
-		return &importFailure{codeImportTooLarge, true, fmt.Errorf("%d bytes", res.ContentLength)}
+		return 0, &importFailure{codeImportTooLarge, true, fmt.Errorf("%d bytes", res.ContentLength)}
 	}
 	body := &countingReader{r: io.LimitReader(res.Body, s.MaxImportSize+1)}
 	if err := store.Put(ctx, key, body); err != nil {
-		return &importFailure{codeImportFailed, false, err}
+		return 0, &importFailure{codeImportFailed, false, err}
 	}
 	switch {
 	case body.n > s.MaxImportSize:
 		_ = store.Delete(context.WithoutCancel(ctx), key)
-		return &importFailure{codeImportTooLarge, true, fmt.Errorf("more than %d bytes", s.MaxImportSize)}
+		return 0, &importFailure{codeImportTooLarge, true, fmt.Errorf("more than %d bytes", s.MaxImportSize)}
 	case body.n == 0:
 		_ = store.Delete(context.WithoutCancel(ctx), key)
-		return &importFailure{codeImportFailed, true, errors.New("empty body")}
+		return 0, &importFailure{codeImportFailed, true, errors.New("empty body")}
 	case res.ContentLength >= 0 && body.n != res.ContentLength:
-		return &importFailure{codeImportFailed, false, fmt.Errorf("got %d of %d bytes", body.n, res.ContentLength)}
+		return 0, &importFailure{codeImportFailed, false, fmt.Errorf("got %d of %d bytes", body.n, res.ContentLength)}
 	}
-	return nil
+	return body.n, nil
 }
 
 func (s *Service) failImport(ctx context.Context, job db.Job, code string) error {

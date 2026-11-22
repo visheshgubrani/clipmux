@@ -11,6 +11,17 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const getAnalyticsInstallID = `-- name: GetAnalyticsInstallID :one
+SELECT analytics_install_id FROM projects WHERE id = $1
+`
+
+func (q *Queries) GetAnalyticsInstallID(ctx context.Context, id string) (string, error) {
+	row := q.db.QueryRow(ctx, getAnalyticsInstallID, id)
+	var analytics_install_id string
+	err := row.Scan(&analytics_install_id)
+	return analytics_install_id, err
+}
+
 const getMediaURL = `-- name: GetMediaURL :one
 SELECT coalesce(media_url, public_url, '')::text FROM projects WHERE id = $1
 `

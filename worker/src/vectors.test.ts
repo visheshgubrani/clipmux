@@ -5,7 +5,7 @@
 
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { createWorker, rewriteMaster } from './delivery.ts'
+import { createWorker, kindOf, rewriteMaster } from './delivery.ts'
 import { vectorEnv, vectors } from './fixture.test.ts'
 
 const worker = createWorker({ now: () => vectors.now, cache: null })
@@ -23,18 +23,28 @@ interface Expected {
 }
 
 // The data point a counted case writes (D103): the viewer key from the
-// viewer_keys vectors, never the raw vid.
-function want(a: Expected) {
+// viewer_keys vectors, never the raw vid, with stratified indexes.
+function want(reqPath: string, a: Expected) {
   const viewer = a.vid
     ? vectors.viewer_keys.find(
         (k: { app_id: string; vid: string }) => k.app_id === a.app_id && k.vid === a.vid,
       )?.key_hex
     : ''
   assert.notEqual(viewer, undefined, `no viewer_keys vector for ${a.app_id}/${a.vid}`)
+  const trimmed = reqPath.replace(/^\/(?:v\/[^/]+|p)\/[^/]+\//, '')
+  const rendition = kindOf(trimmed)?.rendition ?? ''
+  const index =
+    a.views > 0
+      ? `${a.asset_id}:m`
+      : a.watch_seconds > 0
+        ? `${a.asset_id}:w`
+        : a.kind === 'segment'
+          ? `${a.asset_id}:s:${rendition}`
+          : `${a.asset_id}:o`
   return {
-    blobs: ['prj_default', a.app_id, a.asset_id, a.playback_id, a.kind, viewer],
+    blobs: ['prj_default', a.app_id, a.asset_id, a.playback_id, a.kind, viewer, 'ins_test'],
     doubles: [a.views, a.watch_seconds, a.bytes],
-    indexes: [a.asset_id],
+    indexes: [index],
   }
 }
 
@@ -59,7 +69,7 @@ for (const c of vectors.cases) {
     if (c.cache_control) assert.equal(res.headers.get('Cache-Control'), c.cache_control)
     if (c.body) assert.equal(new TextDecoder().decode(body), c.body)
     if (c.body_hex) assert.equal(Buffer.from(body).toString('hex'), c.body_hex)
-    assert.deepEqual(points, c.analytics ? [want(c.analytics)] : [], 'analytics data points')
+    assert.deepEqual(points, c.analytics ? [want(path, c.analytics)] : [], 'analytics data points')
   })
 }
 

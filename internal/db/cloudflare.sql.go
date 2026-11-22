@@ -51,7 +51,7 @@ func (q *Queries) FindStorageConfigByBucket(ctx context.Context, arg FindStorage
 }
 
 const getCloudflareConnection = `-- name: GetCloudflareConnection :one
-SELECT project_id, account_id, zone_id, hostname, bucket, script_name, token_id, storage_id, worker_version, connected_at, deployed_at FROM cloudflare_connections WHERE project_id = $1
+SELECT project_id, account_id, zone_id, hostname, bucket, script_name, token_id, storage_id, worker_version, connected_at, deployed_at, analytics_tagged, analytics_legacy_until FROM cloudflare_connections WHERE project_id = $1
 `
 
 func (q *Queries) GetCloudflareConnection(ctx context.Context, projectID string) (CloudflareConnection, error) {
@@ -69,18 +69,25 @@ func (q *Queries) GetCloudflareConnection(ctx context.Context, projectID string)
 		&i.WorkerVersion,
 		&i.ConnectedAt,
 		&i.DeployedAt,
+		&i.AnalyticsTagged,
+		&i.AnalyticsLegacyUntil,
 	)
 	return i, err
 }
 
 const saveCloudflareConnection = `-- name: SaveCloudflareConnection :one
-INSERT INTO cloudflare_connections (project_id, account_id, zone_id, hostname, bucket, script_name, token_id, storage_id, worker_version)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+INSERT INTO cloudflare_connections (project_id, account_id, zone_id, hostname, bucket, script_name, token_id, storage_id, worker_version, analytics_tagged)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, true)
 ON CONFLICT (project_id) DO UPDATE SET
     account_id = EXCLUDED.account_id, zone_id = EXCLUDED.zone_id, hostname = EXCLUDED.hostname,
     bucket = EXCLUDED.bucket, script_name = EXCLUDED.script_name, token_id = EXCLUDED.token_id,
-    storage_id = EXCLUDED.storage_id, worker_version = EXCLUDED.worker_version, deployed_at = now()
-RETURNING project_id, account_id, zone_id, hostname, bucket, script_name, token_id, storage_id, worker_version, connected_at, deployed_at
+    storage_id = EXCLUDED.storage_id, worker_version = EXCLUDED.worker_version, deployed_at = now(),
+    analytics_legacy_until = CASE
+        WHEN NOT cloudflare_connections.analytics_tagged THEN now() + interval '2 minutes'
+        ELSE cloudflare_connections.analytics_legacy_until
+    END,
+    analytics_tagged = true
+RETURNING project_id, account_id, zone_id, hostname, bucket, script_name, token_id, storage_id, worker_version, connected_at, deployed_at, analytics_tagged, analytics_legacy_until
 `
 
 type SaveCloudflareConnectionParams struct {
@@ -120,6 +127,8 @@ func (q *Queries) SaveCloudflareConnection(ctx context.Context, arg SaveCloudfla
 		&i.WorkerVersion,
 		&i.ConnectedAt,
 		&i.DeployedAt,
+		&i.AnalyticsTagged,
+		&i.AnalyticsLegacyUntil,
 	)
 	return i, err
 }

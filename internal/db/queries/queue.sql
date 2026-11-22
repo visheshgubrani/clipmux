@@ -262,4 +262,4 @@ SELECT g.size FROM assets s JOIN agent_sources g ON g.id = s.agent_source_id WHE
 -- name: MoveSourceToStorage :exec
 -- The PC's upload landed: the source is in storage now, and the asset is
 -- no longer tied to that PC (D059).
-UPDATE assets SET source_uri = $2, agent_source_id = NULL, source_kept = true WHERE id = $1;
+UPDATE assets SET source_uri = $2, source_bytes = $3, agent_source_id = NULL, source_kept = true WHERE id = $1;

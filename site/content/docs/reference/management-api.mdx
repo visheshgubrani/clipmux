@@ -584,10 +584,11 @@ Credentials are never returned.
 `GET /v1/storage` · `POST /v1/storage`
 
 - `GET`:
-  `{data: [{id, kind, bucket?, endpoint?, public_endpoint?, region?, default, asset_count, cloudflare_delivery, created_at}]}`.
+  `{data: [{id, kind, bucket?, endpoint?, public_endpoint?, region?, default, asset_count, source_bytes, media_bytes, total_bytes, cloudflare_delivery, created_at}]}`.
   `kind` is `fs`, `r2` or `s3`. `asset_count` counts videos whose source or
-  encoded files are on it, deleted ones aside. `cloudflare_delivery` marks
-  the bucket the Worker reads.
+  encoded files are on it, deleted ones aside; `source_bytes`, `media_bytes`
+  and `total_bytes` sum the live sources, outputs and tracks currently stored
+  there. `cloudflare_delivery` marks the bucket the Worker reads.
 - `POST`: body
   `{endpoint, bucket, access_key_id, secret_access_key, region?, public_endpoint?}`.
   Returns `201` the config, `kind: "s3"`, not the default. It's saved only

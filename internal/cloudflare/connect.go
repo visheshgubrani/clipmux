@@ -169,7 +169,7 @@ func (c *Connector) Connect(ctx context.Context, req Request) (Result, error) {
 	var res Result
 	step := stepper(&res.Steps)
 	tokenID, accountID, ok := credential(ctx, cf, req.AccountID, step)
-	var zoneID, storageID string
+	var zoneID, storageID, installID string
 	ok = ok && step("zone", func() (string, error) {
 		z, err := cf.ZoneFor(ctx, accountID, req.Hostname)
 		if err != nil {
@@ -187,12 +187,17 @@ func (c *Connector) Connect(ctx context.Context, req Request) (Result, error) {
 		}
 		return "subscribed", err
 	}) && c.r2Store(ctx, cf, req.Token, tokenID, accountID, req.Bucket, step, &storageID) && step("worker", func() (string, error) {
+		installID, err = q.GetAnalyticsInstallID(ctx, c.ProjectID)
+		if err != nil {
+			return "", err
+		}
 		return "version " + WorkerVersion(), cf.UploadWorker(ctx, accountID, script, workerJS, CompatibilityDate, []Binding{
 			{Type: "r2_bucket", Name: "MEDIA", BucketName: req.Bucket},
 			{Type: "plain_text", Name: "ORIGIN_URL", Text: c.URLs.PublicURL()},
 			{Type: "secret_text", Name: "CONTENT_KEYS", Text: c.Keys.WorkerSecret()},
 			{Type: "analytics_engine", Name: "ANALYTICS", Dataset: AnalyticsDataset},
 			{Type: "plain_text", Name: "PROJECT_ID", Text: c.ProjectID},
+			{Type: "plain_text", Name: "INSTALL_ID", Text: installID},
 			{Type: "secret_text", Name: "ANALYTICS_KEY", Text: hex.EncodeToString(c.AnalyticsKey)},
 		})
 	}) && step("routes", func() (string, error) {

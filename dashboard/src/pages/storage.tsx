@@ -18,6 +18,7 @@ import { Item, ItemActions, ItemContent, ItemDescription, ItemTitle } from '@/co
 import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Spinner } from '@/components/ui/spinner'
+import { bytes } from '@/lib/format'
 import { notify } from '@/lib/notify'
 import { q } from '@/queries'
 
@@ -43,6 +44,7 @@ export function Storage() {
   const storage = useQuery(q.storage())
   const cloudflare = useQuery(q.cloudflare())
   const def = storage.data?.data.find((s) => s.default)
+  const totalBytes = storage.data?.data.reduce((sum, s) => sum + s.total_bytes, 0)
   const encoded = cloudflare.data?.connected
     ? `Encoded videos are kept in R2 (${cloudflare.data.bucket}) for Cloudflare to serve.`
     : 'Encoded videos are kept with them.'
@@ -51,7 +53,9 @@ export function Storage() {
       <PageHeader
         title="Storage"
         description={
-          def ? `New uploads go to ${storageName(def)}. ${encoded}` : 'Where uploaded originals are kept.'
+          def
+            ? `${totalBytes !== undefined ? `${bytes(totalBytes)} taken across stores. ` : ''}New uploads go to ${storageName(def)}. ${encoded}`
+            : 'Where uploaded originals are kept.'
         }
       />
       <StorageSection />
@@ -116,6 +120,14 @@ function StorageSection() {
                     </ItemTitle>
                     <ItemDescription>
                       {s.asset_count} video{s.asset_count === 1 ? '' : 's'}
+                      {` · ${bytes(s.total_bytes)}`}
+                      {s.total_bytes > 0 && s.source_bytes > 0 && s.media_bytes > 0
+                        ? ` (${bytes(s.source_bytes)} sources, ${bytes(s.media_bytes)} encoded)`
+                        : s.source_bytes > 0 && s.media_bytes === 0
+                          ? ' (sources)'
+                          : s.media_bytes > 0 && s.source_bytes === 0
+                            ? ' (encoded)'
+                            : ''}
                       {s.endpoint ? `, ${s.endpoint}` : ''}
                       {s.cloudflare_delivery ? ', holds encoded videos for Cloudflare' : ''}
                     </ItemDescription>

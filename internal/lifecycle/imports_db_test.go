@@ -68,6 +68,9 @@ func TestAnImportedURLBecomesTheSourceAndQueuesATranscode(t *testing.T) {
 	if got := r.scalar(`SELECT string_agg(kind || ':' || status, ',' ORDER BY created_at) FROM jobs WHERE asset_id = $1`, id); got != "import:succeeded,transcode:queued" {
 		t.Fatalf("jobs = %v", got)
 	}
+	if sb := r.scalar(`SELECT source_bytes FROM assets WHERE id = $1`, id).(int64); sb != int64(len("an imported video")) {
+		t.Fatalf("source_bytes = %d, want %d", sb, len("an imported video"))
+	}
 }
 
 func TestAPrivateURLIsRefusedBeforeAnythingIsCreated(t *testing.T) {

@@ -174,6 +174,13 @@ func (h *Handler) respond(w http.ResponseWriter, r *http.Request, token string, 
 			return
 		}
 		audience, c.vid, c.internal = g.aud, g.vid, g.internal
+	} else if signedURL {
+		// Soft-check tokens on public routes: invalid tokens still play a
+		// public ID, while valid internal tokens opt out of counting and valid
+		// app tokens forward their viewer ID.
+		if g, status := h.authorize(ctx, q, route, token); status == 0 {
+			c.vid, c.internal = g.vid, g.internal
+		}
 	}
 
 	p := r.PathValue("path")
@@ -300,9 +307,13 @@ func (h *Handler) count(ctx context.Context, w *countingWriter, c *counted, p st
 		return
 	}
 	route := c.route
+	vid := c.vid
+	if kind == analytics.KindPoster {
+		vid = ""
+	}
 	e := analytics.Event{
 		ProjectID: route.ProjectID, AppID: route.AppID, AssetID: route.AssetID, PlaybackID: route.PlaybackID,
-		Kind: kind, Bytes: w.n, Vid: c.vid,
+		Kind: kind, Bytes: w.n, Vid: vid,
 	}
 	if w.status == http.StatusOK || strings.HasPrefix(w.Header().Get("Content-Range"), "bytes 0-") {
 		switch {
@@ -571,6 +582,53 @@ func (h *Handler) key(w http.ResponseWriter, assetID string, out db.Output, vers
 	_, _ = w.Write(k[:])
 }
 
+type rangeReader interface {
+	GetRange(ctx context.Context, key string, start, end int64) (io.ReadCloser, int64, error)
+}
+
+var byteRangeRE = regexp.MustCompile(`^bytes=(\d*)-(\d*)$`)
+
+func parseRange(header string, size int64) (start, end int64, ok, unsatisfiable bool) {
+	m := byteRangeRE.FindStringSubmatch(strings.TrimSpace(header))
+	if m == nil || (m[1] == "" && m[2] == "") {
+		return 0, 0, false, false
+	}
+	if size <= 0 {
+		return 0, 0, false, true
+	}
+	if m[1] == "" {
+		n, err := strconv.ParseInt(m[2], 10, 64)
+		if err != nil {
+			if errors.Is(err, strconv.ErrRange) {
+				return 0, size - 1, true, false
+			}
+			return 0, 0, false, false
+		}
+		if n == 0 {
+			return 0, 0, false, true
+		}
+		return max(int64(0), size-n), size - 1, true, false
+	}
+	start, err := strconv.ParseInt(m[1], 10, 64)
+	if err != nil || start >= size {
+		return 0, 0, false, true
+	}
+	if m[2] == "" {
+		return start, size - 1, true, false
+	}
+	end, err = strconv.ParseInt(m[2], 10, 64)
+	if err != nil {
+		if errors.Is(err, strconv.ErrRange) {
+			return start, size - 1, true, false
+		}
+		return 0, 0, false, false
+	}
+	if end < start {
+		return 0, 0, false, false
+	}
+	return start, min(end, size-1), true, false
+}
+
 // object streams one stored file of an output, if the grammar and the
 // extension allowlist permit it.
 func (h *Handler) object(w http.ResponseWriter, r *http.Request, store storage.Storage, assetID, outputID, rel, policy, cache string) {
@@ -579,7 +637,77 @@ func (h *Handler) object(w http.ResponseWriter, r *http.Request, store storage.S
 		notFound(w)
 		return
 	}
-	rc, err := store.Get(r.Context(), "media/"+assetID+"/"+outputID+"/"+rel)
+	key := "media/" + assetID + "/" + outputID + "/" + rel
+	// A pinned path is never reused, so pinned files are immutable. Signed
+	// bytes stay out of shared caches.
+	scope := "public"
+	if policy == "signed" {
+		scope = "private"
+	}
+	w.Header().Set("Content-Type", ctype)
+	w.Header().Set("Cache-Control", scope+", "+cache)
+
+	if rr, ok := store.(rangeReader); ok {
+		obj, err := store.Head(r.Context(), key)
+		if errors.Is(err, storage.ErrNotFound) {
+			notFound(w)
+			return
+		}
+		if err != nil {
+			h.fail(w, "object", err)
+			return
+		}
+		w.Header().Set("Accept-Ranges", "bytes")
+		if rng := r.Header.Get("Range"); rng != "" {
+			start, end, ok, unsatisfiable := parseRange(rng, obj.Size)
+			if unsatisfiable {
+				w.Header().Set("Content-Range", fmt.Sprintf("bytes */%d", obj.Size))
+				w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
+				return
+			}
+			if ok {
+				length := end - start + 1
+				w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, obj.Size))
+				w.Header().Set("Content-Length", strconv.FormatInt(length, 10))
+				if r.Method == http.MethodHead {
+					w.WriteHeader(http.StatusPartialContent)
+					return
+				}
+				rc, _, err := rr.GetRange(r.Context(), key, start, end)
+				if errors.Is(err, storage.ErrNotFound) {
+					notFound(w)
+					return
+				}
+				if err != nil {
+					h.fail(w, "object", err)
+					return
+				}
+				defer rc.Close()
+				w.WriteHeader(http.StatusPartialContent)
+				_, _ = io.Copy(w, rc)
+				return
+			}
+		}
+		w.Header().Set("Content-Length", strconv.FormatInt(obj.Size, 10))
+		if r.Method == http.MethodHead {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		rc, err := store.Get(r.Context(), key)
+		if errors.Is(err, storage.ErrNotFound) {
+			notFound(w)
+			return
+		}
+		if err != nil {
+			h.fail(w, "object", err)
+			return
+		}
+		defer rc.Close()
+		_, _ = io.Copy(w, rc)
+		return
+	}
+
+	rc, err := store.Get(r.Context(), key)
 	if errors.Is(err, storage.ErrNotFound) {
 		notFound(w)
 		return
@@ -589,14 +717,6 @@ func (h *Handler) object(w http.ResponseWriter, r *http.Request, store storage.S
 		return
 	}
 	defer rc.Close()
-	w.Header().Set("Content-Type", ctype)
-	// A pinned path is never reused, so pinned files are immutable. Signed
-	// bytes stay out of shared caches.
-	scope := "public"
-	if policy == "signed" {
-		scope = "private"
-	}
-	w.Header().Set("Cache-Control", scope+", "+cache)
 	if rs, ok := rc.(io.ReadSeeker); ok {
 		http.ServeContent(w, r, "", time.Time{}, rs) // ranges and HEAD
 		return

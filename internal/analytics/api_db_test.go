@@ -57,6 +57,12 @@ func seedAnalytics(t *testing.T) (*API, *http.ServeMux, func(sql string, args ..
 	      SELECT project_id, source, (hour AT TIME ZONE 'UTC')::date, app_id, asset_id, playback_id, sum(views), sum(watch_seconds), sum(bytes)
 	      FROM playback_hourly GROUP BY 1, 2, 3, 4, 5, 6`)
 	exec(`INSERT INTO playback_viewer_days (project_id, day, app_id, viewer) SELECT DISTINCT project_id, day, app_id, viewer FROM playback_viewers`)
+	exec(`INSERT INTO playback_viewers_hourly (project_id, hour, asset_id, viewer, app_id) VALUES
+	      ('prj_default', '2026-11-09T09:00:00Z', 'ast_1', '\x01000000000000000000000000000000', 'app_a'),
+	      ('prj_default', '2026-11-10T09:00:00Z', 'ast_1', '\x01000000000000000000000000000000', 'app_a'),
+	      ('prj_default', '2026-11-10T08:00:00Z', 'ast_3', '\x02000000000000000000000000000000', 'app_b'),
+	      ('prj_default', '2026-11-03T12:00:00Z', 'ast_2', '\x03000000000000000000000000000000', 'app_a')`)
+	exec(`INSERT INTO playback_viewer_hours (project_id, hour, app_id, viewer) SELECT DISTINCT project_id, hour, app_id, viewer FROM playback_viewers_hourly`)
 
 	auth := apikeys.NewAuthenticator(pool)
 	// The owner's session, as ActAsApp answers it; X-No-Session is a
@@ -97,14 +103,24 @@ type assetJSON struct {
 	Bytes        int64  `json:"bytes_delivered"`
 }
 
+type storageJSON struct {
+	SourceBytes int64 `json:"source_bytes"`
+	MediaBytes  int64 `json:"media_bytes"`
+	TotalBytes  int64 `json:"total_bytes"`
+}
+
 type analyticsJSON struct {
 	Totals     totalsJSON   `json:"totals"`
 	Previous   totalsJSON   `json:"previous"`
 	Series     []pointJSON  `json:"series"`
 	TopAssets  *[]assetJSON `json:"top_assets"`
+	Storage    storageJSON  `json:"storage"`
 	Collecting struct {
-		Builtin bool   `json:"builtin"`
-		Edge    string `json:"edge"`
+		Builtin           bool    `json:"builtin"`
+		Edge              string  `json:"edge"`
+		EdgeNeedsRedeploy bool    `json:"edge_needs_redeploy"`
+		EdgeError         string  `json:"edge_error"`
+		EdgePulledThrough *string `json:"edge_pulled_through"`
 	} `json:"collecting"`
 }
 
@@ -298,11 +314,87 @@ func TestAnAnalyticsKeySeesItsOwnAppOnly(t *testing.T) {
 }
 
 func TestCollectingSaysWhenTheEdgeIsNotCounted(t *testing.T) {
-	_, mux, exec := seedAnalytics(t)
+	a, mux, exec := seedAnalytics(t)
+	a.WorkerVersion = "v2"
 	exec(`INSERT INTO cloudflare_connections (project_id, account_id, zone_id, hostname, bucket, script_name, token_id, storage_id, worker_version)
-	      VALUES ('prj_default', 'acc', 'zone', 'media.example.com', 'b', 'clipmux', 'tok', 'sto_default', '1')`)
+	      VALUES ('prj_default', 'acc', 'zone', 'media.example.com', 'b', 'clipmux', 'tok', 'sto_default', 'v1')`)
 	_, got, _ := call(t, mux, "/v1/analytics?range=24h")
-	if !got.Collecting.Builtin || got.Collecting.Edge != "not_connected" {
-		t.Errorf("collecting = %+v, want builtin and not_connected", got.Collecting)
+	if !got.Collecting.Builtin || got.Collecting.Edge != "not_connected" || !got.Collecting.EdgeNeedsRedeploy {
+		t.Errorf("collecting = %+v, want builtin, not_connected, edge_needs_redeploy", got.Collecting)
+	}
+	exec(`INSERT INTO edge_analytics (project_id, account_id, token_sealed, pulled_through, last_error)
+	      VALUES ('prj_default', 'acc', '\x00', '2026-11-10T09:00:00Z', 'status 502')`)
+	exec(`UPDATE cloudflare_connections SET worker_version = 'v2', analytics_tagged = true`)
+	_, got, _ = call(t, mux, "/v1/analytics?range=24h")
+	if got.Collecting.Edge != "connected" || got.Collecting.EdgeNeedsRedeploy || got.Collecting.EdgeError != "status 502" ||
+		got.Collecting.EdgePulledThrough == nil || *got.Collecting.EdgePulledThrough != "2026-11-10T09:00:00Z" {
+		t.Errorf("collecting connected = %+v", got.Collecting)
+	}
+}
+
+// 24h unique_viewers are read from the hourly tables so yesterday's earlier
+// hours never overlap into today's 24h window.
+func Test24hUniqueViewersDoNotLeakEarlierYesterdayHours(t *testing.T) {
+	_, mux, exec := seedAnalytics(t)
+	// Viewer 4 watched at 02:00 UTC yesterday (in previous, NOT in current 24h window).
+	exec(`INSERT INTO playback_viewers_hourly (project_id, hour, asset_id, viewer, app_id) VALUES
+	      ('prj_default', '2026-11-09T02:00:00Z', 'ast_1', '\x04000000000000000000000000000000', 'app_a')`)
+	exec(`INSERT INTO playback_viewer_hours (project_id, hour, app_id, viewer) VALUES
+	      ('prj_default', '2026-11-09T02:00:00Z', 'app_a', '\x04000000000000000000000000000000')`)
+	code, got, body := call(t, mux, "/v1/analytics?range=24h")
+	if code != http.StatusOK {
+		t.Fatalf("%d %s", code, body)
+	}
+	sameTotals(t, "24h isolated", got.Totals, totalsJSON{13, 90, n(2), 1580})
+	sameTotals(t, "24h previous isolated", got.Previous, totalsJSON{5, 6, n(2), 140})
+
+	code, assetGot, _ := call(t, mux, "/v1/analytics/assets/ast_1?range=24h")
+	if code != http.StatusOK {
+		t.Fatalf("asset %d", code)
+	}
+	sameTotals(t, "asset 24h isolated", assetGot.Totals, totalsJSON{5, 90, n(1), 1500})
+	sameTotals(t, "asset 24h previous isolated", assetGot.Previous, totalsJSON{1, 6, n(2), 100})
+}
+
+func TestAnalyticsReportsStorageTakenAndZeroViewTopAssets(t *testing.T) {
+	_, mux, exec := seedAnalytics(t)
+	exec(`UPDATE assets SET source_bytes = 500 WHERE id = 'ast_1';
+	      UPDATE assets SET source_bytes = 300 WHERE id = 'ast_3';
+	      UPDATE assets SET source_bytes = 900, deleted_at = now() WHERE id = 'ast_del';
+	      INSERT INTO outputs (id, project_id, asset_id, key_version, status, manifest, bytes) VALUES
+	        ('out_1', 'prj_default', 'ast_1', 1, 'committed', '{}', 4000),
+	        ('out_1r', 'prj_default', 'ast_1', 1, 'retired', '{}', 1000),
+	        ('out_3', 'prj_default', 'ast_3', 1, 'committed', '{}', 2000),
+	        ('out_d', 'prj_default', 'ast_del', 1, 'committed', '{}', 7000);
+	      INSERT INTO tracks (id, project_id, asset_id, kind, status, key_version, bytes) VALUES
+	        ('trk_1', 'prj_default', 'ast_1', 'subtitles', 'ready', 1, 250);
+	      -- Segment bytes on an asset whose sampled views rounded to 0 still surface in top_assets.
+	      INSERT INTO playback_hourly (project_id, source, hour, app_id, asset_id, playback_id, views, watch_seconds, bytes) VALUES
+	        ('prj_default', 'edge', '2026-11-10T09:00:00Z', 'app_a', 'ast_2', 'pid_2', 0, 12, 999);`)
+
+	code, got, _ := call(t, mux, "/v1/analytics?range=24h")
+	if code != http.StatusOK {
+		t.Fatalf("%d", code)
+	}
+	if got.Storage != (storageJSON{SourceBytes: 800, MediaBytes: 7250, TotalBytes: 8050}) {
+		t.Errorf("project storage = %+v, want 800/7250/8050", got.Storage)
+	}
+	sameTop(t, got.TopAssets, []assetJSON{
+		{"ast_1", "Lesson 1", 5, 90, 1500},
+		{"ast_3", "", 1, 0, 10},
+		{"ast_2", "", 0, 12, 999},
+	})
+
+	_, appGot, _ := call(t, mux, "/v1/analytics?range=24h&app_id=app_a")
+	if appGot.Storage != (storageJSON{SourceBytes: 500, MediaBytes: 5250, TotalBytes: 5750}) {
+		t.Errorf("app_a storage = %+v, want 500/5250/5750", appGot.Storage)
+	}
+	_, oneGot, _ := call(t, mux, "/v1/analytics/assets/ast_1?range=24h")
+	if oneGot.Storage != (storageJSON{SourceBytes: 500, MediaBytes: 5250, TotalBytes: 5750}) {
+		t.Errorf("ast_1 storage = %+v, want 500/5250/5750", oneGot.Storage)
+	}
+	_, delGot, _ := call(t, mux, "/v1/analytics/assets/ast_del?range=24h")
+	if delGot.Storage != (storageJSON{}) {
+		t.Errorf("deleted asset storage = %+v, want zeros", delGot.Storage)
 	}
 }

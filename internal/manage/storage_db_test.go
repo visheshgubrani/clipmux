@@ -136,3 +136,49 @@ func TestStorageConfigsFromAddToRemove(t *testing.T) {
 		}
 	}
 }
+
+// Storage summaries count source and encoded bytes across stores and stop
+// counting deleted assets (even while source_kept / purged_at haven't flipped).
+func TestStorageListSummarizesBytesTakenAndExcludesDeletedAssets(t *testing.T) {
+	b := s3test.New(t)
+	r := newRig(t, config.Config{})
+	added := r.call("POST", "/v1/storage", map[string]any{
+		"endpoint": b.Endpoint, "bucket": b.Name, "access_key_id": b.AccessKeyID, "secret_access_key": b.SecretAccessKey,
+	}, "")
+	if added.status != 201 {
+		t.Fatalf("add s3: %d %v", added.status, added.body)
+	}
+	s3ID := added.body["id"].(string)
+	r.exec(`INSERT INTO assets (id, project_id, app_id, status, storage_id, media_storage_id, source_kept, source_bytes) VALUES
+	          ('ast_live', 'prj_default', 'app_dashboard', 'processing', 'sto_default', $1, true, 1200),
+	          ('ast_del',  'prj_default', 'app_dashboard', 'deleted',    'sto_default', $1, true, 5000)`, s3ID)
+	r.exec(`UPDATE assets SET deleted_at = now() WHERE id = 'ast_del'`)
+	r.exec(`INSERT INTO outputs (id, project_id, asset_id, key_version, status, manifest, bytes) VALUES
+	          ('out_live', 'prj_default', 'ast_live', 1, 'committed', '{}', 4500),
+	          ('out_ret',  'prj_default', 'ast_live', 1, 'retired',   '{}', 1500),
+	          ('out_prgd', 'prj_default', 'ast_live', 1, 'retired',   '{}', 9999),
+	          ('out_del',  'prj_default', 'ast_del',  1, 'committed', '{}', 8888)`)
+	r.exec(`UPDATE outputs SET purged_at = now() WHERE id = 'out_prgd'`)
+	r.exec(`INSERT INTO tracks (id, project_id, asset_id, kind, status, key_version, bytes) VALUES
+	          ('trk_sub', 'prj_default', 'ast_live', 'subtitles', 'ready', 1, 300),
+	          ('trk_del', 'prj_default', 'ast_del',  'subtitles', 'ready', 1, 777),
+	          ('trk_rm',  'prj_default', 'ast_live', 'chapters',  'deleted', NULL, 666)`)
+
+	got := r.call("GET", "/v1/storage", nil, "")
+	if got.status != 200 {
+		t.Fatalf("GET /v1/storage = %d %v", got.status, got.body)
+	}
+	byID := map[string]map[string]any{}
+	for _, c := range got.list {
+		m := c.(map[string]any)
+		byID[m["id"].(string)] = m
+	}
+	// sto_default holds ast_live's source (1200 B); ast_del (deleted_at != NULL) excluded.
+	if byID["sto_default"]["source_bytes"] != 1200.0 || byID["sto_default"]["media_bytes"] != 0.0 || byID["sto_default"]["total_bytes"] != 1200.0 {
+		t.Errorf("sto_default = %v, want 1200/0/1200", byID["sto_default"])
+	}
+	// s3 holds ast_live's committed (4500) + retired (1500) + track (300) = 6300 B.
+	if byID[s3ID]["source_bytes"] != 0.0 || byID[s3ID]["media_bytes"] != 6300.0 || byID[s3ID]["total_bytes"] != 6300.0 {
+		t.Errorf("s3 = %v, want 0/6300/6300", byID[s3ID])
+	}
+}

@@ -192,6 +192,34 @@ func (q *Queries) AddPlaybackViewerDays(ctx context.Context, arg AddPlaybackView
 	return result.RowsAffected(), nil
 }
 
+const addPlaybackViewerHours = `-- name: AddPlaybackViewerHours :execrows
+INSERT INTO playback_viewer_hours (project_id, hour, app_id, viewer)
+SELECT DISTINCT u.project_id, u.hour, u.app_id, u.viewer
+FROM (SELECT unnest($1::text[]) AS project_id, unnest($2::timestamptz[]) AS hour,
+    unnest($3::bytea[]) AS viewer, unnest($4::text[]) AS app_id) u
+ON CONFLICT DO NOTHING
+`
+
+type AddPlaybackViewerHoursParams struct {
+	ProjectIds []string
+	Hours      []pgtype.Timestamptz
+	Viewers    [][]byte
+	AppIds     []string
+}
+
+func (q *Queries) AddPlaybackViewerHours(ctx context.Context, arg AddPlaybackViewerHoursParams) (int64, error) {
+	result, err := q.db.Exec(ctx, addPlaybackViewerHours,
+		arg.ProjectIds,
+		arg.Hours,
+		arg.Viewers,
+		arg.AppIds,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const addPlaybackViewers = `-- name: AddPlaybackViewers :execrows
 INSERT INTO playback_viewers (project_id, day, asset_id, viewer, app_id)
 SELECT u.project_id, u.day, u.asset_id, u.viewer, u.app_id
@@ -213,6 +241,37 @@ func (q *Queries) AddPlaybackViewers(ctx context.Context, arg AddPlaybackViewers
 	result, err := q.db.Exec(ctx, addPlaybackViewers,
 		arg.ProjectIds,
 		arg.Days,
+		arg.AssetIds,
+		arg.Viewers,
+		arg.AppIds,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const addPlaybackViewersHourly = `-- name: AddPlaybackViewersHourly :execrows
+INSERT INTO playback_viewers_hourly (project_id, hour, asset_id, viewer, app_id)
+SELECT u.project_id, u.hour, u.asset_id, u.viewer, u.app_id
+FROM (SELECT unnest($1::text[]) AS project_id, unnest($2::timestamptz[]) AS hour,
+    unnest($3::text[]) AS asset_id, unnest($4::bytea[]) AS viewer,
+    unnest($5::text[]) AS app_id) u
+ON CONFLICT DO NOTHING
+`
+
+type AddPlaybackViewersHourlyParams struct {
+	ProjectIds []string
+	Hours      []pgtype.Timestamptz
+	AssetIds   []string
+	Viewers    [][]byte
+	AppIds     []string
+}
+
+func (q *Queries) AddPlaybackViewersHourly(ctx context.Context, arg AddPlaybackViewersHourlyParams) (int64, error) {
+	result, err := q.db.Exec(ctx, addPlaybackViewersHourly,
+		arg.ProjectIds,
+		arg.Hours,
 		arg.AssetIds,
 		arg.Viewers,
 		arg.AppIds,
@@ -325,6 +384,36 @@ func (q *Queries) AssetHourlySeries(ctx context.Context, arg AssetHourlySeriesPa
 	return items, nil
 }
 
+const assetStorageTotals = `-- name: AssetStorageTotals :one
+SELECT
+    coalesce((SELECT a.source_bytes FROM assets a
+        WHERE a.project_id = $1 AND a.id = $2
+          AND a.source_kept AND a.agent_source_id IS NULL AND a.deleted_at IS NULL), 0)::bigint AS source_bytes,
+    (coalesce((SELECT sum(o.bytes) FROM outputs o JOIN assets a ON a.id = o.asset_id
+        WHERE a.project_id = $1 AND a.id = $2
+          AND o.status IN ('committed', 'retired') AND o.purged_at IS NULL AND a.deleted_at IS NULL), 0)
+     + coalesce((SELECT sum(t.bytes) FROM tracks t JOIN assets a ON a.id = t.asset_id
+        WHERE a.project_id = $1 AND a.id = $2
+          AND t.status IN ('publishing', 'ready', 'retired') AND a.deleted_at IS NULL), 0))::bigint AS media_bytes
+`
+
+type AssetStorageTotalsParams struct {
+	ProjectID string
+	AssetID   string
+}
+
+type AssetStorageTotalsRow struct {
+	SourceBytes int64
+	MediaBytes  int64
+}
+
+func (q *Queries) AssetStorageTotals(ctx context.Context, arg AssetStorageTotalsParams) (AssetStorageTotalsRow, error) {
+	row := q.db.QueryRow(ctx, assetStorageTotals, arg.ProjectID, arg.AssetID)
+	var i AssetStorageTotalsRow
+	err := row.Scan(&i.SourceBytes, &i.MediaBytes)
+	return i, err
+}
+
 const countAssetViewers = `-- name: CountAssetViewers :one
 SELECT
     (SELECT count(*) FROM (SELECT vw.viewer FROM playback_viewers vw
@@ -361,6 +450,46 @@ func (q *Queries) CountAssetViewers(ctx context.Context, arg CountAssetViewersPa
 		arg.PrevTo,
 	)
 	var i CountAssetViewersRow
+	err := row.Scan(&i.Current, &i.Previous)
+	return i, err
+}
+
+const countAssetViewersHourly = `-- name: CountAssetViewersHourly :one
+SELECT
+    (SELECT count(*) FROM (SELECT vh.viewer FROM playback_viewers_hourly vh
+        WHERE vh.project_id = $1 AND vh.asset_id = $2
+            AND vh.hour >= $3 AND vh.hour < $4
+        GROUP BY vh.viewer) c) AS current,
+    (SELECT count(*) FROM (SELECT vh.viewer FROM playback_viewers_hourly vh
+        WHERE vh.project_id = $1 AND vh.asset_id = $2
+            AND vh.hour >= $5 AND vh.hour < $6
+        GROUP BY vh.viewer) p) AS previous
+`
+
+type CountAssetViewersHourlyParams struct {
+	ProjectID string
+	AssetID   string
+	CurFrom   pgtype.Timestamptz
+	CurTo     pgtype.Timestamptz
+	PrevFrom  pgtype.Timestamptz
+	PrevTo    pgtype.Timestamptz
+}
+
+type CountAssetViewersHourlyRow struct {
+	Current  int64
+	Previous int64
+}
+
+func (q *Queries) CountAssetViewersHourly(ctx context.Context, arg CountAssetViewersHourlyParams) (CountAssetViewersHourlyRow, error) {
+	row := q.db.QueryRow(ctx, countAssetViewersHourly,
+		arg.ProjectID,
+		arg.AssetID,
+		arg.CurFrom,
+		arg.CurTo,
+		arg.PrevFrom,
+		arg.PrevTo,
+	)
+	var i CountAssetViewersHourlyRow
 	err := row.Scan(&i.Current, &i.Previous)
 	return i, err
 }
@@ -403,6 +532,46 @@ func (q *Queries) CountViewers(ctx context.Context, arg CountViewersParams) (Cou
 		arg.PrevTo,
 	)
 	var i CountViewersRow
+	err := row.Scan(&i.Current, &i.Previous)
+	return i, err
+}
+
+const countViewersHourly = `-- name: CountViewersHourly :one
+SELECT
+    (SELECT count(*) FROM (SELECT vh.viewer FROM playback_viewer_hours vh
+        WHERE vh.project_id = $1 AND vh.hour >= $2 AND vh.hour < $3
+            AND ($4::text IS NULL OR vh.app_id = $4)
+        GROUP BY vh.viewer) c) AS current,
+    (SELECT count(*) FROM (SELECT vh.viewer FROM playback_viewer_hours vh
+        WHERE vh.project_id = $1 AND vh.hour >= $5 AND vh.hour < $6
+            AND ($4::text IS NULL OR vh.app_id = $4)
+        GROUP BY vh.viewer) p) AS previous
+`
+
+type CountViewersHourlyParams struct {
+	ProjectID string
+	CurFrom   pgtype.Timestamptz
+	CurTo     pgtype.Timestamptz
+	AppID     pgtype.Text
+	PrevFrom  pgtype.Timestamptz
+	PrevTo    pgtype.Timestamptz
+}
+
+type CountViewersHourlyRow struct {
+	Current  int64
+	Previous int64
+}
+
+func (q *Queries) CountViewersHourly(ctx context.Context, arg CountViewersHourlyParams) (CountViewersHourlyRow, error) {
+	row := q.db.QueryRow(ctx, countViewersHourly,
+		arg.ProjectID,
+		arg.CurFrom,
+		arg.CurTo,
+		arg.AppID,
+		arg.PrevFrom,
+		arg.PrevTo,
+	)
+	var i CountViewersHourlyRow
 	err := row.Scan(&i.Current, &i.Previous)
 	return i, err
 }
@@ -520,17 +689,6 @@ func (q *Queries) EdgeAnalyticsConnected(ctx context.Context, projectID string) 
 	return exists, err
 }
 
-const edgeDeliveryOn = `-- name: EdgeDeliveryOn :one
-SELECT EXISTS (SELECT 1 FROM cloudflare_connections WHERE project_id = $1)
-`
-
-func (q *Queries) EdgeDeliveryOn(ctx context.Context, projectID string) (bool, error) {
-	row := q.db.QueryRow(ctx, edgeDeliveryOn, projectID)
-	var exists bool
-	err := row.Scan(&exists)
-	return exists, err
-}
-
 const getAnalyticsAsset = `-- name: GetAnalyticsAsset :one
 SELECT app_id FROM assets WHERE project_id = $1 AND id = $2
 `
@@ -558,19 +716,6 @@ func (q *Queries) GetAnalyticsKey(ctx context.Context, id string) ([]byte, error
 	return analytics_key_sealed, err
 }
 
-const getCloudflareAccount = `-- name: GetCloudflareAccount :one
-
-SELECT account_id FROM cloudflare_connections WHERE project_id = $1
-`
-
-// Edge analytics (P7-T05).
-func (q *Queries) GetCloudflareAccount(ctx context.Context, projectID string) (string, error) {
-	row := q.db.QueryRow(ctx, getCloudflareAccount, projectID)
-	var account_id string
-	err := row.Scan(&account_id)
-	return account_id, err
-}
-
 const getEdgeAnalytics = `-- name: GetEdgeAnalytics :one
 SELECT project_id, account_id, token_sealed, pulled_through, last_pull_at, last_error, connected_at FROM edge_analytics WHERE project_id = $1
 `
@@ -586,6 +731,46 @@ func (q *Queries) GetEdgeAnalytics(ctx context.Context, projectID string) (EdgeA
 		&i.LastPullAt,
 		&i.LastError,
 		&i.ConnectedAt,
+	)
+	return i, err
+}
+
+const getEdgeProjectInfo = `-- name: GetEdgeProjectInfo :one
+
+SELECT p.analytics_install_id,
+       (cc.project_id IS NOT NULL)::boolean AS cloudflare_connected,
+       coalesce(cc.account_id, '')::text AS account_id,
+       cc.connected_at,
+       coalesce(cc.worker_version, '')::text AS worker_version,
+       coalesce(cc.analytics_tagged, false)::boolean AS analytics_tagged,
+       cc.analytics_legacy_until
+FROM projects p
+LEFT JOIN cloudflare_connections cc ON cc.project_id = p.id
+WHERE p.id = $1
+`
+
+type GetEdgeProjectInfoRow struct {
+	AnalyticsInstallID   string
+	CloudflareConnected  bool
+	AccountID            string
+	ConnectedAt          pgtype.Timestamptz
+	WorkerVersion        string
+	AnalyticsTagged      bool
+	AnalyticsLegacyUntil pgtype.Timestamptz
+}
+
+// Edge analytics (P7-T05).
+func (q *Queries) GetEdgeProjectInfo(ctx context.Context, id string) (GetEdgeProjectInfoRow, error) {
+	row := q.db.QueryRow(ctx, getEdgeProjectInfo, id)
+	var i GetEdgeProjectInfoRow
+	err := row.Scan(
+		&i.AnalyticsInstallID,
+		&i.CloudflareConnected,
+		&i.AccountID,
+		&i.ConnectedAt,
+		&i.WorkerVersion,
+		&i.AnalyticsTagged,
+		&i.AnalyticsLegacyUntil,
 	)
 	return i, err
 }
@@ -715,6 +900,36 @@ func (q *Queries) SetAnalyticsKeyIfUnset(ctx context.Context, arg SetAnalyticsKe
 	return err
 }
 
+const storageTotals = `-- name: StorageTotals :one
+SELECT
+    coalesce((SELECT sum(a.source_bytes) FROM assets a
+        WHERE a.project_id = $1 AND ($2::text IS NULL OR a.app_id = $2)
+          AND a.source_kept AND a.agent_source_id IS NULL AND a.deleted_at IS NULL), 0)::bigint AS source_bytes,
+    (coalesce((SELECT sum(o.bytes) FROM outputs o JOIN assets a ON a.id = o.asset_id
+        WHERE a.project_id = $1 AND ($2::text IS NULL OR a.app_id = $2)
+          AND o.status IN ('committed', 'retired') AND o.purged_at IS NULL AND a.deleted_at IS NULL), 0)
+     + coalesce((SELECT sum(t.bytes) FROM tracks t JOIN assets a ON a.id = t.asset_id
+        WHERE a.project_id = $1 AND ($2::text IS NULL OR a.app_id = $2)
+          AND t.status IN ('publishing', 'ready', 'retired') AND a.deleted_at IS NULL), 0))::bigint AS media_bytes
+`
+
+type StorageTotalsParams struct {
+	ProjectID string
+	AppID     pgtype.Text
+}
+
+type StorageTotalsRow struct {
+	SourceBytes int64
+	MediaBytes  int64
+}
+
+func (q *Queries) StorageTotals(ctx context.Context, arg StorageTotalsParams) (StorageTotalsRow, error) {
+	row := q.db.QueryRow(ctx, storageTotals, arg.ProjectID, arg.AppID)
+	var i StorageTotalsRow
+	err := row.Scan(&i.SourceBytes, &i.MediaBytes)
+	return i, err
+}
+
 const topAssetsDaily = `-- name: TopAssetsDaily :many
 SELECT d.asset_id, a.title, sum(d.views)::bigint AS views, sum(d.watch_seconds)::bigint AS watch_seconds,
     sum(d.bytes)::bigint AS bytes
@@ -723,8 +938,8 @@ JOIN assets a ON a.id = d.asset_id AND a.project_id = d.project_id AND a.status 
 WHERE d.project_id = $1 AND d.day >= $2::date AND d.day < $3::date
     AND ($4::text IS NULL OR d.app_id = $4)
 GROUP BY d.asset_id, a.title
-HAVING sum(d.views) > 0
-ORDER BY sum(d.views) DESC, d.asset_id
+HAVING sum(d.views) > 0 OR sum(d.bytes) > 0
+ORDER BY sum(d.views) DESC, sum(d.bytes) DESC, d.asset_id
 LIMIT 10
 `
 
@@ -782,8 +997,8 @@ JOIN assets a ON a.id = h.asset_id AND a.project_id = h.project_id AND a.status 
 WHERE h.project_id = $1 AND h.hour >= $2 AND h.hour < $3
     AND ($4::text IS NULL OR h.app_id = $4)
 GROUP BY h.asset_id, a.title
-HAVING sum(h.views) > 0
-ORDER BY sum(h.views) DESC, h.asset_id
+HAVING sum(h.views) > 0 OR sum(h.bytes) > 0
+ORDER BY sum(h.views) DESC, sum(h.bytes) DESC, h.asset_id
 LIMIT 10
 `
 
@@ -802,7 +1017,7 @@ type TopAssetsHourlyRow struct {
 	Bytes        int64
 }
 
-// The most viewed live assets in a 24-hour range.
+// The most viewed live assets in a 24-hour range (or by bytes when sampled views read zero).
 func (q *Queries) TopAssetsHourly(ctx context.Context, arg TopAssetsHourlyParams) ([]TopAssetsHourlyRow, error) {
 	rows, err := q.db.Query(ctx, topAssetsHourly,
 		arg.ProjectID,

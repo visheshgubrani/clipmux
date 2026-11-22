@@ -170,8 +170,9 @@ files in the bucket stay where they are. ClipMux refuses to remove:
 
 ## Check it works
 
-- The store shows on **Storage** with **Default** next to it, and a count
-  of videos.
+- The store shows on **Storage** with **Default** next to it, a count
+  of videos, and the bytes held across sources and encoded outputs (`total_bytes`,
+  with `source_bytes` and `media_bytes` breakdown in `GET /v1/storage`).
 - Upload a short video from **Upload**. It reaches **Ready**, and the
   default store's count goes up by one.
 - If **Check and add** fails, the failed step says why: usually the

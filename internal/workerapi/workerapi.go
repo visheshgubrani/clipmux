@@ -931,7 +931,7 @@ func (a *API) completeSource(w http.ResponseWriter, r *http.Request, token strin
 			return errSourceInvalid
 		}
 		return qs.MoveSourceToStorage(r.Context(), db.MoveSourceToStorageParams{
-			ID: job.AssetID, SourceUri: pgtype.Text{String: key, Valid: true},
+			ID: job.AssetID, SourceUri: pgtype.Text{String: key, Valid: true}, SourceBytes: obj.Size,
 		})
 	})
 	switch {

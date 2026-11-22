@@ -76,6 +76,12 @@ func TestEachRuleDeletesExactlyWhatIsPastItsWindow(t *testing.T) {
 	exec(`INSERT INTO playback_viewers (project_id, day, asset_id, viewer, app_id) VALUES
 	      ('prj_default', (now() - interval '181 days')::date, 'ast_1', '\x000102030405060708090a0b0c0d0e0f', 'app_a'),
 	      ('prj_default', (now() - interval '179 days')::date, 'ast_1', '\x000102030405060708090a0b0c0d0e0f', 'app_a')`)
+	exec(`INSERT INTO playback_viewers_hourly (project_id, hour, asset_id, viewer, app_id) VALUES
+	      ('prj_default', date_trunc('hour', now() - interval '15 days', 'UTC'), 'ast_1', '\x000102030405060708090a0b0c0d0e0f', 'app_a'),
+	      ('prj_default', date_trunc('hour', now() - interval '13 days', 'UTC'), 'ast_1', '\x000102030405060708090a0b0c0d0e0f', 'app_a')`)
+	exec(`INSERT INTO playback_viewer_hours (project_id, hour, app_id, viewer) VALUES
+	      ('prj_default', date_trunc('hour', now() - interval '15 days', 'UTC'), 'app_a', '\x000102030405060708090a0b0c0d0e0f'),
+	      ('prj_default', date_trunc('hour', now() - interval '13 days', 'UTC'), 'app_a', '\x000102030405060708090a0b0c0d0e0f')`)
 
 	r := retention.New(pool)
 	dry, err := r.Prune(ctx, true)
@@ -93,6 +99,7 @@ func TestEachRuleDeletesExactlyWhatIsPastItsWindow(t *testing.T) {
 		"idempotency_keys": 1, "owner_sessions": 2, "agent_pairings": 1, "app_pairings": 0, "webhook_deliveries": 1,
 		"webhook_events": 1, "outbox": 1, "setup_tests": 2, "dispatch_keys": 0,
 		"playback_hourly": 2, "playback_daily": 1, "playback_viewers": 1, "playback_viewer_days": 1,
+		"playback_viewers_hourly": 1, "playback_viewer_hours": 1,
 	}
 	for i, rule := range rules {
 		if rule.Deleted != want[rule.Name] {
@@ -116,6 +123,8 @@ func TestEachRuleDeletesExactlyWhatIsPastItsWindow(t *testing.T) {
 		`SELECT count(*) FROM playback_daily`:                                                        1,
 		`SELECT count(*) FROM playback_viewers`:                                                      1,
 		`SELECT count(*) FROM playback_viewer_days`:                                                  1,
+		`SELECT count(*) FROM playback_viewers_hourly`:                                               1,
+		`SELECT count(*) FROM playback_viewer_hours`:                                                 1,
 	} {
 		if got := count(sql); got != n {
 			t.Errorf("%s = %d, want %d", sql, got, n)

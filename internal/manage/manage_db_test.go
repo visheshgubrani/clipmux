@@ -724,19 +724,18 @@ func TestLibraryPostersUseAPublicIDOrAThumbnailToken(t *testing.T) {
 		m := a.(map[string]any)
 		poster[m["id"].(string)], _ = m["poster_url"].(string)
 	}
-	if want := config.DefaultPublicURL + "/p/pid_pp/poster.jpg"; poster["ast_pub"] != want {
-		t.Errorf("public poster = %q, want %q", poster["ast_pub"], want)
-	}
-	prefix, suffix := config.DefaultPublicURL+"/v/", "/pid_ss/poster.jpg"
-	tok := strings.TrimSuffix(strings.TrimPrefix(poster["ast_sig"], prefix), suffix)
-	parsed, err := tokens.Parse(tok)
-	if !strings.HasPrefix(poster["ast_sig"], prefix) || !strings.HasSuffix(poster["ast_sig"], suffix) || err != nil {
-		t.Fatalf("signed poster = %q (%v)", poster["ast_sig"], err)
-	}
 	var internal string
 	_ = r.pool.QueryRow(context.Background(), `SELECT id FROM signing_keys WHERE app_id IS NULL`).Scan(&internal)
-	if parsed.Kid != internal || parsed.Claims.Sub != "pid_ss" || parsed.Claims.Aud != "t" || parsed.Claims.Exp-parsed.Claims.Iat != 3600 {
-		t.Errorf("poster token kid %s claims %+v; want the internal key, pid_ss, aud t, one hour", parsed.Kid, parsed.Claims)
+	for _, c := range []struct{ asset, pid string }{{"ast_pub", "pid_pp"}, {"ast_sig", "pid_ss"}} {
+		prefix, suffix := config.DefaultPublicURL+"/v/", "/"+c.pid+"/poster.jpg"
+		tok := strings.TrimSuffix(strings.TrimPrefix(poster[c.asset], prefix), suffix)
+		parsed, err := tokens.Parse(tok)
+		if !strings.HasPrefix(poster[c.asset], prefix) || !strings.HasSuffix(poster[c.asset], suffix) || err != nil {
+			t.Fatalf("%s poster = %q (%v)", c.asset, poster[c.asset], err)
+		}
+		if parsed.Kid != internal || parsed.Claims.Sub != c.pid || parsed.Claims.Aud != "t" || parsed.Claims.Exp-parsed.Claims.Iat != 3600 {
+			t.Errorf("%s poster token kid %s claims %+v; want the internal key, %s, aud t, one hour", c.asset, parsed.Kid, parsed.Claims, c.pid)
+		}
 	}
 	r.exec(`UPDATE playback_ids SET status = 'revoked', revoked_at = now() WHERE asset_id = 'ast_sig'`)
 	for _, a := range r.call("GET", "/v1/library", nil, "").list {

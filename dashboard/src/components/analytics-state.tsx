@@ -9,6 +9,7 @@ import { Button } from '@/components/ui/button'
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/components/ui/empty'
 import { Skeleton } from '@/components/ui/skeleton'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
+import { bytes } from '@/lib/format'
 import { q } from '@/queries'
 
 const AnalyticsView = React.lazy(() => import('@/components/analytics-view'))
@@ -78,6 +79,39 @@ export function EdgeNotCounted() {
   )
 }
 
+export function EdgePullFailed({ error }: { error: string }) {
+  return (
+    <Alert variant="destructive">
+      <AlertTitle>Cloudflare edge analytics pull failed</AlertTitle>
+      <AlertDescription>
+        Counts from Cloudflare’s edge are stale ({error}). Check the edge analytics token on Delivery.
+      </AlertDescription>
+      <AlertAction>
+        <Button size="sm" variant="outline" render={<Link to="/delivery#edge-analytics" />}>
+          Check Delivery
+        </Button>
+      </AlertAction>
+    </Alert>
+  )
+}
+
+export function EdgeRedeployNeeded() {
+  return (
+    <Alert>
+      <AlertTitle>Update Cloudflare Worker for accurate edge counts</AlertTitle>
+      <AlertDescription>
+        A newer Worker fixes edge view sampling and isolates this install’s counts. Redeploy Cloudflare
+        delivery to update it.
+      </AlertDescription>
+      <AlertAction>
+        <Button size="sm" variant="outline" render={<Link to="/delivery" />}>
+          Update Worker
+        </Button>
+      </AlertAction>
+    </Alert>
+  )
+}
+
 const chartSkeleton = <Skeleton className="h-[22rem] w-full rounded-xl" />
 
 /** The chart panel for a range, an app or one video, with every state. */
@@ -101,6 +135,31 @@ export function AnalyticsPanel({
         ) : (
           <div className="flex flex-col gap-8">
             {data.collecting?.edge === 'not_connected' && <EdgeNotCounted />}
+            {data.collecting?.edge === 'connected' && data.collecting.edge_error && (
+              <EdgePullFailed error={data.collecting.edge_error} />
+            )}
+            {data.collecting?.edge !== 'not_used' && data.collecting?.edge_needs_redeploy && (
+              <EdgeRedeployNeeded />
+            )}
+            {data.storage && (
+              <div className="flex flex-wrap items-center justify-between gap-4 rounded-xl border bg-card px-4 py-3">
+                <div className="flex flex-col gap-0.5">
+                  <span className="text-xs text-muted-foreground">Storage taken</span>
+                  <span className="type-timecode text-lg font-semibold">
+                    {bytes(data.storage.total_bytes)}
+                  </span>
+                </div>
+                <div className="flex flex-wrap items-center gap-x-6 gap-y-1 text-sm text-muted-foreground">
+                  <span>Originals: {bytes(data.storage.source_bytes)}</span>
+                  <span>Encoded &amp; tracks: {bytes(data.storage.media_bytes)}</span>
+                  {!asset && (
+                    <Button size="sm" variant="outline" render={<Link to="/storage" />}>
+                      Manage storage
+                    </Button>
+                  )}
+                </div>
+              </div>
+            )}
             <React.Suspense fallback={chartSkeleton}>
               <AnalyticsView data={data} range={range} />
             </React.Suspense>

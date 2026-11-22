@@ -23,13 +23,14 @@ import (
 )
 
 // dataPoint is one Analytics Engine data point as the Worker writes it (D103):
-// blobs project, app, asset, playback ID, kind, viewer key; doubles views,
-// watch seconds, bytes.
+// blobs project, app, asset, playback ID, kind, viewer key, install ID;
+// doubles views, watch seconds, bytes.
 type dataPoint struct {
 	at                  string
 	sample              float64
 	project, app, asset string
 	pid, kind, viewer   string
+	install             string
 	views, watch, bytes float64
 }
 
@@ -47,9 +48,12 @@ type fakeSQL struct {
 }
 
 var (
-	projectRE = regexp.MustCompile(`blob1 = '([^']*)'`)
-	fromRE    = regexp.MustCompile(`timestamp >= toDateTime\('([^']*)'\)`)
-	toRE      = regexp.MustCompile(`timestamp < toDateTime\('([^']*)'\)`)
+	projectRE      = regexp.MustCompile(`blob1 = '([^']*)'`)
+	installOnlyRE  = regexp.MustCompile(`AND blob7 = '([^']*)' AND timestamp`)
+	installGraceRE = regexp.MustCompile(`blob7 = '([^']*)' OR \(blob7 = '' AND timestamp < toDateTime\('([^']*)'\)\)`)
+	installOrAnyRE = regexp.MustCompile(`\(blob7 = '([^']*)' OR blob7 = ''\)`)
+	fromRE         = regexp.MustCompile(`AND timestamp >= toDateTime\('([^']*)'\)`)
+	toRE           = regexp.MustCompile(`\) AND timestamp < toDateTime\('([^']*)'\)|AND blob7 = '[^']*' AND timestamp < toDateTime\('([^']*)'\)|timestamp >= toDateTime\('[^']*'\) AND timestamp < toDateTime\('([^']*)'\)`)
 )
 
 func (f *fakeSQL) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -86,8 +90,31 @@ func (f *fakeSQL) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	project := projectRE.FindStringSubmatch(sql)[1]
 	from, _ := time.Parse(time.DateTime, fromRE.FindStringSubmatch(sql)[1])
-	to, _ := time.Parse(time.DateTime, toRE.FindStringSubmatch(sql)[1])
+	toMatch := toRE.FindAllStringSubmatch(sql, -1)
+	lastTo := toMatch[len(toMatch)-1]
+	toStr := ""
+	for _, g := range lastTo[1:] {
+		if g != "" {
+			toStr = g
+			break
+		}
+	}
+	to, _ := time.Parse(time.DateTime, toStr)
+	matchesInstall := func(p dataPoint, at time.Time) bool {
+		if m := installGraceRE.FindStringSubmatch(sql); m != nil {
+			until, _ := time.Parse(time.DateTime, m[2])
+			return p.install == m[1] || (p.install == "" && at.Before(until))
+		}
+		if m := installOrAnyRE.FindStringSubmatch(sql); m != nil {
+			return p.install == m[1] || p.install == ""
+		}
+		if m := installOnlyRE.FindStringSubmatch(sql); m != nil {
+			return p.install == m[1]
+		}
+		return true
+	}
 	viewers := strings.Contains(sql, "blob6 AS viewer")
+	excludePoster := strings.Contains(sql, "blob5 != 'poster'")
 	type key struct {
 		bucket                  int64
 		app, asset, pid, viewer string
@@ -96,15 +123,15 @@ func (f *fakeSQL) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var order []key
 	for _, p := range f.points {
 		at := mustTime(p.at)
-		if p.project != project || at.Before(from) || !at.Before(to) {
+		if p.project != project || at.Before(from) || !at.Before(to) || !matchesInstall(p, at) {
 			continue
 		}
 		k := key{bucket: at.Truncate(time.Hour).Unix(), app: p.app, asset: p.asset, pid: p.pid}
 		if viewers {
-			if p.viewer == "" {
+			if p.viewer == "" || (excludePoster && p.kind == KindPoster) {
 				continue
 			}
-			k = key{bucket: at.Truncate(24 * time.Hour).Unix(), app: p.app, asset: p.asset, viewer: p.viewer}
+			k = key{bucket: at.Truncate(time.Hour).Unix(), app: p.app, asset: p.asset, viewer: p.viewer}
 		}
 		if _, ok := sums[k]; !ok {
 			order = append(order, k)
@@ -124,7 +151,7 @@ func (f *fakeSQL) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	data := []map[string]any{}
 	for _, k := range order {
 		if viewers {
-			data = append(data, map[string]any{"day": k.bucket, "app_id": k.app, "asset_id": k.asset, "viewer": k.viewer})
+			data = append(data, map[string]any{"hour": k.bucket, "app_id": k.app, "asset_id": k.asset, "viewer": k.viewer})
 			continue
 		}
 		s := sums[k]
@@ -286,7 +313,7 @@ func TestAPassCatchesUpADayAtATime(t *testing.T) {
 	same(t, "watermark", r.rows(t, `SELECT pulled_through FROM edge_analytics`), []string{"2026-10-29T01:00:00Z"})
 }
 
-func TestADatasetNotYetWrittenAdvancesTheWatermark(t *testing.T) {
+func TestADatasetNotYetWrittenAdvancesTheWatermarkToNow(t *testing.T) {
 	r := newEdgeRig(t)
 	ctx := context.Background()
 	r.cloudflare(t)
@@ -294,7 +321,7 @@ func TestADatasetNotYetWrittenAdvancesTheWatermark(t *testing.T) {
 	if err := r.edge.Connect(ctx, edgeToken); err != nil {
 		t.Fatal(err)
 	}
-	r.exec(t, `UPDATE edge_analytics SET pulled_through = '2026-11-10T08:00:00Z'`)
+	r.exec(t, `UPDATE edge_analytics SET pulled_through = '2026-10-28T01:00:00Z'`)
 	if _, err := r.edge.Pull(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -302,6 +329,61 @@ func TestADatasetNotYetWrittenAdvancesTheWatermark(t *testing.T) {
 		t.Fatalf("queries = %q, want the connect check and one SHOW TABLES", r.fake.queries)
 	}
 	same(t, "watermark", r.rows(t, `SELECT pulled_through FROM edge_analytics`), []string{"2026-11-10T09:30:00Z"})
+}
+
+func TestConnectClampsWatermarkToCloudflareConnectedAtAndCatchUpRunsMultipleDays(t *testing.T) {
+	r := newEdgeRig(t)
+	ctx := context.Background()
+	r.exec(t, `INSERT INTO cloudflare_connections (project_id, account_id, zone_id, hostname, bucket, script_name, token_id, storage_id, worker_version, connected_at, analytics_tagged)
+	           VALUES ('prj_default', 'acc_1', 'zone_1', 'media.example.com', 'clipmux-media', 'clipmux-media', 'tok_1', 'sto_default', 'v2', '2026-11-08T14:20:00Z', true)`)
+	if err := r.edge.Connect(ctx, edgeToken); err != nil {
+		t.Fatal(err)
+	}
+	same(t, "clamped watermark", r.rows(t, `SELECT pulled_through FROM edge_analytics`), []string{"2026-11-08T14:00:00Z"})
+	var installID string
+	_ = r.pool.QueryRow(ctx, `SELECT analytics_install_id FROM projects WHERE id = 'prj_default'`).Scan(&installID)
+	r.fake.points = []dataPoint{
+		{at: "2026-11-08T14:30:00Z", sample: 1, project: "prj_default", install: installID, app: "app_a", asset: "ast_1", pid: "pid_1", kind: KindMaster, views: 1, bytes: 150},
+		{at: "2026-11-09T20:00:00Z", sample: 1, project: "prj_default", install: installID, app: "app_a", asset: "ast_1", pid: "pid_1", kind: KindMaster, views: 2, bytes: 300},
+		// Points from another install or a poster's vid must be ignored / have no viewer.
+		{at: "2026-11-09T20:00:00Z", sample: 1, project: "prj_default", install: "ins_other_staging", app: "app_a", asset: "ast_other", pid: "pid_other", kind: KindMaster, viewer: viewerV2, views: 9, bytes: 9999},
+		{at: "2026-11-09T20:00:00Z", sample: 1, project: "prj_default", install: installID, app: "app_a", asset: "ast_1", pid: "pid_1", kind: KindPoster, viewer: viewerV1, bytes: 500},
+	}
+	if _, err := r.edge.CatchUp(ctx); err != nil {
+		t.Fatal(err)
+	}
+	same(t, "caught up watermark", r.rows(t, `SELECT pulled_through FROM edge_analytics`), []string{"2026-11-10T09:30:00Z"})
+	same(t, "isolated daily", r.rows(t, dailySQL), []string{
+		"edge 2026-11-08T00:00:00Z app_a ast_1 pid_1 1 0 150",
+		"edge 2026-11-09T00:00:00Z app_a ast_1 pid_1 2 0 800",
+	})
+	same(t, "poster excluded from viewers", r.rows(t, viewerSQL), nil)
+	same(t, "poster excluded from hourly viewers", r.rows(t, `SELECT asset_id FROM playback_viewers_hourly`), nil)
+}
+
+func TestUpgradeGraceIncludesLegacyPointsBeforeCutoff(t *testing.T) {
+	r := newEdgeRig(t)
+	ctx := context.Background()
+	r.exec(t, `INSERT INTO cloudflare_connections (project_id, account_id, zone_id, hostname, bucket, script_name, token_id, storage_id, worker_version, connected_at, analytics_tagged, analytics_legacy_until)
+	           VALUES ('prj_default', 'acc_1', 'zone_1', 'media.example.com', 'clipmux-media', 'clipmux-media', 'tok_1', 'sto_default', 'v2', '2026-11-01T00:00:00Z', true, '2026-11-10T08:02:00Z')`)
+	if err := r.edge.Connect(ctx, edgeToken); err != nil {
+		t.Fatal(err)
+	}
+	r.exec(t, `UPDATE edge_analytics SET pulled_through = '2026-11-10T08:00:00Z'`)
+	var installID string
+	_ = r.pool.QueryRow(ctx, `SELECT analytics_install_id FROM projects WHERE id = 'prj_default'`).Scan(&installID)
+	r.fake.points = []dataPoint{
+		{at: "2026-11-10T07:30:00Z", sample: 1, project: "prj_default", install: "", app: "app_a", asset: "ast_1", pid: "pid_1", kind: KindMaster, views: 1, bytes: 100},
+		{at: "2026-11-10T08:05:00Z", sample: 1, project: "prj_default", install: installID, app: "app_a", asset: "ast_1", pid: "pid_1", kind: KindMaster, views: 2, bytes: 200},
+		// Untagged point after cutoff is ignored (belongs to another un-upgraded install).
+		{at: "2026-11-10T08:10:00Z", sample: 1, project: "prj_default", install: "", app: "app_a", asset: "ast_other", pid: "pid_x", kind: KindMaster, views: 5, bytes: 500},
+	}
+	if _, err := r.edge.Pull(ctx); err != nil {
+		t.Fatal(err)
+	}
+	same(t, "grace daily", r.rows(t, dailySQL), []string{
+		"edge 2026-11-10T00:00:00Z app_a ast_1 pid_1 3 0 300",
+	})
 }
 
 // The pull replaces the edge rows of the hours it recomputes, rebuilds the

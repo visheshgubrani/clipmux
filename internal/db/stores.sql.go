@@ -145,6 +145,14 @@ func (q *Queries) ListStorageConfigs(ctx context.Context, projectID string) ([]S
 const listStorageSummaries = `-- name: ListStorageSummaries :many
 SELECT c.id, c.kind, c.config, c.is_default, c.created_at,
     (SELECT count(*) FROM assets a WHERE (a.storage_id = c.id OR a.media_storage_id = c.id) AND a.status <> 'deleted')::bigint AS asset_count,
+    coalesce((SELECT sum(a.source_bytes) FROM assets a
+        WHERE a.storage_id = c.id AND a.source_kept AND a.agent_source_id IS NULL AND a.deleted_at IS NULL), 0)::bigint AS source_bytes,
+    (coalesce((SELECT sum(o.bytes) FROM outputs o JOIN assets a ON a.id = o.asset_id
+        WHERE a.media_storage_id = c.id AND o.status IN ('committed', 'retired')
+          AND o.purged_at IS NULL AND a.deleted_at IS NULL), 0)
+     + coalesce((SELECT sum(t.bytes) FROM tracks t JOIN assets a ON a.id = t.asset_id
+        WHERE a.media_storage_id = c.id AND t.status IN ('publishing', 'ready', 'retired')
+          AND a.deleted_at IS NULL), 0))::bigint AS media_bytes,
     EXISTS (SELECT 1 FROM projects p WHERE p.id = c.project_id AND p.delivery = 'worker' AND p.delivery_storage_id = c.id)::boolean AS delivery
 FROM storage_configs c
 WHERE c.project_id = $1 AND c.removed_at IS NULL
@@ -152,18 +160,20 @@ ORDER BY c.created_at, c.id
 `
 
 type ListStorageSummariesRow struct {
-	ID         string
-	Kind       string
-	Config     []byte
-	IsDefault  bool
-	CreatedAt  pgtype.Timestamptz
-	AssetCount int64
-	Delivery   bool
+	ID          string
+	Kind        string
+	Config      []byte
+	IsDefault   bool
+	CreatedAt   pgtype.Timestamptz
+	AssetCount  int64
+	SourceBytes int64
+	MediaBytes  int64
+	Delivery    bool
 }
 
 // Each config the owner can see, with how many assets (deleted ones
-// aside) keep their source or encoded files on it, and whether Cloudflare
-// delivery reads it.
+// aside) keep their source or encoded files on it, the bytes of stored
+// files whose rows still exist, and whether Cloudflare delivery reads it.
 func (q *Queries) ListStorageSummaries(ctx context.Context, projectID string) ([]ListStorageSummariesRow, error) {
 	rows, err := q.db.Query(ctx, listStorageSummaries, projectID)
 	if err != nil {
@@ -180,6 +190,8 @@ func (q *Queries) ListStorageSummaries(ctx context.Context, projectID string) ([
 			&i.IsDefault,
 			&i.CreatedAt,
 			&i.AssetCount,
+			&i.SourceBytes,
+			&i.MediaBytes,
 			&i.Delivery,
 		); err != nil {
 			return nil, err

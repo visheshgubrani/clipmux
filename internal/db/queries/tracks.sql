@@ -68,7 +68,7 @@ INSERT INTO transcripts (track_id, project_id, asset_id, body) VALUES ($1, $2, $
 -- A transcription's VTT is stored: the track waits for its routes.
 UPDATE tracks
 SET status = 'publishing', language = $2, name = $3, duration_ms = $4, key_version = $5, output_id = $6,
-    version = version + 1, updated_at = now()
+    bytes = $7, version = version + 1, updated_at = now()
 WHERE id = $1 AND status = 'preparing'
 RETURNING *;
 
@@ -172,7 +172,7 @@ ORDER BY created_at DESC, id DESC LIMIT 1;
 -- A chapters job's VTT is stored: the track waits for its routes.
 UPDATE tracks
 SET status = 'publishing', language = $2, name = $3, duration_ms = $4, key_version = $5, output_id = $6,
-    chapters = $7, version = version + 1, updated_at = now()
+    chapters = $7, bytes = $8, version = version + 1, updated_at = now()
 WHERE id = $1 AND status = 'preparing' AND kind = 'chapters'
 RETURNING *;
 

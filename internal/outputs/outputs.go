@@ -93,7 +93,8 @@ func (c *Committer) Commit(ctx context.Context, token string, m media.Manifest) 
 	if err != nil {
 		return Committed{}, err
 	}
-	if err := c.verify(ctx, att, m); err != nil {
+	totalBytes, err := c.verify(ctx, att, m)
+	if err != nil {
 		return Committed{}, err
 	}
 	raw, err := json.Marshal(m)
@@ -102,7 +103,7 @@ func (c *Committer) Commit(ctx context.Context, token string, m media.Manifest) 
 	}
 	var key string
 	v, err := c.queue.CommitAttempt(ctx, token, func(qs *db.Queries, a db.Attempt, _ db.Job) error {
-		next, err := commit(ctx, qs, a, raw)
+		next, err := commit(ctx, qs, a, raw, totalBytes)
 		if err != nil || next.ID == "" || c.HandOff == nil {
 			return err
 		}
@@ -121,44 +122,47 @@ func (c *Committer) Commit(ctx context.Context, token string, m media.Manifest) 
 	return Committed{Verdict: v, NextKey: key}, nil
 }
 
-// verify checks the stored output against the manifest and the rules above.
-func (c *Committer) verify(ctx context.Context, att db.Attempt, m media.Manifest) error {
+// verify checks the stored output against the manifest and returns its total
+// stored byte size (including manifest.json).
+func (c *Committer) verify(ctx context.Context, att db.Attempt, m media.Manifest) (int64, error) {
 	out, err := db.New(c.pool).GetOutput(ctx, att.OutputID.String)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	switch {
 	case m.OutputFormat != media.OutputFormat:
-		return invalid("output_format %d, want %d", m.OutputFormat, media.OutputFormat)
+		return 0, invalid("output_format %d, want %d", m.OutputFormat, media.OutputFormat)
 	case m.Encryption != "aes-128":
-		return invalid("encryption %q, want aes-128", m.Encryption)
+		return 0, invalid("encryption %q, want aes-128", m.Encryption)
 	case m.KeyVersion != out.KeyVersion:
-		return invalid("key_version %d, want %d", m.KeyVersion, out.KeyVersion)
+		return 0, invalid("key_version %d, want %d", m.KeyVersion, out.KeyVersion)
 	}
 	want := make(map[string]int64, len(m.Files))
 	for _, f := range m.Files {
 		if !media.ValidOutputPath(f.Path) || f.Path == "manifest.json" {
-			return invalid("manifest lists %q", f.Path)
+			return 0, invalid("manifest lists %q", f.Path)
 		}
 		if _, dup := want[f.Path]; dup {
-			return invalid("manifest lists %q twice", f.Path)
+			return 0, invalid("manifest lists %q twice", f.Path)
 		}
 		want[f.Path] = f.Size
 	}
 
 	store, err := c.stores.MediaFor(ctx, att.AssetID)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	prefix := "media/" + att.AssetID + "/" + att.OutputID.String + "/"
 	stored := map[string]int64{}
+	var totalBytes int64
 	for cursor := ""; ; {
 		objs, next, err := store.List(ctx, prefix, cursor)
 		if err != nil {
-			return err
+			return 0, err
 		}
 		for _, o := range objs {
 			stored[strings.TrimPrefix(o.Key, prefix)] = o.Size
+			totalBytes += o.Size
 		}
 		if next == "" {
 			break
@@ -166,43 +170,43 @@ func (c *Committer) verify(ctx context.Context, att db.Attempt, m media.Manifest
 		cursor = next
 	}
 	if _, ok := stored["manifest.json"]; !ok {
-		return invalid("manifest.json was not uploaded")
+		return 0, invalid("manifest.json was not uploaded")
 	}
 	for p, size := range want {
 		got, ok := stored[p]
 		switch {
 		case !ok:
-			return invalid("%s is in the manifest but not in storage", p)
+			return 0, invalid("%s is in the manifest but not in storage", p)
 		case got != size:
-			return invalid("%s is %d bytes in storage, %d in the manifest", p, got, size)
+			return 0, invalid("%s is %d bytes in storage, %d in the manifest", p, got, size)
 		}
 	}
 	for p := range stored {
 		if _, ok := want[p]; !ok && p != "manifest.json" {
-			return invalid("storage holds %s, which the manifest doesn't list", p)
+			return 0, invalid("storage holds %s, which the manifest doesn't list", p)
 		}
 	}
 
 	text, err := c.read(ctx, store, prefix+"master.m3u8")
 	if err != nil {
-		return err
+		return 0, err
 	}
 	dirs, err := media.CheckMaster(text)
 	if err != nil {
-		return invalid("%v", err)
+		return 0, invalid("%v", err)
 	}
 	if got := renditionDirs(want); !slices.Equal(got, dirs) {
-		return invalid("master references %v, the output holds %v", dirs, got)
+		return 0, invalid("master references %v, the output holds %v", dirs, got)
 	}
 	// The video renditions are the ones the asset asked for that fit some
 	// source (D130), and the manifest names exactly those.
 	video := slices.DeleteFunc(slices.Clone(dirs), func(d string) bool { return d == "audio" })
 	asked, err := db.New(c.pool).GetAssetRenditions(ctx, att.AssetID)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if err := media.CheckLadder(video, asked); err != nil {
-		return invalid("%v", err)
+		return 0, invalid("%v", err)
 	}
 	named := make([]string, 0, len(m.Renditions))
 	for _, r := range m.Renditions {
@@ -210,24 +214,24 @@ func (c *Committer) verify(ctx context.Context, att db.Attempt, m media.Manifest
 	}
 	slices.Sort(named)
 	if !slices.Equal(named, video) {
-		return invalid("the manifest names renditions %v, the output holds %v", named, video)
+		return 0, invalid("the manifest names renditions %v, the output holds %v", named, video)
 	}
 	for _, d := range dirs {
 		text, err := c.read(ctx, store, prefix+d+"/index.m3u8")
 		if err != nil {
-			return err
+			return 0, err
 		}
 		segments, err := media.CheckMediaPlaylist(text, out.KeyVersion)
 		if err != nil {
-			return invalid("%s: %v", d, err)
+			return 0, invalid("%s: %v", d, err)
 		}
 		for _, name := range append(segments, "init.mp4") {
 			if _, ok := want[d+"/"+name]; !ok {
-				return invalid("%s/index.m3u8 references %s, which isn't in the output", d, name)
+				return 0, invalid("%s/index.m3u8 references %s, which isn't in the output", d, name)
 			}
 		}
 	}
-	return nil
+	return totalBytes, nil
 }
 
 // renditionDirs lists the sorted directories holding a media playlist.
@@ -308,7 +312,7 @@ func QueueUnpublish(ctx context.Context, qs *db.Queries, asset db.Asset, playbac
 
 // commit is step 2, inside the liveness transaction. It returns the
 // transcription it queued for the asset's subtitles, if any.
-func commit(ctx context.Context, qs *db.Queries, a db.Attempt, manifest []byte) (db.Job, error) {
+func commit(ctx context.Context, qs *db.Queries, a db.Attempt, manifest []byte, totalBytes int64) (db.Job, error) {
 	asset, err := qs.LockAsset(ctx, a.AssetID)
 	if err != nil {
 		return db.Job{}, err
@@ -316,7 +320,7 @@ func commit(ctx context.Context, qs *db.Queries, a db.Attempt, manifest []byte) 
 	if asset.Status == "deleted" {
 		return db.Job{}, invalid("the asset was deleted")
 	}
-	n, err := qs.CommitOutput(ctx, db.CommitOutputParams{ID: a.OutputID.String, Manifest: manifest})
+	n, err := qs.CommitOutput(ctx, db.CommitOutputParams{ID: a.OutputID.String, Manifest: manifest, Bytes: totalBytes})
 	if err != nil {
 		return db.Job{}, err
 	}

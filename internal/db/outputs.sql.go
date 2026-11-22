@@ -12,17 +12,18 @@ import (
 )
 
 const commitOutput = `-- name: CommitOutput :execrows
-UPDATE outputs SET status = 'committed', manifest = $2, committed_at = now()
+UPDATE outputs SET status = 'committed', manifest = $2, bytes = $3, committed_at = now()
 WHERE id = $1 AND status = 'writing'
 `
 
 type CommitOutputParams struct {
 	ID       string
 	Manifest []byte
+	Bytes    int64
 }
 
 func (q *Queries) CommitOutput(ctx context.Context, arg CommitOutputParams) (int64, error) {
-	result, err := q.db.Exec(ctx, commitOutput, arg.ID, arg.Manifest)
+	result, err := q.db.Exec(ctx, commitOutput, arg.ID, arg.Manifest, arg.Bytes)
 	if err != nil {
 		return 0, err
 	}
@@ -60,7 +61,7 @@ func (q *Queries) CountPendingRoutesForOutput(ctx context.Context, arg CountPend
 
 const getOutput = `-- name: GetOutput :one
 
-SELECT id, project_id, asset_id, prefix, status, manifest, output_format, key_version, created_at, committed_at, retired_at, purged_at, unlisted_swept_at FROM outputs WHERE id = $1
+SELECT id, project_id, asset_id, prefix, status, manifest, output_format, key_version, created_at, committed_at, retired_at, purged_at, unlisted_swept_at, bytes FROM outputs WHERE id = $1
 `
 
 // Commit and route publication (docs/architecture.md, "Commit").
@@ -81,6 +82,7 @@ func (q *Queries) GetOutput(ctx context.Context, id string) (Output, error) {
 		&i.RetiredAt,
 		&i.PurgedAt,
 		&i.UnlistedSweptAt,
+		&i.Bytes,
 	)
 	return i, err
 }
@@ -150,7 +152,7 @@ func (q *Queries) MarkOutboxDone(ctx context.Context, id string) error {
 const moveCurrentOutput = `-- name: MoveCurrentOutput :one
 UPDATE assets SET current_output_id = $2, version = version + 1, updated_at = now()
 WHERE id = $1
-RETURNING id, project_id, app_id, status, error_code, version, storage_id, source_uri, agent_source_id, source_kept, current_output_id, passthrough, duration_seconds, created_at, updated_at, deleted_at, title, media_storage_id, renditions
+RETURNING id, project_id, app_id, status, error_code, version, storage_id, source_uri, agent_source_id, source_kept, current_output_id, passthrough, duration_seconds, created_at, updated_at, deleted_at, title, media_storage_id, renditions, source_bytes
 `
 
 type MoveCurrentOutputParams struct {
@@ -182,6 +184,7 @@ func (q *Queries) MoveCurrentOutput(ctx context.Context, arg MoveCurrentOutputPa
 		&i.Title,
 		&i.MediaStorageID,
 		&i.Renditions,
+		&i.SourceBytes,
 	)
 	return i, err
 }

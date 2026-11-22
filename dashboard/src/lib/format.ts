@@ -43,8 +43,11 @@ export function bytes(n: number): string {
 }
 
 export function hours(seconds: number): string {
+  if (seconds <= 0) return '0 s'
+  if (seconds < 60) return `${Math.round(seconds)} s`
   if (seconds < 3600) return `${Math.round(seconds / 60)} min`
-  return `${new Intl.NumberFormat().format(Math.round(seconds / 3600))} h`
+  const h = seconds / 3600
+  return h < 10 ? `${h.toFixed(1)} h` : `${new Intl.NumberFormat().format(Math.round(h))} h`
 }
 
 export const count = (n: number) => new Intl.NumberFormat().format(n)

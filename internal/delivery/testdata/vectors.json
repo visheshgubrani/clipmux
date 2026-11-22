@@ -319,6 +319,20 @@
       "iat": 1799999940,
       "exp": 1800003600
     },
+    "internal_public": {
+      "kid": "kid_internal",
+      "sub": "pid_public",
+      "aud": "v",
+      "iat": 1799999940,
+      "exp": 1800003600
+    },
+    "internal_public_t": {
+      "kid": "kid_internal",
+      "sub": "pid_public",
+      "aud": "t",
+      "iat": 1799999940,
+      "exp": 1800003600
+    },
     "internal_share": {
       "kid": "kid_internal",
       "sub": "pid_share",
@@ -340,6 +354,14 @@
       "aud": "v",
       "iat": 1799999940,
       "exp": 1800003600
+    },
+    "public_vid": {
+      "kid": "kid_app_a",
+      "sub": "pid_public",
+      "aud": "v",
+      "iat": 1799999940,
+      "exp": 1800003600,
+      "vid": "stu_8f3a2c"
     },
     "retired_key": {
       "kid": "kid_retired",
@@ -368,6 +390,14 @@
       "aud": "t",
       "iat": 1799999940,
       "exp": 1800003600
+    },
+    "t_vid": {
+      "kid": "kid_app_a",
+      "sub": "pid_signed",
+      "aud": "t",
+      "iat": 1799999940,
+      "exp": 1800003600,
+      "vid": "stu_8f3a2c"
     },
     "too_long": {
       "kid": "kid_app_a",
@@ -408,26 +438,30 @@
     }
   },
   "tokens": {
-    "alt_form": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9hcHBfYSIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJwaWRfc2lnbmVkIiwiYXVkIjoidiIsImlhdCI6MTc5OTk5OTk0MCwiZXhwIjoxODAwMDAzNjAwLCJ2aWQiOiJzdHVfOGYzYTJjIn0.AaIw8KQyfF8FXoHbCt7cC7CgYAETRL_G3PV0ZESaaJuh9qFyGLgHGWdOLTmiiQciXZWINt655FAnJh2T45lzGQ",
-    "bad_aud": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9hcHBfYSIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJwaWRfc2lnbmVkIiwiYXVkIjoieCIsImlhdCI6MTc5OTk5OTk0MCwiZXhwIjoxODAwMDAzNjAwfQ.leczTXt9HzUvk7I4keLDnxhmL0WtURZZwXhyCu5nyVKrVypWsKsU_Luqc0iZhVvCGXDrq3rHmJ3TbRx1W28fbQ",
-    "disabled_app": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9hcHBfYyIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJwaWRfZGlzYWJsZWRfYXBwIiwiYXVkIjoidiIsImlhdCI6MTc5OTk5OTk0MCwiZXhwIjoxODAwMDAzNjAwfQ.Ki2-UXUlLsR3J0ezFS5LJQBl2eN93jpHeykqpQEwtNK0piRW0VGMHdBB6P23y7vWCd86CsxBN1dkm97hyuCoHg",
-    "expired": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9hcHBfYSIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJwaWRfc2lnbmVkIiwiYXVkIjoidiIsImlhdCI6MTc5OTk5MjgwMCwiZXhwIjoxNzk5OTk5OTQwfQ.ERpslXavIQw52AVWaYQWfJAWL2BfPOuqKgQ9E6PgRkYZBG2Efhf40IxIUvs-EsXiM-i0ZcDQqriRVciROjZ8kQ",
-    "future_iat": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9hcHBfYSIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJwaWRfc2lnbmVkIiwiYXVkIjoidiIsImlhdCI6MTgwMDAwMzYwMCwiZXhwIjoxODAwMDA3MjAwfQ.K9INS_AnSpZBiTUnx28KjxMZl52uyP8BkqjubnBoMRJ2AuU7EqPbANoM_fxiBfnQm98ygVcZw7iAvAae-77NXw",
-    "internal": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9pbnRlcm5hbCIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJwaWRfc2lnbmVkIiwiYXVkIjoidiIsImlhdCI6MTc5OTk5OTk0MCwiZXhwIjoxODAwMDAzNjAwfQ.LW0QF9JFxIrXfoW8mHQ0lT6Fo1FGdXzMXfKVTCdqgBoXtka77wSsjo-49Wc_dgWrglwX1_S00eWwIU1jqdR5wA",
-    "internal_share": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9pbnRlcm5hbCIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJwaWRfc2hhcmUiLCJhdWQiOiJ2IiwiaWF0IjoxNzk5OTk5OTQwLCJleHAiOjE4MDAwMDM2MDAsInZpZCI6InN0dV84ZjNhMmMifQ.X8t25hRZC1PC25GnNRze3P9QRh-9XMYovDUv9dj2HQ_cpVhj7VMvNE4YeMmprpANGWUGH19SoHBsH2uSb3PkNA",
-    "noncanonical": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9hcHBfYSIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJwaWRfc2lnbmVkIiwiYXVkIjoidiIsImlhdCI6MTc5OTk5OTk0MCwiZXhwIjoxODAwMDAzNjAwLCJ2aWQiOiJzdHVfOGYzYTJjIn0.AaIw8KQyfF8FXoHbCt7cC7CgYAETRL_G3PV0ZESaaJteCV6M50f455ix0sZddvjdX1FydshdujTMk60vGMmyOB",
-    "other_app": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9hcHBfYiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJwaWRfc2lnbmVkIiwiYXVkIjoidiIsImlhdCI6MTc5OTk5OTk0MCwiZXhwIjoxODAwMDAzNjAwfQ.-HHillSyCy6SWX95I36rmR706wAZA7g4R50xF36vIdJRFmbzIz0lxHIz5qoiL_b56WjVc_uuNzVsD1Pb0UEG9w",
-    "other_sub": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9hcHBfYSIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJwaWRfcHVibGljIiwiYXVkIjoidiIsImlhdCI6MTc5OTk5OTk0MCwiZXhwIjoxODAwMDAzNjAwfQ.zKktk2VcOLj4C4rwrLbnG70eJIkzAkBXb8wHlt9gRHmdr0UBnhu1XeZPGVSy-f3Vc0t8PrKU1agPCrI4Ok9u6w",
-    "retired_key": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9yZXRpcmVkIiwidHlwIjoiSldUIn0.eyJzdWIiOiJwaWRfc2lnbmVkIiwiYXVkIjoidiIsImlhdCI6MTc5OTk5OTk0MCwiZXhwIjoxODAwMDAzNjAwfQ.x8ktI-HUbgBnnD4ezja8mZzUEbtuYvgPKpz8MOPJJnJgRtMdjaDGSdlh9SMLEdP_qCVEfVWu0ei-QRU0atbS7A",
-    "revoked": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9yZXZva2VkIiwidHlwIjoiSldUIn0.eyJzdWIiOiJwaWRfc2lnbmVkIiwiYXVkIjoidiIsImlhdCI6MTc5OTk5OTk0MCwiZXhwIjoxODAwMDAzNjAwfQ.ebgp1zHZfIhUFdokaxEfTnyW4BPBDllFqZz8fqWJ0nJCRDH5iXwPZ8Q_w6XCtu6vXdADNzaFv-x82_e6c9YQIw",
-    "t": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9hcHBfYSIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJwaWRfc2lnbmVkIiwiYXVkIjoidCIsImlhdCI6MTc5OTk5OTk0MCwiZXhwIjoxODAwMDAzNjAwfQ.fMrutnFRuR37eoavN5JFDZQHsgcghamP-vn-F44ggAgV9YHv4efotKGenCkUD5EPUnCdccfdVhKJSRO8nvOm-g",
-    "t_tracks": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9hcHBfYSIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJwaWRfdHJhY2tzIiwiYXVkIjoidCIsImlhdCI6MTc5OTk5OTk0MCwiZXhwIjoxODAwMDAzNjAwfQ.Ty28hLOJEn9_u2--cd-QMe20UwVygjhYIvwyqa2aQYGbtAO5Mu6fkfmn38Q0AelFyoQcp0kHW7NtE0TwUm_AbA",
-    "tampered": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9hcHBfYSIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJwaWRfc2lnbmVkIiwiYXVkIjoidiIsImlhdCI6MTc5OTk5OTk0MCwiZXhwIjoxODAwMDAzNjAwLCJ2aWQiOiJzdHVfOGYzYTJjIn0.AaIw8KQyfF8FXoHbCt7cC7CgYAETRL_G3PV0ZESaaJteCV6M50f455ix0sZddvjdX1FydshdujTMk60vGLmyOA",
-    "too_long": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9hcHBfYSIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJwaWRfc2lnbmVkIiwiYXVkIjoidiIsImlhdCI6MTc5OTk5OTk0MCwiZXhwIjoxODAwNjkxMjAwfQ.w0eCDhbiq6qzASr1udy6X51sDDz9dqQiRBOaaIZ5bW5M1m8unL10SRXmczalxtLsoHadvck9tFQjzz0cJe8xNw",
-    "unknown_kid": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9ub2JvZHkiLCJ0eXAiOiJKV1QifQ.eyJzdWIiOiJwaWRfc2lnbmVkIiwiYXVkIjoidiIsImlhdCI6MTc5OTk5OTk0MCwiZXhwIjoxODAwMDAzNjAwfQ.cpUXMpkL19FIrtLE_pNZrXJVD_pAPp0NTP78Dg0DbddvS_NHE9OELMDUR9LJgZ5XZeJf1052Arr3UdMD3gIRcg",
-    "upper_sub": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9hcHBfYSIsInR5cCI6IkpXVCJ9.eyJTVUIiOiJwaWRfc2lnbmVkIiwiYXVkIjoidiIsImlhdCI6MTc5OTk5OTk0MCwiZXhwIjoxODAwMDAzNjAwfQ.bESKQhET_LP_SqaNiU-JiX0gSgU4TukurVOHCV9DsypmvlNyUfeTkagQJzDx0Ku1N6qAUh8ox65Ih9B1mx6TvQ",
-    "v": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9hcHBfYSIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJwaWRfc2lnbmVkIiwiYXVkIjoidiIsImlhdCI6MTc5OTk5OTk0MCwiZXhwIjoxODAwMDAzNjAwLCJ2aWQiOiJzdHVfOGYzYTJjIn0.AaIw8KQyfF8FXoHbCt7cC7CgYAETRL_G3PV0ZESaaJteCV6M50f455ix0sZddvjdX1FydshdujTMk60vGMmyOA",
-    "v_tracks": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9hcHBfYSIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJwaWRfdHJhY2tzIiwiYXVkIjoidiIsImlhdCI6MTc5OTk5OTk0MCwiZXhwIjoxODAwMDAzNjAwfQ.KDw_7__eHhNndxNlPWOkO7QGQ74dahapNRntklHv-MjEE5ywliChimuhBrFKMY9NM_zzwstJIM6yAnnh4CGaEw"
+    "alt_form": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9hcHBfYSIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJwaWRfc2lnbmVkIiwiYXVkIjoidiIsImlhdCI6MTc5OTk5OTk0MCwiZXhwIjoxODAwMDAzNjAwLCJ2aWQiOiJzdHVfOGYzYTJjIn0.5Y5uggVwD2qJdTe9Qp8gIui2PR1A3VWgCpnnQW_oHMZaLh6CWqT3IxY1GbjWwkwu8SlWHxE4yJKNaw5CA6AC0Q",
+    "bad_aud": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9hcHBfYSIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJwaWRfc2lnbmVkIiwiYXVkIjoieCIsImlhdCI6MTc5OTk5OTk0MCwiZXhwIjoxODAwMDAzNjAwfQ.-6IwUFpRIXInIFaxZnxTElH-AbTXVC7QU4pW4qPqS2sVCIOu4gJ4q5T9GTpUU73VFKDOdJGgz3d_-6-lh6lXyg",
+    "disabled_app": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9hcHBfYyIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJwaWRfZGlzYWJsZWRfYXBwIiwiYXVkIjoidiIsImlhdCI6MTc5OTk5OTk0MCwiZXhwIjoxODAwMDAzNjAwfQ.YsSgahrchGN8HTa_5VlgMCUESopV8WMpQeSf4rIH-vdne38zLXQfl2JTAI3WRodaulvCmcTla2h2p3uiBOz0_g",
+    "expired": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9hcHBfYSIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJwaWRfc2lnbmVkIiwiYXVkIjoidiIsImlhdCI6MTc5OTk5MjgwMCwiZXhwIjoxNzk5OTk5OTQwfQ.I50Yf3iZ8po2UFYnGwr2EkCAm6XRZzpA-srhZcPSCeuPbRRJPDtFyhWoq2ouRCeJ8iAvLzwZaQ9b20tv4kPyXg",
+    "future_iat": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9hcHBfYSIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJwaWRfc2lnbmVkIiwiYXVkIjoidiIsImlhdCI6MTgwMDAwMzYwMCwiZXhwIjoxODAwMDA3MjAwfQ.k0YeDcEHPtbAex8JlMgsSf17dUrI2ADQyYJX11xveJvgHA9j1GlF0E2bRoTPD28nbXPzryRf35MZFXroIJvuvQ",
+    "internal": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9pbnRlcm5hbCIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJwaWRfc2lnbmVkIiwiYXVkIjoidiIsImlhdCI6MTc5OTk5OTk0MCwiZXhwIjoxODAwMDAzNjAwfQ.DseUXZn_jdaMvi_j4Qd8M2JBy-huvLGcFWuA_6_r0v7y09P601RvlFhmBVqBfzc01iguFdoEv_XruOywk1IwwQ",
+    "internal_public": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9pbnRlcm5hbCIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJwaWRfcHVibGljIiwiYXVkIjoidiIsImlhdCI6MTc5OTk5OTk0MCwiZXhwIjoxODAwMDAzNjAwfQ.iAbOz1PEsI_WGipLbWkzAKfV96gjKUuNNysjnOBfwfIhBzt6Dvuydu8wNebHTZwH95HnvFHEPj0NeR74dRZI4Q",
+    "internal_public_t": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9pbnRlcm5hbCIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJwaWRfcHVibGljIiwiYXVkIjoidCIsImlhdCI6MTc5OTk5OTk0MCwiZXhwIjoxODAwMDAzNjAwfQ.G_v7Yph5ZLWuHZmP0MUWRnyNG5OAf0ineAChTvkTN5vP1R5HmJY-qdXO3hPueQVfL1BsLFk00qNJh4-cXH0LxA",
+    "internal_share": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9pbnRlcm5hbCIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJwaWRfc2hhcmUiLCJhdWQiOiJ2IiwiaWF0IjoxNzk5OTk5OTQwLCJleHAiOjE4MDAwMDM2MDAsInZpZCI6InN0dV84ZjNhMmMifQ.mWUrtQd4Sc9N2RCgCxa0QW5H8TkE2dhUnvginGnH5NwVj0dHe24tzN6zBIry0zY9LH89zAusPFy1_6S8yAmYFQ",
+    "noncanonical": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9hcHBfYSIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJwaWRfc2lnbmVkIiwiYXVkIjoidiIsImlhdCI6MTc5OTk5OTk0MCwiZXhwIjoxODAwMDAzNjAwLCJ2aWQiOiJzdHVfOGYzYTJjIn0.5Y5uggVwD2qJdTe9Qp8gIui2PR1A3VWgCpnnQW_oHMal0eF8pVsI3enK5kcpPbPQy72kjpXe1fJmTryA-MMigB",
+    "other_app": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9hcHBfYiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJwaWRfc2lnbmVkIiwiYXVkIjoidiIsImlhdCI6MTc5OTk5OTk0MCwiZXhwIjoxODAwMDAzNjAwfQ.4aB4qDpMApcBObvDJZZyihDC6H7L8KFyNm6IQYYWxDgLeIZKolmtDqkPrvHketGOy6WKybw3da6wQs8yt8H8IQ",
+    "other_sub": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9hcHBfYSIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJwaWRfcHVibGljIiwiYXVkIjoidiIsImlhdCI6MTc5OTk5OTk0MCwiZXhwIjoxODAwMDAzNjAwfQ.I2SDpjlWpfB2K-B310-bwZQ47-CcsUtGPFS8rBhF51FuaIuByU-LweEWTAJtwOHo3xEC-ebMt3ZJE1CPQaOi3g",
+    "public_vid": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9hcHBfYSIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJwaWRfcHVibGljIiwiYXVkIjoidiIsImlhdCI6MTc5OTk5OTk0MCwiZXhwIjoxODAwMDAzNjAwLCJ2aWQiOiJzdHVfOGYzYTJjIn0.LXZv1CsF9RYQXx9X3rgxBc8BjMkJmjgIOf9zldMk_x4ysfAYybabNuWjMNK8yM3tCeKKn8dFoA0k_ayyVVgNTg",
+    "retired_key": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9yZXRpcmVkIiwidHlwIjoiSldUIn0.eyJzdWIiOiJwaWRfc2lnbmVkIiwiYXVkIjoidiIsImlhdCI6MTc5OTk5OTk0MCwiZXhwIjoxODAwMDAzNjAwfQ.-Nm0auYVcF77sPsqvQPMg9MspLons7oxoG756n12jJy37aucy7cocIvzwjBes9ODAWMtefJc0BVlp_vMEpiRbg",
+    "revoked": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9yZXZva2VkIiwidHlwIjoiSldUIn0.eyJzdWIiOiJwaWRfc2lnbmVkIiwiYXVkIjoidiIsImlhdCI6MTc5OTk5OTk0MCwiZXhwIjoxODAwMDAzNjAwfQ.Kycsb4fcudm6mloMZ2I7of6Bf7sXXKKK5Ge4yTM-3gEld-h9k9-_reqJiintdacTqNnzrUSuZ5jAES5dzLsZiw",
+    "t": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9hcHBfYSIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJwaWRfc2lnbmVkIiwiYXVkIjoidCIsImlhdCI6MTc5OTk5OTk0MCwiZXhwIjoxODAwMDAzNjAwfQ.OJMg5vzd3BbZ3oMdO_MbvOUcGBW4N4QULE0jBJ9oZCdLLMA0zZcHG4v9XivLKMiZBjXAVRyAlfVLlvhK-Z9YGg",
+    "t_tracks": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9hcHBfYSIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJwaWRfdHJhY2tzIiwiYXVkIjoidCIsImlhdCI6MTc5OTk5OTk0MCwiZXhwIjoxODAwMDAzNjAwfQ.wLMyaTccOdLgiMIB1smzLOO8nqsfeom3EgmeyafsaefKd1WpXXpJNDXnbubQp_CrOBTfSppULcVpIMJuQVXoPg",
+    "t_vid": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9hcHBfYSIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJwaWRfc2lnbmVkIiwiYXVkIjoidCIsImlhdCI6MTc5OTk5OTk0MCwiZXhwIjoxODAwMDAzNjAwLCJ2aWQiOiJzdHVfOGYzYTJjIn0.ETtD1HY0c582pmaIADUATDK-tpLUEGym-H_VwhKp7OMV0ZE_EbA0z1AqTeNkwrRr15HYvFQMEndk6Dp-PuJUGw",
+    "tampered": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9hcHBfYSIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJwaWRfc2lnbmVkIiwiYXVkIjoidiIsImlhdCI6MTc5OTk5OTk0MCwiZXhwIjoxODAwMDAzNjAwLCJ2aWQiOiJzdHVfOGYzYTJjIn0.5Y5uggVwD2qJdTe9Qp8gIui2PR1A3VWgCpnnQW_oHMal0eF8pVsI3enK5kcpPbPQy72kjpXe1fJmTryA-LMigA",
+    "too_long": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9hcHBfYSIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJwaWRfc2lnbmVkIiwiYXVkIjoidiIsImlhdCI6MTc5OTk5OTk0MCwiZXhwIjoxODAwNjkxMjAwfQ.02eFXQqLQrEsN4vml7zzabMhDy__1-YEOuhIcQMOiXIyg5HP-hdzeXwkP6rEIIFbjhpBUEE1rEol9ma8J4vTig",
+    "unknown_kid": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9ub2JvZHkiLCJ0eXAiOiJKV1QifQ.eyJzdWIiOiJwaWRfc2lnbmVkIiwiYXVkIjoidiIsImlhdCI6MTc5OTk5OTk0MCwiZXhwIjoxODAwMDAzNjAwfQ.xhyJWuKCKIJ_GpSr78FuPKd-HpjP81A7o3CVs_HT0RIw_5lNUiVhGfoYDLX0t7_JqWsQBHEX6MD_vysDd1OtNQ",
+    "upper_sub": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9hcHBfYSIsInR5cCI6IkpXVCJ9.eyJTVUIiOiJwaWRfc2lnbmVkIiwiYXVkIjoidiIsImlhdCI6MTc5OTk5OTk0MCwiZXhwIjoxODAwMDAzNjAwfQ.kywCrftwbGnh8MldJ_fYKPqoGqlVC1QpyttIcPD29qUbh4gQhmdnvAUN1N7rxqPbSERc__EJ5bT7bgMNT4JwZg",
+    "v": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9hcHBfYSIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJwaWRfc2lnbmVkIiwiYXVkIjoidiIsImlhdCI6MTc5OTk5OTk0MCwiZXhwIjoxODAwMDAzNjAwLCJ2aWQiOiJzdHVfOGYzYTJjIn0.5Y5uggVwD2qJdTe9Qp8gIui2PR1A3VWgCpnnQW_oHMal0eF8pVsI3enK5kcpPbPQy72kjpXe1fJmTryA-MMigA",
+    "v_tracks": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImtpZF9hcHBfYSIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJwaWRfdHJhY2tzIiwiYXVkIjoidiIsImlhdCI6MTc5OTk5OTk0MCwiZXhwIjoxODAwMDAzNjAwfQ.CszvgCjDAoy0Se30ppQb-LvnbZkyYKythUCVSwKQ_FtKseJePLrIn4aa0oqXDrDTNx_zBCntJDIvwfHdkNuKpA"
   },
   "cases": [
     {
@@ -1102,6 +1136,53 @@
       "name": "tracks: a signed ID's track needs its token",
       "path": "/p/pid_tracks/tracks/trk_en.vtt",
       "status": 403
+    },
+    {
+      "name": "a public ID under an internal playback token is not counted",
+      "path": "/v/{internal_public}/pid_public/master.m3u8",
+      "status": 200,
+      "content_type": "application/vnd.apple.mpegurl",
+      "cache_control": "no-store"
+    },
+    {
+      "name": "a public ID under an internal poster token is not counted",
+      "path": "/v/{internal_public_t}/pid_public/poster.jpg",
+      "status": 200,
+      "content_type": "image/jpeg",
+      "cache_control": "public, max-age=300",
+      "body": "jpeg-bytes"
+    },
+    {
+      "name": "a public ID under an app token with vid records the viewer",
+      "path": "/v/{public_vid}/pid_public/master.m3u8",
+      "status": 200,
+      "analytics": {
+        "app_id": "app_a",
+        "asset_id": "ast_p",
+        "playback_id": "pid_public",
+        "kind": "master",
+        "bytes": 150,
+        "views": 1,
+        "watch_seconds": 0,
+        "vid": "stu_8f3a2c"
+      }
+    },
+    {
+      "name": "a thumbnail token with vid does not record a viewer on poster",
+      "path": "/v/{t_vid}/pid_signed/poster.jpg",
+      "status": 200,
+      "content_type": "image/jpeg",
+      "cache_control": "private, max-age=300",
+      "body": "jpeg-bytes",
+      "analytics": {
+        "app_id": "app_a",
+        "asset_id": "ast_v",
+        "playback_id": "pid_signed",
+        "kind": "poster",
+        "bytes": 10,
+        "views": 0,
+        "watch_seconds": 0
+      }
     }
   ],
   "analytics_key_hex": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",

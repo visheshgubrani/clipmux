@@ -82,6 +82,7 @@ export function vectorEnv(): {
     MEDIA: memoryBucket(objects) as unknown as R2Bucket,
     CONTENT_KEYS: JSON.stringify({ [vectors.content_key_version]: vectors.content_key_secret_hex }),
     PROJECT_ID: 'prj_default',
+    INSTALL_ID: 'ins_test',
     ANALYTICS_KEY: vectors.analytics_key_hex,
     ANALYTICS: dataset as unknown as AnalyticsEngineDataset,
   }

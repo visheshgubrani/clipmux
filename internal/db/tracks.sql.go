@@ -43,7 +43,7 @@ const createTrack = `-- name: CreateTrack :one
 
 INSERT INTO tracks (id, project_id, asset_id, kind)
 VALUES ($1, $2, $3, $4)
-RETURNING id, project_id, asset_id, kind, source, status, language, name, error_code, key_version, duration_ms, chapters, output_id, version, created_at, updated_at, ready_at, retired_at, deleted_at
+RETURNING id, project_id, asset_id, kind, source, status, language, name, error_code, key_version, duration_ms, chapters, output_id, version, created_at, updated_at, ready_at, retired_at, deleted_at, bytes
 `
 
 type CreateTrackParams struct {
@@ -84,6 +84,7 @@ func (q *Queries) CreateTrack(ctx context.Context, arg CreateTrackParams) (Track
 		&i.ReadyAt,
 		&i.RetiredAt,
 		&i.DeletedAt,
+		&i.Bytes,
 	)
 	return i, err
 }
@@ -108,7 +109,7 @@ func (q *Queries) DeleteAIConnection(ctx context.Context, arg DeleteAIConnection
 const deleteTrack = `-- name: DeleteTrack :one
 UPDATE tracks SET status = 'deleted', deleted_at = now(), retired_at = NULL, error_code = NULL, version = version + 1, updated_at = now()
 WHERE id = $1 AND status <> 'deleted'
-RETURNING id, project_id, asset_id, kind, source, status, language, name, error_code, key_version, duration_ms, chapters, output_id, version, created_at, updated_at, ready_at, retired_at, deleted_at
+RETURNING id, project_id, asset_id, kind, source, status, language, name, error_code, key_version, duration_ms, chapters, output_id, version, created_at, updated_at, ready_at, retired_at, deleted_at, bytes
 `
 
 func (q *Queries) DeleteTrack(ctx context.Context, id string) (Track, error) {
@@ -134,6 +135,7 @@ func (q *Queries) DeleteTrack(ctx context.Context, id string) (Track, error) {
 		&i.ReadyAt,
 		&i.RetiredAt,
 		&i.DeletedAt,
+		&i.Bytes,
 	)
 	return i, err
 }
@@ -162,7 +164,7 @@ func (q *Queries) DeleteTranscriptsForAsset(ctx context.Context, assetID string)
 const errorPreparingTracksOfKind = `-- name: ErrorPreparingTracksOfKind :many
 UPDATE tracks SET status = 'errored', error_code = $3, version = version + 1, updated_at = now()
 WHERE asset_id = $1 AND kind = $2 AND status = 'preparing'
-RETURNING id, project_id, asset_id, kind, source, status, language, name, error_code, key_version, duration_ms, chapters, output_id, version, created_at, updated_at, ready_at, retired_at, deleted_at
+RETURNING id, project_id, asset_id, kind, source, status, language, name, error_code, key_version, duration_ms, chapters, output_id, version, created_at, updated_at, ready_at, retired_at, deleted_at, bytes
 `
 
 type ErrorPreparingTracksOfKindParams struct {
@@ -201,6 +203,7 @@ func (q *Queries) ErrorPreparingTracksOfKind(ctx context.Context, arg ErrorPrepa
 			&i.ReadyAt,
 			&i.RetiredAt,
 			&i.DeletedAt,
+			&i.Bytes,
 		); err != nil {
 			return nil, err
 		}
@@ -215,7 +218,7 @@ func (q *Queries) ErrorPreparingTracksOfKind(ctx context.Context, arg ErrorPrepa
 const errorTrack = `-- name: ErrorTrack :one
 UPDATE tracks SET status = 'errored', error_code = $2, version = version + 1, updated_at = now()
 WHERE id = $1 AND status IN ('preparing', 'publishing')
-RETURNING id, project_id, asset_id, kind, source, status, language, name, error_code, key_version, duration_ms, chapters, output_id, version, created_at, updated_at, ready_at, retired_at, deleted_at
+RETURNING id, project_id, asset_id, kind, source, status, language, name, error_code, key_version, duration_ms, chapters, output_id, version, created_at, updated_at, ready_at, retired_at, deleted_at, bytes
 `
 
 type ErrorTrackParams struct {
@@ -248,6 +251,7 @@ func (q *Queries) ErrorTrack(ctx context.Context, arg ErrorTrackParams) (Track, 
 		&i.ReadyAt,
 		&i.RetiredAt,
 		&i.DeletedAt,
+		&i.Bytes,
 	)
 	return i, err
 }
@@ -292,7 +296,7 @@ func (q *Queries) GetSpeechMode(ctx context.Context, id string) (string, error) 
 }
 
 const getTrack = `-- name: GetTrack :one
-SELECT id, project_id, asset_id, kind, source, status, language, name, error_code, key_version, duration_ms, chapters, output_id, version, created_at, updated_at, ready_at, retired_at, deleted_at FROM tracks WHERE id = $1
+SELECT id, project_id, asset_id, kind, source, status, language, name, error_code, key_version, duration_ms, chapters, output_id, version, created_at, updated_at, ready_at, retired_at, deleted_at, bytes FROM tracks WHERE id = $1
 `
 
 func (q *Queries) GetTrack(ctx context.Context, id string) (Track, error) {
@@ -318,12 +322,13 @@ func (q *Queries) GetTrack(ctx context.Context, id string) (Track, error) {
 		&i.ReadyAt,
 		&i.RetiredAt,
 		&i.DeletedAt,
+		&i.Bytes,
 	)
 	return i, err
 }
 
 const getTrackOfKind = `-- name: GetTrackOfKind :one
-SELECT id, project_id, asset_id, kind, source, status, language, name, error_code, key_version, duration_ms, chapters, output_id, version, created_at, updated_at, ready_at, retired_at, deleted_at FROM tracks WHERE asset_id = $1 AND kind = $2 AND status = ANY ($3::text[])
+SELECT id, project_id, asset_id, kind, source, status, language, name, error_code, key_version, duration_ms, chapters, output_id, version, created_at, updated_at, ready_at, retired_at, deleted_at, bytes FROM tracks WHERE asset_id = $1 AND kind = $2 AND status = ANY ($3::text[])
 ORDER BY created_at DESC, id DESC LIMIT 1
 `
 
@@ -357,6 +362,7 @@ func (q *Queries) GetTrackOfKind(ctx context.Context, arg GetTrackOfKindParams) 
 		&i.ReadyAt,
 		&i.RetiredAt,
 		&i.DeletedAt,
+		&i.Bytes,
 	)
 	return i, err
 }
@@ -602,7 +608,7 @@ func (q *Queries) ListStaleTranscriptions(ctx context.Context, arg ListStaleTran
 }
 
 const listTracksForAsset = `-- name: ListTracksForAsset :many
-SELECT id, project_id, asset_id, kind, source, status, language, name, error_code, key_version, duration_ms, chapters, output_id, version, created_at, updated_at, ready_at, retired_at, deleted_at FROM tracks WHERE asset_id = $1 ORDER BY created_at, id
+SELECT id, project_id, asset_id, kind, source, status, language, name, error_code, key_version, duration_ms, chapters, output_id, version, created_at, updated_at, ready_at, retired_at, deleted_at, bytes FROM tracks WHERE asset_id = $1 ORDER BY created_at, id
 `
 
 func (q *Queries) ListTracksForAsset(ctx context.Context, assetID string) ([]Track, error) {
@@ -634,6 +640,7 @@ func (q *Queries) ListTracksForAsset(ctx context.Context, assetID string) ([]Tra
 			&i.ReadyAt,
 			&i.RetiredAt,
 			&i.DeletedAt,
+			&i.Bytes,
 		); err != nil {
 			return nil, err
 		}
@@ -646,7 +653,7 @@ func (q *Queries) ListTracksForAsset(ctx context.Context, assetID string) ([]Tra
 }
 
 const listTracksForAssets = `-- name: ListTracksForAssets :many
-SELECT id, project_id, asset_id, kind, source, status, language, name, error_code, key_version, duration_ms, chapters, output_id, version, created_at, updated_at, ready_at, retired_at, deleted_at FROM tracks WHERE asset_id = ANY ($1::text[]) AND status NOT IN ('retired', 'deleted')
+SELECT id, project_id, asset_id, kind, source, status, language, name, error_code, key_version, duration_ms, chapters, output_id, version, created_at, updated_at, ready_at, retired_at, deleted_at, bytes FROM tracks WHERE asset_id = ANY ($1::text[]) AND status NOT IN ('retired', 'deleted')
 ORDER BY asset_id, created_at, id
 `
 
@@ -680,6 +687,7 @@ func (q *Queries) ListTracksForAssets(ctx context.Context, assetIds []string) ([
 			&i.ReadyAt,
 			&i.RetiredAt,
 			&i.DeletedAt,
+			&i.Bytes,
 		); err != nil {
 			return nil, err
 		}
@@ -692,7 +700,7 @@ func (q *Queries) ListTracksForAssets(ctx context.Context, assetIds []string) ([
 }
 
 const listTracksToTranscribe = `-- name: ListTracksToTranscribe :many
-SELECT t.id, t.project_id, t.asset_id, t.kind, t.source, t.status, t.language, t.name, t.error_code, t.key_version, t.duration_ms, t.chapters, t.output_id, t.version, t.created_at, t.updated_at, t.ready_at, t.retired_at, t.deleted_at FROM tracks t
+SELECT t.id, t.project_id, t.asset_id, t.kind, t.source, t.status, t.language, t.name, t.error_code, t.key_version, t.duration_ms, t.chapters, t.output_id, t.version, t.created_at, t.updated_at, t.ready_at, t.retired_at, t.deleted_at, t.bytes FROM tracks t
 WHERE t.asset_id = $1 AND t.kind = 'subtitles' AND t.status = 'preparing'
   AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.track_id = t.id AND j.status IN ('queued', 'running'))
 ORDER BY t.created_at, t.id
@@ -730,6 +738,7 @@ func (q *Queries) ListTracksToTranscribe(ctx context.Context, assetID string) ([
 			&i.ReadyAt,
 			&i.RetiredAt,
 			&i.DeletedAt,
+			&i.Bytes,
 		); err != nil {
 			return nil, err
 		}
@@ -742,7 +751,7 @@ func (q *Queries) ListTracksToTranscribe(ctx context.Context, assetID string) ([
 }
 
 const lockTrack = `-- name: LockTrack :one
-SELECT id, project_id, asset_id, kind, source, status, language, name, error_code, key_version, duration_ms, chapters, output_id, version, created_at, updated_at, ready_at, retired_at, deleted_at FROM tracks WHERE id = $1 FOR UPDATE
+SELECT id, project_id, asset_id, kind, source, status, language, name, error_code, key_version, duration_ms, chapters, output_id, version, created_at, updated_at, ready_at, retired_at, deleted_at, bytes FROM tracks WHERE id = $1 FOR UPDATE
 `
 
 func (q *Queries) LockTrack(ctx context.Context, id string) (Track, error) {
@@ -768,6 +777,7 @@ func (q *Queries) LockTrack(ctx context.Context, id string) (Track, error) {
 		&i.ReadyAt,
 		&i.RetiredAt,
 		&i.DeletedAt,
+		&i.Bytes,
 	)
 	return i, err
 }
@@ -775,7 +785,7 @@ func (q *Queries) LockTrack(ctx context.Context, id string) (Track, error) {
 const markTrackReady = `-- name: MarkTrackReady :one
 UPDATE tracks SET status = 'ready', ready_at = now(), version = version + 1, updated_at = now()
 WHERE id = $1 AND status = 'publishing'
-RETURNING id, project_id, asset_id, kind, source, status, language, name, error_code, key_version, duration_ms, chapters, output_id, version, created_at, updated_at, ready_at, retired_at, deleted_at
+RETURNING id, project_id, asset_id, kind, source, status, language, name, error_code, key_version, duration_ms, chapters, output_id, version, created_at, updated_at, ready_at, retired_at, deleted_at, bytes
 `
 
 func (q *Queries) MarkTrackReady(ctx context.Context, id string) (Track, error) {
@@ -801,6 +811,7 @@ func (q *Queries) MarkTrackReady(ctx context.Context, id string) (Track, error) 
 		&i.ReadyAt,
 		&i.RetiredAt,
 		&i.DeletedAt,
+		&i.Bytes,
 	)
 	return i, err
 }
@@ -860,9 +871,9 @@ func (q *Queries) ProjectCanTranscribe(ctx context.Context, arg ProjectCanTransc
 const publishChaptersTrack = `-- name: PublishChaptersTrack :one
 UPDATE tracks
 SET status = 'publishing', language = $2, name = $3, duration_ms = $4, key_version = $5, output_id = $6,
-    chapters = $7, version = version + 1, updated_at = now()
+    chapters = $7, bytes = $8, version = version + 1, updated_at = now()
 WHERE id = $1 AND status = 'preparing' AND kind = 'chapters'
-RETURNING id, project_id, asset_id, kind, source, status, language, name, error_code, key_version, duration_ms, chapters, output_id, version, created_at, updated_at, ready_at, retired_at, deleted_at
+RETURNING id, project_id, asset_id, kind, source, status, language, name, error_code, key_version, duration_ms, chapters, output_id, version, created_at, updated_at, ready_at, retired_at, deleted_at, bytes
 `
 
 type PublishChaptersTrackParams struct {
@@ -873,6 +884,7 @@ type PublishChaptersTrackParams struct {
 	KeyVersion pgtype.Int4
 	OutputID   pgtype.Text
 	Chapters   []byte
+	Bytes      int64
 }
 
 // A chapters job's VTT is stored: the track waits for its routes.
@@ -885,6 +897,7 @@ func (q *Queries) PublishChaptersTrack(ctx context.Context, arg PublishChaptersT
 		arg.KeyVersion,
 		arg.OutputID,
 		arg.Chapters,
+		arg.Bytes,
 	)
 	var i Track
 	err := row.Scan(
@@ -907,6 +920,7 @@ func (q *Queries) PublishChaptersTrack(ctx context.Context, arg PublishChaptersT
 		&i.ReadyAt,
 		&i.RetiredAt,
 		&i.DeletedAt,
+		&i.Bytes,
 	)
 	return i, err
 }
@@ -914,9 +928,9 @@ func (q *Queries) PublishChaptersTrack(ctx context.Context, arg PublishChaptersT
 const publishTrack = `-- name: PublishTrack :one
 UPDATE tracks
 SET status = 'publishing', language = $2, name = $3, duration_ms = $4, key_version = $5, output_id = $6,
-    version = version + 1, updated_at = now()
+    bytes = $7, version = version + 1, updated_at = now()
 WHERE id = $1 AND status = 'preparing'
-RETURNING id, project_id, asset_id, kind, source, status, language, name, error_code, key_version, duration_ms, chapters, output_id, version, created_at, updated_at, ready_at, retired_at, deleted_at
+RETURNING id, project_id, asset_id, kind, source, status, language, name, error_code, key_version, duration_ms, chapters, output_id, version, created_at, updated_at, ready_at, retired_at, deleted_at, bytes
 `
 
 type PublishTrackParams struct {
@@ -926,6 +940,7 @@ type PublishTrackParams struct {
 	DurationMs pgtype.Int8
 	KeyVersion pgtype.Int4
 	OutputID   pgtype.Text
+	Bytes      int64
 }
 
 // A transcription's VTT is stored: the track waits for its routes.
@@ -937,6 +952,7 @@ func (q *Queries) PublishTrack(ctx context.Context, arg PublishTrackParams) (Tra
 		arg.DurationMs,
 		arg.KeyVersion,
 		arg.OutputID,
+		arg.Bytes,
 	)
 	var i Track
 	err := row.Scan(
@@ -959,6 +975,7 @@ func (q *Queries) PublishTrack(ctx context.Context, arg PublishTrackParams) (Tra
 		&i.ReadyAt,
 		&i.RetiredAt,
 		&i.DeletedAt,
+		&i.Bytes,
 	)
 	return i, err
 }

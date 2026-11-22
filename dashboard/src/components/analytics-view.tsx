@@ -28,7 +28,7 @@ function change(now: number | null, before: number | null): { text: string; up: 
 const tick = (range: Range) =>
   new Intl.DateTimeFormat(
     undefined,
-    range === '24h' ? { hour: 'numeric' } : { month: 'short', day: 'numeric' },
+    range === '24h' ? { hour: 'numeric' } : { month: 'short', day: 'numeric', timeZone: 'UTC' },
   )
 
 export default function AnalyticsView({
@@ -42,9 +42,11 @@ export default function AnalyticsView({
 }) {
   const [metric, setMetric] = React.useState<Metric>('views')
   const m = metrics.find((x) => x.key === metric) ?? (metrics[0] as (typeof metrics)[number])
-  // The series has no unique viewers per bucket; that metric shows its total only.
+  const viewsMetric = metrics[0] as (typeof metrics)[number]
+  // The series has no unique viewers per bucket; when unique_viewers is chosen, chart views.
   const seriesKey = metric === 'unique_viewers' ? 'views' : metric
-  const config = { [seriesKey]: { label: m.label, color: 'var(--chart-1)' } } satisfies ChartConfig
+  const seriesMetric = metric === 'unique_viewers' ? viewsMetric : m
+  const config = { [seriesKey]: { label: seriesMetric.label, color: 'var(--chart-1)' } } satisfies ChartConfig
   const fmt = tick(range)
   return (
     <section aria-label="Analytics" className={cn('flex flex-col rounded-xl border bg-card', className)}>
@@ -75,7 +77,9 @@ export default function AnalyticsView({
                 )}
               >
                 {total == null
-                  ? 'Needs a viewer ID in tokens'
+                  ? data.totals.views > 0
+                    ? 'Needs a viewer ID in tokens'
+                    : 'No views yet'
                   : c
                     ? `${c.text} vs previous`
                     : 'No earlier data'}
@@ -85,6 +89,11 @@ export default function AnalyticsView({
         })}
       </ToggleGroup>
       <div className="p-4">
+        {metric === 'unique_viewers' && (
+          <p className="mb-2 text-xs text-muted-foreground">
+            Unique viewers is a range total; the chart shows views over time.
+          </p>
+        )}
         <ChartContainer config={config} className="aspect-auto h-64 w-full">
           <AreaChart data={data.series} margin={{ left: 4, right: 8, top: 8 }}>
             <CartesianGrid vertical={false} />
@@ -99,7 +108,7 @@ export default function AnalyticsView({
               tickLine={false}
               axisLine={false}
               width={56}
-              tickFormatter={(v: number) => (seriesKey === 'views' ? count(v) : m.format(v))}
+              tickFormatter={(v: number) => seriesMetric.format(v)}
             />
             <ChartTooltip
               content={
@@ -108,6 +117,14 @@ export default function AnalyticsView({
                     const t = (p?.[0]?.payload as { t?: string } | undefined)?.t
                     return t ? fmt.format(new Date(t)) : ''
                   }}
+                  formatter={(v) => (
+                    <div className="flex flex-1 items-center justify-between gap-4 leading-none">
+                      <span className="text-muted-foreground">{seriesMetric.label}</span>
+                      <span className="font-mono font-medium text-foreground tabular-nums">
+                        {seriesMetric.format(Number(v))}
+                      </span>
+                    </div>
+                  )}
                 />
               }
             />

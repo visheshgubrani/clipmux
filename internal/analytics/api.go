@@ -21,10 +21,11 @@ import (
 // The owner's session sees every app, or the one app_id names; an API key
 // with analytics:read sees its own app only.
 type API struct {
-	Auth   *apikeys.Authenticator
-	Now    func() time.Time
-	Logger *slog.Logger
-	pool   *pgxpool.Pool
+	Auth          *apikeys.Authenticator
+	Now           func() time.Time
+	Logger        *slog.Logger
+	WorkerVersion string
+	pool          *pgxpool.Pool
 }
 
 // NewAPI returns the analytics API; serve sets Auth.Session.
@@ -97,19 +98,29 @@ type assetView struct {
 	Bytes        int64  `json:"bytes_delivered"`
 }
 
+type storageTotalsView struct {
+	SourceBytes int64 `json:"source_bytes"`
+	MediaBytes  int64 `json:"media_bytes"`
+	TotalBytes  int64 `json:"total_bytes"`
+}
+
 type collectingView struct {
 	Builtin bool `json:"builtin"`
 	// Edge is "not_used" without Cloudflare delivery, "not_connected" with
 	// it and no analytics token (T05), or "connected".
-	Edge string `json:"edge"`
+	Edge              string     `json:"edge"`
+	EdgeNeedsRedeploy bool       `json:"edge_needs_redeploy,omitempty"`
+	EdgeError         string     `json:"edge_error,omitempty"`
+	EdgePulledThrough *time.Time `json:"edge_pulled_through,omitempty"`
 }
 
 type analyticsView struct {
-	Totals     totalsView     `json:"totals"`
-	Previous   totalsView     `json:"previous"`
-	Series     []pointView    `json:"series"`
-	TopAssets  *[]assetView   `json:"top_assets,omitempty"`
-	Collecting collectingView `json:"collecting"`
+	Totals     totalsView        `json:"totals"`
+	Previous   totalsView        `json:"previous"`
+	Series     []pointView       `json:"series"`
+	TopAssets  *[]assetView      `json:"top_assets,omitempty"`
+	Storage    storageTotalsView `json:"storage"`
+	Collecting collectingView    `json:"collecting"`
 }
 
 // scope is what one request may see.
@@ -234,21 +245,48 @@ func (a *API) read(ctx context.Context, s scope, win window) (analyticsView, err
 		out.TopAssets = &top
 	}
 
-	edge, err := q.EdgeDeliveryOn(ctx, s.project)
+	st, err := a.storageTotals(ctx, q, s)
+	if err != nil {
+		return analyticsView{}, fmt.Errorf("read storage totals: %w", err)
+	}
+	out.Storage = st
+
+	info, err := q.GetEdgeProjectInfo(ctx, s.project)
 	if err != nil {
 		return analyticsView{}, fmt.Errorf("read edge delivery: %w", err)
 	}
-	if edge {
+	if info.CloudflareConnected {
 		out.Collecting.Edge = "not_connected"
-		pulled, err := q.EdgeAnalyticsConnected(ctx, s.project)
-		if err != nil {
+		out.Collecting.EdgeNeedsRedeploy = !info.AnalyticsTagged || (a.WorkerVersion != "" && info.WorkerVersion != a.WorkerVersion)
+		ea, err := q.GetEdgeAnalytics(ctx, s.project)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return analyticsView{}, fmt.Errorf("read edge analytics: %w", err)
 		}
-		if pulled {
+		if err == nil {
 			out.Collecting.Edge = "connected"
+			out.Collecting.EdgeError = ea.LastError.String
+			if ea.PulledThrough.Valid {
+				pt := ea.PulledThrough.Time.UTC()
+				out.Collecting.EdgePulledThrough = &pt
+			}
 		}
 	}
 	return out, nil
+}
+
+func (a *API) storageTotals(ctx context.Context, q *db.Queries, s scope) (storageTotalsView, error) {
+	if s.asset.Valid {
+		r, err := q.AssetStorageTotals(ctx, db.AssetStorageTotalsParams{ProjectID: s.project, AssetID: s.asset.String})
+		if err != nil {
+			return storageTotalsView{}, err
+		}
+		return storageTotalsView{SourceBytes: r.SourceBytes, MediaBytes: r.MediaBytes, TotalBytes: r.SourceBytes + r.MediaBytes}, nil
+	}
+	r, err := q.StorageTotals(ctx, db.StorageTotalsParams{ProjectID: s.project, AppID: s.app})
+	if err != nil {
+		return storageTotalsView{}, err
+	}
+	return storageTotalsView{SourceBytes: r.SourceBytes, MediaBytes: r.MediaBytes, TotalBytes: r.SourceBytes + r.MediaBytes}, nil
 }
 
 // series reads [prevStart, stop): hourly rows for hourly buckets, daily
@@ -292,6 +330,20 @@ func (a *API) series(ctx context.Context, q *db.Queries, s scope, win window) ([
 }
 
 func (a *API) viewers(ctx context.Context, q *db.Queries, s scope, win window) (cur, prev int64, err error) {
+	if win.step == time.Hour {
+		if s.asset.Valid {
+			v, err := q.CountAssetViewersHourly(ctx, db.CountAssetViewersHourlyParams{
+				ProjectID: s.project, AssetID: s.asset.String,
+				CurFrom: ts(win.start), CurTo: ts(win.stop), PrevFrom: ts(win.prevStart), PrevTo: ts(win.start),
+			})
+			return v.Current, v.Previous, err
+		}
+		v, err := q.CountViewersHourly(ctx, db.CountViewersHourlyParams{
+			ProjectID: s.project, AppID: s.app,
+			CurFrom: ts(win.start), CurTo: ts(win.stop), PrevFrom: ts(win.prevStart), PrevTo: ts(win.start),
+		})
+		return v.Current, v.Previous, err
+	}
 	days := struct{ curFrom, curTo, prevFrom, prevTo pgtype.Date }{
 		date(win.curFrom()), date(win.curTo()), date(win.prevFrom()), date(win.prevTo()),
 	}
