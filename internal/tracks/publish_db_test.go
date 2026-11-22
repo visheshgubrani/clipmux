@@ -117,6 +117,10 @@ func TestATrackIsReadyOnceItsRoutesAndItsVideoAre(t *testing.T) {
 	if s := r.status(trk); s != "publishing" {
 		t.Fatalf("after its commit the track is %s, want publishing", s)
 	}
+	var trackBytes int64
+	if err := r.pool.QueryRow(ctx, `SELECT bytes FROM tracks WHERE id = $1`, trk).Scan(&trackBytes); err != nil || trackBytes <= 0 {
+		t.Fatalf("track bytes = %d (%v), want > 0", trackBytes, err)
+	}
 	var trackRows int
 	if err := r.pool.QueryRow(ctx, `SELECT count(*) FROM outbox WHERE kind = 'route_sync' AND payload->>'op' = 'track' AND payload->>'track_id' = $1`, trk).Scan(&trackRows); err != nil || trackRows != 2 {
 		t.Fatalf("%d track route rows (%v), want one per playback ID", trackRows, err)

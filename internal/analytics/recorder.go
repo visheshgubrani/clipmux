@@ -57,7 +57,7 @@ type totals struct{ views, watch, bytes int64 }
 
 type viewerKey struct {
 	project, asset string
-	day            int64 // Unix seconds, on the UTC day
+	hour           int64 // Unix seconds, on the UTC hour
 	viewer         [ViewerKeySize]byte
 }
 
@@ -75,10 +75,13 @@ func NewRecorder(pool *pgxpool.Pool, key []byte) *Recorder {
 // Postgres; when the recorder is full, new keys are dropped.
 func (r *Recorder) Record(e Event) {
 	now := r.Now().UTC()
-	hk := hourKey{e.ProjectID, e.AppID, e.AssetID, e.PlaybackID, now.Truncate(time.Hour).Unix()}
+	hour := now.Truncate(time.Hour).Unix()
+	hk := hourKey{e.ProjectID, e.AppID, e.AssetID, e.PlaybackID, hour}
 	var vk viewerKey
-	if e.Vid != "" {
-		vk = viewerKey{project: e.ProjectID, asset: e.AssetID, day: now.Truncate(24 * time.Hour).Unix()}
+	// Posters do not identify unique playback viewers.
+	hasViewer := e.Vid != "" && e.Kind != KindPoster
+	if hasViewer {
+		vk = viewerKey{project: e.ProjectID, asset: e.AssetID, hour: hour}
 		copy(vk.viewer[:], ViewerKey(r.key, e.AppID, e.Vid))
 	}
 	r.mu.Lock()
@@ -88,7 +91,7 @@ func (r *Recorder) Record(e Event) {
 	} else {
 		r.dropped()
 	}
-	if e.Vid == "" {
+	if !hasViewer {
 		return
 	}
 	if _, ok := r.viewers[vk]; ok || r.room() {
@@ -150,13 +153,32 @@ func (r *Recorder) write(ctx context.Context, hourly map[hourKey]totals, viewers
 		h.WatchSeconds = append(h.WatchSeconds, t.watch)
 		h.Bytes = append(h.Bytes, t.bytes)
 	}
+	var vh db.AddPlaybackViewersHourlyParams
 	var v db.AddPlaybackViewersParams
+	type dayViewerKey struct {
+		project, asset string
+		day            int64
+		viewer         [ViewerKeySize]byte
+	}
+	seenDays := make(map[dayViewerKey]bool, len(viewers))
 	for k, app := range viewers {
-		v.ProjectIds = append(v.ProjectIds, k.project)
-		v.Days = append(v.Days, pgtype.Date{Time: time.Unix(k.day, 0).UTC(), Valid: true})
-		v.AssetIds = append(v.AssetIds, k.asset)
-		v.Viewers = append(v.Viewers, k.viewer[:])
-		v.AppIds = append(v.AppIds, app)
+		ht := time.Unix(k.hour, 0).UTC()
+		vh.ProjectIds = append(vh.ProjectIds, k.project)
+		vh.Hours = append(vh.Hours, pgtype.Timestamptz{Time: ht, Valid: true})
+		vh.AssetIds = append(vh.AssetIds, k.asset)
+		vh.Viewers = append(vh.Viewers, k.viewer[:])
+		vh.AppIds = append(vh.AppIds, app)
+
+		day := ht.Truncate(24 * time.Hour)
+		dk := dayViewerKey{project: k.project, asset: k.asset, day: day.Unix(), viewer: k.viewer}
+		if !seenDays[dk] {
+			seenDays[dk] = true
+			v.ProjectIds = append(v.ProjectIds, k.project)
+			v.Days = append(v.Days, pgtype.Date{Time: day, Valid: true})
+			v.AssetIds = append(v.AssetIds, k.asset)
+			v.Viewers = append(v.Viewers, k.viewer[:])
+			v.AppIds = append(v.AppIds, app)
+		}
 	}
 	var n int64
 	err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
@@ -179,7 +201,17 @@ func (r *Recorder) write(ctx context.Context, hourly map[hourKey]totals, viewers
 		if err != nil {
 			return fmt.Errorf("add viewer days: %w", err)
 		}
-		n = a + b + c + d
+		e, err := q.AddPlaybackViewersHourly(ctx, vh)
+		if err != nil {
+			return fmt.Errorf("add hourly playback viewers: %w", err)
+		}
+		f, err := q.AddPlaybackViewerHours(ctx, db.AddPlaybackViewerHoursParams{
+			ProjectIds: vh.ProjectIds, Hours: vh.Hours, Viewers: vh.Viewers, AppIds: vh.AppIds,
+		})
+		if err != nil {
+			return fmt.Errorf("add hourly viewer hours: %w", err)
+		}
+		n = a + b + c + d + e + f
 		return nil
 	})
 	return int(n), err

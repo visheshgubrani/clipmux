@@ -123,6 +123,7 @@ type Asset struct {
 	Title           pgtype.Text
 	MediaStorageID  string
 	Renditions      []string
+	SourceBytes     int64
 }
 
 type Attempt struct {
@@ -155,17 +156,19 @@ type Attempt struct {
 }
 
 type CloudflareConnection struct {
-	ProjectID     string
-	AccountID     string
-	ZoneID        string
-	Hostname      string
-	Bucket        string
-	ScriptName    string
-	TokenID       string
-	StorageID     string
-	WorkerVersion string
-	ConnectedAt   pgtype.Timestamptz
-	DeployedAt    pgtype.Timestamptz
+	ProjectID            string
+	AccountID            string
+	ZoneID               string
+	Hostname             string
+	Bucket               string
+	ScriptName           string
+	TokenID              string
+	StorageID            string
+	WorkerVersion        string
+	ConnectedAt          pgtype.Timestamptz
+	DeployedAt           pgtype.Timestamptz
+	AnalyticsTagged      bool
+	AnalyticsLegacyUntil pgtype.Timestamptz
 }
 
 type ContentKeySecret struct {
@@ -295,6 +298,7 @@ type Output struct {
 	RetiredAt       pgtype.Timestamptz
 	PurgedAt        pgtype.Timestamptz
 	UnlistedSweptAt pgtype.Timestamptz
+	Bytes           int64
 }
 
 type Owner struct {
@@ -375,6 +379,21 @@ type PlaybackViewerDay struct {
 	Viewer    []byte
 }
 
+type PlaybackViewerHour struct {
+	ProjectID string
+	Hour      pgtype.Timestamptz
+	AppID     string
+	Viewer    []byte
+}
+
+type PlaybackViewersHourly struct {
+	ProjectID string
+	Hour      pgtype.Timestamptz
+	AssetID   string
+	Viewer    []byte
+	AppID     string
+}
+
 type Project struct {
 	ID                      string
 	Name                    string
@@ -395,6 +414,7 @@ type Project struct {
 	SpeechMode              string
 	AnalyticsKeySealed      []byte
 	DeviceKeySealed         []byte
+	AnalyticsInstallID      string
 }
 
 type RetentionCursor struct {
@@ -473,6 +493,7 @@ type Track struct {
 	ReadyAt    pgtype.Timestamptz
 	RetiredAt  pgtype.Timestamptz
 	DeletedAt  pgtype.Timestamptz
+	Bytes      int64
 }
 
 type Transcript struct {

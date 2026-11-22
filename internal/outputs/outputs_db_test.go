@@ -182,6 +182,17 @@ func TestFirstCommitMakesTheAssetReadyAfterItsRoutesPublish(t *testing.T) {
 	if v := f.scalar(`SELECT version FROM assets`).(int64); v != before+2 {
 		t.Errorf("version = %d, want %d (pointer move, then ready)", v, before+2)
 	}
+	manObj, err := f.store.Head(context.Background(), "media/ast_1/"+c.Output.ID+"/manifest.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantBytes := manObj.Size
+	for _, mf := range m.Files {
+		wantBytes += mf.Size
+	}
+	if gotBytes := f.scalar(`SELECT bytes FROM outputs WHERE id = $1`, c.Output.ID).(int64); gotBytes != wantBytes {
+		t.Errorf("outputs.bytes = %d, want %d (files + manifest.json)", gotBytes, wantBytes)
+	}
 	if ev := f.events(); len(ev) != 1 || ev[0] != "video.asset.ready" {
 		t.Fatalf("events = %v, want one video.asset.ready", ev)
 	}

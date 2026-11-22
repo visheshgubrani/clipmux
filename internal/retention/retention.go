@@ -121,6 +121,12 @@ func (s *Service) rules(now time.Time) []struct {
 		{"playback_viewer_days", func(ctx context.Context, q *db.Queries) (int64, error) {
 			return q.PrunePlaybackViewerDays(ctx, db.PrunePlaybackViewerDaysParams{Before: analyticsDay, MaxRows: batch})
 		}},
+		{"playback_viewers_hourly", func(ctx context.Context, q *db.Queries) (int64, error) {
+			return q.PrunePlaybackViewersHourly(ctx, db.PrunePlaybackViewersHourlyParams{Before: ts(now.Add(-HourlyAnalyticsWindow)), MaxRows: batch})
+		}},
+		{"playback_viewer_hours", func(ctx context.Context, q *db.Queries) (int64, error) {
+			return q.PrunePlaybackViewerHours(ctx, db.PrunePlaybackViewerHoursParams{Before: ts(now.Add(-HourlyAnalyticsWindow)), MaxRows: batch})
+		}},
 	}
 }
 

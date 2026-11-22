@@ -453,6 +453,7 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 	apiLimits := apikeys.NewLimits()
 	analyticsAPI := analytics.NewAPI(pool)
 	analyticsAPI.Logger = logger
+	analyticsAPI.WorkerVersion = cloudflare.WorkerVersion()
 	for _, auth := range []*apikeys.Authenticator{upl.Auth, life.Auth, assetsAPI.Auth, analyticsAPI.Auth, shareSvc.Auth} {
 		auth.Session = mgmt.ActAsApp
 		auth.Limits = apiLimits
@@ -540,7 +541,7 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 	prune := retention.New(pool)
 	prune.Logger = logger
 	loop(RetentionInterval, "retention", prune.Run)
-	loop(EdgeAnalyticsInterval, "analytics_edge", edge.Pull)
+	loop(EdgeAnalyticsInterval, "analytics_edge", edge.CatchUp)
 	loop(ShareExpiryInterval, "shares", func(ctx context.Context) (int, error) { return shareSvc.Expire(ctx, 100) })
 	files := retention.NewFiles(pool, set, store)
 	files.Logger = logger

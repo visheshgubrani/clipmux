@@ -18,15 +18,17 @@ in **Analytics** include playback at the edge.
 ## What the Worker counts
 
 The Worker counts what built-in delivery counts: a view per generated master
-playlist, 6 seconds of watch time per audio segment, and the bytes of every
-response it serves. It writes one data point per counted response to the
-Analytics Engine dataset `clipmux_delivery`.
+playlist, 6 seconds of watch time per audio segment, and the bytes actually
+streamed for every GET response (including partial transfers cancelled early).
+It writes one data point per counted response to the Analytics Engine dataset
+`clipmux_delivery`.
 
-A data point holds the project, app, video and playback ID, the kind of
-file, the views, watch seconds and bytes, and a viewer key: an HMAC of the
-token's `vid` under the project's analytics key, never the `vid` itself. No
-IP address, User-Agent, referrer or token is written. Dashboard previews and
-the setup test aren't counted; share links are.
+A data point holds the project, app, video, playback ID, file kind, a viewer
+key (an HMAC of `vid` under the project's analytics key, omitted on poster
+requests), and a per-install `INSTALL_ID` (`blob7`) so multiple installs
+sharing a Cloudflare account never mix their counts. Dashboard previews
+(even on public IDs), library posters and the setup test aren't counted;
+[share links](/docs/build/play/share-links) are.
 
 ## Connect edge analytics
 
@@ -61,8 +63,8 @@ delivery, and `400 token_rejected` for a token Cloudflare refuses.
 - The server pulls every 5 minutes.
 - Each pull recomputes from an hour before the last one and replaces those
   hours, so points that arrive late still count and nothing counts twice.
-- A first connect starts 13 days back and catches up a day per pull, so
-  recent plays show up within about an hour.
+- A first connect starts at the later of 13 days back or when Cloudflare
+  delivery was connected, and catches up immediately through `now`.
 - Pasting a new token keeps the place the pulls have reached.
 - Disconnecting forgets the token. Counts already pulled stay in Analytics.
 
@@ -71,23 +73,24 @@ delivery, and `400 token_rejected` for a token Cloudflare refuses.
 
 ## What's sampled
 
-Analytics Engine samples data points, even a single viewer's burst of
-requests. ClipMux weights views, watch time and bytes back up, so edge
-counts are close estimates rather than exact. Points that are sampled out
-take their viewer keys with them, so edge unique viewers can read low.
+Analytics Engine samples high-volume requests. The Worker stratifies its data
+point `indexes` by request class (`master`, watch-time segments, non-watch-time
+video rendition segments, and metadata/posters) so high-volume video segments
+don't drown out master-playlist view counts or bias byte weights. ClipMux
+weights views, watch time and bytes back up by `_sample_interval`, so edge
+counts stay accurate estimates.
 
 Other limits:
 
 - ClipMux pulls only the last 13 days. If pulls stop for longer than that,
   the gap is lost.
-- The Worker counts a response's bytes from its `Content-Length`, so a
-  viewer who stops a segment partway counts it whole at the edge.
 - Data points and queries count against Analytics Engine's allowance on
   Workers Paid. A viewer-hour writes about 1,200 data points, one per
   request. See
   [Analytics Engine pricing](https://developers.cloudflare.com/analytics/analytics-engine/pricing/).
-- A Worker deployed by an older ClipMux counts at the edge only after it's
-  redeployed. **Delivery** offers that as "A newer Worker is available".
+- When an older Worker needs an upgrade (for example, to add `INSTALL_ID` and
+  stratified `indexes`), **Analytics** and **Delivery** prompt you to redeploy
+  Cloudflare delivery.
 
 ## Check it works
 

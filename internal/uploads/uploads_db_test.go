@@ -227,6 +227,9 @@ func TestUppyCallOrderUploadsAndQueuesProcessing(t *testing.T) {
 	if code, again := e.complete(c, etags); code != http.StatusOK || str(again, "status") != "processing" {
 		t.Fatalf("second complete: %d %v", code, again)
 	}
+	if sb := e.row(`SELECT source_bytes FROM assets WHERE id = $1`, c.AssetID)[0].(int64); sb != 20 {
+		t.Fatalf("source_bytes = %d, want 20", sb)
+	}
 
 	got := e.row(`SELECT a.status, a.source_uri, j.kind, j.status, u.status FROM assets a
 		JOIN jobs j ON j.asset_id = a.id JOIN uploads u ON u.asset_id = a.id WHERE a.id = $1`, c.AssetID)

@@ -134,7 +134,7 @@ func (q *Queries) FinishUpload(ctx context.Context, arg FinishUploadParams) erro
 }
 
 const getAssetByID = `-- name: GetAssetByID :one
-SELECT id, project_id, app_id, status, error_code, version, storage_id, source_uri, agent_source_id, source_kept, current_output_id, passthrough, duration_seconds, created_at, updated_at, deleted_at, title, media_storage_id, renditions FROM assets WHERE id = $1
+SELECT id, project_id, app_id, status, error_code, version, storage_id, source_uri, agent_source_id, source_kept, current_output_id, passthrough, duration_seconds, created_at, updated_at, deleted_at, title, media_storage_id, renditions, source_bytes FROM assets WHERE id = $1
 `
 
 func (q *Queries) GetAssetByID(ctx context.Context, id string) (Asset, error) {
@@ -160,6 +160,7 @@ func (q *Queries) GetAssetByID(ctx context.Context, id string) (Asset, error) {
 		&i.Title,
 		&i.MediaStorageID,
 		&i.Renditions,
+		&i.SourceBytes,
 	)
 	return i, err
 }
@@ -373,18 +374,19 @@ func (q *Queries) LockUpload(ctx context.Context, id string) (Upload, error) {
 
 const markAssetProcessing = `-- name: MarkAssetProcessing :one
 UPDATE assets
-SET status = 'processing', source_uri = $2, version = version + 1, updated_at = now()
+SET status = 'processing', source_uri = $2, source_bytes = $3, version = version + 1, updated_at = now()
 WHERE id = $1
-RETURNING id, project_id, app_id, status, error_code, version, storage_id, source_uri, agent_source_id, source_kept, current_output_id, passthrough, duration_seconds, created_at, updated_at, deleted_at, title, media_storage_id, renditions
+RETURNING id, project_id, app_id, status, error_code, version, storage_id, source_uri, agent_source_id, source_kept, current_output_id, passthrough, duration_seconds, created_at, updated_at, deleted_at, title, media_storage_id, renditions, source_bytes
 `
 
 type MarkAssetProcessingParams struct {
-	ID        string
-	SourceUri pgtype.Text
+	ID          string
+	SourceUri   pgtype.Text
+	SourceBytes int64
 }
 
 func (q *Queries) MarkAssetProcessing(ctx context.Context, arg MarkAssetProcessingParams) (Asset, error) {
-	row := q.db.QueryRow(ctx, markAssetProcessing, arg.ID, arg.SourceUri)
+	row := q.db.QueryRow(ctx, markAssetProcessing, arg.ID, arg.SourceUri, arg.SourceBytes)
 	var i Asset
 	err := row.Scan(
 		&i.ID,
@@ -406,6 +408,7 @@ func (q *Queries) MarkAssetProcessing(ctx context.Context, arg MarkAssetProcessi
 		&i.Title,
 		&i.MediaStorageID,
 		&i.Renditions,
+		&i.SourceBytes,
 	)
 	return i, err
 }

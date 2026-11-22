@@ -56,7 +56,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Spinner } from '@/components/ui/spinner'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { clock, fullDate, timecode, videoName } from '@/lib/format'
+import { bytes, clock, fullDate, timecode, videoName } from '@/lib/format'
 import { notify } from '@/lib/notify'
 import { cn } from '@/lib/utils'
 import { q } from '@/queries'
@@ -503,6 +503,14 @@ function PlayerWithChapters({
 
 function Details({ asset: a }: { asset: Asset }) {
   const apps = useQuery(q.apps())
+  const analytics = useQuery(q.analytics('30d', undefined, a.id))
+  const st = analytics.data?.storage
+  const storageValue =
+    !st || st.total_bytes === 0
+      ? '—'
+      : st.source_bytes > 0 && st.media_bytes > 0
+        ? `${bytes(st.total_bytes)} (${bytes(st.source_bytes)} source, ${bytes(st.media_bytes)} encoded)`
+        : bytes(st.total_bytes)
   const appName = apps.data?.data.find((x) => x.id === a.app_id)?.name ?? a.app_id
   const rows: [string, React.ReactNode][] = [
     [
@@ -511,6 +519,7 @@ function Details({ asset: a }: { asset: Asset }) {
         {timecode(a.duration_seconds) ?? '—'}
       </span>,
     ],
+    ['Storage', storageValue],
     ['Added', fullDate(a.created_at)],
     ['App', appName],
     ['Version', a.version],

@@ -342,6 +342,13 @@ func (m *API) connectEdgeAnalytics(w http.ResponseWriter, r *http.Request, _ acc
 	case err != nil:
 		return err
 	}
+	// Run an initial bounded catch-up right away so edge counts appear on connect;
+	// any remainder is finished by the background loop.
+	catchCtx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	if _, err := m.Edge.CatchUp(catchCtx); err != nil {
+		m.Logger.WarnContext(r.Context(), "initial edge analytics pull", "err", err)
+	}
+	cancel()
 	return m.edgeAnalytics(w, r, accounts.Owner{})
 }
 
@@ -905,26 +912,24 @@ func (m *API) library(w http.ResponseWriter, r *http.Request, o accounts.Owner) 
 	signed := false
 	for i, v := range views {
 		items[i].View = v
-		pid, public := posterID(v)
-		switch {
-		case pid == "":
-		case public:
-			u := v.BaseURL + "/p/" + pid + "/poster.jpg"
-			items[i].PosterURL = &u
-		default:
-			if !signed {
-				if signer, err = signingkeys.Internal(r.Context(), m.pool, m.box, o.ProjectID); err != nil {
-					return err
-				}
-				signed = true
-			}
-			tok, _, err := m.preview(signer, pid, tokens.AudienceThumbnail)
-			if err != nil {
+		pid := posterID(v)
+		if pid == "" {
+			continue
+		}
+		if !signed {
+			if signer, err = signingkeys.Internal(r.Context(), m.pool, m.box, o.ProjectID); err != nil {
 				return err
 			}
-			u := v.BaseURL + "/v/" + tok + "/" + pid + "/poster.jpg"
-			items[i].PosterURL = &u
+			signed = true
 		}
+		tok, _, err := m.preview(signer, pid, tokens.AudienceThumbnail)
+		if err != nil {
+			return err
+		}
+		// Sign every dashboard library poster with the internal key (even
+		// public IDs) so browsing the dashboard never counts as viewer traffic.
+		u := v.BaseURL + "/v/" + tok + "/" + pid + "/poster.jpg"
+		items[i].PosterURL = &u
 	}
 	body := map[string]any{"data": items}
 	if next != "" {
@@ -944,23 +949,23 @@ type libraryItem struct {
 	PosterURL *string `json:"poster_url"`
 }
 
-// posterID picks the playback ID a poster is fetched through: a public one
-// needs no token, so it wins; else the first playable signed one. A share
-// link's own ID is never used, so revoking a link leaves the poster alone.
-func posterID(v assets.View) (string, bool) {
+// posterID picks the playback ID a library poster is fetched through,
+// preferring a public one and falling back to the first playable signed one. A
+// share link's own ID is never used, so revoking a link leaves the poster alone.
+func posterID(v assets.View) string {
 	pick := ""
 	for _, p := range v.PlaybackIDs {
 		if !p.Playable || p.Share != nil {
 			continue
 		}
 		if p.Policy == "public" {
-			return p.ID, true
+			return p.ID
 		}
 		if pick == "" {
 			pick = p.ID
 		}
 	}
-	return pick, false
+	return pick
 }
 
 // likePattern matches s anywhere, with LIKE's wildcards in s taken

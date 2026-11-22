@@ -160,6 +160,22 @@ func (s *S3) Get(ctx context.Context, key string) (io.ReadCloser, error) {
 	return out.Body, nil
 }
 
+// GetRange reads the inclusive byte range [start, end] of key and returns its stream and length.
+func (s *S3) GetRange(ctx context.Context, key string, start, end int64) (io.ReadCloser, int64, error) {
+	if !ValidKey(key) {
+		return nil, 0, ErrInvalidKey
+	}
+	if start < 0 || end < start {
+		return nil, 0, fmt.Errorf("get range %s: invalid bounds %d-%d", key, start, end)
+	}
+	rng := fmt.Sprintf("bytes=%d-%d", start, end)
+	out, err := s.client.GetObject(ctx, &s3.GetObjectInput{Bucket: &s.bucket, Key: &key, Range: &rng})
+	if err != nil {
+		return nil, 0, s.wrap("get range", key, err)
+	}
+	return out.Body, aws.ToInt64(out.ContentLength), nil
+}
+
 func (s *S3) Head(ctx context.Context, key string) (Object, error) {
 	if !ValidKey(key) {
 		return Object{}, ErrInvalidKey

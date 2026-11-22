@@ -86,13 +86,14 @@ type EdgeStatus struct {
 // keeps it sealed. A new token for a connected project keeps the watermark.
 func (e *Edge) Connect(ctx context.Context, token string) error {
 	q := db.New(e.pool)
-	account, err := q.GetCloudflareAccount(ctx, e.projectID)
-	if errors.Is(err, pgx.ErrNoRows) {
+	info, err := q.GetEdgeProjectInfo(ctx, e.projectID)
+	if err != nil {
+		return fmt.Errorf("read edge project info: %w", err)
+	}
+	if !info.CloudflareConnected {
 		return ErrNoCloudflare
 	}
-	if err != nil {
-		return fmt.Errorf("read cloudflare account: %w", err)
-	}
+	account := info.AccountID
 	token = strings.TrimSpace(token)
 	if token == "" {
 		return ErrTokenRejected
@@ -106,7 +107,13 @@ func (e *Edge) Connect(ctx context.Context, token string) error {
 		}
 		return err
 	}
-	start := e.Now().UTC().Truncate(24 * time.Hour).Add(-edgeHistory).Add(edgeLate)
+	now := e.Now().UTC().Truncate(time.Second)
+	start := now.Truncate(24 * time.Hour).Add(-edgeHistory).Add(edgeLate)
+	if info.ConnectedAt.Valid {
+		if connected := info.ConnectedAt.Time.UTC().Truncate(time.Hour); !connected.After(now) && connected.After(start) {
+			start = connected
+		}
+	}
 	err = q.SaveEdgeAnalytics(ctx, db.SaveEdgeAnalyticsParams{
 		ProjectID: e.projectID, AccountID: account, TokenSealed: e.box.Seal(edgeSealTable, e.projectID, []byte(token)),
 		PulledThrough: ts(start),
@@ -174,12 +181,48 @@ func (e *Edge) Pull(ctx context.Context) (int, error) {
 	return n, nil
 }
 
+// CatchUp runs Pull repeatedly until pulled_through reaches now (bounded to
+// at most maxCatchUpPasses passes so one run never starves its context).
+func (e *Edge) CatchUp(ctx context.Context) (int, error) {
+	const maxCatchUpPasses = 15
+	q := db.New(e.pool)
+	total := 0
+	for range maxCatchUpPasses {
+		before, err := q.GetEdgeAnalytics(ctx, e.projectID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return total, nil
+		}
+		if err != nil {
+			return total, fmt.Errorf("read edge analytics: %w", err)
+		}
+		n, err := e.Pull(ctx)
+		total += n
+		if err != nil {
+			return total, err
+		}
+		after, err := q.GetEdgeAnalytics(ctx, e.projectID)
+		if errors.Is(err, pgx.ErrNoRows) || err != nil {
+			return total, err
+		}
+		now := e.Now().UTC().Truncate(time.Second)
+		if !after.PulledThrough.Time.After(before.PulledThrough.Time) || !after.PulledThrough.Time.Before(now) {
+			return total, nil
+		}
+	}
+	return total, nil
+}
+
 func (e *Edge) pull(ctx context.Context, row db.EdgeAnalytic) (int, error) {
 	token, err := e.box.Open(edgeSealTable, e.projectID, row.TokenSealed)
 	if err != nil {
 		return 0, fmt.Errorf("open edge token: %w", err)
 	}
-	now := e.Now().UTC()
+	q := db.New(e.pool)
+	info, err := q.GetEdgeProjectInfo(ctx, e.projectID)
+	if err != nil {
+		return 0, fmt.Errorf("read edge project info: %w", err)
+	}
+	now := e.Now().UTC().Truncate(time.Second)
 	through := row.PulledThrough.Time.UTC()
 	if oldest := now.Truncate(24 * time.Hour).Add(-edgeHistory).Add(edgeLate); through.Before(oldest) {
 		through = oldest
@@ -196,10 +239,9 @@ func (e *Edge) pull(ctx context.Context, row db.EdgeAnalytic) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	q := db.New(e.pool)
 	if !tables[Dataset] {
-		// No Worker has written a point yet: there is nothing to pull.
-		return 0, q.MarkEdgePulled(ctx, db.MarkEdgePulledParams{ProjectID: e.projectID, PulledThrough: ts(to)})
+		// No Worker has written a point yet: jump straight to now.
+		return 0, q.MarkEdgePulled(ctx, db.MarkEdgePulledParams{ProjectID: e.projectID, PulledThrough: ts(now)})
 	}
 	var totals []struct {
 		Hour       flexNumber `json:"hour"`
@@ -210,7 +252,7 @@ func (e *Edge) pull(ctx context.Context, row db.EdgeAnalytic) (int, error) {
 		Watch      flexNumber `json:"watch_seconds"`
 		Bytes      flexNumber `json:"bytes"`
 	}
-	where, err := e.where(from, to)
+	where, err := e.where(from, to, info)
 	if err != nil {
 		return 0, err
 	}
@@ -222,14 +264,14 @@ func (e *Edge) pull(ctx context.Context, row db.EdgeAnalytic) (int, error) {
 		return 0, err
 	}
 	var viewers []struct {
-		Day     flexNumber `json:"day"`
+		Hour    flexNumber `json:"hour"`
 		AppID   string     `json:"app_id"`
 		AssetID string     `json:"asset_id"`
 		Viewer  string     `json:"viewer"`
 	}
-	if err := e.query(ctx, row.AccountID, string(token), `SELECT toUnixTimestamp(toStartOfDay(timestamp)) AS day, `+
+	if err := e.query(ctx, row.AccountID, string(token), `SELECT toUnixTimestamp(toStartOfHour(timestamp)) AS hour, `+
 		`blob2 AS app_id, blob3 AS asset_id, blob6 AS viewer FROM `+Dataset+` WHERE `+where+
-		` AND blob6 != '' GROUP BY day, app_id, asset_id, viewer FORMAT JSON`, &viewers); err != nil {
+		` AND blob6 != '' AND blob5 != 'poster' GROUP BY hour, app_id, asset_id, viewer FORMAT JSON`, &viewers); err != nil {
 		return 0, err
 	}
 
@@ -258,36 +300,58 @@ func (e *Edge) pull(ctx context.Context, row db.EdgeAnalytic) (int, error) {
 		h.WatchSeconds = append(h.WatchSeconds, t.Watch.int())
 		h.Bytes = append(h.Bytes, t.Bytes.int())
 	}
+	var vh db.AddPlaybackViewersHourlyParams
 	var v db.AddPlaybackViewersParams
+	type dayKey struct {
+		day           int64
+		asset, viewer string
+	}
+	seenDays := map[dayKey]bool{}
 	for _, r := range viewers {
 		key, err := hex.DecodeString(r.Viewer)
 		if err != nil || len(key) != ViewerKeySize {
 			continue // not a key the Worker writes
 		}
-		v.ProjectIds = append(v.ProjectIds, e.projectID)
-		v.Days = append(v.Days, date(time.Unix(r.Day.int(), 0).UTC()))
-		v.AssetIds = append(v.AssetIds, r.AssetID)
-		v.Viewers = append(v.Viewers, key)
-		v.AppIds = append(v.AppIds, r.AppID)
+		ht := time.Unix(r.Hour.int(), 0).UTC()
+		vh.ProjectIds = append(vh.ProjectIds, e.projectID)
+		vh.Hours = append(vh.Hours, ts(ht))
+		vh.AssetIds = append(vh.AssetIds, r.AssetID)
+		vh.Viewers = append(vh.Viewers, key)
+		vh.AppIds = append(vh.AppIds, r.AppID)
+
+		day := ht.Truncate(24 * time.Hour)
+		dk := dayKey{day: day.Unix(), asset: r.AssetID, viewer: r.Viewer}
+		if !seenDays[dk] {
+			seenDays[dk] = true
+			v.ProjectIds = append(v.ProjectIds, e.projectID)
+			v.Days = append(v.Days, date(day))
+			v.AssetIds = append(v.AssetIds, r.AssetID)
+			v.Viewers = append(v.Viewers, key)
+			v.AppIds = append(v.AppIds, r.AppID)
+		}
 	}
 
 	var n int64
 	err = pgx.BeginFunc(ctx, e.pool, func(tx pgx.Tx) error {
 		q := db.New(tx)
-		if _, err := q.DeleteEdgeHourly(ctx, db.DeleteEdgeHourlyParams{ProjectID: e.projectID, Start: ts(from), Stop: ts(to)}); err != nil {
+		deleted, err := q.DeleteEdgeHourly(ctx, db.DeleteEdgeHourlyParams{ProjectID: e.projectID, Start: ts(from), Stop: ts(to)})
+		if err != nil {
 			return fmt.Errorf("delete edge hours: %w", err)
 		}
 		a, err := q.AddEdgeHourly(ctx, h)
 		if err != nil {
 			return fmt.Errorf("add edge hours: %w", err)
 		}
-		days := db.DeleteEdgeDailyParams{ProjectID: e.projectID, Start: date(from.Truncate(24 * time.Hour)), Stop: date(to.Truncate(24 * time.Hour).Add(24 * time.Hour))}
-		if _, err := q.DeleteEdgeDaily(ctx, days); err != nil {
-			return fmt.Errorf("delete edge days: %w", err)
-		}
-		b, err := q.AddEdgeDaily(ctx, db.AddEdgeDailyParams(days))
-		if err != nil {
-			return fmt.Errorf("add edge days: %w", err)
+		var b int64
+		if deleted > 0 || len(h.Hours) > 0 {
+			days := db.DeleteEdgeDailyParams{ProjectID: e.projectID, Start: date(from.Truncate(24 * time.Hour)), Stop: date(to.Truncate(24 * time.Hour).Add(24 * time.Hour))}
+			if _, err := q.DeleteEdgeDaily(ctx, days); err != nil {
+				return fmt.Errorf("delete edge days: %w", err)
+			}
+			b, err = q.AddEdgeDaily(ctx, db.AddEdgeDailyParams(days))
+			if err != nil {
+				return fmt.Errorf("add edge days: %w", err)
+			}
 		}
 		c, err := q.AddPlaybackViewers(ctx, v)
 		if err != nil {
@@ -299,7 +363,17 @@ func (e *Edge) pull(ctx context.Context, row db.EdgeAnalytic) (int, error) {
 		if err != nil {
 			return fmt.Errorf("add edge viewer days: %w", err)
 		}
-		n = a + b + c + d
+		eh, err := q.AddPlaybackViewersHourly(ctx, vh)
+		if err != nil {
+			return fmt.Errorf("add edge hourly viewers: %w", err)
+		}
+		ef, err := q.AddPlaybackViewerHours(ctx, db.AddPlaybackViewerHoursParams{
+			ProjectIds: vh.ProjectIds, Hours: vh.Hours, Viewers: vh.Viewers, AppIds: vh.AppIds,
+		})
+		if err != nil {
+			return fmt.Errorf("add edge viewer hours: %w", err)
+		}
+		n = a + b + c + d + eh + ef
 		return q.MarkEdgePulled(ctx, db.MarkEdgePulledParams{ProjectID: e.projectID, PulledThrough: ts(to)})
 	})
 	return int(n), err
@@ -307,14 +381,30 @@ func (e *Edge) pull(ctx context.Context, row db.EdgeAnalytic) (int, error) {
 
 var projectIDRE = regexp.MustCompile(`^[a-z0-9_]{1,64}$`)
 
-// where filters a pass's points: this project, [from, to). The project ID
-// is checked before it goes into the SQL text.
-func (e *Edge) where(from, to time.Time) (string, error) {
+// where filters a pass's points: this project and install, [from, to). IDs
+// are validated before entering the SQL text.
+func (e *Edge) where(from, to time.Time, info db.GetEdgeProjectInfoRow) (string, error) {
 	if !projectIDRE.MatchString(e.projectID) {
 		return "", fmt.Errorf("analytics: project ID %q can't be queried", e.projectID)
 	}
-	return fmt.Sprintf("blob1 = '%s' AND timestamp >= toDateTime('%s') AND timestamp < toDateTime('%s')",
-		e.projectID, from.Format(time.DateTime), to.Format(time.DateTime)), nil
+	if !projectIDRE.MatchString(info.AnalyticsInstallID) {
+		return "", fmt.Errorf("analytics: install ID %q can't be queried", info.AnalyticsInstallID)
+	}
+	var scope string
+	switch {
+	case !info.CloudflareConnected:
+		scope = fmt.Sprintf("blob1 = '%s' AND (blob7 = '%s' OR blob7 = '')", e.projectID, info.AnalyticsInstallID)
+	case !info.AnalyticsTagged:
+		scope = fmt.Sprintf("blob1 = '%s' AND blob7 = ''", e.projectID)
+	case info.AnalyticsLegacyUntil.Valid && from.Before(info.AnalyticsLegacyUntil.Time.UTC()):
+		until := info.AnalyticsLegacyUntil.Time.UTC().Format(time.DateTime)
+		scope = fmt.Sprintf("blob1 = '%s' AND (blob7 = '%s' OR (blob7 = '' AND timestamp < toDateTime('%s')))",
+			e.projectID, info.AnalyticsInstallID, until)
+	default:
+		scope = fmt.Sprintf("blob1 = '%s' AND blob7 = '%s'", e.projectID, info.AnalyticsInstallID)
+	}
+	return fmt.Sprintf("%s AND timestamp >= toDateTime('%s') AND timestamp < toDateTime('%s')",
+		scope, from.Format(time.DateTime), to.Format(time.DateTime)), nil
 }
 
 // tables lists the account's datasets; it is also the token check.

@@ -28,4 +28,4 @@ UPDATE jobs SET status = 'queued', failed_count = failed_count + 1, error_code =
 WHERE id = sqlc.arg(id);
 
 -- name: SetAssetSource :exec
-UPDATE assets SET source_uri = $2, source_kept = true, updated_at = now() WHERE id = $1;
+UPDATE assets SET source_uri = $2, source_bytes = $3, source_kept = true, updated_at = now() WHERE id = $1;

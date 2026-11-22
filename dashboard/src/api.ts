@@ -407,6 +407,9 @@ export interface StorageConfig {
   region?: string
   default: boolean
   asset_count: number
+  source_bytes: number
+  media_bytes: number
+  total_bytes: number
   cloudflare_delivery: boolean
   created_at: string
 }
@@ -434,9 +437,21 @@ export interface AnalyticsTotals {
   unique_viewers: number | null
   bytes_delivered: number
 }
+export interface StorageTotals {
+  source_bytes: number
+  media_bytes: number
+  total_bytes: number
+}
 export interface Analytics {
   /** What is being counted: this server always; the edge once its counts are pulled in. */
-  collecting?: { builtin: boolean; edge: 'connected' | 'not_connected' | 'not_used' }
+  collecting?: {
+    builtin: boolean
+    edge: 'connected' | 'not_connected' | 'not_used'
+    edge_needs_redeploy?: boolean
+    edge_error?: string
+    edge_pulled_through?: string
+  }
+  storage?: StorageTotals
   totals: AnalyticsTotals
   previous: AnalyticsTotals
   series: { t: string; views: number; watch_seconds: number; bytes_delivered: number }[]

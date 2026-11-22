@@ -286,7 +286,7 @@ ${trackID}`)
     });
     const res = await (opts.fetchOrigin ?? fetch)(upstream);
     const h = common(new Headers(res.headers));
-    if (cacheKey && res.status === 200) await remember(cacheKey, res.clone(), h);
+    if (cacheKey && res.status === 200 && cacheFor()) await remember(cacheKey, res.clone(), h);
     return new Response(res.body, { status: res.status, headers: h });
   }
   const cacheFor = () => opts.cache !== void 0 ? opts.cache : typeof caches !== "undefined" ? caches.default : null;
@@ -381,32 +381,59 @@ ${trackID}`)
       else if (k.kind === "segment" && (k.rendition === "audio" || r.no_audio?.includes(k.outputID)))
         watch = SEGMENT_SECONDS;
     }
-    const viewer = await viewerKey(env, r.app_id, seen.vid ?? "");
+    const viewer = k.kind === "poster" ? "" : await viewerKey(env, r.app_id, seen.vid ?? "");
+    const index = views > 0 ? `${r.asset_id}:m` : watch > 0 ? `${r.asset_id}:w` : k.kind === "segment" ? `${r.asset_id}:s:${k.rendition}` : `${r.asset_id}:o`;
     const write = (bytes) => dataset.writeDataPoint({
-      blobs: [env.PROJECT_ID ?? "", r.app_id, r.asset_id, seen.pid ?? "", k.kind, viewer],
+      blobs: [
+        env.PROJECT_ID ?? "",
+        r.app_id,
+        r.asset_id,
+        seen.pid ?? "",
+        k.kind,
+        viewer,
+        env.INSTALL_ID ?? ""
+      ],
       doubles: [views, watch, bytes],
-      indexes: [r.asset_id]
+      indexes: [index]
     });
-    const length = res.headers.get("Content-Length");
-    if (length !== null && /^[0-9]+$/.test(length)) {
-      write(Number(length));
-      return res;
-    }
     if (!res.body) {
       write(0);
       return res;
     }
+    const reader = res.body.getReader();
     let n = 0;
-    const counter = new TransformStream({
-      transform(chunk, c) {
-        n += chunk.byteLength;
-        c.enqueue(chunk);
+    let wrote = false;
+    const record = () => {
+      if (wrote) return;
+      wrote = true;
+      write(n);
+    };
+    const body = new ReadableStream(
+      {
+        async pull(controller) {
+          try {
+            const { done, value } = await reader.read();
+            if (done) {
+              record();
+              controller.close();
+              return;
+            }
+            n += value.byteLength;
+            controller.enqueue(value);
+          } catch (err) {
+            record();
+            controller.error(err);
+          }
+        },
+        async cancel(reason) {
+          record();
+          await reader.cancel(reason).catch(() => {
+          });
+        }
       },
-      flush() {
-        write(n);
-      }
-    });
-    return new Response(res.body.pipeThrough(counter), { status: res.status, headers: res.headers });
+      { highWaterMark: 0 }
+    );
+    return new Response(body, { status: res.status, headers: res.headers });
   }
   async function serve(req, env, seen) {
     const url = new URL(req.url);
@@ -432,6 +459,12 @@ ${trackID}`)
       audience = a.aud;
       seen.internal = a.internal;
       seen.vid = a.vid;
+    } else if (token !== void 0) {
+      const a = await authorize(env, r, pid, token);
+      if (!(a instanceof Response)) {
+        seen.internal = a.internal;
+        seen.vid = a.vid;
+      }
     }
     Object.assign(seen, { route: r, pid, path });
     if (path === "master.m3u8" && audience === "v") return master(env, r, req);

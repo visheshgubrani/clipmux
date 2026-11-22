@@ -44,6 +44,21 @@ FROM (SELECT unnest(sqlc.arg(project_ids)::text[]) AS project_id, unnest(sqlc.ar
     unnest(sqlc.arg(viewers)::bytea[]) AS viewer, unnest(sqlc.arg(app_ids)::text[]) AS app_id) u
 ON CONFLICT DO NOTHING;
 
+-- name: AddPlaybackViewersHourly :execrows
+INSERT INTO playback_viewers_hourly (project_id, hour, asset_id, viewer, app_id)
+SELECT u.project_id, u.hour, u.asset_id, u.viewer, u.app_id
+FROM (SELECT unnest(sqlc.arg(project_ids)::text[]) AS project_id, unnest(sqlc.arg(hours)::timestamptz[]) AS hour,
+    unnest(sqlc.arg(asset_ids)::text[]) AS asset_id, unnest(sqlc.arg(viewers)::bytea[]) AS viewer,
+    unnest(sqlc.arg(app_ids)::text[]) AS app_id) u
+ON CONFLICT DO NOTHING;
+
+-- name: AddPlaybackViewerHours :execrows
+INSERT INTO playback_viewer_hours (project_id, hour, app_id, viewer)
+SELECT DISTINCT u.project_id, u.hour, u.app_id, u.viewer
+FROM (SELECT unnest(sqlc.arg(project_ids)::text[]) AS project_id, unnest(sqlc.arg(hours)::timestamptz[]) AS hour,
+    unnest(sqlc.arg(viewers)::bytea[]) AS viewer, unnest(sqlc.arg(app_ids)::text[]) AS app_id) u
+ON CONFLICT DO NOTHING;
+
 -- name: GetAnalyticsKey :one
 SELECT analytics_key_sealed FROM projects WHERE id = $1;
 
@@ -105,8 +120,30 @@ SELECT
             AND vw.day >= sqlc.arg(prev_from)::date AND vw.day <= sqlc.arg(prev_to)::date
         GROUP BY vw.viewer) p) AS previous;
 
+-- name: CountViewersHourly :one
+SELECT
+    (SELECT count(*) FROM (SELECT vh.viewer FROM playback_viewer_hours vh
+        WHERE vh.project_id = sqlc.arg(project_id) AND vh.hour >= sqlc.arg(cur_from) AND vh.hour < sqlc.arg(cur_to)
+            AND (sqlc.narg(app_id)::text IS NULL OR vh.app_id = sqlc.narg(app_id))
+        GROUP BY vh.viewer) c) AS current,
+    (SELECT count(*) FROM (SELECT vh.viewer FROM playback_viewer_hours vh
+        WHERE vh.project_id = sqlc.arg(project_id) AND vh.hour >= sqlc.arg(prev_from) AND vh.hour < sqlc.arg(prev_to)
+            AND (sqlc.narg(app_id)::text IS NULL OR vh.app_id = sqlc.narg(app_id))
+        GROUP BY vh.viewer) p) AS previous;
+
+-- name: CountAssetViewersHourly :one
+SELECT
+    (SELECT count(*) FROM (SELECT vh.viewer FROM playback_viewers_hourly vh
+        WHERE vh.project_id = sqlc.arg(project_id) AND vh.asset_id = sqlc.arg(asset_id)
+            AND vh.hour >= sqlc.arg(cur_from) AND vh.hour < sqlc.arg(cur_to)
+        GROUP BY vh.viewer) c) AS current,
+    (SELECT count(*) FROM (SELECT vh.viewer FROM playback_viewers_hourly vh
+        WHERE vh.project_id = sqlc.arg(project_id) AND vh.asset_id = sqlc.arg(asset_id)
+            AND vh.hour >= sqlc.arg(prev_from) AND vh.hour < sqlc.arg(prev_to)
+        GROUP BY vh.viewer) p) AS previous;
+
 -- name: TopAssetsHourly :many
--- The most viewed live assets in a 24-hour range.
+-- The most viewed live assets in a 24-hour range (or by bytes when sampled views read zero).
 SELECT h.asset_id, a.title, sum(h.views)::bigint AS views, sum(h.watch_seconds)::bigint AS watch_seconds,
     sum(h.bytes)::bigint AS bytes
 FROM playback_hourly h
@@ -114,8 +151,8 @@ JOIN assets a ON a.id = h.asset_id AND a.project_id = h.project_id AND a.status 
 WHERE h.project_id = sqlc.arg(project_id) AND h.hour >= sqlc.arg(start) AND h.hour < sqlc.arg(stop)
     AND (sqlc.narg(app_id)::text IS NULL OR h.app_id = sqlc.narg(app_id))
 GROUP BY h.asset_id, a.title
-HAVING sum(h.views) > 0
-ORDER BY sum(h.views) DESC, h.asset_id
+HAVING sum(h.views) > 0 OR sum(h.bytes) > 0
+ORDER BY sum(h.views) DESC, sum(h.bytes) DESC, h.asset_id
 LIMIT 10;
 
 -- name: TopAssetsDaily :many
@@ -126,20 +163,50 @@ JOIN assets a ON a.id = d.asset_id AND a.project_id = d.project_id AND a.status 
 WHERE d.project_id = sqlc.arg(project_id) AND d.day >= sqlc.arg(start)::date AND d.day < sqlc.arg(stop)::date
     AND (sqlc.narg(app_id)::text IS NULL OR d.app_id = sqlc.narg(app_id))
 GROUP BY d.asset_id, a.title
-HAVING sum(d.views) > 0
-ORDER BY sum(d.views) DESC, d.asset_id
+HAVING sum(d.views) > 0 OR sum(d.bytes) > 0
+ORDER BY sum(d.views) DESC, sum(d.bytes) DESC, d.asset_id
 LIMIT 10;
+
+-- name: StorageTotals :one
+SELECT
+    coalesce((SELECT sum(a.source_bytes) FROM assets a
+        WHERE a.project_id = sqlc.arg(project_id) AND (sqlc.narg(app_id)::text IS NULL OR a.app_id = sqlc.narg(app_id))
+          AND a.source_kept AND a.agent_source_id IS NULL AND a.deleted_at IS NULL), 0)::bigint AS source_bytes,
+    (coalesce((SELECT sum(o.bytes) FROM outputs o JOIN assets a ON a.id = o.asset_id
+        WHERE a.project_id = sqlc.arg(project_id) AND (sqlc.narg(app_id)::text IS NULL OR a.app_id = sqlc.narg(app_id))
+          AND o.status IN ('committed', 'retired') AND o.purged_at IS NULL AND a.deleted_at IS NULL), 0)
+     + coalesce((SELECT sum(t.bytes) FROM tracks t JOIN assets a ON a.id = t.asset_id
+        WHERE a.project_id = sqlc.arg(project_id) AND (sqlc.narg(app_id)::text IS NULL OR a.app_id = sqlc.narg(app_id))
+          AND t.status IN ('publishing', 'ready', 'retired') AND a.deleted_at IS NULL), 0))::bigint AS media_bytes;
+
+-- name: AssetStorageTotals :one
+SELECT
+    coalesce((SELECT a.source_bytes FROM assets a
+        WHERE a.project_id = sqlc.arg(project_id) AND a.id = sqlc.arg(asset_id)
+          AND a.source_kept AND a.agent_source_id IS NULL AND a.deleted_at IS NULL), 0)::bigint AS source_bytes,
+    (coalesce((SELECT sum(o.bytes) FROM outputs o JOIN assets a ON a.id = o.asset_id
+        WHERE a.project_id = sqlc.arg(project_id) AND a.id = sqlc.arg(asset_id)
+          AND o.status IN ('committed', 'retired') AND o.purged_at IS NULL AND a.deleted_at IS NULL), 0)
+     + coalesce((SELECT sum(t.bytes) FROM tracks t JOIN assets a ON a.id = t.asset_id
+        WHERE a.project_id = sqlc.arg(project_id) AND a.id = sqlc.arg(asset_id)
+          AND t.status IN ('publishing', 'ready', 'retired') AND a.deleted_at IS NULL), 0))::bigint AS media_bytes;
 
 -- name: GetAnalyticsAsset :one
 SELECT app_id FROM assets WHERE project_id = $1 AND id = $2;
 
--- name: EdgeDeliveryOn :one
-SELECT EXISTS (SELECT 1 FROM cloudflare_connections WHERE project_id = $1);
-
 -- Edge analytics (P7-T05).
 
--- name: GetCloudflareAccount :one
-SELECT account_id FROM cloudflare_connections WHERE project_id = $1;
+-- name: GetEdgeProjectInfo :one
+SELECT p.analytics_install_id,
+       (cc.project_id IS NOT NULL)::boolean AS cloudflare_connected,
+       coalesce(cc.account_id, '')::text AS account_id,
+       cc.connected_at,
+       coalesce(cc.worker_version, '')::text AS worker_version,
+       coalesce(cc.analytics_tagged, false)::boolean AS analytics_tagged,
+       cc.analytics_legacy_until
+FROM projects p
+LEFT JOIN cloudflare_connections cc ON cc.project_id = p.id
+WHERE p.id = $1;
 
 -- name: SaveEdgeAnalytics :exec
 -- A new token keeps the watermark: reconnecting doesn't pull again.

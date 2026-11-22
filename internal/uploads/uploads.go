@@ -398,6 +398,7 @@ func (s *Service) markCompleted(ctx context.Context, tx pgx.Tx, up db.Upload) (a
 	}
 	asset, err = q.MarkAssetProcessing(ctx, db.MarkAssetProcessingParams{
 		ID: asset.ID, SourceUri: pgtype.Text{String: sourceKey(asset.ID), Valid: true},
+		SourceBytes: up.DeclaredSize,
 	})
 	if err != nil {
 		return assets.View{}, err

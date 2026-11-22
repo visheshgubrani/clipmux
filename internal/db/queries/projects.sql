@@ -30,3 +30,6 @@ FROM projects WHERE id = $1;
 UPDATE projects
 SET primary_executor = $2, fallback_executor = $3, queue_age_fallback_minutes = $4
 WHERE id = $1;
+
+-- name: GetAnalyticsInstallID :one
+SELECT analytics_install_id FROM projects WHERE id = $1;

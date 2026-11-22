@@ -126,6 +126,8 @@ func TestAFlushWritesHourlyTotalsAndViewers(t *testing.T) {
 	r.Record(master("pid_signed", "stu_8f3a2c"))
 	r.Record(audioSegment("pid_signed", "stu_8f3a2c"))
 	r.Record(audioSegment("pid_signed", ""))
+	// A poster with a vid counts bytes only, never a unique viewer.
+	r.Record(Event{ProjectID: "prj_default", AppID: "app_a", AssetID: "ast_p", PlaybackID: "pid_poster", Kind: KindPoster, Bytes: 50, Vid: "stu_poster"})
 	set("2026-11-10T10:00:01Z") // the next hour
 	r.Record(audioSegment("pid_signed", "stu_8f3a2c"))
 	r.Record(master("pid_public", ""))
@@ -134,21 +136,35 @@ func TestAFlushWritesHourlyTotalsAndViewers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n != 7 { // three hourly rows, two daily, a viewer and a viewer day
-		t.Errorf("Flush wrote %d rows, want 7", n)
+	if n != 13 { // 4 hourly rows, 3 daily, 1 daily viewer, 1 viewer day, 2 hourly viewers, 2 viewer hours
+		t.Errorf("Flush wrote %d rows, want 13", n)
 	}
 	equal(t, "hourly", hourly(t, pool), []string{
+		"origin 2026-11-10T09 ast_p pid_poster 0 0 50",
 		"origin 2026-11-10T09 ast_v pid_signed 1 12 168",
 		"origin 2026-11-10T10 ast_v pid_public 1 0 150",
 		"origin 2026-11-10T10 ast_v pid_signed 0 6 9",
 	})
 	equal(t, "daily", daily(t, pool), []string{
+		"origin 2026-11-10 ast_p pid_poster 0 0 50",
 		"origin 2026-11-10 ast_v pid_public 1 0 150",
 		"origin 2026-11-10 ast_v pid_signed 1 18 177",
 	})
-	// One viewer that day, seen in two hours.
+	// One viewer that day, seen in two hours; poster vid recorded nowhere.
 	equal(t, "viewers", viewers(t, pool), []string{"2026-11-10 ast_v app_a " + stu8f})
 	equal(t, "viewer days", viewerDays(t, pool), []string{"2026-11-10 app_a " + stu8f})
+	equal(t, "hourly viewers", strings1(t, pool, `
+		SELECT format('%s %s %s %s', to_char(hour AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24'), asset_id, app_id, encode(viewer, 'hex'))
+		FROM playback_viewers_hourly ORDER BY hour, viewer`), []string{
+		"2026-11-10T09 ast_v app_a " + stu8f,
+		"2026-11-10T10 ast_v app_a " + stu8f,
+	})
+	equal(t, "hourly viewer hours", strings1(t, pool, `
+		SELECT format('%s %s %s', to_char(hour AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24'), app_id, encode(viewer, 'hex'))
+		FROM playback_viewer_hours ORDER BY hour, viewer`), []string{
+		"2026-11-10T09 app_a " + stu8f,
+		"2026-11-10T10 app_a " + stu8f,
+	})
 
 	// Nothing recorded since: a flush writes nothing.
 	if n, err := r.Flush(ctx); err != nil || n != 0 {

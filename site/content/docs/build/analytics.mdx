@@ -63,6 +63,7 @@ video keeps its history.
   "previous": { "views": 1502, "watch_seconds": 251000, "unique_viewers": null, "bytes_delivered": 80211000000 },
   "series": [{ "t": "2026-11-03T00:00:00Z", "views": 260, "watch_seconds": 43100, "bytes_delivered": 14000000000 }],
   "top_assets": [{ "asset_id": "ast_…", "title": "Lesson 42", "views": 310, "watch_seconds": 61000, "bytes_delivered": 17000000000 }],
+  "storage": { "source_bytes": 524288000, "media_bytes": 2147483648, "total_bytes": 2671771648 },
   "collecting": { "builtin": true, "edge": "not_used" }
 }
 ```
@@ -72,8 +73,9 @@ video keeps its history.
 | `totals` | The range's views, watch time in seconds, unique viewers and bytes. They include deleted videos' history. |
 | `previous` | The same for the same length of time immediately before, to show a change. |
 | `series` | One bucket per hour for `24h`, per UTC day otherwise, oldest first, with empty buckets as zeros. `t` is the bucket's start. The last bucket is the current one, so it's partial. |
-| `top_assets` | Up to 10 live videos, by views. Not in the one-video response. A `title` may be missing. |
-| `collecting` | Where counts come from; see [Edge counts](#edge-counts). |
+| `top_assets` | Up to 10 live videos, by views (and bytes when sampled views read zero). Not in the one-video response. A `title` may be missing. |
+| `storage` | Current storage taken across live sources (`source_bytes`), encoded outputs and tracks (`media_bytes`), and their sum (`total_bytes`). Zeros for deleted videos. |
+| `collecting` | Where counts come from and edge pull health; see [Edge counts](#edge-counts). |
 
 ## What counts
 
@@ -105,8 +107,9 @@ await clipmux.playback.token('pid_…', { viewerId: user.id })
 
 For anonymous viewers, use a random ID you keep in their session. ClipMux
 stores only a keyed hash of `vid`, never the ID itself. `unique_viewers`
-counts distinct viewers on the days the range touches (for `24h`, yesterday
-and today), and is `null` when no view in the range carried a `vid`.
+counts distinct viewers by hour for `24h` (matching exact `[start, stop)`
+and `previous` windows) and by UTC day for longer ranges, excluding poster
+requests, and is `null` when no view in the range carried a `vid`.
 
 Nothing in analytics stores an IP address, User-Agent, referrer, token or
 raw viewer ID.

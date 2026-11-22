@@ -308,6 +308,12 @@ export type AnalyticsTotals = {
   bytes_delivered: number
 }
 
+export type StorageTotals = {
+  source_bytes: number
+  media_bytes: number
+  total_bytes: number
+}
+
 export type Analytics = {
   totals: AnalyticsTotals
   previous: AnalyticsTotals
@@ -324,9 +330,13 @@ export type Analytics = {
     watch_seconds: number
     bytes_delivered: number
   }[]
+  storage: StorageTotals
   collecting: {
     builtin: boolean
     edge: 'not_used' | 'not_connected' | 'connected'
+    edge_needs_redeploy?: boolean
+    edge_error?: string
+    edge_pulled_through?: string
   }
 }
 

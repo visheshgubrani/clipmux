@@ -15,11 +15,12 @@ export interface Env {
   CONTENT_KEYS: string
   // The built-in handler, for routes whose backend is "origin".
   ORIGIN_URL?: string
-  // Analytics (D103): the Analytics Engine dataset, the project every data
-  // point names, and the 64-hex-digit key viewer IDs are hashed under.
-  // Without the dataset nothing is counted.
+  // Analytics (D103): the Analytics Engine dataset, the project and install
+  // every data point names, and the 64-hex-digit key viewer IDs are hashed
+  // under. Without the dataset nothing is counted.
   ANALYTICS?: AnalyticsEngineDataset
   PROJECT_ID?: string
+  INSTALL_ID?: string
   ANALYTICS_KEY?: string
 }
 
@@ -320,7 +321,7 @@ export function createWorker(opts: Options = {}) {
     })
     const res = await (opts.fetchOrigin ?? fetch)(upstream)
     const h = common(new Headers(res.headers))
-    if (cacheKey && res.status === 200) await remember(cacheKey, res.clone(), h)
+    if (cacheKey && res.status === 200 && cacheFor()) await remember(cacheKey, res.clone(), h)
     return new Response(res.body, { status: res.status, headers: h })
   }
 
@@ -431,7 +432,7 @@ export function createWorker(opts: Options = {}) {
   // count writes one data point for a response delivery counts (D103): a
   // GET answered 200 or 206 on a route, never under the internal key unless
   // the ID is a share link's. A range not starting at byte 0 adds its bytes
-  // only. A body without a Content-Length is counted as it streams.
+  // only. Bytes are counted as chunks stream, including aborted responses.
   async function count(env: Env, req: Request, res: Response, seen: Seen): Promise<Response> {
     const r = seen.route
     const dataset = env.ANALYTICS
@@ -446,33 +447,66 @@ export function createWorker(opts: Options = {}) {
       else if (k.kind === 'segment' && (k.rendition === 'audio' || r.no_audio?.includes(k.outputID)))
         watch = SEGMENT_SECONDS
     }
-    const viewer = await viewerKey(env, r.app_id, seen.vid ?? '')
+    const viewer = k.kind === 'poster' ? '' : await viewerKey(env, r.app_id, seen.vid ?? '')
+    const index =
+      views > 0
+        ? `${r.asset_id}:m`
+        : watch > 0
+          ? `${r.asset_id}:w`
+          : k.kind === 'segment'
+            ? `${r.asset_id}:s:${k.rendition}`
+            : `${r.asset_id}:o`
     const write = (bytes: number) =>
       dataset.writeDataPoint({
-        blobs: [env.PROJECT_ID ?? '', r.app_id, r.asset_id, seen.pid ?? '', k.kind, viewer],
+        blobs: [
+          env.PROJECT_ID ?? '',
+          r.app_id,
+          r.asset_id,
+          seen.pid ?? '',
+          k.kind,
+          viewer,
+          env.INSTALL_ID ?? '',
+        ],
         doubles: [views, watch, bytes],
-        indexes: [r.asset_id],
+        indexes: [index],
       })
-    const length = res.headers.get('Content-Length')
-    if (length !== null && /^[0-9]+$/.test(length)) {
-      write(Number(length))
-      return res
-    }
     if (!res.body) {
       write(0)
       return res
     }
+    const reader = res.body.getReader()
     let n = 0
-    const counter = new TransformStream<Uint8Array, Uint8Array>({
-      transform(chunk, c) {
-        n += chunk.byteLength
-        c.enqueue(chunk)
+    let wrote = false
+    const record = () => {
+      if (wrote) return
+      wrote = true
+      write(n)
+    }
+    const body = new ReadableStream<Uint8Array>(
+      {
+        async pull(controller) {
+          try {
+            const { done, value } = await reader.read()
+            if (done) {
+              record()
+              controller.close()
+              return
+            }
+            n += value.byteLength
+            controller.enqueue(value)
+          } catch (err) {
+            record()
+            controller.error(err)
+          }
+        },
+        async cancel(reason) {
+          record()
+          await reader.cancel(reason).catch(() => {})
+        },
       },
-      flush() {
-        write(n)
-      },
-    })
-    return new Response(res.body.pipeThrough(counter), { status: res.status, headers: res.headers })
+      { highWaterMark: 0 },
+    )
+    return new Response(body, { status: res.status, headers: res.headers })
   }
 
   async function serve(req: Request, env: Env, seen: Seen): Promise<Response> {
@@ -506,6 +540,14 @@ export function createWorker(opts: Options = {}) {
       audience = a.aud
       seen.internal = a.internal
       seen.vid = a.vid
+    } else if (token !== undefined) {
+      // Soft-check tokens on public routes so valid internal tokens skip
+      // counting and valid app tokens still pass their viewer ID.
+      const a = await authorize(env, r, pid, token)
+      if (!(a instanceof Response)) {
+        seen.internal = a.internal
+        seen.vid = a.vid
+      }
     }
     Object.assign(seen, { route: r, pid, path })
 

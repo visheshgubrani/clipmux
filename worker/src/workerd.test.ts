@@ -45,6 +45,7 @@ before(async () => {
     bindings: {
       CONTENT_KEYS: JSON.stringify({ 1: vectors.content_key_secret_hex }),
       PROJECT_ID: 'prj_default',
+      INSTALL_ID: 'ins_test',
       ANALYTICS_KEY: vectors.analytics_key_hex,
     },
     analyticsEngineDatasets: { ANALYTICS: { dataset: 'clipmux_delivery' } },
@@ -135,4 +136,7 @@ test('counting runs in workerd without touching the response', async () => {
   })
   assert.equal(seg.status, 206)
   assert.equal(await seg.text(), 'audio')
+  const aborted = await mf.dispatchFetch(`https://media.example/v/${tok}/pid_signed/out_v/360p/seg_00001.m4s`)
+  assert.equal(aborted.status, 200)
+  await aborted.body?.cancel()
 })

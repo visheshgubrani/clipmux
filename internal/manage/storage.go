@@ -33,13 +33,20 @@ type storageView struct {
 	Region         string `json:"region,omitempty"`
 	Default        bool   `json:"default"`
 	AssetCount     int64  `json:"asset_count"`
+	SourceBytes    int64  `json:"source_bytes"`
+	MediaBytes     int64  `json:"media_bytes"`
+	TotalBytes     int64  `json:"total_bytes"`
 	// CloudflareDelivery: the Worker reads this bucket; it can't be removed.
 	CloudflareDelivery bool      `json:"cloudflare_delivery"`
 	Created            time.Time `json:"created_at"`
 }
 
-func viewStorage(id, kind string, config []byte, isDefault bool, assetCount int64, delivery bool, created time.Time) storageView {
-	v := storageView{ID: id, Kind: kind, Default: isDefault, AssetCount: assetCount, CloudflareDelivery: delivery, Created: created.UTC()}
+func viewStorage(id, kind string, config []byte, isDefault bool, assetCount, sourceBytes, mediaBytes int64, delivery bool, created time.Time) storageView {
+	v := storageView{
+		ID: id, Kind: kind, Default: isDefault, AssetCount: assetCount,
+		SourceBytes: sourceBytes, MediaBytes: mediaBytes, TotalBytes: sourceBytes + mediaBytes,
+		CloudflareDelivery: delivery, Created: created.UTC(),
+	}
 	if kind != stores.KindFilesystem {
 		var cfg stores.S3Config
 		_ = json.Unmarshal(config, &cfg) // written by stores.AddS3; a bad row shows without its details
@@ -58,7 +65,7 @@ func (m *API) listStorage(w http.ResponseWriter, r *http.Request, o accounts.Own
 	}
 	out := make([]storageView, 0, len(rows))
 	for _, c := range rows {
-		out = append(out, viewStorage(c.ID, c.Kind, c.Config, c.IsDefault, c.AssetCount, c.Delivery, c.CreatedAt.Time))
+		out = append(out, viewStorage(c.ID, c.Kind, c.Config, c.IsDefault, c.AssetCount, c.SourceBytes, c.MediaBytes, c.Delivery, c.CreatedAt.Time))
 	}
 	httpjson.Write(w, http.StatusOK, map[string]any{"data": out})
 	return nil
@@ -122,7 +129,7 @@ func (m *API) addStorage(w http.ResponseWriter, r *http.Request, o accounts.Owne
 		return err
 	}
 	m.Logger.InfoContext(r.Context(), "storage added", "storage", row.ID, "bucket", cfg.Bucket, "endpoint", cfg.Endpoint)
-	httpjson.Write(w, http.StatusCreated, viewStorage(row.ID, row.Kind, row.Config, row.IsDefault, 0, false, row.CreatedAt.Time))
+	httpjson.Write(w, http.StatusCreated, viewStorage(row.ID, row.Kind, row.Config, row.IsDefault, 0, 0, 0, false, row.CreatedAt.Time))
 	return nil
 }
 

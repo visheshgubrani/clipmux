@@ -117,7 +117,7 @@ func (p *Publisher) CommitTranscript(ctx context.Context, raw json.RawMessage) f
 		if _, err := qs.PublishTrack(ctx, db.PublishTrackParams{
 			ID: track.ID, Language: text(t.Language), Name: text(LanguageName(t.Language)),
 			DurationMs: pgtype.Int8{Int64: t.DurationMS, Valid: true}, KeyVersion: pgtype.Int4{Int32: secret.Version, Valid: true},
-			OutputID: text(out.ID),
+			OutputID: text(out.ID), Bytes: int64(len(sealed)),
 		}); err != nil {
 			return err
 		}
@@ -253,7 +253,7 @@ func (p *Publisher) CommitChapters(ctx context.Context, qs *db.Queries, job db.J
 	if _, err := qs.PublishChaptersTrack(ctx, db.PublishChaptersTrackParams{
 		ID: track.ID, Language: text(r.Language), Name: text("Chapters"),
 		DurationMs: pgtype.Int8{Int64: r.DurationMS, Valid: true}, KeyVersion: pgtype.Int4{Int32: secret.Version, Valid: true},
-		OutputID: text(r.OutputID), Chapters: r.Chapters,
+		OutputID: text(r.OutputID), Chapters: r.Chapters, Bytes: int64(len(sealed)),
 	}); err != nil {
 		return err
 	}

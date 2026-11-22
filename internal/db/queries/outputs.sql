@@ -4,7 +4,7 @@
 SELECT * FROM outputs WHERE id = $1;
 
 -- name: CommitOutput :execrows
-UPDATE outputs SET status = 'committed', manifest = $2, committed_at = now()
+UPDATE outputs SET status = 'committed', manifest = $2, bytes = $3, committed_at = now()
 WHERE id = $1 AND status = 'writing';
 
 -- name: MoveCurrentOutput :one

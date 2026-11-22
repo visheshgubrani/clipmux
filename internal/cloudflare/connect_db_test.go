@@ -216,14 +216,19 @@ func TestConnectMovesDeliveryToTheWorker(t *testing.T) {
 	if !bytes.Equal(r.fake.script, workerJS) || r.fake.metadata["main_module"] != "worker.js" {
 		t.Fatal("the embedded Worker wasn't uploaded as the main module")
 	}
+	installID, err := r.pool.GetAnalyticsInstallID(ctx, db.DefaultProjectID)
+	if err != nil || !strings.HasPrefix(installID, "ins_") {
+		t.Fatalf("install ID = %q, %v", installID, err)
+	}
 	bindings, _ := json.Marshal(r.fake.metadata["bindings"])
 	for _, want := range []string{
 		`{"bucket_name":"` + r.bucket + `","name":"MEDIA","type":"r2_bucket"}`,
 		`{"name":"ORIGIN_URL","text":"https://video.example.org","type":"plain_text"}`,
 		`{"name":"CONTENT_KEYS","text":"{\"1\":\"000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f\"}","type":"secret_text"}`,
-		// Counting at the edge (D103): one dataset, every point naming its project.
+		// Counting at the edge (D103): one dataset, every point naming its project and install.
 		`{"dataset":"clipmux_delivery","name":"ANALYTICS","type":"analytics_engine"}`,
 		`{"name":"PROJECT_ID","text":"prj_default","type":"plain_text"}`,
+		`{"name":"INSTALL_ID","text":"` + installID + `","type":"plain_text"}`,
 		`{"name":"ANALYTICS_KEY","text":"abababababababababababababababababababababababababababababababab","type":"secret_text"}`,
 	} {
 		if !strings.Contains(string(bindings), want) {
@@ -256,7 +261,7 @@ func TestConnectMovesDeliveryToTheWorker(t *testing.T) {
 	var leaked int
 	_ = r.raw.QueryRow(ctx, `SELECT count(*) FROM storage_configs WHERE config::text LIKE '%'||$1||'%'`, testToken).Scan(&leaked)
 	row, err := r.pool.GetCloudflareConnection(ctx, db.DefaultProjectID)
-	if err != nil || row.TokenID != testTokenID || leaked != 0 {
+	if err != nil || row.TokenID != testTokenID || leaked != 0 || !row.AnalyticsTagged || row.AnalyticsLegacyUntil.Valid {
 		t.Fatalf("connection = %+v, %v; token in configs: %d", row, err, leaked)
 	}
 	st, err := r.conn.Status(ctx)
@@ -266,10 +271,24 @@ func TestConnectMovesDeliveryToTheWorker(t *testing.T) {
 	// Cloudflare adds a managed DNS record when attaching a custom domain.
 	// Reconnect must preserve that record instead of trying to delete it.
 	r.fake.records = append(r.fake.records, DNSRecord{ID: "managed-worker-dns", Type: "AAAA", Name: "media.example.com"})
-	// Connecting again (a new token, or an upgrade) reuses the config.
+	// Connecting again (a new token, or an upgrade) reuses the config and
+	// keeps analytics_legacy_until unset when already tagged.
 	res, err = r.conn.Connect(ctx, Request{Token: testToken, Hostname: "media.example.com", Bucket: r.bucket})
 	if err != nil || !res.Connected {
 		t.Fatalf("reconnect: %+v, %v", res.Steps, err)
+	}
+	if row, _ = r.pool.GetCloudflareConnection(ctx, db.DefaultProjectID); !row.AnalyticsTagged || row.AnalyticsLegacyUntil.Valid {
+		t.Fatalf("reconnect on tagged connection = %+v, want legacy_until unset", row)
+	}
+	// Upgrading an older untagged connection sets analytics_legacy_until.
+	if _, err := r.raw.Exec(ctx, `UPDATE cloudflare_connections SET analytics_tagged = false`); err != nil {
+		t.Fatal(err)
+	}
+	if res, err = r.conn.Connect(ctx, Request{Token: testToken, Hostname: "media.example.com", Bucket: r.bucket}); err != nil || !res.Connected {
+		t.Fatalf("upgrade reconnect: %+v, %v", res.Steps, err)
+	}
+	if row, _ = r.pool.GetCloudflareConnection(ctx, db.DefaultProjectID); !row.AnalyticsTagged || !row.AnalyticsLegacyUntil.Valid {
+		t.Fatalf("upgrade reconnect = %+v, want analytics_tagged and legacy_until set", row)
 	}
 	if len(r.fake.records) != 2 || r.fake.records[1].ID != "managed-worker-dns" {
 		t.Fatalf("reconnect removed Worker-managed DNS: %+v", r.fake.records)

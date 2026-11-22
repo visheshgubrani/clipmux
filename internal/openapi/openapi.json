@@ -5667,6 +5667,11 @@
                       "bytes_delivered": 17000000000
                     }
                   ],
+                  "storage": {
+                    "source_bytes": 524288000,
+                    "media_bytes": 2147483648,
+                    "total_bytes": 2671771648
+                  },
                   "collecting": {
                     "builtin": true,
                     "edge": "not_used"
@@ -5796,7 +5801,7 @@
             }
           }
         },
-        "description": "Totals, the same number of whole buckets just before (`previous`), a zero-filled series (hourly for `24h`, daily otherwise; the last bucket is partial), and the top 10 videos by views. `unique_viewers` counts distinct `vid` claims in tokens and is `null` when no view carried one."
+        "description": "Totals, the same number of whole buckets just before (`previous`), a zero-filled series (hourly for `24h`, daily otherwise; the last bucket is partial), storage bytes currently held (`storage`), and the top 10 live videos by views (`top_assets`). `unique_viewers` counts distinct `vid` claims in tokens (by hour for `24h`, by UTC day otherwise, excluding poster fetches) and is `null` when no view carried one."
       }
     },
     "/v1/analytics/assets/{id}": {
@@ -5867,6 +5872,11 @@
                       "bytes_delivered": 14000000000
                     }
                   ],
+                  "storage": {
+                    "source_bytes": 52428800,
+                    "media_bytes": 214748364,
+                    "total_bytes": 267177164
+                  },
                   "collecting": {
                     "builtin": true,
                     "edge": "not_used"
@@ -9094,6 +9104,25 @@
           "bytes_delivered"
         ]
       },
+      "StorageTotals": {
+        "type": "object",
+        "properties": {
+          "source_bytes": {
+            "type": "integer"
+          },
+          "media_bytes": {
+            "type": "integer"
+          },
+          "total_bytes": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "source_bytes",
+          "media_bytes",
+          "total_bytes"
+        ]
+      },
       "Analytics": {
         "type": "object",
         "properties": {
@@ -9159,6 +9188,9 @@
               ]
             }
           },
+          "storage": {
+            "$ref": "#/components/schemas/StorageTotals"
+          },
           "collecting": {
             "type": "object",
             "properties": {
@@ -9172,6 +9204,16 @@
                   "not_connected",
                   "connected"
                 ]
+              },
+              "edge_needs_redeploy": {
+                "type": "boolean"
+              },
+              "edge_error": {
+                "type": "string"
+              },
+              "edge_pulled_through": {
+                "type": "string",
+                "format": "date-time"
               }
             },
             "required": [
@@ -9184,6 +9226,7 @@
           "totals",
           "previous",
           "series",
+          "storage",
           "collecting"
         ]
       },

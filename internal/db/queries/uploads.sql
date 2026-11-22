@@ -50,7 +50,7 @@ FROM uploads WHERE id = sqlc.arg(id);
 
 -- name: MarkAssetProcessing :one
 UPDATE assets
-SET status = 'processing', source_uri = $2, version = version + 1, updated_at = now()
+SET status = 'processing', source_uri = $2, source_bytes = $3, version = version + 1, updated_at = now()
 WHERE id = $1
 RETURNING *;
 

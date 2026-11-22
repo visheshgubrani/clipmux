@@ -151,9 +151,17 @@ test('an origin fetch carries the edge header and is counted once, at the edge',
   assert.equal(sent[0]?.headers.get('X-ClipMux-Edge'), '1')
   assert.deepEqual(points, [
     {
-      blobs: ['prj_default', 'app_a', 'ast_v', 'pid_signed', 'segment', '4687a687f4ac9c03299afb2103b29a7c'],
+      blobs: [
+        'prj_default',
+        'app_a',
+        'ast_v',
+        'pid_signed',
+        'segment',
+        '4687a687f4ac9c03299afb2103b29a7c',
+        'ins_test',
+      ],
       doubles: [0, 6, 9],
-      indexes: ['ast_v'],
+      indexes: ['ast_v:w'],
     },
   ])
 })
@@ -170,9 +178,9 @@ test("a share link's ID counts under the internal key; other IDs don't", async (
   await (await shared.fetch(new Request(internal), env)).arrayBuffer()
   assert.deepEqual(points, [
     {
-      blobs: ['prj_default', 'app_a', 'ast_v', 'pid_signed', 'master', ''],
+      blobs: ['prj_default', 'app_a', 'ast_v', 'pid_signed', 'master', '', 'ins_test'],
       doubles: [1, 0, 150],
-      indexes: ['ast_v'],
+      indexes: ['ast_v:m'],
     },
   ])
 })
@@ -206,11 +214,69 @@ test('a body without a Content-Length is counted as it streams', async () => {
   assert.equal(await res.text(), 'segment')
   assert.deepEqual(points, [
     {
-      blobs: ['prj_default', 'app_a', 'ast_p', 'pid_public', 'segment', ''],
+      blobs: ['prj_default', 'app_a', 'ast_p', 'pid_public', 'segment', '', 'ins_test'],
       doubles: [0, 6, 7],
-      indexes: ['ast_p'],
+      indexes: ['ast_p:w'],
     },
   ])
+})
+
+test('an aborted stream counts only the bytes streamed before cancel, even with Content-Length', async () => {
+  const { env, objects, points } = vectorEnv()
+  const route = JSON.parse(new TextDecoder().decode(objects.get('_routes/pid_public.json')))
+  objects.set(
+    '_routes/pid_public.json',
+    new TextEncoder().encode(JSON.stringify({ ...route, backend: 'origin' })),
+  )
+  const makeOrigin = (withLength: boolean) =>
+    createWorker({
+      now,
+      cache: null,
+      fetchOrigin: async () =>
+        new Response(
+          new ReadableStream({
+            start(c) {
+              c.enqueue(new TextEncoder().encode('abc'))
+              c.enqueue(new TextEncoder().encode('defghij'))
+            },
+          }),
+          withLength ? { headers: { 'Content-Length': '10' } } : {},
+        ),
+    })
+
+  for (const withLength of [true, false]) {
+    points.length = 0
+    const res = await makeOrigin(withLength).fetch(
+      new Request('https://media.example/p/pid_public/out_p/360p/seg_00001.m4s'),
+      { ...env, ORIGIN_URL: 'https://app.example' },
+    )
+    if (!res.body) throw new Error('expected body')
+    const reader = res.body.getReader()
+    const first = await reader.read()
+    assert.equal(new TextDecoder().decode(first.value), 'abc')
+    assert.deepEqual(points, [], 'not recorded before cancel or EOF')
+    await reader.cancel('aborted')
+    assert.deepEqual(points, [
+      {
+        blobs: ['prj_default', 'app_a', 'ast_p', 'pid_public', 'segment', '', 'ins_test'],
+        doubles: [0, 6, 3],
+        indexes: ['ast_p:w'],
+      },
+    ])
+  }
+})
+
+test('stratified indexes separate master, watch segment, video segment and metadata', async () => {
+  const { env, points } = vectorEnv()
+  const w = createWorker({ now, cache: null })
+  const segRes = await w.fetch(new Request(signed('out_v/360p/seg_00001.m4s')), env)
+  await segRes.arrayBuffer()
+  const keyRes = await w.fetch(new Request(signed('out_v/key/1')), env)
+  await keyRes.arrayBuffer()
+  assert.deepEqual(
+    points.map((p) => p.indexes),
+    [['ast_v:s:360p'], ['ast_v:o']],
+  )
 })
 
 test('without the Analytics Engine binding nothing is counted and delivery is unchanged', async () => {

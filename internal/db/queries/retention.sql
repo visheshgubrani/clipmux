@@ -117,6 +117,16 @@ DELETE FROM playback_viewers WHERE (project_id, day, asset_id, viewer) IN (
     SELECT v.project_id, v.day, v.asset_id, v.viewer FROM playback_viewers v
     WHERE v.day < sqlc.arg(before)::date LIMIT sqlc.arg(max_rows));
 
+-- name: PrunePlaybackViewerHours :execrows
+DELETE FROM playback_viewer_hours WHERE (project_id, hour, app_id, viewer) IN (
+    SELECT v.project_id, v.hour, v.app_id, v.viewer FROM playback_viewer_hours v
+    WHERE v.hour < sqlc.arg(before) LIMIT sqlc.arg(max_rows));
+
+-- name: PrunePlaybackViewersHourly :execrows
+DELETE FROM playback_viewers_hourly WHERE (project_id, hour, asset_id, viewer) IN (
+    SELECT v.project_id, v.hour, v.asset_id, v.viewer FROM playback_viewers_hourly v
+    WHERE v.hour < sqlc.arg(before) LIMIT sqlc.arg(max_rows));
+
 -- name: ListUnsweptOutputs :many
 -- Committed outputs past their PUT URLs (committed before before) whose
 -- files haven't been checked against their manifest yet.

@@ -229,14 +229,15 @@ only when asked for at creation, and then sees its own app.
 
 | Route | Notes |
 | --- | --- |
-| `GET /v1/analytics?range=24h\|7d\|30d\|90d&app_id=` | → `{totals, previous, series, top_assets, collecting}` below. `app_id` is ignored for an API key. `400 invalid_request` for any other `range` |
-| `GET /v1/analytics/assets/{id}?range=` | the same for one asset, without `top_assets`; a deleted asset keeps its history. `404 not_found` for an asset outside the project, or outside the key's app |
+| `GET /v1/analytics?range=24h\|7d\|30d\|90d&app_id=` | → `{totals, previous, series, top_assets, storage, collecting}` below. `app_id` is ignored for an API key. `400 invalid_request` for any other `range` |
+| `GET /v1/analytics/assets/{id}?range=` | the same for one asset, without `top_assets`; a deleted asset keeps its history (with `storage` all zero). `404 not_found` for an asset outside the project, or outside the key's app |
 
 ```json
 {"totals":   {"views": 1840, "watch_seconds": 302400, "unique_viewers": 412, "bytes_delivered": 98123456789},
  "previous": {"views": 1502, "watch_seconds": 251000, "unique_viewers": null, "bytes_delivered": 80211000000},
  "series": [{"t": "2026-11-03T00:00:00Z", "views": 260, "watch_seconds": 43100, "bytes_delivered": 14000000000}],
  "top_assets": [{"asset_id": "ast_…", "title": "Lesson 42", "views": 310, "watch_seconds": 61000, "bytes_delivered": 17000000000}],
+ "storage": {"source_bytes": 524288000, "media_bytes": 2147483648, "total_bytes": 2671771648},
  "collecting": {"builtin": true, "edge": "not_used"}}
 ```
 
@@ -244,23 +245,32 @@ only when asked for at creation, and then sees its own app.
 first, zero-filled, with `t` the bucket's start. The last bucket is the one
 now falls in, so it is partial. `previous` is the same number of whole
 buckets just before, for the change against it. Unique viewers are kept per
-UTC day, so they count the days a range touches: for `24h`, yesterday and
-today. `top_assets` lists at most 10 live assets, by views; a `title` may
-be absent. Totals include deleted assets' history.
+hour for 14 days (used for exact `24h` comparisons) and per UTC day for 180
+days (used for `7d`, `30d` and `90d`). `top_assets` lists at most 10 live
+assets by views (and bytes when sampled views read zero); a `title` may
+be absent. Totals include deleted assets' history; `storage` reports live
+sources and non-purged outputs and tracks (`deleted_at IS NULL`).
 
 What counts (D103): a `GET` answered 200 or 206; a range not from byte 0
 adds bytes only. A view is one
 generated `master.m3u8`. Watch time is 6 seconds per audio segment served,
-which overcounts by the player's buffer-ahead. Bytes are every counted body.
-`unique_viewers` counts distinct `vid` claims and is `null` when no view in
+which overcounts by the player's buffer-ahead. Bytes are every counted body
+actually written/streamed (both built-in and Cloudflare Worker count streamed
+bytes on aborted transfers).
+`unique_viewers` counts distinct `vid` claims (excluding poster fetches)
+and is `null` when no view in
 the range carried one; sign `vid` (any stable ID for the viewer, which
 ClipMux keeps only as a keyed hash) to count viewers. Tokens signed by the
-server's internal key don't count, so previews and setup tests don't; share
-links (below) are the exception.
+server's internal key don't count (even on public playback IDs), so
+previews, library posters and setup tests don't; share links (below) are the
+exception.
 
 `collecting.edge` is `not_used` without Cloudflare delivery, and
 `not_connected` with it until edge analytics are connected (below): the
-Worker counts, but nothing pulls its counts in. Once `connected`, serve
+Worker counts, but nothing pulls its counts in. When Cloudflare delivery is
+connected, `collecting.edge_needs_redeploy` indicates if the deployed Worker
+should be redeployed; once `connected`, `edge_error` and
+`edge_pulled_through` report the latest pull state. Serve
 pulls every 5 minutes, so the edge's last few minutes show up on the next
 pull, and each pull recomputes the hour before it.
 

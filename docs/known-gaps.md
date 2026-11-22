@@ -24,9 +24,8 @@ when you introduce or discover it; remove it when it is closed.
   owner chooses:
   - A share link's HLS URL is checked as a signed playlist that loads, not
     played in hls.js and ExoPlayer.
-  - Edge counts match Analytics Engine exactly but not the traffic, because
-    it samples even one viewer (D106); a per-request data point index is
-    untried.
+  - Edge counts now stratify Analytics Engine `indexes` by request class (`master`, watch segment, video rendition segment, metadata) and tag each install with `INSTALL_ID` (`blob7`), preventing master views from being drowned by segment floods or shared accounts from cross-contaminating; Analytics Engine still uses weighted sampling under heavy bursts.
+  - Pre-migration `00039` URL-imported sources (where uploads table had no record) and existing subtitle/chapter tracks show `0` stored bytes in Storage/Analytics totals until re-encoded or re-imported; direct uploads and existing outputs are backfilled from `uploads` and output manifests.
   - On the real zone the Worker answered an origin-backed video without
     reaching serve (D106), unexplained, so "a forwarded fetch counts once"
     is shown by the vectors and the Worker's tests only.
