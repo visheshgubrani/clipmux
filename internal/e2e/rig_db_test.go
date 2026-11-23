@@ -125,7 +125,7 @@ func boot(t *testing.T, pinned bool, extraEnv ...string) *instance {
 	// directory is new, and the speech models are 0.9 GB.
 	in.env = append(in.env, "CLIPMUX_SPEECH=off")
 	in.env = append(in.env, extraEnv...)
-	for _, k := range []string{"CLIPMUX_PACKAGER", "CLIPMUX_UNSANDBOXED_WORKER"} {
+	for _, k := range []string{"CLIPMUX_PACKAGER", "CLIPMUX_UNSANDBOXED_WORKER", "CLIPMUX_PG_DUMP"} {
 		if v := os.Getenv(k); v != "" {
 			in.env = append(in.env, k+"="+v)
 		}
@@ -281,6 +281,11 @@ func (in *instance) upload(key, path string) (asset, pid string) {
 // generate.
 func (in *instance) uploadWith(key, path string, extra map[string]any) (asset, pid string) {
 	in.t.Helper()
+	return in.uploadThrough(key, path, extra, in.call)
+}
+
+func (in *instance) uploadThrough(key, path string, extra map[string]any, call func(string, string, string, any, any) int) (asset, pid string) {
+	in.t.Helper()
 	data, err := os.ReadFile(path)
 	if err != nil {
 		in.t.Fatal(err)
@@ -295,7 +300,7 @@ func (in *instance) uploadWith(key, path string, extra map[string]any) (asset, p
 	}
 	body := map[string]any{"size": len(data), "playback_policy": "signed"}
 	maps.Copy(body, extra)
-	if s := in.call("POST", "/v1/uploads", key, body, &created); s != 201 {
+	if s := call("POST", "/v1/uploads", key, body, &created); s != 201 {
 		in.t.Fatalf("create upload: %d", s)
 	}
 	numbers := make([]int, created.PartCount)
@@ -308,7 +313,9 @@ func (in *instance) uploadWith(key, path string, extra map[string]any) (asset, p
 			URL        string `json:"url"`
 		} `json:"parts"`
 	}
-	in.call("POST", "/v1/uploads/"+created.UploadID+"/parts", created.UploadToken, map[string]any{"part_numbers": numbers}, &signed)
+	if s := call("POST", "/v1/uploads/"+created.UploadID+"/parts", created.UploadToken, map[string]any{"part_numbers": numbers}, &signed); s != 200 {
+		in.t.Fatalf("sign parts: %d", s)
+	}
 	var parts []map[string]any
 	for _, p := range signed.Parts {
 		start := int64(p.PartNumber-1) * created.PartSize
@@ -321,7 +328,7 @@ func (in *instance) uploadWith(key, path string, extra map[string]any) (asset, p
 		res.Body.Close()
 		parts = append(parts, map[string]any{"part_number": p.PartNumber, "etag": res.Header.Get("ETag")})
 	}
-	if s := in.call("POST", "/v1/uploads/"+created.UploadID+"/complete", created.UploadToken, map[string]any{"parts": parts}, nil); s != 200 {
+	if s := call("POST", "/v1/uploads/"+created.UploadID+"/complete", created.UploadToken, map[string]any{"parts": parts}, nil); s != 200 {
 		in.t.Fatalf("complete: %d", s)
 	}
 	return created.AssetID, created.PlaybackIDs[0].ID

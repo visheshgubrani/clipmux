@@ -105,6 +105,7 @@ curl -fsSL https://clipmux.com/install.sh | sudo sh -s -- --version v1.0.0
 | --- | --- |
 | `--version vX.Y.Z` | Installs that release instead of the latest. |
 | `--dir DIR` | Installs in `DIR` instead of `/opt/clipmux`. Pass the same `--dir` when you upgrade or uninstall. |
+| `--restore` | On a new server: restores the latest backup from the target your saved `.env` names, then starts ClipMux. Put the `.env` in the install directory first. See [Back up and restore](/docs/self-host/operate/backups#restore). |
 | `--uninstall` | Stops and removes the stack, keeping the volumes and `.env`. See [Upgrade and uninstall](/docs/self-host/install-options/upgrade-and-uninstall). |
 | `--purge` | With `--uninstall`, also deletes the volumes and the folder. |
 

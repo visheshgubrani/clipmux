@@ -23,6 +23,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/apikeys"
 	"github.com/visheshgubrani/clipmux/internal/apppairings"
 	"github.com/visheshgubrani/clipmux/internal/assets"
+	"github.com/visheshgubrani/clipmux/internal/backup"
 	"github.com/visheshgubrani/clipmux/internal/chapters"
 	"github.com/visheshgubrani/clipmux/internal/cloudflare"
 	"github.com/visheshgubrani/clipmux/internal/config"
@@ -30,6 +31,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/db"
 	"github.com/visheshgubrani/clipmux/internal/delivery"
 	"github.com/visheshgubrani/clipmux/internal/dispatch"
+	"github.com/visheshgubrani/clipmux/internal/fence"
 	"github.com/visheshgubrani/clipmux/internal/lifecycle"
 	"github.com/visheshgubrani/clipmux/internal/manage"
 	"github.com/visheshgubrani/clipmux/internal/modal"
@@ -114,6 +116,10 @@ const ShareExpiryInterval = time.Minute
 // SetupTestInterval is how often a queued setup test is picked up.
 const SetupTestInterval = 5 * time.Second
 
+// BackupInterval is how often serve checks whether a backup is due; the
+// backups themselves follow CLIPMUX_BACKUP_INTERVAL.
+const BackupInterval = time.Minute
+
 // BuiltinStopWait is how long shutdown waits for the built-in worker to hand
 // its attempt back before it stops serving.
 const BuiltinStopWait = 20 * time.Second
@@ -141,6 +147,10 @@ var passTimeouts = map[string]time.Duration{
 	"uploads":              5 * time.Minute,
 	"routes":               5 * time.Minute,  // storage writes for pending route records
 	"route_reconciler":     30 * time.Minute, // lists every route record
+	"restore_epoch":        2 * time.Minute,  // a marker read and write per store
+	"backups":              2 * time.Hour,    // a whole dump, encrypted and uploaded
+	"backup_verify":        time.Hour,        // a download, a restore into a scratch database and a few counts
+	"backup_sources":       12 * time.Hour,   // up to 20 sources, each encrypted as it uploads
 	"webhooks":             5 * time.Minute,  // 10 s per delivery, 8 at a time
 	"setup_tests":          30 * time.Minute, // waits up to 15 minutes for its encode
 	"retention":            10 * time.Minute,
@@ -249,7 +259,16 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		return err
 	}
 	defer pool.Close()
-	if err := db.Migrate(ctx, pool); err != nil {
+	// Pending migrations are applied after a backup of the database as it is
+	// (D143); one that fails stops the boot, so an upgrade never migrates
+	// without a way back.
+	if _, err := backup.Migrate(ctx, pool, backup.MigrateOptions{
+		Config:      cfg.Backup,
+		Box:         func() (*secrets.Box, error) { return secrets.Load(cfg.DataDir, cfg.SecretsKey) },
+		DatabaseURL: cfg.DatabaseURL,
+		Version:     cfg.Version,
+		Logger:      logger,
+	}); err != nil {
 		return err
 	}
 	logger.Info("database ready")
@@ -398,6 +417,7 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 	mgmt.Tests = tests
 	mgmt.Life = life
 	mgmt.Stores = set
+	mgmt.BackupConfig = cfg.Backup
 	mgmt.Keys = &manage.ContentKeys{Ring: keys, DataDir: cfg.DataDir}
 	edge := analytics.NewEdge(pool, box, db.DefaultProjectID)
 	edge.API = cmp.Or(cfg.CloudflareAPI, analytics.DefaultCloudflareAPI)
@@ -474,10 +494,47 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 	wg.Go(func() { leader.Run(ctx) })
 	leader.Await(ctx, 2*time.Second)
 	obs := newObserver(pool, leader, cfg.Version)
+	obs.backups(cfg.Backup.Interval, cfg.DataDir)
 	loop := func(interval time.Duration, name string, task sweeper.Task) {
 		wg.Go(func() {
 			sweeper.Every(ctx, interval, passTimeouts[name], name, leader.Only(obs.loop(name, task)), logger)
 		})
+	}
+	// The restore fence is checked before any loop that deletes from storage
+	// can run, so a database restored while serve was down is fenced before
+	// its first sweep or reconcile (D144).
+	epoch := fence.New(pool, set)
+	epoch.Logger = logger
+	if leader.IsLeader() {
+		bootCtx, cancel := context.WithTimeout(ctx, passTimeouts["restore_epoch"])
+		if _, err := epoch.Pass(bootCtx); err != nil && ctx.Err() == nil {
+			logger.Error("restore epoch at boot failed", "err", err)
+		}
+		cancel()
+	}
+	loop(fence.Interval, "restore_epoch", epoch.Pass)
+	// Backups (D143): a pass a minute, which takes one when the last is older
+	// than the interval.
+	if cfg.Backup.Interval > 0 {
+		target, err := backup.OpenTarget(cfg.Backup)
+		if err != nil {
+			return fmt.Errorf("backup target: %w", err)
+		}
+		defer target.Close()
+		backups := backup.New(pool, b.box, target, cfg.Backup, cfg.DatabaseURL, cfg.Version)
+		backups.Logger = logger
+		backups.TempDir = filepath.Join(cfg.DataDir, "restore-tmp")
+		backups.Stores = set
+		mgmt.Backups = backups
+		logger.Info("backups on", "target", target.Desc, "interval", cfg.Backup.Interval.String(), "off_site", !cfg.Backup.Local)
+		loop(BackupInterval, "backups", backups.Run)
+		// A backup nobody has restored is a hope. Weekly, the newest is
+		// restored into a scratch database and read (T29.6).
+		loop(BackupInterval, "backup_verify", backups.RunVerify)
+		// Sources can't be made again, so each committed one is copied,
+		// encrypted, to the target, and a deleted asset's gets a tombstone
+		// (T29.7, D146).
+		loop(BackupInterval, "backup_sources", backups.RunSources)
 	}
 	loop(LeaseSweepInterval, "lost_leases", func(ctx context.Context) (int, error) { return q.SweepLostLeases(ctx, 100) })
 	loop(RouteInterval, "routing", func(ctx context.Context) (int, error) { return q.Route(ctx, 200) })

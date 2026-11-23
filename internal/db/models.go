@@ -104,26 +104,28 @@ type AppPairing struct {
 }
 
 type Asset struct {
-	ID              string
-	ProjectID       string
-	AppID           string
-	Status          string
-	ErrorCode       pgtype.Text
-	Version         int64
-	StorageID       string
-	SourceUri       pgtype.Text
-	AgentSourceID   pgtype.Text
-	SourceKept      bool
-	CurrentOutputID pgtype.Text
-	Passthrough     pgtype.Text
-	DurationSeconds pgtype.Float8
-	CreatedAt       pgtype.Timestamptz
-	UpdatedAt       pgtype.Timestamptz
-	DeletedAt       pgtype.Timestamptz
-	Title           pgtype.Text
-	MediaStorageID  string
-	Renditions      []string
-	SourceBytes     int64
+	ID                 string
+	ProjectID          string
+	AppID              string
+	Status             string
+	ErrorCode          pgtype.Text
+	Version            int64
+	StorageID          string
+	SourceUri          pgtype.Text
+	AgentSourceID      pgtype.Text
+	SourceKept         bool
+	CurrentOutputID    pgtype.Text
+	Passthrough        pgtype.Text
+	DurationSeconds    pgtype.Float8
+	CreatedAt          pgtype.Timestamptz
+	UpdatedAt          pgtype.Timestamptz
+	DeletedAt          pgtype.Timestamptz
+	Title              pgtype.Text
+	MediaStorageID     string
+	Renditions         []string
+	SourceBytes        int64
+	SourceBackedUpAt   pgtype.Timestamptz
+	SourceTombstonedAt pgtype.Timestamptz
 }
 
 type Attempt struct {
@@ -153,6 +155,23 @@ type Attempt struct {
 	SourcePartSize    pgtype.Int8
 	InputOutputID     pgtype.Text
 	ErrorMessage      pgtype.Text
+}
+
+type Backup struct {
+	ID                string
+	ProjectID         string
+	Kind              string
+	ObjectKey         string
+	SizeBytes         int64
+	Sha256            string
+	ClipmuxVersion    string
+	SchemaVersion     int64
+	PostgresVersion   string
+	SecretsKeyVersion int32
+	CreatedAt         pgtype.Timestamptz
+	VerifiedAt        pgtype.Timestamptz
+	VerifyError       pgtype.Text
+	VerifyMode        pgtype.Text
 }
 
 type CloudflareConnection struct {
@@ -240,6 +259,13 @@ type IdempotencyKey struct {
 	ResponseStatus pgtype.Int4
 	ResponseBody   []byte
 	CreatedAt      pgtype.Timestamptz
+}
+
+type InstallEpoch struct {
+	ProjectID  string
+	InstallID  string
+	Generation int64
+	UpdatedAt  pgtype.Timestamptz
 }
 
 type Job struct {
@@ -415,6 +441,21 @@ type Project struct {
 	AnalyticsKeySealed      []byte
 	DeviceKeySealed         []byte
 	AnalyticsInstallID      string
+	BackupRequestedAt       pgtype.Timestamptz
+	BackupError             pgtype.Text
+	BackupErrorAt           pgtype.Timestamptz
+	RecoveryKitConfirmedAt  pgtype.Timestamptz
+}
+
+type RestoreFence struct {
+	ID         int64
+	ProjectID  string
+	Reason     string
+	Detail     string
+	BackupID   pgtype.Text
+	BackupAt   pgtype.Timestamptz
+	DetectedAt pgtype.Timestamptz
+	LiftedAt   pgtype.Timestamptz
 }
 
 type RetentionCursor struct {

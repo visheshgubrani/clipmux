@@ -80,7 +80,7 @@ when you introduce or discover it; remove it when it is closed.
   skips it (D121).
 - Content key secrets live in Postgres sealed with the secrets key (D022).
   Back up Postgres and the secrets key together: losing either makes every
-  output unplayable (docs/operations.md). Rotating the content key secret
+  output unplayable (site/content/docs/self-host/operate/backups.mdx). Rotating the content key secret
   (D071) doesn't re-encode existing outputs; each keeps its version.
 - Sign caps file count per attempt, not total bytes; a presigned filesystem
   PUT is capped at 5 GiB per object. `GET /v1/assets` looks up by
@@ -337,7 +337,8 @@ when you introduce or discover it; remove it when it is closed.
   reconciler, per-output keys derived from one secret (P6 open question 7).
 - Audit leftovers: none open. (`vid` is kept as a keyed hash in analytics,
   D103; the shared Go/Worker vectors are D015/D036, pinned-job timeouts
-  D045, the route cache D072 and the backup docs docs/operations.md.)
+  D045, the route cache D072 and the backup docs
+  site/content/docs/self-host/operate/backups.mdx.)
 
 ## Onboarding (2026-11-12)
 
@@ -485,3 +486,89 @@ when you introduce or discover it; remove it when it is closed.
   A provider runs several at once, one machine per job. Encode slots that
   fix this are planned for after v1.0.0
   ([plans/parallel-encodes.md](plans/parallel-encodes.md)).
+
+## Backups and recovery (D143–D146, 2026-11-23)
+
+Deferred by [plans/P6-T29-recovery.md](plans/P6-T29-recovery.md):
+
+- **No continuous WAL archiving (PITR).** Backups are scheduled dumps: up to
+  one interval of data (15 minutes on production, one hour by default) is
+  lost on a restore. WAL archiving can be added on top of them.
+- **No high availability.** One `serve` replica and one Postgres. A warm
+  standby that restores continuously ("pilot light") would shorten a lost
+  host's recovery below the 30 minutes of D145.
+- **No adopting from storage.** After a restore, what is newer than the
+  database stays in storage, listed by `clipmux admin restore report`, but
+  rebuilding its asset and output rows from route records and `manifest.json`
+  is not built. Until then the fence (D144) keeps that data safe, and a
+  video uploaded after the backup is not in the library.
+- **No trash window for deleted assets.** A deleted asset's files go at once,
+  so a backup is the only way back, and sources deleted since the last
+  backup are lost.
+- **Each backup is a whole dump of the install's schema.** Nothing is
+  incremental, so a database of many gigabytes is dumped, encrypted and
+  uploaded in full every interval, and pg_dump holds one transaction open for
+  its length. Roles and other schemas in the same database aren't included,
+  and a backup needs `DATABASE_URL` as a `postgres://` URL, not the
+  keyword/value form.
+- **A store's endpoint and bucket can't be changed.** A store's config is
+  fixed when it is added; only its credentials rotate
+  (`PUT /v1/storage/{id}/credentials`). So after a lost bucket in the same
+  account (the same name, so the same endpoint) `restore-sources` works, but
+  after a lost Cloudflare or cloud account the assets' store still names the
+  old endpoint and nothing repoints it. Recovery into a new account needs an
+  endpoint edit on the store, which the disaster-recovery page says isn't
+  supported yet.
+- **The source mirror copies sources, not outputs, and only some sources.**
+  A source on a PC agent isn't copied until it is uploaded, and an asset
+  encoded with the source not kept has none to copy; after a lost bucket
+  those assets can't be re-encoded. Outputs are re-encoded, not restored, so
+  playback after a lost bucket waits for the encodes: hours for a large
+  library. A source is copied whole each time it is copied; a source replaced
+  after it was copied is not noticed (sources are not replaced today). An
+  immutable target keeps a deleted asset's copy until its lifecycle rule
+  removes it.
+- **"Back up now" and the card are leader-paced.** The request is taken on
+  the leader's next pass, up to a minute later, and a failed attempt waits
+  five minutes before the next. `immutable` is unknown until the first backup
+  after serve starts. The recovery-kit checkbox is the owner's word and
+  nothing checks it.
+- **The restore check shares the database server.** It restores into a
+  scratch database on the same Postgres as the install, so a large backup
+  loads that server for the length of the restore (at idle priority for the
+  client, but not for the server), and a role without `CREATEDB` gets the
+  file checked and not restored. It checks the newest backup only, ten counted
+  tables, and that the content keys load, not that a video plays; and it runs
+  only while scheduled backups are on. A first check follows the first backup
+  within a minute.
+- **A restore replaces the whole schema, and decrypts the dump to disk.**
+  Anything else in the install's schema (not ClipMux's) goes with it. The
+  plaintext dump sits in a private directory on the data volume for the
+  length of the restore, and `pg_restore` needs room for it. If loading
+  fails after the schema is cleared, the database is empty until the restore
+  is run again; the safety backup (`pre_restore`) holds what was there.
+- **`clipmux admin migrate down-to` takes no backup.** It is asked for by
+  name and needs `--yes`; take `clipmux admin backup now` first. Only
+  migrating up is backed up (D143).
+- **`install.sh --restore` restores the newest backup.** A particular one,
+  or a dump file, is `docker compose run --rm app admin restore --id ID --yes`
+  by hand. Restoring onto a host that already runs ClipMux is by hand too.
+- **Backup retention is by age only.** Pruning has no cap on count or bytes,
+  and the newest backup is always kept, so a target that fills up is the
+  owner's to size.
+- **Outputs aren't backed up** (D146): a lost bucket means re-encoding every
+  source before anything plays again.
+- **The restore fence protects stores, not Postgres.** A fenced install
+  still takes writes, and what it takes after an older database came back
+  is itself lost if the owner then restores a newer backup over it.
+- **Only S3 Object Lock is read, not R2's bucket locks** (D147). On an R2
+  target with a bucket lock rule ClipMux still prunes, the lock refuses the
+  deletes of backups it holds, and each backup's housekeeping logs that as
+  an error. Prefer B2 or another store with S3 Object Lock for backups.
+- **A restore clears the schema and loads the dump in two transactions**
+  (D147). A load that fails leaves the schema empty; the error says so and
+  names the safety backup to restore instead.
+- **The locked B2 target still needs a production probe.** The live drill
+  confirmed that a delete without a version ID adds a hide marker.
+  T29.12 checks Object Lock on production with the bucket-scoped key and
+  its `readBucketRetentions` permission.

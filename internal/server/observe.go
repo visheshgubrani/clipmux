@@ -202,9 +202,23 @@ func boundCode(code string) string {
 	return "other"
 }
 
+// backups registers the gauges that come from this server rather than from
+// Postgres: how often it backs up (0 when it doesn't), and the room left on the
+// disk holding its data directory.
+func (o *observer) backups(interval time.Duration, dataDir string) {
+	o.reg.Func("clipmux_backup_interval_seconds", "How often backups are taken; 0 if they are off.", "gauge", nil,
+		func() []cm.Sample { return []cm.Sample{{Value: interval.Seconds()}} })
+	o.reg.Func("clipmux_data_free_bytes", "Bytes free to serve on the disk holding the data directory.", "gauge", nil,
+		func() []cm.Sample { free, _ := diskSpace(dataDir); return []cm.Sample{{Value: free}} })
+	o.reg.Func("clipmux_data_total_bytes", "Size of the disk holding the data directory.", "gauge", nil,
+		func() []cm.Sample { _, total := diskSpace(dataDir); return []cm.Sample{{Value: total}} })
+}
+
 // dbCounts is one read of every Postgres-backed family.
 type dbCounts struct {
 	jobs, oldest, attempts, outbox, outboxAge, deliveries, dispatches, online []cm.Sample
+	// backups is nil when it couldn't be read, which leaves its gauges empty.
+	backups *db.MetricBackupsRow
 }
 
 func (o *observer) database(pool *pgxpool.Pool) {
@@ -239,6 +253,36 @@ func (o *observer) database(pool *pgxpool.Pool) {
 		func(c dbCounts) []cm.Sample { return c.deliveries })
 	family("clipmux_dispatches", "Serverless dispatches by provider and status.", "gauge", []string{"provider", "status"},
 		func(c dbCounts) []cm.Sample { return c.dispatches })
+	// Backups and recovery (T29.8). A gauge is a time or a size, so an alert
+	// can say "older than twice the interval" without the server judging it.
+	bk := func(name, help string, f func(db.MetricBackupsRow) float64) {
+		family(name, help, "gauge", nil, func(c dbCounts) []cm.Sample {
+			if c.backups == nil {
+				return nil
+			}
+			return []cm.Sample{{Value: f(*c.backups)}}
+		})
+	}
+	flag := func(b bool) float64 {
+		if b {
+			return 1
+		}
+		return 0
+	}
+	bk("clipmux_backup_last_success_timestamp_seconds", "When the newest backup was written; 0 if there is none.",
+		func(r db.MetricBackupsRow) float64 { return r.LastSuccess })
+	bk("clipmux_backup_last_verified_timestamp_seconds", "When a backup was last proved restorable; 0 if none has been.",
+		func(r db.MetricBackupsRow) float64 { return r.LastVerified })
+	bk("clipmux_backup_verify_failed", "1 if the newest check of a backup failed.",
+		func(r db.MetricBackupsRow) float64 { return flag(r.VerifyFailed) })
+	bk("clipmux_backup_last_bytes", "Size of the newest backup, as stored.",
+		func(r db.MetricBackupsRow) float64 { return float64(r.LastBytes) })
+	bk("clipmux_backup_sources_pending", "Committed sources not yet copied to the backup target.",
+		func(r db.MetricBackupsRow) float64 { return float64(r.SourcesPending) })
+	bk("clipmux_restore_fenced", "1 while the restore fence stops storage deletes (D144).",
+		func(r db.MetricBackupsRow) float64 { return flag(r.Fenced) })
+	bk("clipmux_db_size_bytes", "Size of the Postgres database.",
+		func(r db.MetricBackupsRow) float64 { return float64(r.DbSize) })
 	family("clipmux_workers_online", "Workers seen in the last minute: PC agents and the built-in worker.", "gauge",
 		[]string{"kind"}, func(c dbCounts) []cm.Sample { return c.online })
 }
@@ -281,6 +325,9 @@ func readCounts(ctx context.Context, q *db.Queries) dbCounts {
 		for _, r := range rows {
 			c.dispatches = append(c.dispatches, cm.Sample{Labels: []string{r.Kind, r.Status}, Value: float64(r.N)})
 		}
+	}
+	if r, err := q.MetricBackups(ctx, db.DefaultProjectID); err == nil {
+		c.backups = &r
 	}
 	if w, err := q.MetricWorkersOnline(ctx, queue.OnlineWithin.Seconds()); err == nil {
 		c.online = []cm.Sample{{Labels: []string{"agent"}, Value: float64(w.Agents)}, {Labels: []string{"builtin"}, Value: float64(w.Builtin)}}

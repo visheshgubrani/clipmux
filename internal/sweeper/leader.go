@@ -2,6 +2,7 @@ package sweeper
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"sync/atomic"
 	"time"
@@ -100,4 +101,33 @@ func (l *Leader) Await(ctx context.Context, d time.Duration) {
 	for !l.IsLeader() && time.Now().Before(deadline) && ctx.Err() == nil {
 		time.Sleep(20 * time.Millisecond)
 	}
+}
+
+// HoldLeaderLock takes the leader lock for a command that must have the
+// database to itself, such as a restore: while it is held, no serve runs the
+// background loops, and one that boots waits as a follower. held is false when
+// a serve already has the lock; call release, once, when the command is done.
+// The lock is keyed by the schema's name rather than by current_schema(), so
+// it survives a command that drops and recreates the schema.
+func HoldLeaderLock(ctx context.Context, pool *pgxpool.Pool) (release func(), held bool, err error) {
+	var schema string
+	if err := pool.QueryRow(ctx, `SELECT current_schema()`).Scan(&schema); err != nil {
+		return nil, false, fmt.Errorf("current schema: %w", err)
+	}
+	conn, err := pool.Acquire(ctx)
+	if err != nil {
+		return nil, false, fmt.Errorf("take the leader lock: %w", err)
+	}
+	if err := conn.QueryRow(ctx, `SELECT pg_try_advisory_lock($1, hashtext($2))`, int32(leaderLockClass), schema).Scan(&held); err != nil || !held {
+		conn.Release()
+		if err != nil {
+			return nil, false, fmt.Errorf("take the leader lock: %w", err)
+		}
+		return nil, false, nil
+	}
+	return func() {
+		// Unlock on a live connection; a dead one has lost it already.
+		_, _ = conn.Exec(context.WithoutCancel(ctx), `SELECT pg_advisory_unlock($1, hashtext($2))`, int32(leaderLockClass), schema)
+		conn.Release()
+	}, true, nil
 }

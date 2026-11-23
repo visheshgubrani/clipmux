@@ -39,6 +39,42 @@ func TestOnlyOneReplicaLeadsAndAnotherTakesOver(t *testing.T) {
 	}
 }
 
+// A restore takes the leader lock to have the database to itself: it can't
+// while a serve leads, and a serve that boots meanwhile stays a follower.
+func TestACommandHoldingTheLeaderLockExcludesServe(t *testing.T) {
+	pool := dbtest.New(t)
+	ctx := context.Background()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	l := NewLeader(pool, logger)
+	l.Retry = 20 * time.Millisecond
+	lctx, stop := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() { l.Run(lctx); close(done) }()
+	waitFor(t, l.IsLeader)
+	if _, held, err := HoldLeaderLock(ctx, pool); err != nil || held {
+		t.Fatalf("HoldLeaderLock under a leading serve = held %v, %v; want it refused", held, err)
+	}
+	stop()
+	<-done
+
+	release, held, err := HoldLeaderLock(ctx, pool)
+	if err != nil || !held {
+		t.Fatalf("HoldLeaderLock with no serve = held %v, %v; want it taken", held, err)
+	}
+	l2 := NewLeader(pool, logger)
+	l2.Retry = 20 * time.Millisecond
+	l2ctx, stop2 := context.WithCancel(ctx)
+	defer stop2()
+	go l2.Run(l2ctx)
+	time.Sleep(150 * time.Millisecond)
+	if l2.IsLeader() {
+		t.Fatal("a serve took the lock while a command held it")
+	}
+	release()
+	waitFor(t, l2.IsLeader)
+}
+
 func waitFor(t *testing.T, cond func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)

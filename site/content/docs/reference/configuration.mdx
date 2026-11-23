@@ -20,6 +20,13 @@ A value that doesn't parse stops the command at start, naming the variable.
 | `CLIPMUX_DATA_DIR` | `./data` | Filesystem storage, the storage signing key, and the secrets key when `CLIPMUX_SECRETS_KEY` is unset. Back it up. |
 | `CLIPMUX_SECRETS_KEY` | `{data_dir}/secrets.key` | `v1:` and 64 hex digits; seals every secret kept in Postgres. Losing it makes every stored secret, and every output, unusable. |
 | `CLIPMUX_SECRETS_KEY_PREVIOUS` | unset | The key being rotated away from, only until `clipmux admin reseal-secrets` has run. |
+| `CLIPMUX_BACKUP_URL` | `file://{data_dir}/backups` | Where backups go: `s3://bucket/prefix?endpoint=https://…&region=…` for an S3-compatible bucket (Backblaze B2, R2, S3), or `file:///absolute/path`. The default is the server's own disk. |
+| `CLIPMUX_BACKUP_ACCESS_KEY_ID`, `CLIPMUX_BACKUP_SECRET_ACCESS_KEY` | unset | The bucket's credentials; required for an `s3://` target. Use a key that can write and list but not delete. |
+| `CLIPMUX_BACKUP_INTERVAL` | `1h`; `24h` for the default directory | Time between scheduled backups, a duration of at least `1m`. `0` turns scheduled backups off; `clipmux admin backup now` still works. |
+| `CLIPMUX_BACKUP_RECIPIENTS` | none | More age recipients (`age1…`, comma-separated) every backup is encrypted to, such as a key you keep offline. |
+| `CLIPMUX_BACKUP_PING_URL` | unset | A URL fetched after each successful scheduled backup, for a dead man's switch such as healthchecks.io or an Uptime Kuma push monitor. |
+| `CLIPMUX_BACKUP_BEFORE_MIGRATE` | `true` | Back the database up (kind `pre_migrate`) before applying pending migrations, at boot and in `clipmux admin` commands, and refuse to migrate if the backup fails. `false` migrates without one. A new database has nothing to back up. |
+| `CLIPMUX_PG_DUMP` | `pg_dump` on `PATH` | The PostgreSQL 18 `pg_dump` backups run. The image has it. |
 | `CLIPMUX_PUBLIC_URL` | chosen at first boot | The origin browsers and workers reach serve at. Set, it pins both URLs and the first-boot URL step is read-only. |
 | `CLIPMUX_MEDIA_URL` | `CLIPMUX_PUBLIC_URL` | The origin playback is served from (`base_url`); ideally another registrable domain. Needs `CLIPMUX_PUBLIC_URL`. |
 | `CLIPMUX_TRUSTED_PROXIES` | none | Addresses or CIDR ranges (Caddy's) whose `X-Forwarded-For`, `X-Forwarded-Proto` and `X-Request-Id` are believed. Rate limits, sign-in limits, request IDs and the https redirect all depend on it. |

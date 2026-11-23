@@ -496,12 +496,8 @@ func (c *Committer) syncKeys(ctx context.Context, qs *db.Queries, adapters adapt
 	done := 0
 	for projectID, pending := range byProject {
 		d, _, err := adapters(ctx, projectID)
-		var keys routes.Keys
 		if err == nil {
-			keys, err = routes.DesiredKeys(ctx, qs, projectID)
-		}
-		if err == nil {
-			err = d.PublishKeys(ctx, keys)
+			err = routes.PublishKeys(ctx, qs, d, projectID)
 		}
 		for _, row := range pending {
 			if err != nil {

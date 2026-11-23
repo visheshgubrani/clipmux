@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/visheshgubrani/clipmux/internal/db/dbtest"
 )
@@ -130,6 +131,7 @@ func TestAlertsUseMetricsServeExports(t *testing.T) {
 	exported := map[string]bool{}
 	obs := newObserver(nil, nil, "test")
 	obs.inFlight.Add(0)
+	obs.backups(time.Hour, t.TempDir())
 	for _, line := range strings.Split(string(obs.reg.Expose()), "\n") {
 		if f := strings.Fields(line); len(f) >= 3 && f[0] == "#" && f[1] == "TYPE" {
 			exported[f[2]] = true
@@ -138,12 +140,89 @@ func TestAlertsUseMetricsServeExports(t *testing.T) {
 	// The Postgres-backed families exist only with a pool; name them here.
 	for _, n := range []string{"clipmux_jobs", "clipmux_job_queue_oldest_seconds", "clipmux_attempts_finished_total",
 		"clipmux_outbox_pending", "clipmux_outbox_oldest_pending_seconds", "clipmux_webhook_deliveries",
-		"clipmux_dispatches", "clipmux_workers_online", "clipmux_db_pool_acquired_conns", "clipmux_db_pool_max_conns"} {
+		"clipmux_dispatches", "clipmux_workers_online", "clipmux_db_pool_acquired_conns", "clipmux_db_pool_max_conns",
+		"clipmux_backup_last_success_timestamp_seconds", "clipmux_backup_last_verified_timestamp_seconds", "clipmux_backup_verify_failed",
+		"clipmux_backup_last_bytes", "clipmux_backup_sources_pending", "clipmux_restore_fenced", "clipmux_db_size_bytes"} {
 		exported[n] = true
 	}
 	for _, m := range regexp.MustCompile(`clipmux_[a-z_]+`).FindAllString(string(rules), -1) {
+		// A histogram is exported as its name and used as _bucket, _sum and _count.
+		for _, suffix := range []string{"_bucket", "_sum", "_count"} {
+			if base := strings.TrimSuffix(m, suffix); base != m && exported[base] {
+				m = base
+			}
+		}
 		if !exported[m] {
 			t.Errorf("alerts.yml uses %s, which serve doesn't export", m)
 		}
 	}
+}
+
+func TestMetricsReportBackupsSourcesTheFenceAndTheDisk(t *testing.T) {
+	pool := dbtest.New(t)
+	ctx := context.Background()
+	exec := func(sql string, args ...any) {
+		t.Helper()
+		if _, err := pool.Exec(ctx, sql, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	obs := newObserver(pool, nil, "test")
+	obs.backups(time.Hour, t.TempDir())
+
+	// Nothing backed up yet: zeros, which an alert reads together with the interval.
+	out := scrape(t, obs.Handler(false))
+	for _, want := range []string{
+		`clipmux_backup_last_success_timestamp_seconds 0`, `clipmux_backup_last_verified_timestamp_seconds 0`,
+		`clipmux_backup_verify_failed 0`, `clipmux_backup_last_bytes 0`, `clipmux_backup_sources_pending 0`,
+		`clipmux_restore_fenced 0`, `clipmux_backup_interval_seconds 3600`,
+	} {
+		if !strings.Contains(out, want+"\n") {
+			t.Errorf("missing %s", want)
+		}
+	}
+	free := regexp.MustCompile(`clipmux_data_free_bytes ([0-9.e+]+)`).FindStringSubmatch(out)
+	total := regexp.MustCompile(`clipmux_data_total_bytes ([0-9.e+]+)`).FindStringSubmatch(out)
+	if free == nil || total == nil {
+		t.Fatal("no disk gauges")
+	}
+	if f, _ := strconv.ParseFloat(free[1], 64); f <= 0 {
+		t.Errorf("free bytes = %v, want the temp directory's disk to have some", f)
+	}
+	if size := regexp.MustCompile(`clipmux_db_size_bytes ([0-9.e+]+)`).FindStringSubmatch(out); size == nil {
+		t.Error("no database size")
+	}
+
+	// Two backups, the older proved restorable, the newer checked and failed;
+	// two sources waiting; the fence up.
+	exec(`INSERT INTO backups (id, project_id, kind, object_key, size_bytes, sha256, clipmux_version, schema_version, postgres_version, secrets_key_version, created_at, verified_at, verify_mode)
+		VALUES ('bak_old', 'prj_default', 'scheduled', 'db/hourly/a', 111, 'x', 'v', 1, '18', 1, '2026-11-01T10:00:00Z', '2026-11-01T11:00:00Z', 'restore')`)
+	exec(`INSERT INTO backups (id, project_id, kind, object_key, size_bytes, sha256, clipmux_version, schema_version, postgres_version, secrets_key_version, created_at, verified_at, verify_mode, verify_error)
+		VALUES ('bak_new', 'prj_default', 'scheduled', 'db/hourly/b', 222, 'x', 'v', 1, '18', 1, '2026-11-02T10:00:00Z', '2026-11-02T11:00:00Z', 'restore', 'broken')`)
+	for _, id := range []string{"ast_1", "ast_2"} {
+		exec(`INSERT INTO assets (id, project_id, app_id, status, storage_id, source_uri) VALUES ($1, 'prj_default', 'app_dashboard', 'processing', 'sto_default', 'uploads/'||$1||'/source')`, id)
+	}
+	exec(`INSERT INTO restore_fence (project_id, reason) VALUES ('prj_default', 'restored')`)
+	time.Sleep(dbCacheFor + 100*time.Millisecond) // the counts are cached for 10 s
+	out = scrape(t, obs.Handler(false))
+	for _, want := range []string{
+		`clipmux_backup_last_success_timestamp_seconds 1.7936136e+09`, `clipmux_backup_last_verified_timestamp_seconds 1.7935308e+09`,
+		`clipmux_backup_verify_failed 1`, `clipmux_backup_last_bytes 222`, `clipmux_backup_sources_pending 2`, `clipmux_restore_fenced 1`,
+	} {
+		if !strings.Contains(out, want+"\n") {
+			t.Errorf("missing %s\n%s", want, grepLines(out, "clipmux_backup", "clipmux_restore"))
+		}
+	}
+}
+
+func grepLines(out string, prefixes ...string) string {
+	var keep []string
+	for _, l := range strings.Split(out, "\n") {
+		for _, p := range prefixes {
+			if strings.HasPrefix(l, p) {
+				keep = append(keep, l)
+			}
+		}
+	}
+	return strings.Join(keep, "\n")
 }

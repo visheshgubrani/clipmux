@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import * as React from 'react'
 import { useSearchParams } from 'react-router'
 import { ApiError, describe, post, put, type Setup, type Step } from '@/api'
+import { BackupsCard } from '@/components/backups'
 import { CopyBlock } from '@/components/copy'
 import { PageBody, PageHeader, Section } from '@/components/page'
 import { SetupTestPanel, UrlsForm } from '@/components/setup-parts'
@@ -61,19 +62,11 @@ export function Settings({ setup }: { setup: Setup }) {
         </TabsContent>
         <TabsContent value="security" className="flex flex-col gap-10 pt-8">
           <ContentKeySection />
-          <Section title="Backups">
-            <p className="text-sm text-muted-foreground">
-              Back up Postgres and the secrets key together. Losing either makes every video unplayable.{' '}
-              <a
-                href="https://clipmux.com/docs/self-host/operate/backups"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="underline underline-offset-3 hover:text-foreground"
-              >
-                Back up and restore
-              </a>{' '}
-              has the steps.
-            </p>
+          <Section
+            title="Backups"
+            description="Encrypted copies of the database and of every uploaded source, and whether you could restore from them."
+          >
+            <BackupsCard />
           </Section>
         </TabsContent>
         <TabsContent value="about" className="pt-8">

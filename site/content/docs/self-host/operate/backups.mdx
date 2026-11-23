@@ -1,90 +1,396 @@
 ---
 title: Back up and restore
-description: Back up the database, the secrets key and the stored videos together, and restore all three.
+description: Back up the database, the uploaded videos and the secrets key, check the backups, and restore them on the same server or a new one.
 icon: DatabaseBackup
 ---
 
-A ClipMux backup is three things, and they only work together. Postgres
+A ClipMux install is three things, and they only work together. Postgres
 holds every record and every secret, sealed with the secrets key. The
 secrets key opens them. The stored videos are encrypted with keys derived
 from a secret that the secrets key seals.
 
+ClipMux backs up the first for you, copies the originals of the third, and
+leaves the second to you, because a backup can't hold the key that opens it.
+
 <Warning>
   Losing the secrets key makes every stored secret unusable, and every
-  encoded video unplayable. Back it up somewhere off the server.
+  encoded video unplayable. Keep a copy somewhere off the server. See
+  [the recovery kit](#recovery-kit).
 </Warning>
 
 The commands below are for the one-line install, which runs in
-`/opt/clipmux`. Run them from that directory.
+`/opt/clipmux`. Run them from that directory. For what to do when something
+has already gone wrong, start at
+[Disaster recovery](/docs/self-host/operate/disaster-recovery).
 
 ## Before you start
 
 - Shell access to the server, with Docker Compose.
-- Somewhere off the server to keep backups, encrypted or offline.
+- Somewhere off the server to keep backups: a bucket at a provider other
+  than the one holding your videos, so one account can't lose both.
 
-## What to back up
+## What is backed up
 
-| What | Where | How |
-| --- | --- | --- |
-| Postgres | the `pgdata` volume | `pg_dump` in custom format, daily |
-| The secrets key | `CLIPMUX_SECRETS_KEY` in `/opt/clipmux/.env`, or `secrets.key` in `CLIPMUX_DATA_DIR` when the variable is unset | once, and again after every rotation |
-| Stored videos | the `data` volume for this server's disk, or your R2 or S3 buckets | a snapshot of the volume; for buckets, the provider's versioning or replication |
+| What | How |
+| --- | --- |
+| Postgres | serve writes an encrypted dump to the backup target every hour. |
+| Uploaded originals | serve copies each source, encrypted, to the same target. See [Uploaded sources](#uploaded-sources). |
+| Encoded videos | Not copied. After a lost bucket they are encoded again from the originals. |
+| The secrets key and `DATABASE_URL` | Yours to keep: the [recovery kit](#recovery-kit). |
 
-Encoded videos are AES-128 ciphertext, so a media backup is useless without
-the other two. Uploaded originals are stored as they were uploaded.
+Encoded videos are AES-128 ciphertext, so a copy of them is useless without
+the other two. If you want one anyway, snapshot the `data` volume, or turn on
+versioning or replication for your buckets at the provider.
 
-## Back up
+## Automatic backups
+
+serve backs up its own database, with nothing to install on the host. Every
+backup is a `pg_dump` of ClipMux's schema, encrypted with
+[age](https://age-encryption.org) as it is written, so no plaintext reaches
+the target or the disk. The server's identity is derived from the secrets
+key, so the key and the backups are enough to bring everything back.
+
+Without any setting, serve writes a copy a day to `backups/` in the data
+directory and keeps seven days. That sits on the same disk as the database, so
+a lost disk takes the backups too, and the dashboard says so. Send them
+elsewhere, as below.
+
+With a bucket set, a backup is taken every hour
+(`CLIPMUX_BACKUP_INTERVAL`; `0` turns backups off). It is written to
+`db/hourly/` as `{time}-{id}.dump.age`, beside a `.json` manifest with its
+size, SHA-256, ClipMux version and migration version. The first backup of each
+day, week and month is also copied to `db/daily/`, `db/weekly/` and
+`db/monthly/`, so a lifecycle rule has something to keep.
+
+```bash
+docker compose exec app clipmux admin backup check      # can the target be written, read and listed; can it delete?
+docker compose exec app clipmux admin backup now        # take one now
+docker compose exec app clipmux admin backup list       # what the target holds
+```
+
+Before an upgrade's migrations run, serve (and `clipmux admin`) takes a backup
+of the database as it is, listed as kind `pre_migrate`, and doesn't migrate if
+it can't. That backup is how you go back after a bad upgrade: stop the app,
+install the older release and [restore](#restore) it. A new install has nothing
+to back up, and `CLIPMUX_BACKUP_BEFORE_MIGRATE=false` turns it off.
+
+## Set up a backup target
+
+`CLIPMUX_BACKUP_URL` takes `s3://bucket/prefix?endpoint=…&region=…` for any
+S3-compatible bucket, or `file:///path` for a directory. The best setup is a
+bucket whose key can write and list but **not delete**, with object lock and
+lifecycle rules that expire old backups. Then ransomware on the server, or a
+stolen `.env`, can't erase the backups. ClipMux asks the target what its key
+may do: with a key that can't delete it prunes nothing and says the target is
+immutable; with a key that can, it prunes hourly backups after 3 days, daily
+after 35, weekly after 90 and monthly after 400, and always keeps the newest.
+
+### Backblaze B2
+
+This is the setup ClipMux is built around.
 
 <Steps>
 <Step>
 
-### Dump the database
+### Make a locked bucket
+
+Create a **private** bucket and turn on **Object Lock**, with a default
+retention of 7 days, in compliance mode. For a week after it is written, a
+file can't be deleted or changed by anyone, whatever key asks. Note the bucket's S3
+endpoint and region, such as `https://s3.us-west-004.backblazeb2.com` and
+`us-west-004`.
+
+</Step>
+<Step>
+
+### Add lifecycle rules
+
+ClipMux doesn't prune a locked bucket, so the bucket does. (On B2 a delete
+through the S3 API only hides a file, which even a key without `deleteFiles`
+may do; the lock is what keeps each backup for its retention, and ClipMux
+reads it.) Add one rule per prefix, each hiding files after the number of
+days shown and deleting them a day later:
+
+| Prefix | Hide after |
+| --- | --- |
+| `db/hourly/` | 3 days |
+| `db/daily/` | 35 days |
+| `db/weekly/` | 90 days |
+| `db/monthly/` | 400 days |
+| `_probe/` | 1 day |
+
+`_probe/` holds the tiny object each backup writes to learn what its key may
+do. Leave `sources/` without a rule: those are your originals.
+
+</Step>
+<Step>
+
+### Make two application keys
+
+Both limited to this bucket.
+
+- **For the server:** `listFiles`, `readFiles`, `writeFiles` and
+  `readBucketRetentions`, and not `deleteFiles`. The server reads too, to
+  check its own backups, and reads the bucket's lock to know not to prune it.
+- **For you, kept off the server:** `listFiles` and `readFiles`. A restore only
+  reads, so this is the key to keep in your recovery kit.
+
+</Step>
+<Step>
+
+### Point ClipMux at it
+
+```bash
+# /opt/clipmux/.env
+CLIPMUX_BACKUP_URL=s3://my-clipmux-backups/clipmux?endpoint=https://s3.us-west-004.backblazeb2.com&region=us-west-004
+CLIPMUX_BACKUP_ACCESS_KEY_ID=…
+CLIPMUX_BACKUP_SECRET_ACCESS_KEY=…
+```
+
+Restart with `docker compose up -d --wait`, then check it:
+
+```bash
+docker compose exec app clipmux admin backup check
+```
+
+It should say writes, reads and lists are ok and that object lock is on: the
+target is immutable to this server, and ClipMux prunes nothing. If it says the
+lock couldn't be read, the key is missing `readBucketRetentions`.
+
+</Step>
+</Steps>
+
+### Other providers
+
+- **Cloudflare R2.** The endpoint is
+  `https://<account id>.r2.cloudflarestorage.com`, with region `auto`. An R2
+  token that can write can also delete, so ClipMux will prune, and the
+  dashboard will say the key can delete. For protection, add a
+  [bucket lock](https://developers.cloudflare.com/r2/buckets/bucket-locks/)
+  rule. Use a different Cloudflare account from your media if you can, or a
+  different provider.
+- **Hetzner Object Storage.** The endpoint is
+  `https://<location>.your-objectstorage.com`, such as
+  `fsn1.your-objectstorage.com`, with that location as the region. Check what
+  the credentials of your project can be limited to; `clipmux admin backup check`
+  tells you what the key you set may do.
+- **AWS S3.** Create the bucket with Object Lock on, and give the server's
+  IAM user `s3:PutObject`, `s3:GetObject` and `s3:ListBucket` on it, and no
+  `s3:DeleteObject`. Add lifecycle expiration rules for the prefixes above.
+- **A directory.** `file:///path` works for a mounted disk or share. Its key
+  is the host's own, so it can always delete and ClipMux prunes to the same
+  ages. A directory on another machine, or a network share, is far better than
+  one on the same disk.
+
+## Checking backups
+
+A backup nobody has restored is a hope, so serve restores the newest one every
+week, into a scratch database on the same Postgres server, and drops it again.
+It checks that the file is whole (its SHA-256 matches the manifest and it
+decrypts), that this install's secrets key opens every secret in it, that the
+content keys it needs load, and that each counted table has exactly the rows
+the manifest recorded, counted in the snapshot the dump read. The result is
+kept with the backup, and a failed check is tried again after six hours. It
+needs a database role that may create databases, which the compose stack's
+role is; without one it proves the file only, and says so. Run it yourself,
+for example after changing the secrets key:
+
+```bash
+docker compose exec app clipmux admin backup verify
+```
+
+## Uploaded sources
+
+Encoded videos can be made again from the originals you uploaded, but the
+originals can't be made again from anything. So serve also copies each
+committed source, encrypted the same way, to `sources/{asset}.age` on the
+target, twenty a pass, oldest first. Sources on a PC agent aren't copied
+until you upload them, and a source you chose not to keep isn't either. The
+encoded files are not copied.
+
+When a bucket is lost, or an account is closed, restore the database, point
+the stores at new buckets and run:
+
+```bash
+docker compose exec app clipmux admin backup restore-sources --all
+```
+
+It copies each missing source back to the store it belongs on and queues a
+re-encode through the usual job path, for every asset whose source was
+restored or whose encoded files are gone. Playback returns as the re-encodes
+finish, which takes hours for a large library and not minutes. Running it
+again changes nothing that is already restored; `--asset ID` does one asset.
+An asset you deleted after the backup has a tombstone on the target, and is
+left alone.
+
+A deleted asset's copy stays on the target for 30 days. Where the backup key
+may delete, serve then removes it. Where it can't, the copies stay, and you
+can clear them now and then with a key that can delete, used for this one
+command:
+
+```bash
+docker compose exec \
+  -e CLIPMUX_BACKUP_ACCESS_KEY_ID=… -e CLIPMUX_BACKUP_SECRET_ACCESS_KEY=… \
+  app clipmux admin backup prune-sources
+```
+
+## The recovery kit [#recovery-kit]
+
+Everything on the target is encrypted to a key derived from the secrets key.
+So after losing the server, the backups open only if you still have these,
+kept somewhere other than the server:
+
+- `CLIPMUX_SECRETS_KEY`, the `v1:…` line of `.env`, and, after a
+  [rotation](/docs/self-host/operate/rotate-secrets), every older key whose
+  backups still exist.
+- `POSTGRES_PASSWORD` and the rest of `.env`, which names the target.
+- The backup target's read key, from the step above.
+- If you set `CLIPMUX_BACKUP_RECIPIENTS`, the private half of that age key.
+
+The simplest kit is a copy of `/opt/clipmux/.env` in a password manager, plus
+the read key. Tick the dashboard's **Recovery kit stored off this server**
+once you have done it; that is your own word, and nothing checks it. Without
+the secrets key, backups can't be opened by anyone, ClipMux included.
+
+`CLIPMUX_BACKUP_RECIPIENTS` adds your own age public key (`age-keygen` makes
+one) to every backup, so you can open them without the server's key, with only
+the private half kept offline. `CLIPMUX_BACKUP_PING_URL` is fetched after every
+successful backup: point a healthchecks.io check at it and you are told when
+backups stop.
+
+## Open a backup without ClipMux
+
+A backup is an `age` file around a standard `pg_dump` archive, so the `age` and
+`pg_restore` tools open it. With the server's identity:
+
+```bash
+age -d -i <(docker compose exec -T app clipmux admin backup identity) 20261123T101500Z-bak_….dump.age > clipmux.dump
+pg_restore --list clipmux.dump
+```
+
+Or with your own key, if you set `CLIPMUX_BACKUP_RECIPIENTS`:
+
+```bash
+age -d -i my-age-identity.txt 20261123T101500Z-bak_….dump.age > clipmux.dump
+```
+
+Sources open the same way: `age -d -i … sources/ast_….age > video.mp4`.
+
+After a secrets-key rotation, keep the previous key (`CLIPMUX_SECRETS_KEY_PREVIOUS`)
+until the oldest backup made under it has expired: backups are encrypted to
+the key that was current when they were taken.
+
+## In the dashboard
+
+**Settings**, **Security**, **Backups** shows the newest backup, whether one
+has been proved restorable, whether the backups are off this server and out of
+its reach, how many sources are waiting to be copied, and a restore fence if
+one is up. **Back up now** asks serve for a backup, which it takes within a
+minute. The same facts are on
+[the management API](/docs/reference/management-api#backups), and as
+[metrics and alerts](/docs/self-host/operate/monitoring).
+
+## Back up by hand
+
+Automatic backups cover the database and the sources. If you turn them off
+(`CLIPMUX_BACKUP_INTERVAL=0`), or want a copy of your own, dump the database
+yourself and keep the secrets key:
 
 ```bash
 cd /opt/clipmux
 docker compose exec -T postgres pg_dump -U clipmux -Fc clipmux > clipmux.dump
 ```
 
-Run it daily, for example from cron, and copy `clipmux.dump` off the
-server.
-
-</Step>
-<Step>
-
-### Keep the secrets key
-
-Copy the `CLIPMUX_SECRETS_KEY=v1:…` line from `/opt/clipmux/.env` to a
-password manager or another offline place. Do it again whenever you
-[rotate it](/docs/self-host/operate/rotate-secrets).
-
-</Step>
-<Step>
-
-### Back up the videos
-
-Snapshot the `data` volume with your host's tools, or turn on versioning or
-replication for your buckets at the provider.
-
-</Step>
-</Steps>
+Copy `clipmux.dump` off the server, and copy the `CLIPMUX_SECRETS_KEY=v1:…`
+line from `/opt/clipmux/.env` to a password manager. Do it again whenever you
+[rotate the key](/docs/self-host/operate/rotate-secrets). A dump restores with
+`clipmux admin restore --file`.
 
 The dump carries analytics and share links too. Viewer counts stay
 comparable after a restore, because the analytics key is sealed with the
 secrets key. With Cloudflare edge analytics, a restored install pulls only
 the last 13 days of edge counts again.
 
-## Restore
+## Restore [#restore]
+
+`clipmux admin restore` replaces the database with a backup from the target.
+Stop the app first: it refuses while a serve is running.
 
 ```bash
 cd /opt/clipmux
-docker compose up -d postgres
-docker compose exec -T postgres pg_restore -U clipmux -d clipmux --clean --if-exists < clipmux.dump
-# restore the data volume, or point the storage configs at the restored buckets
+docker compose exec app clipmux admin restore --list          # what the target holds
+docker compose stop app
+docker compose run --rm -T --no-deps app admin restore --latest --yes   # or --id ID, or --file PATH
 docker compose up -d --wait
 ```
 
-Start the stack with the same `CLIPMUX_SECRETS_KEY` in `.env` that the dump
-was made with.
+Without `--yes` it only names the backup it would restore. Before it changes
+anything it checks that the backup is whole (its size and SHA-256 match the
+manifest), that this install's secrets key opens it, that it was taken by a
+ClipMux no newer than this one, and that it is of the schema `DATABASE_URL`
+uses. It then backs up the database it is about to replace, as a `pre_restore`
+backup, so a restore can itself be undone with `restore --id`. It loads the dump
+into an emptied schema in one transaction, migrates the result to this version,
+and raises the restore fence below.
+
+The database backup holds no videos. Stored files on this server's disk
+come back with the `data` volume; files in R2 or S3 buckets are still there, and
+the restored database points at them.
+
+`--file PATH` restores a dump you hold: a `.dump.age` copied off the target, or
+a plain `pg_dump -Fc` file.
+
+### On a new server
+
+With only Docker and the `.env` you saved, the installer does all of it:
+
+```bash
+mkdir -p /opt/clipmux && cp .env /opt/clipmux/
+curl -fsSL https://clipmux.com/install.sh | sudo sh -s -- --restore
+```
+
+The `.env` must hold `POSTGRES_PASSWORD`, `CLIPMUX_SECRETS_KEY` and
+`CLIPMUX_BACKUP_URL` (with its access keys, for a bucket). The installer starts
+Postgres, restores the latest backup in a one-off container, starts ClipMux and
+prints the report below. Then point DNS at the new server. Behind your own
+reverse proxy, run the [steps by hand](/docs/self-host/install-options/reverse-proxy#restore-from-a-backup).
+
+<Note>
+  Restoring replaces everything in ClipMux's schema, and the decrypted dump
+  sits in a private directory under the data volume while it loads. Without
+  ClipMux, `pg_restore --clean --if-exists --no-owner -d clipmux clipmux.dump`
+  loads a dump you opened with `age`, though it won't clear tables a newer
+  version added.
+</Note>
+
+## After a restore: the fence
+
+Restoring an older database leaves storage holding what the database no
+longer knows: videos uploaded since the dump. ClipMux's cleanups would
+delete exactly that, so every store carries a marker, `_clipmux/epoch.json`,
+with the install's ID and a counter that goes up every five minutes. A store
+whose marker belongs to another install, or is ahead of the database's
+counter, raises the **restore fence**: until you lift it, serve deletes
+nothing from storage and never removes a route record or a signing key it
+doesn't know. Playback of what the database does know carries on.
+
+A restored database always fences, even from last night's dump. A new
+install pointed at a bucket that another install used is fenced too.
+
+```bash
+docker compose exec app clipmux admin restore report
+```
+
+The report lists the route records, output prefixes and sources in storage
+that the database has no row for. Read it, then lift the fence:
+
+```bash
+docker compose exec app clipmux admin restore finish --yes
+```
+
+Finishing stamps every store as this install's. After it, serve deletes the
+output prefixes and route records the report listed. Nothing else lifts the
+fence.
 
 ## Check it works
 
@@ -114,6 +420,7 @@ Then play an older video from the dashboard.
 
 ## Next
 
+- [Disaster recovery](/docs/self-host/operate/disaster-recovery)
 - [Rotate keys and secrets](/docs/self-host/operate/rotate-secrets)
 - [Upgrade and uninstall](/docs/self-host/install-options/upgrade-and-uninstall)
 - [Security checklist](/docs/self-host/operate/security-checklist)

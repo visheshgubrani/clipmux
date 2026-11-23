@@ -21,6 +21,15 @@ services:
       CLIPMUX_SECRETS_KEY: ${CLIPMUX_SECRETS_KEY:?set CLIPMUX_SECRETS_KEY in deploy/.env}
       # Only while rotating the secrets key: the old key, until reseal-secrets.
       CLIPMUX_SECRETS_KEY_PREVIOUS: ${CLIPMUX_SECRETS_KEY_PREVIOUS:-}
+      # Backups (D143). Unset, a copy a day goes to the data volume, which a lost
+      # disk takes too: set CLIPMUX_BACKUP_URL to a bucket elsewhere.
+      CLIPMUX_BACKUP_URL: ${CLIPMUX_BACKUP_URL:-}
+      CLIPMUX_BACKUP_ACCESS_KEY_ID: ${CLIPMUX_BACKUP_ACCESS_KEY_ID:-}
+      CLIPMUX_BACKUP_SECRET_ACCESS_KEY: ${CLIPMUX_BACKUP_SECRET_ACCESS_KEY:-}
+      CLIPMUX_BACKUP_INTERVAL: ${CLIPMUX_BACKUP_INTERVAL:-}
+      CLIPMUX_BACKUP_RECIPIENTS: ${CLIPMUX_BACKUP_RECIPIENTS:-}
+      CLIPMUX_BACKUP_PING_URL: ${CLIPMUX_BACKUP_PING_URL:-}
+      CLIPMUX_BACKUP_BEFORE_MIGRATE: ${CLIPMUX_BACKUP_BEFORE_MIGRATE:-}
       # Empty: chosen at first boot in the dashboard. Set: pinned.
       CLIPMUX_PUBLIC_URL: ${CLIPMUX_PUBLIC_URL:-}
       CLIPMUX_MEDIA_URL: ${CLIPMUX_MEDIA_URL:-}

@@ -128,3 +128,33 @@ func TestOpenGivesUpAfterItsWaitWithoutTheURL(t *testing.T) {
 		t.Fatalf("a bad URL: %v", err)
 	}
 }
+
+// A restore holds the migration lock while it replaces the schema, so a serve
+// that boots meanwhile waits rather than migrating a fresh schema into the
+// gap. The lock is the one migrations take: while it is held, nobody else
+// gets it.
+func TestTheMigrationLockIsHeldByOneAtATime(t *testing.T) {
+	ctx := context.Background()
+	pool := dbtest.New(t)
+	release, held, err := db.HoldMigrationLock(ctx, pool)
+	if err != nil || !held {
+		t.Fatalf("first hold = %v, %v", held, err)
+	}
+	var schema string
+	if err := pool.QueryRow(ctx, "SELECT current_schema()").Scan(&schema); err != nil {
+		t.Fatal(err)
+	}
+	var got bool
+	if err := pool.QueryRow(ctx, "SELECT pg_try_advisory_lock($1)", db.MigrationLockID(schema)).Scan(&got); err != nil || got {
+		t.Fatalf("another session took the migration lock while it was held: %v, %v", got, err)
+	}
+	if _, again, err := db.HoldMigrationLock(ctx, pool); err != nil || again {
+		t.Fatalf("second hold = %v, %v; want refused", again, err)
+	}
+	release()
+	release2, held, err := db.HoldMigrationLock(ctx, pool)
+	if err != nil || !held {
+		t.Fatalf("hold after release = %v, %v", held, err)
+	}
+	release2()
+}

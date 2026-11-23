@@ -24,7 +24,9 @@ alert rules for the metrics.
 | `/readyz` | Postgres answers within 2 seconds and the server isn't shutting down. Otherwise `503`, with `database unavailable` or `draining`. |
 
 Both are on the main listener, so `https://video.example.com/readyz` works
-through Caddy. The image's own Docker health check uses `/healthz`.
+through Caddy. The compose files declare the Docker health check, which runs
+`clipmux healthcheck`; the image has none, because the same image runs the
+cloud GPU workers.
 
 ## Metrics
 
@@ -76,6 +78,23 @@ network and scrape `app:9090` with the job name `clipmux`. Setting
 - `clipmux_speech_api_audio_seconds_total`: seconds of audio sent to a
   [speech API](/docs/self-host/captions-and-ai/speech-apis)
 
+**Backups and recovery**
+
+- `clipmux_backup_last_success_timestamp_seconds`: when the newest backup
+  was written, `0` if none
+- `clipmux_backup_last_verified_timestamp_seconds`: when a backup last passed
+  its [restore check](/docs/self-host/operate/backups), `0` if none has
+- `clipmux_backup_verify_failed`: `1` if the newest check failed
+- `clipmux_backup_interval_seconds`: how often backups are taken, `0` when
+  they are off
+- `clipmux_backup_last_bytes`: size of the newest backup, as stored
+- `clipmux_backup_sources_pending`: committed sources not yet copied to the
+  backup target
+- `clipmux_restore_fenced`: `1` while the restore fence stops storage deletes
+- `clipmux_db_size_bytes`: size of the Postgres database
+- `clipmux_data_free_bytes` and `clipmux_data_total_bytes`: the disk holding
+  the data directory
+
 **Database pool and process**
 
 - `clipmux_db_pool_acquired_conns`, `clipmux_db_pool_idle_conns`,
@@ -98,7 +117,18 @@ from the repository into Prometheus. It alerts when:
 - a job has waited over 30 minutes;
 - jobs are queued and no worker has been seen in the last minute;
 - webhook deliveries gave up;
-- the Postgres pool is more than 90% used.
+- the Postgres pool is more than 90% used;
+- no backup has been written for twice the backup interval;
+- the newest backup failed its restore check, or none has passed one in
+  8 days;
+- the restore fence is up;
+- under 10% of the disk holding the data directory is free.
+
+The same file records the install's service levels as series, in a group
+named `clipmux-slo`: `clipmux:http_availability:ratio_rate5m` and
+`…ratio_rate1h` (the share of requests that didn't answer 5xx), and
+`clipmux:http_request_duration_seconds:p95_rate5m` and `…p95_rate1h` (the 95th
+percentile of request time). Chart them, or alert on a burn rate of your own.
 
 ## Logs
 

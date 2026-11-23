@@ -152,7 +152,7 @@ func (q *Queries) MarkOutboxDone(ctx context.Context, id string) error {
 const moveCurrentOutput = `-- name: MoveCurrentOutput :one
 UPDATE assets SET current_output_id = $2, version = version + 1, updated_at = now()
 WHERE id = $1
-RETURNING id, project_id, app_id, status, error_code, version, storage_id, source_uri, agent_source_id, source_kept, current_output_id, passthrough, duration_seconds, created_at, updated_at, deleted_at, title, media_storage_id, renditions, source_bytes
+RETURNING id, project_id, app_id, status, error_code, version, storage_id, source_uri, agent_source_id, source_kept, current_output_id, passthrough, duration_seconds, created_at, updated_at, deleted_at, title, media_storage_id, renditions, source_bytes, source_backed_up_at, source_tombstoned_at
 `
 
 type MoveCurrentOutputParams struct {
@@ -185,6 +185,8 @@ func (q *Queries) MoveCurrentOutput(ctx context.Context, arg MoveCurrentOutputPa
 		&i.MediaStorageID,
 		&i.Renditions,
 		&i.SourceBytes,
+		&i.SourceBackedUpAt,
+		&i.SourceTombstonedAt,
 	)
 	return i, err
 }

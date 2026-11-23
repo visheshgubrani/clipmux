@@ -95,6 +95,15 @@ repository goes public.
    - the image and the tarball ship `licenses/` and a written source offer
      for FFmpeg;
    - a security review of the threat table is recorded.
+10. **Recovery works** (T29, D143–D146, [P6-T29-recovery.md](P6-T29-recovery.md)).
+    On a fresh VM with only Docker and the saved `.env`, `install.sh --restore`
+    brings back a working install from the backup target. A video uploaded
+    before the backup plays; one uploaded after it is still in the bucket,
+    appears in `clipmux admin restore report`, and nothing was deleted. The
+    time of each phase is recorded as a decision and becomes the published
+    recovery time.
+    The ARM64 capacity baseline is recorded in D148. The cold B2 restore
+    and first playback still need to be timed.
 
 ## Design notes
 
@@ -207,6 +216,9 @@ Order:
   exit ([P7-sharing-analytics.md](P7-sharing-analytics.md), D102), so the
   candidate carries share links and analytics. D114 drops the release
   candidate and Track E from this: T19 runs on a `sha-` image from `main`.
+- **T29** (recovery, D143–D146) gates v1.0.0: T29.1 first, then T29.2
+  before anything that restores. Its Track A (interim protection for the
+  production VPS) doesn't wait for it. T20 waits for T29.
 - **T20** last.
 
 | Task | Scope | Port from |
@@ -238,6 +250,7 @@ Order:
 | T26 | **done (D112)** — **CLI:** `init` (app pairing, env-file merge, gitignore warning, framework next steps, `--no-open`), `doctor`, `listen` (D048, re-signing with the app's secret), `upload`. No secret is printed. | `internal/listen`, `internal/push` |
 | T27 | **done** — **Browser packages:** player 0.5.0 (`session-url`, native flag, typed events, React 19 JSX types) and uploader 0.4.0 (`createUrl` with built-in resume, `<clipmux-uploader>`). Backward compatible. | `packages/*` |
 | T28 | **partial**: `release.yml` publishes `packages/node` (workspace ranges pinned) and the package ships `AGENTS.md`; the examples and the exit run are open — **Examples and the Track E exit:** `examples/nextjs-lms` and `examples/express`; the exit check 8 Playwright run; `release.yml` publishes `packages/node`; the package ships an `AGENTS.md`. | `e2e/web` fixture |
+| T29 | **Backups and recovery** (exit check 10), planned in [P6-T29-recovery.md](P6-T29-recovery.md). Track A protects production now (off-site encrypted dumps, a proved restore, swap, a reboot, external probes), outside this repository. Track B builds it in: T29.1 docs; T29.2 the restore fence and store epoch; T29.3 the backup engine; T29.4 restore and `install.sh --restore`; T29.5 backup before migrating; T29.6 the automatic restore check; T29.7 the source mirror; T29.8 metrics, alerts and the dashboard; T29.9 docs; T29.10 the drills; T29.11 a capacity baseline; T29.12 the production cutover. | `TestDrillBackupAndRestore`, `deploy/` |
 | T20 | **Exit and launch day.** The exit checks above, recorded as a decision. Then make the repository and the ghcr package public, tag `v1.0.0`, put the docs site live, unarchive `vod` to add a banner linking here and archive it again, and announce. | — |
 
 ## Open questions

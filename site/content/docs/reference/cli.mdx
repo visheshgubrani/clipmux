@@ -114,6 +114,16 @@ same as serve. Each command that makes a secret prints it once.
 | `clipmux admin prune [--dry-run] [--files]` | Delete rows past their retention windows now; `--files` also deletes stored files past theirs. |
 | `clipmux admin reseal-secrets` | Seal every stored secret with the current secrets key, when rotating it. |
 | `clipmux admin outbox [--retry ID]` | List side effects still pending after an hour; `--retry` makes one due at once. |
+| `clipmux admin restore [--list] [--latest \| --id ID \| --file PATH] --yes` | Replace the database with a backup: the newest, one by ID, or a dump file on this host. Refuses while a serve runs, and a backup that is damaged, newer than this binary or that this install's secrets key doesn't open. Backs up the database it replaces first (kind `pre_restore`), migrates the restored one and raises the restore fence. Without `--yes` it only names the backup; `--list` shows what the target holds. |
+| `clipmux admin restore report` | List what storage holds that the database doesn't know (route records, output prefixes, sources), and whether the restore fence is up. |
+| `clipmux admin restore finish --yes` | Lift the restore fence and stamp every store as this install's. Serve then deletes what the database doesn't know. Read the report first. |
+| `clipmux admin backup now` | Back up the database now, without migrating it first. Prints the backup's ID, where it went and its SHA-256. |
+| `clipmux admin backup list` | List the backups on the target, read from their manifests, so it works on a host with no database. |
+| `clipmux admin backup check` | Prove the target can be written, read and listed, say whether it refuses deletes, and show the latest backup. Exits 1 when the target doesn't work. |
+| `clipmux admin backup verify [--id ID]` | Verify the newest backup by default or select one by ID. Checks its hash, decrypts it, restores it into a scratch database, and checks the secrets key, content keys and row counts. Records the result and exits 1 if the backup fails. |
+| `clipmux admin backup restore-sources --asset ID \| --all` | After a store lost files: copy mirrored sources back to the stores they belong on and queue a re-encode for each asset whose source was restored or whose encoded files are gone, through the usual job path. Skips assets deleted after the backup (they have a tombstone); running it again restores nothing twice. |
+| `clipmux admin backup prune-sources [--older-than DURATION]` | Delete the mirrored copies of assets deleted at least that long ago (default 720h), and their tombstones. Needs a backup key that may delete; on an immutable target the bucket's lifecycle rules do this. |
+| `clipmux admin backup identity` | Print the age identities that open the backups, derived from the secrets key. They are secret: `age -d -i <(clipmux admin backup identity) FILE` opens a backup without ClipMux. |
 
 `create-key` and `create-integration` refuse while the public URL is
 loopback, because signed upload URLs and `base_url` would point at the

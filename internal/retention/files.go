@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/visheshgubrani/clipmux/internal/db"
+	"github.com/visheshgubrani/clipmux/internal/fence"
 	"github.com/visheshgubrani/clipmux/internal/routes"
 	"github.com/visheshgubrani/clipmux/internal/storage"
 	"github.com/visheshgubrani/clipmux/internal/stores"
@@ -87,18 +88,61 @@ func (f *Files) Run(ctx context.Context) (int, error) {
 
 func (f *Files) ts(t time.Time) pgtype.Timestamptz { return pgtype.Timestamptz{Time: t, Valid: true} }
 
+// errFenced stops a rule part way when its guard raised the fence.
+var errFenced = errors.New("the restore fence went up")
+
+// guard starts a rule's pass. It is nil when the fence is up: the database
+// may be older than the files, and what it doesn't know may be newer, not
+// garbage (D144). Each store is then checked again before anything on it is
+// deleted (fence.Guard).
+func (f *Files) guard(ctx context.Context) (*fence.Guard, error) {
+	g, err := fence.NewGuard(ctx, db.New(f.pool), db.DefaultProjectID, f.Logger)
+	if err != nil {
+		return nil, err
+	}
+	if g.Fenced() {
+		f.Logger.Warn("the restore fence is up; not deleting files")
+		return nil, nil
+	}
+	return g, nil
+}
+
+// media returns the store holding an asset's encoded files and tracks, and
+// whether g lets this pass delete from it.
+func (f *Files) media(ctx context.Context, g *fence.Guard, assetID string) (storage.Storage, bool, error) {
+	row, err := db.New(f.pool).AssetStores(ctx, assetID)
+	if err != nil {
+		return nil, false, fmt.Errorf("storage of %s: %w", assetID, err)
+	}
+	st, err := f.stores.Get(ctx, row.MediaStorageID)
+	if err != nil {
+		return nil, false, fmt.Errorf("store of %s: %w", assetID, err)
+	}
+	ok, err := g.MayDelete(ctx, row.MediaStorageID, st)
+	return st, ok, err
+}
+
 // PurgeRetired deletes retired outputs past the retire window: the larger
 // of 7 days and the project's longest token, plus an hour, so a viewer
 // mid-session on the old output finishes first.
 func (f *Files) PurgeRetired(ctx context.Context) (int, error) {
+	g, err := f.guard(ctx)
+	if g == nil {
+		return 0, err
+	}
 	rows, err := db.New(f.pool).ListPurgeableRetired(ctx, db.ListPurgeableRetiredParams{Now: f.ts(f.Now()), MaxRows: 100})
 	if err != nil {
 		return 0, err
 	}
 	n := 0
 	for _, o := range rows {
+		// Asked before the row is marked, so a fence that goes up leaves both.
+		store, ok, err := f.media(ctx, g, o.AssetID)
+		if err != nil || !ok {
+			return n, err
+		}
 		// Stop serving it first: the route records drop the output.
-		err := pgx.BeginFunc(ctx, f.pool, func(tx pgx.Tx) error {
+		err = pgx.BeginFunc(ctx, f.pool, func(tx pgx.Tx) error {
 			q := db.New(tx)
 			if _, err := q.MarkOutputPurged(ctx, o.ID); err != nil {
 				return err
@@ -108,8 +152,8 @@ func (f *Files) PurgeRetired(ctx context.Context) (int, error) {
 		if err != nil {
 			return n, fmt.Errorf("purge output %s: %w", o.ID, err)
 		}
-		if err := f.deletePrefix(ctx, o.AssetID, o.Prefix.String); err != nil {
-			return n, err // the orphan sweep finishes it
+		if err := store.DeletePrefix(ctx, o.Prefix.String); err != nil {
+			return n, fmt.Errorf("delete %s: %w", o.Prefix.String, err) // the orphan sweep finishes it
 		}
 		n++
 	}
@@ -121,13 +165,21 @@ func (f *Files) PurgeRetired(ctx context.Context) (int, error) {
 // track stops being served first (it becomes deleted and the records drop
 // it), then its file goes.
 func (f *Files) PurgeRetiredTracks(ctx context.Context) (int, error) {
+	g, err := f.guard(ctx)
+	if g == nil {
+		return 0, err
+	}
 	rows, err := db.New(f.pool).ListPurgeableRetiredTracks(ctx, db.ListPurgeableRetiredTracksParams{Now: f.ts(f.Now()), MaxRows: 100})
 	if err != nil {
 		return 0, err
 	}
 	n := 0
 	for _, t := range rows {
-		err := pgx.BeginFunc(ctx, f.pool, func(tx pgx.Tx) error {
+		store, ok, err := f.media(ctx, g, t.AssetID)
+		if err != nil || !ok {
+			return n, err
+		}
+		err = pgx.BeginFunc(ctx, f.pool, func(tx pgx.Tx) error {
 			q := db.New(tx)
 			if _, err := q.PurgeTrack(ctx, t.ID); err != nil {
 				return err
@@ -136,10 +188,6 @@ func (f *Files) PurgeRetiredTracks(ctx context.Context) (int, error) {
 		})
 		if err != nil {
 			return n, fmt.Errorf("purge track %s: %w", t.ID, err)
-		}
-		store, err := f.stores.MediaFor(ctx, t.AssetID)
-		if err != nil {
-			return n, err
 		}
 		if err := store.Delete(ctx, tracks.StorageKey(t.AssetID, t.ID)); err != nil {
 			return n, fmt.Errorf("delete track %s: %w", t.ID, err)
@@ -152,6 +200,10 @@ func (f *Files) PurgeRetiredTracks(ctx context.Context) (int, error) {
 // PurgeAbandoned deletes the outputs of attempts that were replaced, or
 // whose job ended, more than AbandonedGrace ago. Nothing ever served them.
 func (f *Files) PurgeAbandoned(ctx context.Context) (int, error) {
+	g, err := f.guard(ctx)
+	if g == nil {
+		return 0, err
+	}
 	q := db.New(f.pool)
 	rows, err := q.ListPurgeableAbandoned(ctx, db.ListPurgeableAbandonedParams{Before: f.ts(f.Now().Add(-AbandonedGrace)), MaxRows: 100})
 	if err != nil {
@@ -159,26 +211,19 @@ func (f *Files) PurgeAbandoned(ctx context.Context) (int, error) {
 	}
 	n := 0
 	for _, o := range rows {
+		store, ok, err := f.media(ctx, g, o.AssetID)
+		if err != nil || !ok {
+			return n, err
+		}
 		if _, err := q.MarkOutputPurged(ctx, o.ID); err != nil {
 			return n, fmt.Errorf("purge output %s: %w", o.ID, err)
 		}
-		if err := f.deletePrefix(ctx, o.AssetID, o.Prefix.String); err != nil {
-			return n, err
+		if err := store.DeletePrefix(ctx, o.Prefix.String); err != nil {
+			return n, fmt.Errorf("delete %s: %w", o.Prefix.String, err)
 		}
 		n++
 	}
 	return n, nil
-}
-
-func (f *Files) deletePrefix(ctx context.Context, assetID, prefix string) error {
-	store, err := f.stores.MediaFor(ctx, assetID)
-	if err != nil {
-		return fmt.Errorf("store of %s: %w", assetID, err)
-	}
-	if err := store.DeletePrefix(ctx, prefix); err != nil {
-		return fmt.Errorf("delete %s: %w", prefix, err)
-	}
-	return nil
 }
 
 // SweepOrphans deletes output prefixes no row accounts for, on the stores
@@ -188,6 +233,10 @@ func (f *Files) deletePrefix(ctx context.Context, assetID, prefix string) error 
 // tracks, later) are never touched. A claim creates its output's row
 // before the worker gets a URL, so a prefix with no row has no writer.
 func (f *Files) SweepOrphans(ctx context.Context) (int, error) {
+	g, err := f.guard(ctx)
+	if g == nil {
+		return 0, err
+	}
 	q := db.New(f.pool)
 	after, err := q.GetRetentionCursor(ctx, db.GetRetentionCursorParams{ProjectID: db.DefaultProjectID, Name: "orphan_prefixes"})
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
@@ -199,8 +248,11 @@ func (f *Files) SweepOrphans(ctx context.Context) (int, error) {
 	}
 	n := 0
 	for _, a := range assets {
-		removed, err := f.sweepAsset(ctx, q, a.ID)
+		removed, err := f.sweepAsset(ctx, q, g, a.ID)
 		n += removed
+		if errors.Is(err, errFenced) {
+			return n, nil // the cursor stays, for when the fence is lifted
+		}
 		if err != nil {
 			return n, err
 		}
@@ -212,7 +264,7 @@ func (f *Files) SweepOrphans(ctx context.Context) (int, error) {
 	return n, q.SetRetentionCursor(ctx, db.SetRetentionCursorParams{ProjectID: db.DefaultProjectID, Name: "orphan_prefixes", Value: next})
 }
 
-func (f *Files) sweepAsset(ctx context.Context, q *db.Queries, assetID string) (int, error) {
+func (f *Files) sweepAsset(ctx context.Context, q *db.Queries, g *fence.Guard, assetID string) (int, error) {
 	known, err := q.KnownOutputs(ctx, assetID)
 	if err != nil {
 		return 0, err
@@ -221,9 +273,12 @@ func (f *Files) sweepAsset(ctx context.Context, q *db.Queries, assetID string) (
 	for _, id := range known {
 		keep[id] = true
 	}
-	store, err := f.stores.MediaFor(ctx, assetID)
+	store, ok, err := f.media(ctx, g, assetID)
 	if err != nil {
 		return 0, err
+	}
+	if !ok {
+		return 0, errFenced
 	}
 	base := "media/" + assetID + "/"
 	orphans := map[string]bool{}
@@ -260,6 +315,10 @@ func (f *Files) sweepAsset(ctx context.Context, q *db.Queries, assetID string) (
 // them for the Cloudflare Worker too, which reads the bucket. Each output
 // is checked once.
 func (f *Files) SweepUnlisted(ctx context.Context) (int, error) {
+	g, err := f.guard(ctx)
+	if g == nil {
+		return 0, err
+	}
 	q := db.New(f.pool)
 	rows, err := q.ListUnsweptOutputs(ctx, db.ListUnsweptOutputsParams{Before: f.ts(f.Now().Add(-CommitGrace)), MaxRows: 100})
 	if err != nil {
@@ -288,9 +347,9 @@ func (f *Files) SweepUnlisted(ctx context.Context) (int, error) {
 		for _, file := range m.Files {
 			keep[file.Path] = true
 		}
-		store, err := f.stores.MediaFor(ctx, o.AssetID)
-		if err != nil {
-			return n, fmt.Errorf("store of %s: %w", o.AssetID, err)
+		store, ok, err := f.media(ctx, g, o.AssetID)
+		if err != nil || !ok {
+			return n, err
 		}
 		var extra []string
 		for cursor := ""; ; {

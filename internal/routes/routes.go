@@ -22,12 +22,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/visheshgubrani/clipmux/internal/db"
+	"github.com/visheshgubrani/clipmux/internal/fence"
 	"github.com/visheshgubrani/clipmux/internal/storage"
 	"github.com/visheshgubrani/clipmux/internal/stores"
 	"github.com/visheshgubrani/clipmux/internal/tokens"
@@ -191,19 +193,26 @@ func ForProject(ctx context.Context, q *db.Queries, set *stores.Set, projectID s
 // playable). A disabled app's ID keeps a record marked Denied, for its 403.
 // bucketID is the Worker's storage config.
 func Desired(ctx context.Context, q *db.Queries, playbackID, bucketID string) (*Record, error) {
+	r, _, err := desired(ctx, q, playbackID, bucketID)
+	return r, err
+}
+
+// desired is Desired, with the project the playback ID belongs to when it
+// has a record.
+func desired(ctx context.Context, q *db.Queries, playbackID, bucketID string) (*Record, string, error) {
 	rt, err := q.GetRoute(ctx, playbackID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, nil
+		return nil, "", nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	if rt.PlaybackStatus != "active" || rt.AssetStatus == "deleted" || !rt.CurrentOutputID.Valid {
-		return nil, nil
+		return nil, "", nil
 	}
 	outs, err := q.ListServableOutputs(ctx, rt.AssetID)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	r := &Record{
 		V: 1, AppID: rt.AppID, AssetID: rt.AssetID, OutputID: rt.CurrentOutputID.String, Policy: rt.Policy,
@@ -218,7 +227,7 @@ func Desired(ctx context.Context, q *db.Queries, playbackID, bucketID string) (*
 	}
 	trks, err := q.ListServableTracks(ctx, rt.AssetID)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	for _, t := range trks {
 		if r.Tracks == nil {
@@ -226,7 +235,7 @@ func Desired(ctx context.Context, q *db.Queries, playbackID, bucketID string) (*
 		}
 		r.Tracks[t.ID] = TrackOf(t.Kind, t.Status, t.Language, t.Name, t.DurationMs, t.KeyVersion)
 	}
-	return r, nil
+	return r, rt.ProjectID, nil
 }
 
 // backend says where the Worker reads an asset's encoded files: from its
@@ -239,15 +248,53 @@ func backend(mediaStorageID, bucketID string) string {
 }
 
 // Apply publishes a playback ID's current state: its record, or its absence.
+// While the restore fence is up it leaves a record that plays an output the
+// database doesn't know (see playsNewer).
 func Apply(ctx context.Context, q *db.Queries, d Delivery, bucketID, playbackID string) error {
-	r, err := Desired(ctx, q, playbackID, bucketID)
+	r, projectID, err := desired(ctx, q, playbackID, bucketID)
 	if err != nil {
 		return err
 	}
 	if r == nil {
 		return d.Unpublish(ctx, playbackID)
 	}
+	if bucket := d.Bucket(); bucket != nil {
+		fenced, err := q.FenceActive(ctx, projectID)
+		if err != nil {
+			return fmt.Errorf("restore fence: %w", err)
+		}
+		if fenced {
+			if keep, err := playsNewer(ctx, bucket, playbackID, *r); err != nil || keep {
+				return err
+			}
+		}
+	}
 	return d.Publish(ctx, playbackID, *r)
+}
+
+// playsNewer reports whether the published record of playbackID plays an
+// output the database doesn't know: a re-encode made after the backup the
+// database was restored from. While the fence is up such a record is kept
+// rather than pointed back at the backup's output, which may have been purged
+// since (D144). want is the record the database would write.
+func playsNewer(ctx context.Context, bucket storage.Storage, playbackID string, want Record) (bool, error) {
+	rc, err := bucket.Get(ctx, RouteKey(playbackID))
+	if errors.Is(err, storage.ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("read %s: %w", RouteKey(playbackID), err)
+	}
+	defer rc.Close()
+	var have Record
+	if err := json.NewDecoder(rc).Decode(&have); err != nil {
+		return false, nil // nothing readable to keep
+	}
+	if have.OutputID == "" || have.OutputID == want.OutputID {
+		return false, nil
+	}
+	_, known := want.Outputs[have.OutputID]
+	return !known, nil
 }
 
 // DesiredKeys builds _keys.json from the keys delivery accepts now.
@@ -292,19 +339,35 @@ func toJWK(pemText string) (JWK, error) {
 	return JWK{Kty: "EC", Crv: "P-256", X: enc.EncodeToString(b[1:33]), Y: enc.EncodeToString(b[33:])}, nil
 }
 
-// Result counts what a reconcile pass changed.
-type Result struct{ Written, Deleted int }
+// Result counts what a reconcile pass changed. Kept counts the records it
+// would have deleted but didn't, because the restore fence was up.
+type Result struct{ Written, Deleted, Kept int }
 
 // Reconcile makes the bucket match Postgres: it deletes records for IDs that
 // shouldn't be served, rewrites any whose bytes differ (by MD5 ETag) and
 // writes missing ones, then rewrites _keys.json. It repairs drift a lost
-// outbox row or a manual edit could cause.
+// outbox row or a manual edit could cause. While the restore fence is up it
+// deletes nothing (D144): a record the database doesn't know may belong to a
+// video uploaded after the backup it was restored from.
 func Reconcile(ctx context.Context, q *db.Queries, d Delivery, bucketID, projectID string) (Result, error) {
 	var res Result
 	bucket := d.Bucket()
 	if bucket == nil {
 		return res, nil
 	}
+	// The bucket's own marker is read before anything is deleted, not only
+	// the fence row: a reconcile that runs before the epoch loop has seen
+	// this bucket must not delete what a newer database, or another install,
+	// published (D144). A marker that can't be read stops the pass.
+	g, err := fence.NewGuard(ctx, q, projectID, nil)
+	if err != nil {
+		return res, err
+	}
+	mayDelete, err := g.MayDelete(ctx, bucketID, bucket)
+	if err != nil {
+		return res, err
+	}
+	fenced := !mayDelete
 	want, err := desiredAll(ctx, q, projectID, bucketID)
 	if err != nil {
 		return res, err
@@ -319,12 +382,26 @@ func Reconcile(ctx context.Context, q *db.Queries, d Delivery, bucketID, project
 			pid, ok := strings.CutSuffix(strings.TrimPrefix(o.Key, "_routes/"), ".json")
 			body, wanted := want[pid]
 			switch {
+			case (!ok || !wanted) && fenced:
+				res.Kept++
 			case !ok || !wanted:
 				if err := bucket.Delete(ctx, o.Key); err != nil {
 					return res, err
 				}
 				res.Deleted++
 			case strings.Trim(o.ETag, `"`) != md5hex(body):
+				if fenced {
+					var r Record
+					_ = json.Unmarshal(body, &r) // encode's own bytes; can't fail
+					keep, err := playsNewer(ctx, bucket, pid, r)
+					if err != nil {
+						return res, err
+					}
+					if keep {
+						res.Kept++
+						break
+					}
+				}
 				if err := bucket.Put(ctx, o.Key, bytes.NewReader(body)); err != nil {
 					return res, err
 				}
@@ -346,11 +423,64 @@ func Reconcile(ctx context.Context, q *db.Queries, d Delivery, bucketID, project
 		}
 		res.Written++
 	}
+	return res, PublishKeys(ctx, q, d, projectID)
+}
+
+// PublishKeys writes _keys.json from the keys delivery accepts now. While
+// the restore fence is up it also keeps the keys the file already lists that
+// the database has no row for: an app created after the backup was taken has
+// videos at the edge that only its key can play. A key the database does have
+// a row for, revoked or retired, is left to the database.
+func PublishKeys(ctx context.Context, q *db.Queries, d Delivery, projectID string) error {
 	keys, err := DesiredKeys(ctx, q, projectID)
 	if err != nil {
-		return res, err
+		return err
 	}
-	return res, d.PublishKeys(ctx, keys)
+	if bucket := d.Bucket(); bucket != nil {
+		fenced, err := q.FenceActive(ctx, projectID)
+		if err != nil {
+			return fmt.Errorf("restore fence: %w", err)
+		}
+		if fenced {
+			if keys, err = keepUnknownKeys(ctx, q, bucket, projectID, keys); err != nil {
+				return err
+			}
+		}
+	}
+	return d.PublishKeys(ctx, keys)
+}
+
+// keepUnknownKeys adds to desired the keys of the published _keys.json that
+// the database has never heard of.
+func keepUnknownKeys(ctx context.Context, q *db.Queries, bucket storage.Storage, projectID string, desired Keys) (Keys, error) {
+	rc, err := bucket.Get(ctx, KeysKey)
+	if errors.Is(err, storage.ErrNotFound) {
+		return desired, nil
+	}
+	if err != nil {
+		return desired, fmt.Errorf("read %s: %w", KeysKey, err)
+	}
+	defer rc.Close()
+	var existing Keys
+	if err := json.NewDecoder(rc).Decode(&existing); err != nil {
+		return desired, nil // nothing readable to keep
+	}
+	rows, err := q.ListSigningKeyIDs(ctx, projectID)
+	if err != nil {
+		return desired, fmt.Errorf("list signing keys: %w", err)
+	}
+	have := make(map[string]bool, len(rows)+len(desired.Keys))
+	for _, id := range rows {
+		have[id] = true
+	}
+	for _, k := range existing.Keys {
+		if !have[k.Kid] {
+			desired.Keys = append(desired.Keys, k)
+		}
+	}
+	desired.MaxTokenLifetimeSeconds = max(desired.MaxTokenLifetimeSeconds, existing.MaxTokenLifetimeSeconds)
+	slices.SortFunc(desired.Keys, func(a, b Key) int { return strings.Compare(a.Kid, b.Kid) })
+	return desired, nil
 }
 
 // desiredAll builds every record of the project in two queries.

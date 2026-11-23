@@ -110,3 +110,33 @@ func TestKeyIsCreatedOnceWithMode0600AndTheEnvironmentWins(t *testing.T) {
 		}
 	}
 }
+
+func TestDeriveGivesEachPurposeAndKeyVersionItsOwnStableBytes(t *testing.T) {
+	cur := "v2:" + hex.EncodeToString(bytes.Repeat([]byte{2}, 32))
+	old := "v1:" + hex.EncodeToString(bytes.Repeat([]byte{1}, 32))
+	b, err := parse(cur)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := b.AddPrevious(old); err != nil {
+		t.Fatal(err)
+	}
+	a, ok := b.Derive(2, "purpose-a")
+	// HKDF-SHA256 of 32 bytes of 0x02, no salt, info "purpose-a", worked
+	// out with Python's hmac.
+	if want := "ee8a4dd4902d12334f6fc3f008846908a786c503719764bf292005abdd36055b"; !ok || hex.EncodeToString(a) != want {
+		t.Fatalf("Derive(2) = %x, %v, want %s", a, ok, want)
+	}
+	again, _ := b.Derive(2, "purpose-a")
+	other, _ := b.Derive(2, "purpose-b")
+	prev, ok := b.Derive(1, "purpose-a")
+	if !ok || !bytes.Equal(a, again) || bytes.Equal(a, other) || bytes.Equal(a, prev) {
+		t.Fatalf("same key and purpose must repeat, any other must differ: %x %x %x %x", a, again, other, prev)
+	}
+	if _, ok := b.Derive(3, "purpose-a"); ok {
+		t.Error("a version the box doesn't hold derives nothing")
+	}
+	if got := b.Versions(); len(got) != 2 || got[0] != 2 || got[1] != 1 {
+		t.Errorf("Versions = %v, want [2 1]", got)
+	}
+}

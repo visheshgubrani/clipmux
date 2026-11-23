@@ -816,7 +816,7 @@ Smaller items raised by the audit and not yet designed:
 - [x] For SSRF, pin the resolved IP for each connection, and also block IPv6 ULA and IPv4-mapped ranges. *(`internal/publicnet`, D039)*
 - [ ] Time out jobs pinned to an agent that never returns, and tell the agent when its source's asset is deleted.
 - [x] Cache routes in the built-in handler, and document its revocation delay. *(D072)*
-- [x] Document backups for Postgres, the key that encrypts adapter secrets, and the content key secret, because losing that secret makes every output unplayable. The `manifest.json` in each output makes a rebuild-from-storage tool possible. *(docs/operations.md, D073; no rebuild tool)*
+- [x] Document backups for Postgres, the key that encrypts adapter secrets, and the content key secret, because losing that secret makes every output unplayable. The `manifest.json` in each output makes a rebuild-from-storage tool possible. *(site/content/docs/self-host/operate/backups.mdx and disaster-recovery.mdx, D073, D143; no rebuild tool)*
 
 ## Sources
 

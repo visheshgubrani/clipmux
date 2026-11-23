@@ -18,6 +18,7 @@ import (
 
 	"github.com/visheshgubrani/clipmux/internal/contentkey"
 	"github.com/visheshgubrani/clipmux/internal/db"
+	"github.com/visheshgubrani/clipmux/internal/fence"
 	"github.com/visheshgubrani/clipmux/internal/routes"
 	"github.com/visheshgubrani/clipmux/internal/settings"
 	"github.com/visheshgubrani/clipmux/internal/stores"
@@ -212,8 +213,23 @@ func (c *Connector) Connect(ctx context.Context, req Request) (Result, error) {
 		if err != nil {
 			return "", err
 		}
+		// A bucket another install published into, or this one before its
+		// database was restored, keeps what this database doesn't know: the
+		// fence goes up before the first reconcile could delete it (D144).
+		g, err := fence.NewGuard(ctx, q, c.ProjectID, nil)
+		if err != nil {
+			return "", err
+		}
+		fenced, err := g.CheckBucket(ctx, bucketID, d.Bucket())
+		if err != nil {
+			return "", err
+		}
 		r, err := routes.Reconcile(ctx, q, d, bucketID, c.ProjectID)
-		return fmt.Sprintf("%d routes written; new videos are encoded into the bucket", r.Written), err
+		msg := fmt.Sprintf("%d routes written; new videos are encoded into the bucket", r.Written)
+		if fenced {
+			msg += fmt.Sprintf("; the restore fence is up, so %d route records this database doesn't know were kept: read `clipmux admin restore report`, then `clipmux admin restore finish --yes`", r.Kept)
+		}
+		return msg, err
 	}) && step("dns", func() (string, error) {
 		attached, err := cf.DomainMatches(ctx, accountID, zoneID, req.Hostname, script)
 		if err != nil {

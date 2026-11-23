@@ -382,6 +382,24 @@ func (s *S3) PresignPut(ctx context.Context, key string, ttl time.Duration) (str
 
 // wrap maps store errors onto the package's errors and names the operation.
 // SDK errors name the operation and status, never a presigned URL.
+// ObjectLock reports whether the bucket has Object Lock on with a default
+// retention, so that every object written is kept for that long whatever key
+// asks to delete it. Off, or on with no default retention, is false. A key
+// that may not read the setting is an error (B2 calls the permission
+// readBucketRetentions; AWS, s3:GetBucketObjectLockConfiguration).
+func (s *S3) ObjectLock(ctx context.Context) (bool, error) {
+	out, err := s.client.GetObjectLockConfiguration(ctx, &s3.GetObjectLockConfigurationInput{Bucket: &s.bucket})
+	if err != nil {
+		var api smithy.APIError
+		if errors.As(err, &api) && api.ErrorCode() == "ObjectLockConfigurationNotFoundError" {
+			return false, nil
+		}
+		return false, fmt.Errorf("read the object lock of %s: %w", s.bucket, err)
+	}
+	c := out.ObjectLockConfiguration
+	return c != nil && c.ObjectLockEnabled == types.ObjectLockEnabledEnabled && c.Rule != nil && c.Rule.DefaultRetention != nil, nil
+}
+
 func (s *S3) wrap(op, key string, err error) error {
 	if err == nil {
 		return nil

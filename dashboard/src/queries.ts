@@ -7,6 +7,7 @@ import {
   type App,
   type Asset,
   api,
+  type Backups,
   type ChaptersStatus,
   type Cloudflare,
   type Counts,
@@ -166,6 +167,13 @@ export const q = {
       queryKey: ['agents'],
       queryFn: () => api<Page<Agent>>('/v1/agents'),
       refetchInterval: 10000,
+    }),
+  // Polls while a "back up now" waits for the server to take it.
+  backups: () =>
+    queryOptions({
+      queryKey: ['backups'],
+      queryFn: () => api<Backups>('/v1/settings/backups'),
+      refetchInterval: (query) => (query.state.data?.requested ? 3000 : false),
     }),
   routing: () => queryOptions({ queryKey: ['routing'], queryFn: () => api<Routing>('/v1/settings/routing') }),
   executors: () =>

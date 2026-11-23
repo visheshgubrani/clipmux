@@ -68,3 +68,47 @@ groups:
         labels: { severity: warn }
         annotations:
           summary: "the Postgres pool is nearly full; raise pool_max_conns in DATABASE_URL"
+
+      - alert: ClipMuxBackupStale
+        expr: clipmux_backup_interval_seconds > 0 and time() - clipmux_backup_last_success_timestamp_seconds > 2 * clipmux_backup_interval_seconds
+        for: 10m
+        labels: { severity: page }
+        annotations:
+          summary: "no backup has been written for twice the backup interval, or ever; see the dashboard's Backups card or `clipmux admin backup check`"
+
+      - alert: ClipMuxBackupVerifyFailing
+        expr: |
+          clipmux_backup_verify_failed == 1
+          or (clipmux_backup_interval_seconds > 0 and clipmux_backup_last_success_timestamp_seconds > 0
+              and time() - clipmux_backup_last_verified_timestamp_seconds > 8 * 86400)
+        for: 1h
+        labels: { severity: warn }
+        annotations:
+          summary: "the newest backup failed its restore check, or none has passed one in 8 days; run `clipmux admin backup verify` for the reason"
+
+      - alert: ClipMuxRestoreFenced
+        expr: clipmux_restore_fenced == 1
+        for: 5m
+        labels: { severity: warn }
+        annotations:
+          summary: "the restore fence is up and storage deletes are stopped; read `clipmux admin restore report`, then `clipmux admin restore finish --yes`"
+
+      - alert: ClipMuxDiskLow
+        expr: clipmux_data_total_bytes > 0 and clipmux_data_free_bytes / clipmux_data_total_bytes < 0.10
+        for: 15m
+        labels: { severity: warn }
+        annotations:
+          summary: "under 10% of the disk holding the data directory is free; encodes, backups and restores need room"
+
+  # What the install promises, as series to chart and to alert on burn rates.
+  - name: clipmux-slo
+    interval: 1m
+    rules:
+      - record: clipmux:http_availability:ratio_rate5m
+        expr: 1 - sum(rate(clipmux_http_requests_total{code=~"5.."}[5m])) / sum(rate(clipmux_http_requests_total[5m]))
+      - record: clipmux:http_availability:ratio_rate1h
+        expr: 1 - sum(rate(clipmux_http_requests_total{code=~"5.."}[1h])) / sum(rate(clipmux_http_requests_total[1h]))
+      - record: clipmux:http_request_duration_seconds:p95_rate5m
+        expr: histogram_quantile(0.95, sum by (le) (rate(clipmux_http_request_duration_seconds_bucket[5m])))
+      - record: clipmux:http_request_duration_seconds:p95_rate1h
+        expr: histogram_quantile(0.95, sum by (le) (rate(clipmux_http_request_duration_seconds_bucket[1h])))
