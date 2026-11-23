@@ -24,7 +24,7 @@
 # toolchain/check_layers.sh checks it (install.yml, image.yml).
 
 # ── Bases ───────────────────────────────────────────────────────────────────
-FROM ubuntu:24.04@sha256:9c7f200c07e3d4a03e7249d2c16bf66a51120fb876aa2242cf31451412543289 AS base
+FROM ubuntu:26.04@sha256:d66b366dac61b575bee2aef07e9c26e8070096fbe84a3d4d3eb0da069b5d76db AS base
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 # ── Each tool's pins, cut out of versions.env ───────────────────────────────
@@ -116,7 +116,7 @@ RUN --mount=type=bind,source=toolchain/fetch_speech_models.sh,target=/tc/fetch_s
     bash /tc/fetch_speech_models.sh /models && chmod 0644 /models/* && touch -d @0 /models /models/*
 
 # ── The dashboard (embedded in the binary) ──────────────────────────────────
-FROM node:24@sha256:9d266751ca3d7fdbe651c878ffd5ad0a42fed49a18c283509267c97f025b7496 AS web
+FROM node:26@sha256:e18c3ccdf7d71619990b0e85639f506e2028a95410999cab24cc373cbd10e0ac AS web
 WORKDIR /src
 RUN corepack enable
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json ./
