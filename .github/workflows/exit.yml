@@ -40,9 +40,9 @@ jobs:
           --health-cmd "pg_isready -U clipmux -d clipmux_test"
           --health-interval 2s --health-timeout 3s --health-retries 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
         with:
           node-version-file: .node-version
           cache: pnpm
@@ -83,7 +83,7 @@ jobs:
       - name: Launch exit check 8 (examples/nextjs-lms, P6-T28)
         working-directory: e2e/web
         run: pnpm run test:exit8
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: failure()
         with:
           name: playwright
@@ -104,12 +104,12 @@ jobs:
           --health-cmd "pg_isready -U clipmux -d clipmux_test"
           --health-interval 2s --health-timeout 3s --health-retries 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: "17"
-      - uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@v6
         with:
           gradle-version: "8.11.1"
       - uses: ./.github/actions/media-tools
