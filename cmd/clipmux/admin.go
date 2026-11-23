@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -21,8 +22,10 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/agents"
 	"github.com/visheshgubrani/clipmux/internal/apikeys"
 	"github.com/visheshgubrani/clipmux/internal/apppairings"
+	"github.com/visheshgubrani/clipmux/internal/backup"
 	"github.com/visheshgubrani/clipmux/internal/config"
 	"github.com/visheshgubrani/clipmux/internal/db"
+	"github.com/visheshgubrani/clipmux/internal/fence"
 	"github.com/visheshgubrani/clipmux/internal/ids"
 	"github.com/visheshgubrani/clipmux/internal/retention"
 	"github.com/visheshgubrani/clipmux/internal/routes"
@@ -51,6 +54,12 @@ const adminUsage = `Usage:
   clipmux admin revoke-key ID
   clipmux admin reset-totp
   clipmux admin outbox [--retry ID]
+  clipmux admin restore [--list] [--latest | --id ID | --file PATH] --yes
+  clipmux admin restore report
+  clipmux admin restore finish --yes
+  clipmux admin backup now | list | check | verify [--id ID] | identity
+  clipmux admin backup restore-sources --asset ID | --all
+  clipmux admin backup prune-sources [--older-than DURATION]
 
 Host-side administration, alongside the dashboard. Reads DATABASE_URL, and
 for create-webhook CLIPMUX_DATA_DIR or CLIPMUX_SECRETS_KEY (the same key serve
@@ -101,6 +110,43 @@ list-keys shows the app's API and signing keys; revoke-key ends one at once
 
 reset-totp turns off the owner's second factor, for an owner who lost both
 the authenticator and the recovery codes.
+
+restore replaces the database with a backup: the newest (--latest), one by
+ID (--id; --list shows them) or a dump file on this host (--file: an
+encrypted backup copied off the target, or a plain pg_dump -Fc). It refuses
+while a serve runs, a backup that is damaged, that this install's secrets key
+doesn't open, or that was taken by a newer ClipMux, and it backs up the database
+it replaces first (kind pre_restore), so a restore can be undone. Without
+--yes it only says what it would restore. Afterwards it migrates the database
+to this binary and raises the restore fence, so serve deletes nothing from
+storage until the report has been read. On a new host, deploy/install.sh
+--restore does all of it.
+
+The restore fence guards a database that went back in time. Every store carries the
+install's ID and a generation; a store stamped by another install, or ahead
+of this database, raises the restore fence, and while it is up serve deletes
+nothing from storage (retired and orphaned files, route records and keys the
+database doesn't know). restore report lists what storage holds that the
+database doesn't: route records, output prefixes and sources. restore finish
+--yes lifts the fence, stamps every store as this install's, and lets the
+sweeps run again, so run it once the report has been read.
+
+backup keeps encrypted copies of the database on the backup target
+(CLIPMUX_BACKUP_URL: a bucket, or a directory; unset, the data directory's
+backups/). serve takes one every CLIPMUX_BACKUP_INTERVAL; now takes one at
+once, with no migration first. list shows what the target holds, read from its
+manifests, so it works on a host with no database. check proves the target can
+be written, read and listed, says whether it refuses deletes (the setup that
+ransomware can't empty), and shows the latest backup. verify restores the
+newest backup into a scratch database and checks it, as serve does weekly, and
+records the result; identity prints the age
+identities that open the backups, derived from the secrets key, so the age CLI
+can open one without ClipMux: age -d -i <(clipmux admin backup identity) FILE.
+serve also copies each source, encrypted, to the target (sources/). After the
+stores lose files, restore-sources copies them back and queues re-encodes of
+the assets that need them, one asset or all; it skips assets deleted after the
+backup. prune-sources deletes the copies of assets deleted more than
+--older-than ago (default 720h), where the target's key may delete.
 `
 
 const project = db.DefaultProjectID
@@ -109,6 +155,12 @@ const project = db.DefaultProjectID
 func admin(args []string, getenv func(string) string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) > 0 && args[0] == "migrate" {
 		return migrateCmd(args[1:], getenv, stdout, stderr)
+	}
+	if len(args) > 0 && args[0] == "backup" {
+		return backupCmd(args[1:], getenv, stdout, stderr)
+	}
+	if len(args) > 0 && args[0] == "restore" {
+		return restoreCmd(args[1:], getenv, stdout, stderr)
 	}
 	if len(args) > 0 && (args[0] == "prune" || args[0] == "outbox") {
 		return retentionCmd(args[0], args[1:], getenv, stdout, stderr)
@@ -146,7 +198,7 @@ func admin(args []string, getenv func(string) string, stdin io.Reader, stdout, s
 		return 1
 	}
 	defer pool.Close()
-	if err := db.Migrate(ctx, pool); err != nil {
+	if err := migrateWithBackup(ctx, pool, getenv, stderr); err != nil {
 		fmt.Fprintf(stderr, "clipmux admin: %v\n", err)
 		return 1
 	}
@@ -401,6 +453,25 @@ func createPairing(ctx context.Context, pool *pgxpool.Pool, name string, stdout 
 	return nil
 }
 
+// migrateWithBackup applies pending migrations the way serve does: after a
+// backup of the database as it is, unless CLIPMUX_BACKUP_BEFORE_MIGRATE=false
+// (D143). Every admin command that migrates first goes through it.
+func migrateWithBackup(ctx context.Context, pool *pgxpool.Pool, getenv func(string) string, stderr io.Writer) error {
+	dataDir := orDefault(getenv("CLIPMUX_DATA_DIR"), config.DefaultDataDir)
+	cfg, err := backup.FromEnv(getenv, dataDir)
+	if err != nil {
+		return err
+	}
+	_, err = backup.Migrate(ctx, pool, backup.MigrateOptions{
+		Config:      cfg,
+		Box:         func() (*secrets.Box, error) { return loadBox(getenv) },
+		DatabaseURL: getenv("DATABASE_URL"),
+		Version:     version,
+		Logger:      slog.New(slog.NewTextHandler(stderr, nil)),
+	})
+	return err
+}
+
 // migrateCmd runs clipmux admin migrate. Unlike the other commands it
 // doesn't migrate first: status must show what is pending.
 func migrateCmd(args []string, getenv func(string) string, stdout, stderr io.Writer) int {
@@ -451,7 +522,7 @@ func migrateCmd(args []string, getenv func(string) string, stdout, stderr io.Wri
 		}
 		fmt.Fprintf(stdout, "%d pending\n", pending)
 	case "up":
-		err = db.Migrate(ctx, pool)
+		err = migrateWithBackup(ctx, pool, getenv, stderr)
 	case "down-to":
 		if !*yes {
 			fmt.Fprintf(stderr, "clipmux admin migrate down-to %d drops what later migrations added; pass --yes to do it\n", version)
@@ -486,7 +557,7 @@ func retentionCmd(cmd string, args []string, getenv func(string) string, stdout,
 		return 1
 	}
 	defer pool.Close()
-	if err := db.Migrate(ctx, pool); err != nil {
+	if err := migrateWithBackup(ctx, pool, getenv, stderr); err != nil {
 		fmt.Fprintf(stderr, "clipmux admin: %v\n", err)
 		return 1
 	}
@@ -504,7 +575,7 @@ func retentionCmd(cmd string, args []string, getenv func(string) string, stdout,
 		if *dryRun {
 			fmt.Fprintln(stdout, "(dry run: nothing was deleted)")
 		} else if *withFiles {
-			n, err := pruneFiles(ctx, pool, getenv)
+			n, err := pruneFiles(ctx, pool, getenv, stderr)
 			fmt.Fprintf(stdout, "%-20s %d\n", "files", n)
 			if err != nil {
 				fmt.Fprintf(stderr, "clipmux admin: %v\n", err)
@@ -537,19 +608,158 @@ func retentionCmd(cmd string, args []string, getenv func(string) string, stdout,
 	return 0
 }
 
-// pruneFiles runs the file retention rules over the install's stores.
-func pruneFiles(ctx context.Context, pool *pgxpool.Pool, getenv func(string) string) (int, error) {
+// openStores opens the install's stores as serve does: the filesystem store
+// under CLIPMUX_DATA_DIR and the R2 and S3 configs sealed with the secrets
+// key. The caller closes the filesystem store.
+func openStores(pool *pgxpool.Pool, getenv func(string) string) (*stores.Set, *storage.Filesystem, error) {
 	dataDir := orDefault(getenv("CLIPMUX_DATA_DIR"), config.DefaultDataDir)
 	box, err := loadBox(getenv)
 	if err != nil {
-		return 0, err
+		return nil, nil, err
 	}
 	fsStore, err := storage.OpenFilesystem(filepath.Join(dataDir, "storage"), storage.FilesystemOptions{BaseURL: config.DefaultPublicURL})
+	if err != nil {
+		return nil, nil, err
+	}
+	return stores.New(pool, box, fsStore), fsStore, nil
+}
+
+// pruneFiles runs the file retention rules over the install's stores. It
+// reads the stores' epoch first, so a database that went back in time raises
+// the restore fence before a rule can delete anything.
+func pruneFiles(ctx context.Context, pool *pgxpool.Pool, getenv func(string) string, stderr io.Writer) (int, error) {
+	set, fsStore, err := openStores(pool, getenv)
 	if err != nil {
 		return 0, err
 	}
 	defer fsStore.Close()
-	return retention.NewFiles(pool, stores.New(pool, box, fsStore), fsStore).Run(ctx)
+	if _, err := fence.New(pool, set).Pass(ctx); err != nil {
+		fmt.Fprintf(stderr, "clipmux admin: restore epoch: %v\n", err)
+	}
+	return retention.NewFiles(pool, set, fsStore).Run(ctx)
+}
+
+// restoreCmd runs clipmux admin restore: the restore itself (restoreBackupCmd)
+// with flags, or report and finish (D144).
+func restoreCmd(args []string, getenv func(string) string, stdout, stderr io.Writer) int {
+	usage := func() int { fmt.Fprint(stderr, adminUsage); return 2 }
+	if len(args) == 0 {
+		return usage()
+	}
+	if strings.HasPrefix(args[0], "-") {
+		return restoreBackupCmd(args, getenv, stdout, stderr)
+	}
+	fs := flag.NewFlagSet("restore "+args[0], flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	yes := fs.Bool("yes", false, "lift the restore fence (finish)")
+	if err := fs.Parse(args[1:]); err != nil || fs.NArg() > 0 || (args[0] != "finish" && *yes) {
+		return usage()
+	}
+	if args[0] != "report" && args[0] != "finish" {
+		return usage()
+	}
+	if args[0] == "finish" && !*yes {
+		fmt.Fprintln(stderr, "clipmux admin restore finish lifts the restore fence: serve then deletes what the database doesn't know from storage.\nRead `clipmux admin restore report` first, then pass --yes.")
+		return 2
+	}
+	ctx := context.Background()
+	pool, err := db.Open(ctx, getenv("DATABASE_URL"))
+	if err != nil {
+		fmt.Fprintf(stderr, "clipmux admin: %v\n", err)
+		return 1
+	}
+	defer pool.Close()
+	if err := migrateWithBackup(ctx, pool, getenv, stderr); err != nil {
+		fmt.Fprintf(stderr, "clipmux admin: %v\n", err)
+		return 1
+	}
+	set, fsStore, err := openStores(pool, getenv)
+	if err != nil {
+		fmt.Fprintf(stderr, "clipmux admin: %v\n", err)
+		return 1
+	}
+	defer fsStore.Close()
+	epoch := fence.New(pool, set)
+	if args[0] == "finish" {
+		lifted, err := epoch.Finish(ctx)
+		switch {
+		case err != nil:
+			fmt.Fprintf(stderr, "clipmux admin: %v\n", err)
+			return 1
+		case !lifted:
+			fmt.Fprintln(stdout, "no restore fence is up")
+		default:
+			fmt.Fprintln(stdout, "the restore fence is lifted; every store is stamped as this install's")
+		}
+		return 0
+	}
+	if err := writeRestoreReport(ctx, pool, epoch, stdout); err != nil {
+		fmt.Fprintf(stderr, "clipmux admin: %v\n", err)
+		return 1
+	}
+	return 0
+}
+
+// writeRestoreReport prints the fence's state and what storage holds that
+// the database doesn't know.
+func writeRestoreReport(ctx context.Context, pool *pgxpool.Pool, epoch *fence.Epoch, out io.Writer) error {
+	q := db.New(pool)
+	f, err := q.GetActiveFence(ctx, project)
+	fenced := err == nil
+	switch {
+	case fenced:
+		fmt.Fprintf(out, "restore fence: up since %s (%s)\n", f.DetectedAt.Time.UTC().Format(time.RFC3339), f.Reason)
+		if f.Detail != "" {
+			fmt.Fprintf(out, "  %s\n", f.Detail)
+		}
+		if f.BackupID.Valid {
+			fmt.Fprintf(out, "  restored from backup %s", f.BackupID.String)
+			if f.BackupAt.Valid {
+				fmt.Fprintf(out, " taken %s", f.BackupAt.Time.UTC().Format(time.RFC3339))
+			}
+			fmt.Fprintln(out)
+		}
+	case errors.Is(err, pgx.ErrNoRows):
+		fmt.Fprintln(out, "restore fence: none")
+	default:
+		return err
+	}
+	rep, err := epoch.Report(ctx)
+	fmt.Fprintf(out, "\nroute records the database doesn't know: %d\n", len(rep.Routes))
+	for _, r := range rep.Routes {
+		fmt.Fprintf(out, "  %s  %s  asset %s  output %s\n", r.Store, r.PlaybackID, orDash(r.AssetID), orDash(r.OutputID))
+	}
+	fmt.Fprintf(out, "output prefixes the database doesn't know: %d\n", len(rep.Outputs))
+	for _, o := range rep.Outputs {
+		what := "a re-encode of a known asset"
+		if !o.AssetKnown {
+			what = "a new asset"
+		}
+		if !o.HasManifest {
+			what += ", no manifest (never committed)"
+		}
+		fmt.Fprintf(out, "  %s  media/%s/%s/  %s, %d files, %d bytes\n", o.Store, o.AssetID, o.OutputID, what, o.Files, o.Bytes)
+	}
+	fmt.Fprintf(out, "sources the database doesn't know: %d\n", len(rep.Sources))
+	for _, s := range rep.Sources {
+		fmt.Fprintf(out, "  %s  uploads/%s/source  %d bytes\n", s.Store, s.AssetID, s.Bytes)
+	}
+	switch {
+	case fenced && !rep.Empty():
+		fmt.Fprintln(out, "\nNothing above is deleted while the fence is up. When you have read it, run:\n  clipmux admin restore finish --yes\nThen serve deletes the output prefixes and route records listed.")
+	case fenced:
+		fmt.Fprintln(out, "\nStorage holds nothing the database doesn't know. `clipmux admin restore finish --yes` lifts the fence.")
+	case !rep.Empty():
+		fmt.Fprintln(out, "\nNo fence is up, so serve will delete the output prefixes and route records listed.")
+	}
+	return err
+}
+
+func orDash(s string) string {
+	if s == "" {
+		return "-"
+	}
+	return s
 }
 
 // loadBox loads the secrets key serve uses, and the previous one during a
@@ -587,7 +797,7 @@ func keysCmd(cmd string, args []string, getenv func(string) string, stdout, stde
 		return 1
 	}
 	defer pool.Close()
-	if err := db.Migrate(ctx, pool); err != nil {
+	if err := migrateWithBackup(ctx, pool, getenv, stderr); err != nil {
 		fmt.Fprintf(stderr, "clipmux admin: %v\n", err)
 		return 1
 	}

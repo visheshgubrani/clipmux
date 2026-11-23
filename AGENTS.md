@@ -14,10 +14,13 @@ anything decided since, and wins over the architecture doc where they differ.
 - Current packages: `config`, `db` (migrations, sqlc-generated queries and
   models, `dbtest`), `ids`, `apikeys`, `agents`, `assets`, `uploads`, `queue`,
   `workerapi`, `worker`, `outputs`, `delivery`, `tokens`, `media`, `contentkey`,
-  `storage` (filesystem and S3 adapters, `s3test`), `stores`, `routes`, `outbox`, `push`, `listen`,
+  `storage` (filesystem and S3 adapters, `s3test`), `stores`, `routes`, `fence` (restore fence and store epoch, D144), `backup` (encrypted database backups, D143), `outbox`, `push`, `listen`,
   `dispatch` (serverless dispatches, keys, reaper), `runpod` (`runpodtest`), `modal`, `registry` (`registrytest`),
   `httpjson`, `server`, `sweeper`, `web` (embedded dashboard build), `openapi`
   (the integration API spec, D112).
+- Backup and restore tests run the PostgreSQL 18 `pg_dump` (`CLIPMUX_PG_DUMP`, default on
+  `PATH`) and the `pg_restore` in the same directory, and skip without it unless `CLIPMUX_REQUIRE_MEDIA_TOOLS=1`; the
+  image's client is pinned under `PGCLIENT_` in `toolchain/versions.env`.
 - Media tests need ffmpeg, ffprobe and Shaka Packager ≥ 3.9.1
   (`toolchain/install_packager.sh`); they skip without them, and the lean PR
   CI doesn't install them, so run media and whisper.cpp tests locally (or set

@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/visheshgubrani/clipmux/internal/backup"
 	"github.com/visheshgubrani/clipmux/internal/media"
 )
 
@@ -92,6 +93,8 @@ type Config struct {
 	// Version is the build's version, for clipmux_build_info; the binary
 	// sets it, not the environment.
 	Version string
+	// Backup is where and how often the database is backed up (D143).
+	Backup backup.Config
 	// Tools are the media binaries (CLIPMUX_FFMPEG, CLIPMUX_FFPROBE,
 	// CLIPMUX_PACKAGER, CLIPMUX_WHISPER; default: found on PATH).
 	Tools media.Tools
@@ -187,6 +190,9 @@ func FromEnv(getenv func(string) string) (Config, error) {
 		return Config{}, errors.New("CLIPMUX_PPROF needs CLIPMUX_METRICS_ADDR: pprof is served only on the metrics listener")
 	}
 	cfg.Tools = media.DefaultTools()
+	if cfg.Backup, err = backup.FromEnv(getenv, cfg.DataDir); err != nil {
+		return Config{}, err
+	}
 	cfg.Tools.FFmpeg = orDefault(getenv("CLIPMUX_FFMPEG"), cfg.Tools.FFmpeg)
 	cfg.Tools.FFprobe = orDefault(getenv("CLIPMUX_FFPROBE"), cfg.Tools.FFprobe)
 	cfg.Tools.Packager = orDefault(getenv("CLIPMUX_PACKAGER"), cfg.Tools.Packager)

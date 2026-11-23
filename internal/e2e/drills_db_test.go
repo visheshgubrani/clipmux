@@ -186,7 +186,7 @@ func withDatabase(t *testing.T, raw, name string) string {
 	return u.String()
 }
 
-// Backup and restore (docs/operations.md, "Backups"; P5 check 7): a pg_dump
+// Backup and restore (the backups page, "Back up by hand"; P5 check 7): a pg_dump
 // and a copy of the data directory, restored into a new database on a new
 // data directory with the same secrets key, serve the same owner session,
 // API key, signing key and video, and encode new ones. A different secrets
@@ -257,6 +257,109 @@ func TestDrillBackupAndRestore(t *testing.T) {
 	second, secondPID := re.upload(key, fixture(t, 4, 320, 180))
 	re.waitReady(key, second, 3*time.Minute)
 	re.plays(kid, priv, secondPID)
+}
+
+// filesNamed lists the stored files under the data directory whose path
+// contains part.
+func (in *instance) filesNamed(part string) []string {
+	in.t.Helper()
+	var found []string
+	_ = filepath.WalkDir(in.dataDir, func(p string, d os.DirEntry, err error) error {
+		if err == nil && !d.IsDir() && strings.Contains(p, part) {
+			found = append(found, p)
+		}
+		return nil
+	})
+	return found
+}
+
+// Recovery (D143, D144; launch exit check 10), with the real commands: a
+// backup taken by serve's own `clipmux admin backup now` while it runs, a
+// second video uploaded after it, the older backup restored over the newer
+// database, and the restore fence keeping everything the database no longer
+// knows. The data directory is not rolled back, which is the hazard: the
+// second video's files, and the output the first video was re-encoded to,
+// are in storage and their rows are gone. The cleanup that deletes such
+// files (`admin prune --files`, the rules serve runs hourly) must leave
+// them, `restore report` must name them, and once the fence is lifted the
+// first video still plays and a new one still encodes.
+func TestDrillRestoreFromABackupKeepsWhatIsNewer(t *testing.T) {
+	secrets := secretsKey("1")
+	target := t.TempDir()
+	in := start(t, "CLIPMUX_SECRETS_KEY="+secrets, "CLIPMUX_BACKUP_URL=file://"+target, "CLIPMUX_BACKUP_INTERVAL=0")
+	key, kid, priv := in.credentials("Recovery")
+	first, firstPID := in.upload(key, fixture(t, 4, 320, 180))
+	in.waitReady(key, first, 3*time.Minute)
+
+	// 1. Back up, with serve running.
+	if out := in.admin("backup", "now"); !strings.Contains(out, "written to") {
+		t.Fatalf("backup now:\n%s", out)
+	}
+
+	// 2. A second video, and the first re-encoded, after the backup.
+	reencoded := in.currentOutput(first)
+	in.reencode(key, first)
+	reencodedOutput := in.currentOutput(first)
+	if reencodedOutput == reencoded {
+		t.Fatalf("re-encoding %s kept output %s", first, reencoded)
+	}
+	reencodedFiles := in.filesOf(reencodedOutput)
+	if len(reencodedFiles) == 0 {
+		t.Fatalf("the re-encoded output %s has no files", reencodedOutput)
+	}
+	second, secondPID := in.upload(key, fixture(t, 4, 320, 180))
+	in.waitReady(key, second, 3*time.Minute)
+	secondOutput := in.currentOutput(second)
+	outputFiles := append(in.filesOf(secondOutput), reencodedFiles...)
+	routeFiles := in.filesNamed(secondPID + ".json")
+	sourceFiles := in.filesNamed(second + string(filepath.Separator) + "source")
+	if len(outputFiles) == 0 || len(sourceFiles) == 0 {
+		t.Fatalf("the second video has %d output files and %d source files before the restore", len(outputFiles), len(sourceFiles))
+	}
+	t.Logf("before the restore: %d output files, %d route records, %d source files", len(outputFiles), len(routeFiles), len(sourceFiles))
+
+	// 3. Restore the older backup over the newer database. serve is stopped:
+	// restore refuses while one runs.
+	in.halt(os.Interrupt)
+	out := in.admin("restore", "--latest", "--yes")
+	if !strings.Contains(out, "fence") {
+		t.Fatalf("restore --latest --yes didn't mention the fence:\n%s", out)
+	}
+	in.launch()
+	var gone string
+	if err := in.pool.QueryRow(context.Background(), `SELECT count(*)::text FROM assets WHERE id = $1`, second).Scan(&gone); err != nil || gone != "0" {
+		t.Fatalf("the second video's row after the restore: %q, %v; want none", gone, err)
+	}
+
+	// 4. Nothing of the second video is deleted: not by the sweeps serve runs,
+	// and not by the cleanup, which reads the fence first.
+	in.admin("prune", "--files")
+	for _, f := range append(append(outputFiles, routeFiles...), sourceFiles...) {
+		if _, err := os.Stat(f); err != nil {
+			t.Fatalf("the fence let %s be deleted: %v", f, err)
+		}
+	}
+	report := in.admin("restore", "report")
+	for _, want := range []string{secondOutput, second, reencodedOutput} {
+		if !strings.Contains(report, want) {
+			t.Errorf("restore report doesn't list %s:\n%s", want, report)
+		}
+	}
+	if len(routeFiles) > 0 && !strings.Contains(report, secondPID) {
+		t.Errorf("restore report doesn't list the route record of %s:\n%s", secondPID, report)
+	}
+	if strings.Contains(report, first+"\n") && strings.Contains(report, firstPID) {
+		t.Errorf("restore report lists the first video, which the database knows:\n%s", report)
+	}
+
+	// 5. Lift the fence: the first video plays, and a new one encodes.
+	if out := in.admin("restore", "finish", "--yes"); !strings.Contains(out, "lifted") {
+		t.Fatalf("restore finish:\n%s", out)
+	}
+	in.plays(kid, priv, firstPID)
+	third, thirdPID := in.upload(key, fixture(t, 4, 320, 180))
+	in.waitReady(key, third, 3*time.Minute)
+	in.plays(kid, priv, thirdPID)
 }
 
 // Rotating the secrets key (D071; P5 check 8): with only the new key serve

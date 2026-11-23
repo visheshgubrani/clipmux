@@ -295,6 +295,24 @@ export interface Routing {
   builtin_worker: { last_seen_at?: string; online: boolean }
   providers_ready: string[]
 }
+/** GET /v1/settings/backups: the Backups card (T29.8). */
+export interface Backups {
+  enabled: boolean
+  target?: string
+  interval_seconds: number
+  off_site: boolean
+  /** True when the target's key can't delete; null until a backup has found out. */
+  immutable: boolean | null
+  last: { id: string; kind: string; created_at: string; size_bytes: number } | null
+  /** The newest check of a backup, failed or not. */
+  verified: { backup_id: string; at: string; mode: 'restore' | 'integrity'; error?: string } | null
+  error: { at: string; message: string } | null
+  /** A "back up now" waiting for serve's next pass. */
+  requested: boolean
+  sources_pending: number
+  fence: { reason: string; detail: string; detected_at: string } | null
+  recovery_kit_confirmed_at: string | null
+}
 export interface Provider {
   kind: string
   connected: boolean

@@ -14,6 +14,9 @@
 # Options (after `sh -s --`):
 #   --version vX.Y.Z   install that release (default: the one this script came from, else the latest)
 #   --dir DIR          install there instead of /opt/clipmux
+#   --restore          on a new host: bring ClipMux back from its latest backup. Put the saved
+#                      .env in DIR first; it names the backup target and holds the secrets key
+#   --restore-only     restore into a fresh Postgres for a recovery drill, leaving ClipMux stopped
 #   --uninstall        stop and remove the stack; the volumes and .env stay
 #   --purge            with --uninstall: delete the volumes and DIR too (every video, key and setting)
 #
@@ -34,12 +37,16 @@ main() {
 	dir=/opt/clipmux
 	uninstall=
 	purge=
+	restore=
+	restore_only=
 	while [ $# -gt 0 ]; do
 		case $1 in
 		--version) version=${2:?--version needs a tag}; shift ;;
 		--version=*) version=${1#*=} ;;
 		--dir) dir=${2:?--dir needs a directory}; shift ;;
 		--dir=*) dir=${1#*=} ;;
+		--restore) restore=1 ;;
+		--restore-only) restore=1; restore_only=1 ;;
 		--uninstall) uninstall=1 ;;
 		--purge) purge=1 ;;
 		-h | --help) usage; exit 0 ;;
@@ -48,6 +55,7 @@ main() {
 		shift
 	done
 	[ -z "$purge" ] || [ -n "$uninstall" ] || die "--purge goes with --uninstall"
+	[ -z "$restore" ] || [ -z "$uninstall" ] || die "--restore can't go with --uninstall"
 
 	need docker
 	docker compose version >/dev/null 2>&1 || die "Docker Compose v2 is needed (the 'docker compose' plugin)"
@@ -78,8 +86,10 @@ main() {
 	[ -f "$dir/.env" ] && upgrade=1
 	mkdir -p "$dir" 2>/dev/null || die "can't create $dir: run as root (curl … | sudo sh), or pass --dir"
 	[ -w "$dir" ] || die "can't write $dir: run as root (curl … | sudo sh), or pass --dir"
+	[ -z "$restore" ] || check_restore_env
 	check_disk
-	[ -n "$upgrade" ] || check_ports
+	# A restore is a new host's first start, whatever its .env says.
+	[ -n "$restore_only" ] || { [ -n "$upgrade" ] && [ -z "$restore" ]; } || check_ports
 
 	tmp=$(mktemp -d)
 	trap 'rm -rf "$tmp"' EXIT
@@ -98,6 +108,11 @@ main() {
 	fi
 	cp "$tmp/compose.yml" "$tmp/Caddyfile" "$dir/"
 	chmod 0644 "$dir/compose.yml" "$dir/Caddyfile"
+
+	if [ -n "$restore" ]; then
+		restore_stack
+		return
+	fi
 
 	say "Starting ClipMux (pulling the image takes a few minutes the first time)"
 	compose pull --quiet
@@ -231,6 +246,78 @@ setenv() {
 	fi
 	chmod 0600 "$1.new"
 	mv "$1.new" "$1"
+}
+
+# check_restore_env checks that the saved .env holds what a restore needs,
+# before anything is downloaded or started.
+check_restore_env() {
+	[ -f "$dir/.env" ] || die "--restore needs the .env you saved from the old server in $dir: copy it there first"
+	for k in POSTGRES_PASSWORD CLIPMUX_SECRETS_KEY CLIPMUX_BACKUP_URL; do
+		[ -n "$(envval "$k")" ] || die "$dir/.env has no $k, which a restore needs (see https://clipmux.com/docs/self-host/operate/backups)"
+	done
+	case $(envval CLIPMUX_BACKUP_URL) in
+	s3://*) [ -n "$(envval CLIPMUX_BACKUP_ACCESS_KEY_ID)" ] && [ -n "$(envval CLIPMUX_BACKUP_SECRET_ACCESS_KEY)" ] ||
+		die "$dir/.env names an s3 backup target but not its CLIPMUX_BACKUP_ACCESS_KEY_ID and CLIPMUX_BACKUP_SECRET_ACCESS_KEY" ;;
+	esac
+}
+
+# envval prints the value of KEY in $dir/.env, the last one if it is set twice.
+envval() {
+	sed -n "s/^$1=//p" "$dir/.env" | tail -n 1
+}
+
+# restore_stack brings ClipMux back from the latest backup on the target the
+# saved .env names: Postgres first, then the restore in a one-off app container
+# (serve isn't running, so nothing else uses the database), then the whole
+# stack, then the report of what storage holds that the backup doesn't know.
+restore_stack() {
+	[ -z "$(compose ps --status running -q app 2>/dev/null)" ] ||
+		die "ClipMux is running on this host; --restore is for a new one. To roll this one back, see https://clipmux.com/docs/self-host/operate/backups"
+	say "Pulling the recovery images"
+	compose pull --quiet
+	say "Starting Postgres"
+	compose up -d --wait --wait-timeout 300 postgres || {
+		compose logs --tail 50 postgres >&2
+		die "Postgres didn't become healthy; the logs are above"
+	}
+	if [ -n "$restore_only" ]; then
+		tables=$(compose exec -T postgres psql -U clipmux -d clipmux -Atqc "SELECT count(*) FROM pg_tables WHERE schemaname = 'public'") ||
+			die "couldn't check that the recovery database is empty"
+		[ "$tables" = 0 ] || die "--restore-only requires an empty recovery database"
+	fi
+	say "Restoring the latest backup from $(envval CLIPMUX_BACKUP_URL | sed 's/?.*//')"
+	compose run --rm -T --no-deps app admin restore --latest --yes || {
+		die "the restore failed; only Postgres is running. Fix the error above (the secrets key and backup settings are in $dir/.env) and run this again"
+	}
+	if [ -n "$restore_only" ]; then
+		say "ClipMux $version is restored from the backup. Only Postgres is running."
+		return
+	fi
+	say "Starting ClipMux"
+	compose up -d --wait --wait-timeout 600 || {
+		compose ps >&2
+		compose logs --tail 50 app >&2
+		die "ClipMux didn't become healthy; the logs are above"
+	}
+	say ""
+	compose exec -T app clipmux admin restore report || say "(the report couldn't be read; run it again below)"
+	cat <<DONE
+
+  ClipMux $version is restored from the backup and running.
+
+  The restore fence is up: until you lift it, nothing is deleted from storage,
+  so the videos uploaded after the backup stay safe. Read the report above,
+  then lift the fence:
+
+      cd $dir && docker compose exec app clipmux admin restore finish --yes
+
+  Next:
+    - Point DNS for the public and media hostnames at this server. Caddy gets
+      a certificate for each when it is first visited.
+    - Play a video, and run: docker compose exec app clipmux admin setup-test --wait
+    - Backups carry on to the same target, from this host.
+
+DONE
 }
 
 check_disk() {

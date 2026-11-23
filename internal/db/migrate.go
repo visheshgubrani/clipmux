@@ -8,6 +8,7 @@ import (
 	"hash/fnv"
 	"io/fs"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -121,6 +122,35 @@ func MigrationLockID(schema string) int64 {
 	return int64(0x636d7832)<<32 | int64(h.Sum32())
 }
 
+// HoldMigrationLock takes the migration lock of the pool's schema for a
+// command that replaces the schema under it, such as a restore: while it is
+// held, a serve or an admin command that boots waits to migrate instead of
+// creating a fresh schema in the moment the old one is gone. held is false
+// when someone is migrating now; call release, once, before migrating
+// yourself, since migrating takes the same lock on another connection.
+func HoldMigrationLock(ctx context.Context, pool *pgxpool.Pool) (release func(), held bool, err error) {
+	var schema string
+	if err := pool.QueryRow(ctx, "SELECT current_schema()").Scan(&schema); err != nil {
+		return nil, false, fmt.Errorf("current schema: %w", err)
+	}
+	conn, err := pool.Acquire(ctx)
+	if err != nil {
+		return nil, false, fmt.Errorf("take the migration lock: %w", err)
+	}
+	if err := conn.QueryRow(ctx, "SELECT pg_try_advisory_lock($1)", MigrationLockID(schema)).Scan(&held); err != nil || !held {
+		conn.Release()
+		if err != nil {
+			return nil, false, fmt.Errorf("take the migration lock: %w", err)
+		}
+		return nil, false, nil
+	}
+	return func() {
+		// Unlock on a live connection; a dead one has lost it already.
+		_, _ = conn.Exec(context.WithoutCancel(ctx), "SELECT pg_advisory_unlock($1)", MigrationLockID(schema))
+		conn.Release()
+	}, true, nil
+}
+
 // checkNotNewer refuses a database migrated past this binary.
 func checkNotNewer(ctx context.Context, p *goose.Provider) error {
 	current, err := p.GetDBVersion(ctx)
@@ -134,6 +164,29 @@ func checkNotNewer(ctx context.Context, p *goose.Provider) error {
 	}
 	if current > known {
 		return fmt.Errorf("%w: the database is at migration %d, newer than this binary's %d; run the newer binary, or migrate down with it", ErrSchemaNewer, current, known)
+	}
+	return nil
+}
+
+// LatestMigration is the version of the newest migration this binary knows.
+func LatestMigration() int64 {
+	entries, _ := fs.ReadDir(migrationFiles, "migrations") // an embedded directory that always exists
+	var latest int64
+	for _, e := range entries {
+		num, _, _ := strings.Cut(e.Name(), "_")
+		if v, err := strconv.ParseInt(num, 10, 64); err == nil {
+			latest = max(latest, v)
+		}
+	}
+	return latest
+}
+
+// CheckNotNewer refuses a schema version past this binary's, as a restore
+// does for a dump taken by a newer ClipMux: loading it would bring back rows an
+// older binary doesn't understand.
+func CheckNotNewer(version int64) error {
+	if known := LatestMigration(); version > known {
+		return fmt.Errorf("%w: the schema is at migration %d, newer than this binary's %d; use the newer binary", ErrSchemaNewer, version, known)
 	}
 	return nil
 }
@@ -209,4 +262,22 @@ func MigrateDownAll(ctx context.Context, pool *pgxpool.Pool) error {
 		return fmt.Errorf("migrate down: %w", err)
 	}
 	return nil
+}
+
+// SchemaVersion is the version of the newest migration the database has
+// applied, 0 for none. A backup records it, and a restore refuses a dump
+// that is newer than the binary. GetVersions doesn't take the migration
+// lock, so a restore can read the version for its safety backup while
+// holding that lock.
+func SchemaVersion(ctx context.Context, pool *pgxpool.Pool) (int64, error) {
+	p, closeDB, err := provider(ctx, pool)
+	if err != nil {
+		return 0, err
+	}
+	defer closeDB()
+	v, _, err := p.GetVersions(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("schema version: %w", err)
+	}
+	return v, nil
 }

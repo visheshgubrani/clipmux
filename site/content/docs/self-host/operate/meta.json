@@ -1,4 +1,12 @@
 {
   "title": "Operate",
-  "pages": ["backups", "monitoring", "retention", "rotate-secrets", "security-checklist", "troubleshooting"]
+  "pages": [
+    "backups",
+    "disaster-recovery",
+    "monitoring",
+    "retention",
+    "rotate-secrets",
+    "security-checklist",
+    "troubleshooting"
+  ]
 }

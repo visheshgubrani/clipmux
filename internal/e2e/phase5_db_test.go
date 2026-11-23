@@ -625,7 +625,7 @@ func TestPhase5ExitSoak(t *testing.T) {
 	})
 	wg.Go(func() { // listing
 		for ctx.Err() == nil {
-			s := in.call("GET", "/v1/assets?limit=100", key, nil, nil)
+			s := in.call("GET", "/v1/assets?updated_since=2000-01-01T00:00:00Z&limit=100", key, nil, nil)
 			countMu.Lock()
 			if s >= 500 {
 				count(&fiveXX, "GET /v1/assets")

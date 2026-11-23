@@ -21,6 +21,9 @@ concurrency:
 env:
   TEST_DATABASE_URL: postgres://clipmux:clipmux@localhost:5432/clipmux_test?sslmode=disable
   CLIPMUX_REQUIRE_MEDIA_TOOLS: "1"
+  # The backup drills run the PostgreSQL 18 pg_dump and pg_restore; the
+  # runner's own are 16, which refuse a newer server.
+  CLIPMUX_PG_DUMP: /usr/lib/postgresql/18/bin/pg_dump
 jobs:
   linux:
     runs-on: ubuntu-24.04
@@ -44,6 +47,14 @@ jobs:
           node-version-file: .node-version
           cache: pnpm
       - uses: ./.github/actions/media-tools
+      - name: PostgreSQL 18 client tools
+        run: |
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt noble-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends postgresql-client-18
+          "$CLIPMUX_PG_DUMP" --version
       - run: pnpm install --frozen-lockfile && pnpm -r run build
       - name: S3-compatible store (R2 in the Phase 2 exit test)
         run: |
@@ -55,6 +66,7 @@ jobs:
           docker cp prom:/bin/promtool /usr/local/bin/promtool
           docker rm prom
           promtool check rules deploy/prometheus/alerts.yml
+          promtool test rules deploy/prometheus/alerts_test.yml
       - name: Real binary (Phase 1 to 5 exit tests)
         env:
           CLIPMUX_E2E_SOAK: ${{ inputs.soak && '1' || '' }}

@@ -51,8 +51,13 @@ since; see below.
 ### What happens at boot
 
 - **Migrations.** The app applies new database migrations when it starts,
-  holding a lock so two processes never migrate at once.
-  `clipmux admin migrate status` lists what the database has.
+  holding a lock so two processes never migrate at once. If there are any
+  to apply, it first backs the database up as it is (a `pre_migrate` backup
+  on your [backup target](/docs/self-host/operate/backups)), and if that
+  fails it doesn't migrate and stops with the reason in its log. Set
+  `CLIPMUX_BACKUP_BEFORE_MIGRATE=false` to migrate without one. The
+  `clipmux admin` commands do the same. `clipmux admin migrate status` lists
+  what the database has.
 - **A database newer than the app.** An older release refuses to start
   against a database a newer one migrated, with `schema_newer` in its log.
   Run the newer release, or roll the database back first with it (below).
@@ -78,6 +83,9 @@ sudo docker compose exec app clipmux admin migrate down-to VERSION --yes
 
 Then install the older release with `--version`. Rolling back can lose
 whatever the newer migrations added, which is why the backup comes first.
+If the upgrade went wrong and you would rather have the database exactly as it
+was, restore the `pre_migrate` backup that was taken just before it with the
+older release; see [Restore](/docs/self-host/operate/backups#restore).
 
 ## Uninstall
 

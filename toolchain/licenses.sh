@@ -15,6 +15,9 @@
 #   whisper/        whisper.cpp's licence and build manifest
 #   models/         where the speech models come from and their licences
 #                   (the image bakes them in, D118; an agent fetches them)
+#   postgresql/     the PostgreSQL licence, for the pg_dump and pg_restore the
+#                   image carries for backups (D143); not written where they
+#                   aren't installed
 #   packages.txt    every Debian package in the stage, with its source package
 #                   and version, for the libraries FFmpeg links against
 #
@@ -64,6 +67,38 @@ LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF
 CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 NOTICE
+if [ -x /usr/local/bin/pg_dump ]; then
+  mkdir -p "$out/postgresql"
+  cat >"$out/postgresql/NOTICE" <<NOTICE
+pg_dump, pg_restore and libpq, PostgreSQL ${PGCLIENT_VERSION%%-*}, are PGDG's
+binary packages (${PGCLIENT_POOL_URL}), unmodified, run as separate processes
+for backups. Source: https://ftp.postgresql.org/pub/source/v${PGCLIENT_VERSION%%-*}/
+
+PostgreSQL Database Management System
+(formerly known as Postgres, then as Postgres95)
+
+Portions Copyright (c) 1996-2026, The PostgreSQL Global Development Group
+
+Portions Copyright (c) 1994, The Regents of the University of California
+
+Permission to use, copy, modify, and distribute this software and its
+documentation for any purpose, without fee, and without a written agreement is
+hereby granted, provided that the above copyright notice and this paragraph
+and the following two paragraphs appear in all copies.
+
+IN NO EVENT SHALL THE UNIVERSITY OF CALIFORNIA BE LIABLE TO ANY PARTY FOR
+DIRECT, INDIRECT, SPECIAL, INCIDENTAL, OR CONSEQUENTIAL DAMAGES, INCLUDING LOST
+PROFITS, ARISING OUT OF THE USE OF THIS SOFTWARE AND ITS DOCUMENTATION, EVEN IF
+THE UNIVERSITY OF CALIFORNIA HAS BEEN ADVISED OF THE POSSIBILITY OF SUCH
+DAMAGE.
+
+THE UNIVERSITY OF CALIFORNIA SPECIFICALLY DISCLAIMS ANY WARRANTIES, INCLUDING,
+BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A
+PARTICULAR PURPOSE. THE SOFTWARE PROVIDED HEREUNDER IS ON AN "AS IS" BASIS, AND
+THE UNIVERSITY OF CALIFORNIA HAS NO OBLIGATIONS TO PROVIDE MAINTENANCE,
+SUPPORT, UPDATES, ENHANCEMENTS, OR MODIFICATIONS.
+NOTICE
+fi
 dpkg-query -W -f '${Package} ${Version} source=${source:Package} ${source:Version}\n' | sort >"$out/packages.txt"
 
 cat >"$out/README" <<'README'
@@ -72,7 +107,9 @@ v3.0. FFmpeg here is built from source under the GPL v2 or later (see
 ffmpeg/: its licence, the GPLv2 and LGPLv2.1 texts, the exact sources and
 configure flags) and runs as a separate process, never linked into
 ClipMux. Shaka Packager is BSD-licensed. whisper.cpp is MIT-licensed (see
-whisper/); its speech models are MIT too (see models/). Every other
+whisper/); its speech models are MIT too (see models/). The image's
+pg_dump and pg_restore are PostgreSQL's, under the PostgreSQL licence
+(postgresql/, where they are installed). Every other
 library comes from a Debian package listed in packages.txt, under that
 package's licence (its copyright file is in /usr/share/doc/PACKAGE/ in
 the image, and in packages/ in the agent tarball).

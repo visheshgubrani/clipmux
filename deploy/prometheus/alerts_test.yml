@@ -1,0 +1,110 @@
+# Unit tests for alerts.yml. Run with: promtool test rules deploy/prometheus/alerts_test.yml
+# The test clock starts at 0, so a timestamp series of "0+60x" tracks it.
+rule_files:
+  - alerts.yml
+evaluation_interval: 1m
+
+tests:
+  - name: a backup is stale at twice the interval, and not before
+    interval: 1m
+    input_series:
+      - series: 'clipmux_backup_interval_seconds'
+        values: '3600+0x300'
+      # Taken at 30 minutes, never again.
+      - series: 'clipmux_backup_last_success_timestamp_seconds'
+        values: '1800+0x300'
+    alert_rule_test:
+      - eval_time: 2h
+        alertname: ClipMuxBackupStale
+        exp_alerts: []
+      - eval_time: 3h
+        alertname: ClipMuxBackupStale
+        exp_alerts:
+          - exp_labels: { severity: page }
+            exp_annotations:
+              summary: "no backup has been written for twice the backup interval, or ever; see the dashboard's Backups card or `clipmux admin backup check`"
+
+  - name: a backup that keeps coming is never stale, and with backups off nothing alerts
+    interval: 1m
+    input_series:
+      - series: 'clipmux_backup_interval_seconds{instance="on"}'
+        values: '3600+0x300'
+      - series: 'clipmux_backup_last_success_timestamp_seconds{instance="on"}'
+        values: '0+60x300'
+      - series: 'clipmux_backup_interval_seconds{instance="off"}'
+        values: '0+0x300'
+      - series: 'clipmux_backup_last_success_timestamp_seconds{instance="off"}'
+        values: '0+0x300'
+    alert_rule_test:
+      - eval_time: 4h
+        alertname: ClipMuxBackupStale
+        exp_alerts: []
+
+  - name: a failed restore check alerts after an hour
+    interval: 1m
+    input_series:
+      - series: 'clipmux_backup_verify_failed'
+        values: '0+0x30 1+0x300'
+      - series: 'clipmux_backup_interval_seconds'
+        values: '3600+0x400'
+      - series: 'clipmux_backup_last_success_timestamp_seconds'
+        values: '0+60x400'
+      - series: 'clipmux_backup_last_verified_timestamp_seconds'
+        values: '0+60x400'
+    alert_rule_test:
+      - eval_time: 1h
+        alertname: ClipMuxBackupVerifyFailing
+        exp_alerts: []
+      - eval_time: 2h
+        alertname: ClipMuxBackupVerifyFailing
+        exp_alerts:
+          - exp_labels: { severity: warn }
+            exp_annotations:
+              summary: "the newest backup failed its restore check, or none has passed one in 8 days; run `clipmux admin backup verify` for the reason"
+
+  - name: a backup never checked alerts after 8 days, a new install doesn't alert at once
+    interval: 1m
+    input_series:
+      - series: 'clipmux_backup_verify_failed'
+        values: '0+0x15000'
+      - series: 'clipmux_backup_interval_seconds'
+        values: '3600+0x15000'
+      - series: 'clipmux_backup_last_success_timestamp_seconds'
+        values: '0+60x15000'
+      - series: 'clipmux_backup_last_verified_timestamp_seconds'
+        values: '0+0x15000'
+    alert_rule_test:
+      - eval_time: 7d
+        alertname: ClipMuxBackupVerifyFailing
+        exp_alerts: []
+      - eval_time: 10d
+        alertname: ClipMuxBackupVerifyFailing
+        exp_alerts:
+          - exp_labels: { severity: warn }
+            exp_annotations:
+              summary: "the newest backup failed its restore check, or none has passed one in 8 days; run `clipmux admin backup verify` for the reason"
+
+  - name: the fence and a nearly full disk alert
+    interval: 1m
+    input_series:
+      - series: 'clipmux_restore_fenced'
+        values: '1+0x60'
+      - series: 'clipmux_data_total_bytes'
+        values: '1000+0x60'
+      - series: 'clipmux_data_free_bytes{instance="low"}'
+        values: '90+0x60'
+      - series: 'clipmux_data_total_bytes{instance="low"}'
+        values: '1000+0x60'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: ClipMuxRestoreFenced
+        exp_alerts:
+          - exp_labels: { severity: warn }
+            exp_annotations:
+              summary: "the restore fence is up and storage deletes are stopped; read `clipmux admin restore report`, then `clipmux admin restore finish --yes`"
+      - eval_time: 30m
+        alertname: ClipMuxDiskLow
+        exp_alerts:
+          - exp_labels: { severity: warn, instance: low }
+            exp_annotations:
+              summary: "under 10% of the disk holding the data directory is free; encodes, backups and restores need room"

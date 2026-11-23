@@ -104,6 +104,53 @@ behind a load balancer would not share them. To grow, move work off the
 server: storage to a bucket, encoding to a cloud GPU, playback to
 Cloudflare.
 
+## Control-plane capacity
+
+The capacity test ramps from 10 to 200 API reads per second, with one
+multipart upload per second. It measures an asset lookup, a 100-asset
+catch-up page, an app lookup and the upload create, sign and complete calls.
+A simulated encoder claims each job and reports a terminal result. The
+webhook goes to a receiver on the same host. The claim measurement starts
+when the job is queued. The webhook measurement starts when the event is
+written.
+
+For this workload, the sizing objectives are 99.9% successful API requests,
+API p95 under 200 ms on each route, enqueue-to-claim p95 under 2 seconds
+with an available worker, and event-to-webhook p95 under 10 seconds with a
+healthy receiver. Remote worker wake-up, encoding time and internet latency
+add to the time an integration sees. Use the
+[monitoring recording rules](/docs/self-host/operate/monitoring) to track
+your own API response times and server errors.
+
+The November 2026 run used a shared 2-vCPU ARM64 VM and PostgreSQL 18.6.
+ClipMux, Postgres and the load generator had 4 GiB of memory limits
+combined. Each column shows **p50 / p95 in milliseconds** over one minute.
+
+| Operation | 10 reads/s | 50 reads/s | 100 reads/s | 200 reads/s |
+| --- | ---: | ---: | ---: | ---: |
+| List 100 assets | 4.9 / 18.2 | 4.8 / 17.4 | 4.6 / 34.4 | 5.2 / 255.5 |
+| Read an asset | 3.2 / 9.3 | 2.8 / 11.1 | 2.7 / 25.4 | 3.3 / 236.2 |
+| Read app details | 2.8 / 10.8 | 2.5 / 8.0 | 2.5 / 20.1 | 2.6 / 229.9 |
+| Create an upload | 7.8 / 22.2 | 7.9 / 26.2 | 7.8 / 34.6 | 11.9 / 197.5 |
+| Sign upload parts | 2.7 / 10.4 | 2.6 / 11.2 | 3.2 / 12.4 | 5.8 / 132.6 |
+| Complete an upload | 5.5 / 19.2 | 5.7 / 23.4 | 7.8 / 37.5 | 11.7 / 118.4 |
+| Enqueue to claim | 401 / 986 | 402 / 968 | 468 / 972 | 448 / 991 |
+| Event to webhook delivery | 2,373 / 4,516 | 2,551 / 4,642 | 2,481 / 4,810 | 2,446 / 4,559 |
+
+The run met all four objectives through 100 reads/s plus one upload/s.
+At 200 reads/s, the three read routes exceeded the p95 objective and the
+load generator dropped 187 of 12,000 scheduled reads. Every read that
+reached ClipMux succeeded in this run.
+
+With R2 storage, a 1 GiB upload takes 32 part PUTs of 32 MiB each. R2
+receives all 1 GiB directly from the uploader. On a successful upload with
+one signing batch, ClipMux handles three API calls to create the upload,
+sign the parts and complete it. With Cloudflare Worker delivery and a
+video whose encoded files are in R2, 100 viewers averaging 5 Mbit/s each
+receive about 500 Mbit/s from Cloudflare. The ClipMux origin serves zero
+of those media bytes. Budget origin bandwidth separately for files still
+served through origin fallback.
+
 ## Next
 
 - [Install with one line](/docs/self-host/install)

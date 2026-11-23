@@ -628,7 +628,7 @@ func (q *Queries) ListRoutableJobs(ctx context.Context, arg ListRoutableJobsPara
 }
 
 const lockAsset = `-- name: LockAsset :one
-SELECT id, project_id, app_id, status, error_code, version, storage_id, source_uri, agent_source_id, source_kept, current_output_id, passthrough, duration_seconds, created_at, updated_at, deleted_at, title, media_storage_id, renditions, source_bytes FROM assets WHERE id = $1 FOR UPDATE
+SELECT id, project_id, app_id, status, error_code, version, storage_id, source_uri, agent_source_id, source_kept, current_output_id, passthrough, duration_seconds, created_at, updated_at, deleted_at, title, media_storage_id, renditions, source_bytes, source_backed_up_at, source_tombstoned_at FROM assets WHERE id = $1 FOR UPDATE
 `
 
 func (q *Queries) LockAsset(ctx context.Context, id string) (Asset, error) {
@@ -655,6 +655,8 @@ func (q *Queries) LockAsset(ctx context.Context, id string) (Asset, error) {
 		&i.MediaStorageID,
 		&i.Renditions,
 		&i.SourceBytes,
+		&i.SourceBackedUpAt,
+		&i.SourceTombstonedAt,
 	)
 	return i, err
 }

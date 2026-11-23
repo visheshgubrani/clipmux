@@ -21,7 +21,7 @@ test-db:
 	TEST_DATABASE_URL=postgres://clipmux:clipmux@localhost:5444/clipmux_test?sslmode=disable $(S3_TEST_ENV) go test ./...
 
 run:
-	DATABASE_URL=$${DATABASE_URL:-postgres://clipmux:clipmux@localhost:5444/clipmux?sslmode=disable} go run ./cmd/clipmux serve
+	CLIPMUX_BACKUP_BEFORE_MIGRATE=false DATABASE_URL=$${DATABASE_URL:-postgres://clipmux:clipmux@localhost:5444/clipmux?sslmode=disable} go run ./cmd/clipmux serve
 
 # The dashboard, built into internal/web/dist for the binary to embed.
 web:

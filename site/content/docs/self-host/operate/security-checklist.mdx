@@ -29,8 +29,12 @@ and again after a major change. Each item links to where it's explained.
       **Two-factor sign-in**, and store the recovery codes offline. A
       locked-out owner runs `clipmux admin reset-password` and
       `clipmux admin reset-totp` on the server.
-- [ ] **Backups hold the secrets key,** and the backups are encrypted or
-      offline. See [Back up and restore](/docs/self-host/operate/backups).
+- [ ] **Backups are off this server, and you hold the recovery kit.**
+      `CLIPMUX_BACKUP_URL` points at a bucket at another provider, with a
+      key that can't delete, and the secrets key and `.env` are stored
+      somewhere other than the server. The dashboard's Backups card shows
+      each. See [Back up and restore](/docs/self-host/operate/backups) and
+      [Disaster recovery](/docs/self-host/operate/disaster-recovery).
 - [ ] **PC agents run sandboxed.** `clipmux worker doctor` on each PC shows
       the sandbox, and `GET /v1/agents` reports `sandboxed` for each agent.
       An unsandboxed agent takes only its own jobs and the owner's uploads.

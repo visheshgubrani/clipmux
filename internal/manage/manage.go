@@ -25,6 +25,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/analytics"
 	"github.com/visheshgubrani/clipmux/internal/apikeys"
 	"github.com/visheshgubrani/clipmux/internal/assets"
+	"github.com/visheshgubrani/clipmux/internal/backup"
 	"github.com/visheshgubrani/clipmux/internal/chapters"
 	"github.com/visheshgubrani/clipmux/internal/cloudflare"
 	"github.com/visheshgubrani/clipmux/internal/db"
@@ -77,6 +78,10 @@ type API struct {
 	// Stores lists, adds and removes storage configs; nil leaves their
 	// routes 404.
 	Stores *stores.Set
+	// Backups is the backup service, nil when backups are off; BackupConfig is
+	// what the environment set either way (T29.8).
+	Backups      *backup.Service
+	BackupConfig backup.Config
 	// Keys rotates the content key secret; nil leaves its route 404.
 	Keys   *ContentKeys
 	Now    func() time.Time
@@ -119,6 +124,9 @@ func (m *API) ActAsApp(r *http.Request) (apikeys.Key, error) {
 func (m *API) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/setup", m.setup)
 	mux.HandleFunc("PUT /v1/settings/urls", m.owned(m.saveURLs))
+	mux.HandleFunc("GET /v1/settings/backups", m.owned(m.getBackups))
+	mux.HandleFunc("POST /v1/settings/backups/run", m.owned(m.runBackup))
+	mux.HandleFunc("PUT /v1/settings/backups/recovery-kit", m.owned(m.setRecoveryKit))
 	mux.HandleFunc("GET /v1/settings/routing", m.owned(m.getRouting))
 	mux.HandleFunc("PUT /v1/settings/routing", m.owned(m.saveRouting))
 	mux.HandleFunc("GET /v1/executors", m.owned(m.listExecutors))

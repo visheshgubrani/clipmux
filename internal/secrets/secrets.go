@@ -9,10 +9,13 @@
 package secrets
 
 import (
+	"bytes"
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/hkdf"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/binary"
 	"encoding/hex"
@@ -21,6 +24,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -46,10 +50,13 @@ const (
 // Box seals and opens secrets with one version of the secrets key.
 type Box struct {
 	version uint32
+	key     []byte
 	aead    cipher.AEAD
 	// previous opens values sealed with an earlier key while they are
 	// resealed (CLIPMUX_SECRETS_KEY_PREVIOUS, D071); Seal never uses it.
 	previous map[uint32]cipher.AEAD
+	// previousKeys are those earlier keys, for Derive.
+	previousKeys map[uint32][]byte
 }
 
 // NewBox returns a Box for a 32-byte key.
@@ -65,7 +72,7 @@ func NewBox(version uint32, key []byte) (*Box, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Box{version: version, aead: aead}, nil
+	return &Box{version: version, key: bytes.Clone(key), aead: aead}, nil
 }
 
 func associated(table, rowID string) []byte {
@@ -196,6 +203,14 @@ func LoadOrCreate(ctx context.Context, q *db.Queries, projectID, dir, env, previ
 	return b, nil
 }
 
+// Verify checks that the box opens the project's check value, the first thing
+// serve does with a key. It seals the value if the database has none yet, so
+// run it only on a database you may write to, such as a scratch copy of a
+// backup.
+func Verify(ctx context.Context, q *db.Queries, projectID string, b *Box) error {
+	return verify(ctx, q, projectID, b)
+}
+
 func verify(ctx context.Context, q *db.Queries, projectID string, b *Box) error {
 	check, err := q.GetSecretsCheck(ctx, projectID)
 	if err != nil {
@@ -242,7 +257,38 @@ func (b *Box) AddPrevious(key string) error {
 	}
 	if b.previous == nil {
 		b.previous = map[uint32]cipher.AEAD{}
+		b.previousKeys = map[uint32][]byte{}
 	}
 	b.previous[prev.version] = prev.aead
+	b.previousKeys[prev.version] = prev.key
 	return nil
+}
+
+// Derive returns 32 bytes for a purpose, from the key of the given version
+// (HKDF-SHA256 with info naming the purpose), so a secret the key protects
+// can be derived again from the key alone. It reports false for a version the
+// box doesn't hold. Never log the result.
+func (b *Box) Derive(version uint32, info string) ([]byte, bool) {
+	key := b.key
+	if version != b.version {
+		var ok bool
+		if key, ok = b.previousKeys[version]; !ok {
+			return nil, false
+		}
+	}
+	out, err := hkdf.Key(sha256.New, key, nil, info, 32)
+	if err != nil {
+		return nil, false // only for a length HKDF can't produce; 32 always can
+	}
+	return out, true
+}
+
+// Versions lists the key versions the box holds, the current one first.
+func (b *Box) Versions() []uint32 {
+	out := []uint32{b.version}
+	for v := range b.previousKeys {
+		out = append(out, v)
+	}
+	slices.Sort(out[1:])
+	return out
 }

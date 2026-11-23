@@ -5,17 +5,45 @@ import (
 	"context"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/visheshgubrani/clipmux/internal/apikeys"
+	"github.com/visheshgubrani/clipmux/internal/db"
 	"github.com/visheshgubrani/clipmux/internal/db/dbtest"
+	"github.com/visheshgubrani/clipmux/internal/fence"
 	"github.com/visheshgubrani/clipmux/internal/secrets"
+	"github.com/visheshgubrani/clipmux/internal/storage"
 	"github.com/visheshgubrani/clipmux/internal/tokens"
 )
+
+// envFor is the environment of a host whose DATABASE_URL is pool's schema.
+func envFor(t *testing.T, pool *pgxpool.Pool, extra map[string]string) func(string) string {
+	t.Helper()
+	var schema string
+	if err := pool.QueryRow(context.Background(), `SELECT current_schema()`).Scan(&schema); err != nil {
+		t.Fatal(err)
+	}
+	u, err := url.Parse(os.Getenv("TEST_DATABASE_URL"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	q := u.Query()
+	q.Set("search_path", schema)
+	u.RawQuery = q.Encode()
+	return func(k string) string {
+		if k == "DATABASE_URL" {
+			return u.String()
+		}
+		return extra[k]
+	}
+}
 
 var keyLine = regexp.MustCompile(`key:\s+(cmx_\S+)`)
 
@@ -47,23 +75,7 @@ func TestCreateKeyCreatesTheAppOnceAndPrintsAWorkingKey(t *testing.T) {
 func TestCreateKeyDefaultsToTheScopesAnIntegrationNeeds(t *testing.T) {
 	ctx := context.Background()
 	pool := dbtest.New(t)
-	var schema string
-	if err := pool.QueryRow(ctx, `SELECT current_schema()`).Scan(&schema); err != nil {
-		t.Fatal(err)
-	}
-	u, err := url.Parse(os.Getenv("TEST_DATABASE_URL"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	q := u.Query()
-	q.Set("search_path", schema)
-	u.RawQuery = q.Encode()
-	getenv := func(k string) string {
-		if k == "DATABASE_URL" {
-			return u.String()
-		}
-		return ""
-	}
+	getenv := envFor(t, pool, nil)
 	cases := []struct {
 		args []string
 		want []string
@@ -294,5 +306,71 @@ func TestCreateIntegrationRefusesLoopbackUnlessAllowed(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "CLIPMUX_URL=http://localhost:8080\n") || strings.Contains(out.String(), "CLIPMUX_WEBHOOK_SECRET") {
 		t.Fatalf("output:\n%s", out.String())
+	}
+}
+
+func TestRestoreReportListsWhatStorageHoldsAndFinishLiftsTheFence(t *testing.T) {
+	ctx := context.Background()
+	pool := dbtest.New(t)
+	dir := t.TempDir()
+	getenv := envFor(t, pool, map[string]string{"CLIPMUX_DATA_DIR": dir, "CLIPMUX_SECRETS_KEY": "v1:" + strings.Repeat("a", 64)})
+	st, err := storage.OpenFilesystem(filepath.Join(dir, "storage"), storage.FilesystemOptions{BaseURL: "http://unused"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for key, body := range map[string]string{
+		"_routes/pid_newer.json":          `{"v":1,"asset_id":"ast_newer","output_id":"out_newer"}`,
+		"media/ast_newer/out_newer/a.m4s": "12345",
+		"uploads/ast_newer/source":        "1234567890",
+	} {
+		if err := st.Put(ctx, key, strings.NewReader(body)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	st.Close()
+	run := func(args ...string) (int, string, string) {
+		var out, errOut bytes.Buffer
+		code := admin(append([]string{"restore"}, args...), getenv, strings.NewReader(""), &out, &errOut)
+		return code, out.String(), errOut.String()
+	}
+
+	code, out, errOut := run("report")
+	if code != 0 || !strings.Contains(out, "restore fence: none") || !strings.Contains(out, "pid_newer") ||
+		!strings.Contains(out, "No fence is up, so serve will delete") {
+		t.Fatalf("report with no fence: exit %d\n%s\n%s", code, out, errOut)
+	}
+
+	if _, err := fence.Engage(ctx, db.New(pool), db.DefaultProjectID, fence.Found{Reason: fence.Restored, Detail: "restored bak_1", BackupID: "bak_1"}); err != nil {
+		t.Fatal(err)
+	}
+	code, out, errOut = run("report")
+	for _, want := range []string{
+		"restore fence: up since", "(restored)", "restored from backup bak_1",
+		"route records the database doesn't know: 1", "pid_newer  asset ast_newer  output out_newer",
+		"media/ast_newer/out_newer/  a new asset, no manifest (never committed), 1 files, 5 bytes",
+		"uploads/ast_newer/source  10 bytes", "clipmux admin restore finish --yes",
+	} {
+		if code != 0 || !strings.Contains(out, want) {
+			t.Fatalf("report under a fence lacks %q: exit %d\n%s\n%s", want, code, out, errOut)
+		}
+	}
+
+	if code, _, errOut := run("finish"); code != 2 || !strings.Contains(errOut, "--yes") {
+		t.Fatalf("finish without --yes: exit %d, %s", code, errOut)
+	}
+	if up, _ := db.New(pool).FenceActive(ctx, db.DefaultProjectID); !up {
+		t.Fatal("finish without --yes lifted the fence")
+	}
+	if code, out, errOut := run("finish", "--yes"); code != 0 || !strings.Contains(out, "lifted") {
+		t.Fatalf("finish --yes: exit %d\n%s\n%s", code, out, errOut)
+	}
+	if up, _ := db.New(pool).FenceActive(ctx, db.DefaultProjectID); up {
+		t.Fatal("finish --yes left the fence up")
+	}
+	if code, out, _ := run("finish", "--yes"); code != 0 || !strings.Contains(out, "no restore fence is up") {
+		t.Fatalf("finish with no fence: exit %d, %s", code, out)
+	}
+	if code, _, _ := run("nonsense"); code != 2 {
+		t.Fatalf("unknown restore command: exit %d, want 2", code)
 	}
 }

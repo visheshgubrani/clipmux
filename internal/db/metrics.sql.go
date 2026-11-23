@@ -52,6 +52,45 @@ func (q *Queries) MetricActiveJobs(ctx context.Context) ([]MetricActiveJobsRow, 
 	return items, nil
 }
 
+const metricBackups = `-- name: MetricBackups :one
+SELECT
+    coalesce((SELECT extract(epoch FROM max(b.created_at)) FROM backups b WHERE b.project_id = $1), 0)::double precision AS last_success,
+    coalesce((SELECT extract(epoch FROM max(b.verified_at)) FROM backups b WHERE b.project_id = $1 AND b.verified_at IS NOT NULL AND b.verify_error IS NULL), 0)::double precision AS last_verified,
+    coalesce((SELECT b.size_bytes FROM backups b WHERE b.project_id = $1 ORDER BY b.created_at DESC LIMIT 1), 0)::bigint AS last_bytes,
+    coalesce((SELECT b.verify_error IS NOT NULL FROM backups b WHERE b.project_id = $1 AND b.verified_at IS NOT NULL ORDER BY b.verified_at DESC LIMIT 1), false)::boolean AS verify_failed,
+    (SELECT count(*) FROM assets
+      WHERE source_backed_up_at IS NULL AND status IN ('processing', 'ready', 'errored')
+        AND source_kept AND source_uri IS NOT NULL AND agent_source_id IS NULL)::bigint AS sources_pending,
+    EXISTS (SELECT 1 FROM restore_fence f WHERE f.project_id = $1 AND f.lifted_at IS NULL)::boolean AS fenced,
+    pg_database_size(current_database())::bigint AS db_size
+`
+
+type MetricBackupsRow struct {
+	LastSuccess    float64
+	LastVerified   float64
+	LastBytes      int64
+	VerifyFailed   bool
+	SourcesPending int64
+	Fenced         bool
+	DbSize         int64
+}
+
+// Everything the backup gauges need, in one read (T29.8).
+func (q *Queries) MetricBackups(ctx context.Context, projectID string) (MetricBackupsRow, error) {
+	row := q.db.QueryRow(ctx, metricBackups, projectID)
+	var i MetricBackupsRow
+	err := row.Scan(
+		&i.LastSuccess,
+		&i.LastVerified,
+		&i.LastBytes,
+		&i.VerifyFailed,
+		&i.SourcesPending,
+		&i.Fenced,
+		&i.DbSize,
+	)
+	return i, err
+}
+
 const metricDispatches = `-- name: MetricDispatches :many
 SELECT kind, status, count(*)::bigint AS n FROM dispatches GROUP BY 1, 2
 `

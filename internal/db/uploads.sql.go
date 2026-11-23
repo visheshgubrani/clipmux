@@ -134,7 +134,7 @@ func (q *Queries) FinishUpload(ctx context.Context, arg FinishUploadParams) erro
 }
 
 const getAssetByID = `-- name: GetAssetByID :one
-SELECT id, project_id, app_id, status, error_code, version, storage_id, source_uri, agent_source_id, source_kept, current_output_id, passthrough, duration_seconds, created_at, updated_at, deleted_at, title, media_storage_id, renditions, source_bytes FROM assets WHERE id = $1
+SELECT id, project_id, app_id, status, error_code, version, storage_id, source_uri, agent_source_id, source_kept, current_output_id, passthrough, duration_seconds, created_at, updated_at, deleted_at, title, media_storage_id, renditions, source_bytes, source_backed_up_at, source_tombstoned_at FROM assets WHERE id = $1
 `
 
 func (q *Queries) GetAssetByID(ctx context.Context, id string) (Asset, error) {
@@ -161,6 +161,8 @@ func (q *Queries) GetAssetByID(ctx context.Context, id string) (Asset, error) {
 		&i.MediaStorageID,
 		&i.Renditions,
 		&i.SourceBytes,
+		&i.SourceBackedUpAt,
+		&i.SourceTombstonedAt,
 	)
 	return i, err
 }
@@ -376,7 +378,7 @@ const markAssetProcessing = `-- name: MarkAssetProcessing :one
 UPDATE assets
 SET status = 'processing', source_uri = $2, source_bytes = $3, version = version + 1, updated_at = now()
 WHERE id = $1
-RETURNING id, project_id, app_id, status, error_code, version, storage_id, source_uri, agent_source_id, source_kept, current_output_id, passthrough, duration_seconds, created_at, updated_at, deleted_at, title, media_storage_id, renditions, source_bytes
+RETURNING id, project_id, app_id, status, error_code, version, storage_id, source_uri, agent_source_id, source_kept, current_output_id, passthrough, duration_seconds, created_at, updated_at, deleted_at, title, media_storage_id, renditions, source_bytes, source_backed_up_at, source_tombstoned_at
 `
 
 type MarkAssetProcessingParams struct {
@@ -409,6 +411,8 @@ func (q *Queries) MarkAssetProcessing(ctx context.Context, arg MarkAssetProcessi
 		&i.MediaStorageID,
 		&i.Renditions,
 		&i.SourceBytes,
+		&i.SourceBackedUpAt,
+		&i.SourceTombstonedAt,
 	)
 	return i, err
 }

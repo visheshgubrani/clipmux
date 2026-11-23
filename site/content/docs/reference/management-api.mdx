@@ -136,6 +136,55 @@ and returns the routing as `GET` does.
 A provider's passing connect test sets routing itself: that provider as
 primary, and `builtin` as fallback when the server runs the built-in worker.
 
+### Backups
+
+`GET /v1/settings/backups` · `POST /v1/settings/backups/run` · `PUT /v1/settings/backups/recovery-kit`
+
+`GET` returns what the dashboard's Backups card shows:
+
+```json
+{
+  "enabled": true,
+  "target": "s3://bucket/clipmux/",
+  "interval_seconds": 3600,
+  "off_site": true,
+  "immutable": true,
+  "last": {"id": "bak_…", "kind": "scheduled", "created_at": "…", "size_bytes": 1048576},
+  "verified": {"backup_id": "bak_…", "at": "…", "mode": "restore", "error": ""},
+  "error": null,
+  "requested": false,
+  "sources_pending": 0,
+  "fence": null,
+  "recovery_kit_confirmed_at": null
+}
+```
+
+- `enabled` is false when `CLIPMUX_BACKUP_INTERVAL` is `0`. The target, the
+  interval and the schedule are environment settings, so they are shown and
+  not edited here.
+- `off_site` is false for a directory on this server's own disk.
+- `immutable` is true when the target's key can't delete, false when it can,
+  and `null` until a backup has found out since serve started.
+- `last` is the newest backup. `verified` is the newest check of one,
+  failed or not: `mode` is `restore` (loaded into a scratch database) or
+  `integrity` (the file only, for a database role that can't create
+  databases), and `error` says what failed.
+- `error` is why the newest attempt failed, until a backup succeeds
+  (`{at, message}`).
+- `requested` is true while a `POST …/run` waits for serve.
+- `sources_pending` counts committed sources not yet copied to the target.
+- `fence` is `{reason, detail, detected_at}` while the restore fence is up
+  and storage deletes are stopped.
+- `recovery_kit_confirmed_at` is when the owner said the secrets key and
+  `DATABASE_URL` are stored off this server.
+
+`POST …/run` asks for a backup now and returns `202 {requested: true}`. serve
+takes it on its next pass, within a minute, since only it runs `pg_dump`.
+`409 backups_off` when backups are off.
+
+`PUT …/recovery-kit` takes `{confirmed}` and returns
+`{recovery_kit_confirmed_at}`: the time, or `null` once withdrawn.
+
 ### Speech
 
 `GET /v1/settings/speech` · `PUT /v1/settings/speech`

@@ -38,6 +38,7 @@ RUN --mount=type=bind,source=toolchain/versions.env,target=/tmp/versions.env \
     grep -E '^(FFMPEG|NV_CODEC_HEADERS)_' /tmp/versions.env >/pins/ffmpeg.env; \
     grep -E '^(WHISPER_CPP|WHISPER_CUDA|CUDA)_' /tmp/versions.env >/pins/whisper.env; \
     grep -E '^SHAKA_' /tmp/versions.env >/pins/shaka.env; \
+    grep -E '^PGCLIENT_' /tmp/versions.env >/pins/pgclient.env; \
     grep -E '^WHISPER_(VAD_)?MODEL_' /tmp/versions.env >/pins/models.env; \
     for f in /pins/*.env; do (set -u; . "$f"); done
 
@@ -94,6 +95,15 @@ FROM fetch AS packager
 COPY --from=pins /pins/shaka.env /tc/versions.env
 RUN --mount=type=bind,source=toolchain/install_packager.sh,target=/tc/install_packager.sh \
     mkdir /out && bash /tc/install_packager.sh /out
+
+# ── The PostgreSQL client tools (D143) ──────────────────────────────────────
+# pg_dump and pg_restore for backups, and libpq; the libraries libpq links are
+# the runtime stage's apt packages. A fixed mtime keeps the layer's bytes the
+# same if this step ever runs again for the same pins.
+FROM fetch AS pgclient
+COPY --from=pins /pins/pgclient.env /tc/versions.env
+RUN --mount=type=bind,source=toolchain/install_pgclient.sh,target=/tc/install_pgclient.sh \
+    mkdir /out && bash /tc/install_pgclient.sh /out && find /out -exec touch -h -d @0 {} +
 
 # ── The speech models (D118) ────────────────────────────────────────────────
 # Baked in, so a serverless machine (a new one for every job) never downloads
@@ -184,6 +194,7 @@ COPY --link --from=models /models/ /usr/share/clipmux/models/
 COPY --link --from=ffmpeg /usr/local/ /usr/local/
 COPY --link --from=whisper /usr/local/ /usr/local/
 COPY --link --from=packager /out/packager /usr/local/bin/packager
+COPY --link --from=pgclient /out/ /usr/local/
 # The toolchain must still do what the engine asks of it on the final image.
 RUN --mount=type=bind,source=toolchain/verify_toolchain.sh,target=/tc/verify_toolchain.sh \
     --mount=type=bind,source=toolchain/licenses.sh,target=/tc/licenses.sh \
@@ -193,6 +204,7 @@ RUN --mount=type=bind,source=toolchain/verify_toolchain.sh,target=/tc/verify_too
     && if [ "$(dpkg --print-architecture)" = amd64 ]; then export CLIPMUX_WHISPER_CUDA=1; fi \
     && bash /tc/verify_toolchain.sh /usr/local/bin/ffmpeg /usr/local/bin/ffprobe /usr/local/bin/whisper-cli \
     && packager --version \
+    && pg_dump --version && pg_restore --version \
     && bash /tc/licenses.sh /usr/share/doc/clipmux/licenses /tc/versions.env /tc/LICENSE
 LABEL org.opencontainers.image.source=https://github.com/visheshgubrani/clipmux \
       org.opencontainers.image.description="ClipMux: self-hosted video infrastructure" \

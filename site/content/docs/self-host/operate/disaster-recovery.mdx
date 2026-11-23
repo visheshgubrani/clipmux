@@ -1,0 +1,252 @@
+---
+title: Disaster recovery
+description: What to do, how long it should take and how to check it worked, for each way a ClipMux server can fail.
+icon: LifeBuoy
+---
+
+Most failures need nothing from you: a crashed process restarts and loses
+nothing that was committed. What ClipMux can't survive by itself is losing
+state, such as a disk, a bucket or the secrets key. This page is a runbook,
+one section per failure. Each says what you will see, what to run, how long it
+should take, and how to check it worked.
+
+The times are the ones ClipMux is built to meet, with a 2 vCPU server and a
+library of the size a single server runs. Your own depend on the size of your
+database and your network, so time a restore on a spare server before you need
+one.
+
+<Note>
+  Everything below that restores needs the [recovery kit](/docs/self-host/operate/backups#recovery-kit):
+  your `.env`, with the secrets key, and the backup target's read key. Make it
+  now, off the server.
+</Note>
+
+## What to expect
+
+| What happens | What you lose | Back in |
+| --- | --- | --- |
+| [serve crashes or is killed](#serve-crashes) | Nothing | Under 30 seconds, jobs requeue in about 2 minutes |
+| [Postgres crashes](#postgres-crashes) | Nothing committed | Under a minute |
+| [Reboot or patching](#reboot) | Nothing | About 2 minutes |
+| [A bad upgrade or migration](#bad-upgrade) | Whatever happened after the upgrade | 15 minutes or less |
+| [The disk or the server is lost](#server-lost) | At most one backup interval of data (1 hour by default) | 30 minutes or less, then DNS |
+| [An older database comes back](#older-database) | Nothing: the fence stops deletes | As long as it takes you to read the report |
+| [A new install on a used bucket](#used-bucket) | Nothing: the install is fenced | As above |
+| [Bucket objects deleted, or the bucket lost](#bucket-lost) | Encoded files, which are made again | Hours, depending on the library |
+| [The secrets key is lost](#key-lost) | Everything that depends on it | Only from the recovery kit |
+| [The server is down](#server-down) | Nothing | R2 videos keep playing meanwhile |
+
+## serve crashes or is killed [#serve-crashes]
+
+Docker restarts the container within 30 seconds. A job that was running
+loses its lease and returns to the queue within about 2 minutes (a 90 second
+lease and a 15 second sweep), and the encode starts again. Nothing you
+committed is lost: uploads resume, and outputs are only ever added, never
+changed.
+
+Check: `docker compose ps` shows `app` as `healthy`, and
+`curl https://video.example.com/readyz` answers `ok`.
+
+## Postgres crashes [#postgres-crashes]
+
+Postgres restarts and replays its log, in under a minute. serve answers
+`503` on `/readyz` until the database does, then carries on. Nothing that
+was committed is lost.
+
+Check: `docker compose ps` shows `postgres` as `healthy`, and `/readyz` answers
+`ok`. If Postgres keeps failing to start, look at
+`docker compose logs --tail 50 postgres`; a full disk is a common reason, and
+`clipmux_data_free_bytes` in [metrics](/docs/self-host/operate/monitoring) warns
+before it happens.
+
+## A reboot, or patching the host [#reboot]
+
+Reboot in a quiet window. Every container comes back by itself, in about
+2 minutes. With [Cloudflare delivery](/docs/self-host/delivery/cloudflare),
+playback of videos in R2 is unaffected throughout, because the Worker serves
+them. With built-in delivery, playback pauses with the server.
+
+Check: `docker compose ps`, then play a video.
+
+## A bad upgrade or migration [#bad-upgrade]
+
+Before any migration runs, serve backs the database up as it is, as a
+`pre_migrate` backup, and doesn't migrate if it can't. That backup is your way
+back. Stop the app, put the older release in `.env`, and restore it with that
+release:
+
+```bash
+cd /opt/clipmux
+docker compose stop app
+docker compose run --rm -T --no-deps app admin backup list     # find the pre_migrate backup before the upgrade
+sed -i 's/^CLIPMUX_VERSION=.*/CLIPMUX_VERSION=v1.0.0/' .env     # the release you came from
+docker compose pull app
+docker compose run --rm -T --no-deps app admin restore --id bak_… --yes
+docker compose up -d --wait
+```
+
+The target is 15 minutes or less. Anything uploaded between the upgrade and the
+rollback is not in the backup, but its files are still in storage, and the
+restore's report lists them. If the upgrade only added a migration and you
+would rather keep the data, [roll the database back](/docs/self-host/install-options/upgrade-and-uninstall#roll-back-past-a-migration)
+instead.
+
+Check: `docker compose exec app clipmux admin migrate status` shows the older
+release's migration as the newest, and the setup test passes:
+
+```bash
+docker compose exec app clipmux admin setup-test --wait
+```
+
+## The disk or the server is lost [#server-lost]
+
+You need a new server with Docker, and your recovery kit. On the new server,
+with the saved `.env`:
+
+```bash
+mkdir -p /opt/clipmux && cp .env /opt/clipmux/
+curl -fsSL https://clipmux.com/install.sh | sudo sh -s -- --restore
+```
+
+The installer starts Postgres, restores the latest backup, starts ClipMux and
+prints the restore report. Then point DNS at the new server. The target is
+30 minutes through first playback, including pulling the images. The amount
+of data lost depends on the age of the newest successful backup. For an
+off-site target, ClipMux schedules backups hourly by default.
+
+The restore reads only from the backup target, so the read key is enough. The
+server then tries to back up with the same key and can't write; put the
+write key back in `.env` and run `docker compose up -d`.
+
+To rehearse with a live install's backup, use `--restore-only` on a spare
+server with an empty Postgres and a copy of the recovery kit that uses the
+read-only backup key. The installer stops after restoring the database and
+raising the fence. With `serve` stopped, the copy cannot run pending jobs,
+send webhooks or publish routes. Run the checks with one-off containers
+and keep the original server online.
+
+```bash
+curl -fsSL https://clipmux.com/install.sh | sudo sh -s -- --restore-only
+cd /opt/clipmux
+docker compose run --rm --no-deps app admin restore report
+docker compose run --rm --no-deps app admin backup verify --id bak_…
+```
+
+Use the backup ID printed by the installer. Run the full playback rehearsal
+with a disposable install and media bucket.
+
+Check:
+
+1. `docker compose ps` shows everything `healthy`, and `/readyz` answers `ok`.
+2. `docker compose exec app clipmux admin restore report` lists what storage
+   holds that the backup doesn't know, such as videos uploaded after it. Read
+   it, then `docker compose exec app clipmux admin restore finish --yes`.
+3. Play a video uploaded before the backup.
+4. `docker compose exec app clipmux admin backup verify` passes.
+
+Videos that were on the lost server's own disk are gone with it, and come
+back as in [a lost bucket](#bucket-lost). Videos in R2 or S3 are still there.
+
+## An older database comes back [#older-database]
+
+Restoring an older dump, or rolling a server snapshot back, leaves storage
+holding videos the database has never heard of, and the cleanups that keep
+storage tidy would delete exactly those. ClipMux notices: every store carries
+a marker with the install's ID and a counter, and a database that is behind
+its stores raises the **restore fence**. While it is up, nothing is deleted
+from storage and no route record or signing key is removed. Playback of what
+the database does know carries on.
+
+```bash
+docker compose exec app clipmux admin restore report    # what storage holds that the database doesn't
+docker compose exec app clipmux admin restore finish --yes
+```
+
+Check: the dashboard's Backups card, and `clipmux_restore_fenced` in
+[metrics](/docs/self-host/operate/monitoring), show the fence while it is up
+and clear once you finish. `finish` lets the cleanups run again, so read the
+report first: what it lists, they then delete.
+
+## A new install on a used bucket [#used-bucket]
+
+A fresh install pointed at a bucket another install used finds a marker with
+another install's ID, and is fenced at once. Without that, its first cleanup
+would take everything there for orphans.
+
+Check `clipmux admin restore report`. If the bucket is meant to belong to
+the install it came from, point this one at that install's database, with
+`--restore`. If you really mean to start over in this bucket, only then run
+`restore finish --yes`, knowing it lets the cleanups delete what is listed.
+
+## Bucket objects deleted, or the bucket lost [#bucket-lost]
+
+Encoded videos can be made again; the originals are on the backup target. If
+the files are gone but the bucket is still yours:
+
+1. Make the bucket again under the same name, in the same account, in your
+   provider's console.
+2. If the keys went with it, give the storage new keys on the **Storage**
+   page, or with `PUT /v1/storage/{id}/credentials`.
+3. Copy the originals back and queue the re-encodes:
+
+   ```bash
+   docker compose exec app clipmux admin backup restore-sources --all
+   ```
+
+4. Watch the **Jobs** page. Route records come back by themselves, within
+   about 15 minutes of serve's next reconcile.
+
+Playback returns video by video as the encodes finish. Expect hours for a
+large library, not minutes. A source that was never copied, such as one on a PC
+agent, or encoded with the source not kept, can't come back: the command lists
+them.
+
+Check: `restore-sources` prints how many sources it restored and how many
+re-encodes it queued, and running it again prints zero of each. Play a video
+once its job succeeds.
+
+A lost Cloudflare or cloud account is harder: a store's endpoint names the
+account, and a store's endpoint and bucket can't be changed once it is added, so
+recovering into a different account isn't supported yet. The sources are safe
+on the backup target meanwhile.
+
+## The secrets key is lost [#key-lost]
+
+This can't be recovered, by design: every secret in Postgres is sealed with
+it, every backup is encrypted to a key derived from it, and without it the
+database's secrets and the stored videos can't be opened by anyone. Only a
+copy from your recovery kit helps. Put it back as `CLIPMUX_SECRETS_KEY` and
+run the restore as above.
+
+If a [rotation](/docs/self-host/operate/rotate-secrets) came after the backup
+you are restoring, you need the key that was current then too, as
+`CLIPMUX_SECRETS_KEY_PREVIOUS`. The `.json` manifest beside each backup on the
+target names the key version it was encrypted to. If you set `CLIPMUX_BACKUP_RECIPIENTS`, your own age
+key opens the backups without it, though the secrets inside Postgres still
+need the secrets key.
+
+## The server is down [#server-down]
+
+With [Cloudflare delivery](/docs/self-host/delivery/cloudflare), the Worker
+serves videos from R2 on its own, so playback continues while the server is
+down. Uploads, the dashboard, the API and new encodes stop, and jobs wait.
+Signing new playback tokens needs your backend, not ClipMux, so players with a
+valid token keep working until it expires.
+
+Check from outside the server, since a monitor on the same host can't report
+the host going down. Probe `https://video.example.com/readyz`, and one
+segment of a known public video on the media hostname, which should play
+without the origin. See [Monitoring](/docs/self-host/operate/monitoring).
+
+## Practise
+
+A restore you have never run is a hope too. On a spare server, run
+`install.sh --restore` with a copy of your `.env` and the read key, check that
+a video plays, and note how long it took. Do it after changing the target or
+the secrets key, and once a quarter.
+
+## Next
+
+- [Back up and restore](/docs/self-host/operate/backups)
+- [Monitoring](/docs/self-host/operate/monitoring)
+- [Rotate keys and secrets](/docs/self-host/operate/rotate-secrets)

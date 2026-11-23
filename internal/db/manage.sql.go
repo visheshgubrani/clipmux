@@ -87,7 +87,7 @@ func (q *Queries) GetApp(ctx context.Context, arg GetAppParams) (App, error) {
 }
 
 const getAssetInProject = `-- name: GetAssetInProject :one
-SELECT id, project_id, app_id, status, error_code, version, storage_id, source_uri, agent_source_id, source_kept, current_output_id, passthrough, duration_seconds, created_at, updated_at, deleted_at, title, media_storage_id, renditions, source_bytes FROM assets WHERE project_id = $1 AND id = $2
+SELECT id, project_id, app_id, status, error_code, version, storage_id, source_uri, agent_source_id, source_kept, current_output_id, passthrough, duration_seconds, created_at, updated_at, deleted_at, title, media_storage_id, renditions, source_bytes, source_backed_up_at, source_tombstoned_at FROM assets WHERE project_id = $1 AND id = $2
 `
 
 type GetAssetInProjectParams struct {
@@ -119,6 +119,8 @@ func (q *Queries) GetAssetInProject(ctx context.Context, arg GetAssetInProjectPa
 		&i.MediaStorageID,
 		&i.Renditions,
 		&i.SourceBytes,
+		&i.SourceBackedUpAt,
+		&i.SourceTombstonedAt,
 	)
 	return i, err
 }
@@ -491,7 +493,7 @@ func (q *Queries) ListJobs(ctx context.Context, arg ListJobsParams) ([]ListJobsR
 }
 
 const listLibrary = `-- name: ListLibrary :many
-SELECT id, project_id, app_id, status, error_code, version, storage_id, source_uri, agent_source_id, source_kept, current_output_id, passthrough, duration_seconds, created_at, updated_at, deleted_at, title, media_storage_id, renditions, source_bytes FROM assets
+SELECT id, project_id, app_id, status, error_code, version, storage_id, source_uri, agent_source_id, source_kept, current_output_id, passthrough, duration_seconds, created_at, updated_at, deleted_at, title, media_storage_id, renditions, source_bytes, source_backed_up_at, source_tombstoned_at FROM assets
 WHERE project_id = $1
   AND ($2::text IS NULL OR app_id = $2)
   AND ($3::text IS NULL OR status = $3)
@@ -559,6 +561,8 @@ func (q *Queries) ListLibrary(ctx context.Context, arg ListLibraryParams) ([]Ass
 			&i.MediaStorageID,
 			&i.Renditions,
 			&i.SourceBytes,
+			&i.SourceBackedUpAt,
+			&i.SourceTombstonedAt,
 		); err != nil {
 			return nil, err
 		}

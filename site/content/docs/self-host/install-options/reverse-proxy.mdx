@@ -202,6 +202,24 @@ The app applies database migrations when it starts. See
 [Upgrade and uninstall](/docs/self-host/install-options/upgrade-and-uninstall)
 for what changes between releases and how to roll back.
 
+## Restore from a backup
+
+The installer's `--restore` starts Caddy, so on this server run the same steps
+by hand. Put the `.env` you saved from the old server in `/opt/clipmux`, with
+`compose.yml` and `compose.proxy.yml` as above, then bring Postgres up, restore
+in a one-off container while nothing else uses the database, and start the rest:
+
+```bash
+cd /opt/clipmux
+docker compose -f compose.yml -f compose.proxy.yml up -d --wait postgres
+docker compose -f compose.yml -f compose.proxy.yml run --rm -T --no-deps app admin restore --latest --yes
+docker compose -f compose.yml -f compose.proxy.yml up -d --wait
+docker compose -f compose.yml -f compose.proxy.yml exec app clipmux admin restore report
+```
+
+The restore leaves the restore fence up. Read the report, then lift it; see
+[Back up and restore](/docs/self-host/operate/backups#restore).
+
 ## Check it works
 
 ```bash

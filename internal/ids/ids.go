@@ -34,6 +34,7 @@ const (
 	Track      = "trk"
 	Connection = "aic"
 	ShareLink  = "shr"
+	Backup     = "bak"
 )
 
 const alphabet = "0123456789abcdefghjkmnpqrstvwxyz" // Crockford, lowercase
