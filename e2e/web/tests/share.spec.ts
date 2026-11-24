@@ -61,7 +61,7 @@ async function playing(page: Page): Promise<void> {
     .toBeGreaterThan(1)
 }
 
-test('a share link plays in a fresh browser, with its subtitles', async ({ page }) => {
+test('a share link plays in a fresh browser, with its subtitles and chapters', async ({ page }) => {
   const link = await share({ name: 'For the board' })
   expect(link.url).toBe(`${cfg.ops}/s/${link.url.split('/s/')[1]}`)
   const noViolations = await watchCSP(page)
@@ -82,6 +82,7 @@ test('a share link plays in a fresh browser, with its subtitles', async ({ page 
       }),
     )
     .toBe(true)
+  await expect(page.locator('clipmux-player .media-time-slider-chapter')).toHaveCount(2)
   await expect(page.getByText('Shared with ClipMux')).toBeVisible()
   // The page carries no session: nothing of the dashboard's.
   expect((await page.context().cookies()).length).toBe(0)

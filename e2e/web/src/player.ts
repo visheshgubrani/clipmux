@@ -30,7 +30,8 @@ el.addEventListener('clipmux-denied', () => {
 el.addEventListener('clipmux-error', () => state.errors++)
 // ?chapters=1 names the asset's chapters track (P5-T18); ?chapters=late
 // names it once playback is past 10 s, after an 8 s token has expired.
-if (params.get('chapters') === '1') el.setAttribute('chapters-track', cfg.chapters_track)
+const lateAuth = params.get('chapters') === 'late-auth'
+if (params.get('chapters') === '1' || lateAuth) el.setAttribute('chapters-track', cfg.chapters_track)
 if (params.get('chapters') === 'late') {
   const wait = setInterval(() => {
     if ((el.media?.currentTime ?? 0) > 10) {
@@ -42,11 +43,18 @@ if (params.get('chapters') === 'late') {
 el.addEventListener('clipmux-chapters', (e) => {
   state.chapters = (e as CustomEvent<{ chapters: unknown[] }>).detail.chapters
 })
-el.getToken = async (request) => {
+const getToken: NonNullable<typeof el.getToken> = async (request) => {
   state.getTokenCalls++
   state.getTokenArgs.push(request)
   if (deny && state.getTokenCalls > 1) return null
   return token(ttl)
+}
+if (lateAuth) {
+  el.addEventListener('clipmux-error', (e) => {
+    if (e.detail.track === cfg.chapters_track && !el.getToken) el.getToken = getToken
+  })
+} else {
+  el.getToken = getToken
 }
 // The element asks for its first token, then refreshes on expiry.
 document.body.append(el)

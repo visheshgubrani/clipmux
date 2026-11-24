@@ -38,6 +38,16 @@ const media = (page: Page) =>
 test('session-url plays a signed video and refreshes an expiring token through it', async ({ page }) => {
   const bodies = sessions(page)
   const statuses: number[] = []
+  let first = true
+  await page.route(
+    (url) => url.pathname === '/session',
+    async (route) => {
+      if (!first) return route.continue()
+      first = false
+      const response = await route.fetch()
+      await route.fulfill({ response, json: { ...(await response.json()), tracks: [] } })
+    },
+  )
   page.on('response', (r) => {
     if (r.url().includes('/v/')) statuses.push(r.status())
   })
@@ -51,7 +61,8 @@ test('session-url plays a signed video and refreshes an expiring token through i
   const s = await state(page)
   expect(s.tokenEvents).toBeGreaterThanOrEqual(1)
   expect(s.errors).toEqual([])
-  expect(s.chapters, "the session's ready chapters track is marked").toBeGreaterThan(0)
+  expect(s.chapters, "the renewed session's ready chapters track is marked").toBeGreaterThan(0)
+  await expect(page.locator('.media-time-slider-chapter')).toHaveCount(2)
   const m = await media(page)
   expect(m.poster).toMatch(new RegExp(`/v/[^/]+/${cfg.playback_id}/poster\\.jpg$`))
   expect(m.played.length, `played ranges ${JSON.stringify(m.played)}: one, from the start`).toBe(1)

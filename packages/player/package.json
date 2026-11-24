@@ -1,6 +1,6 @@
 {
   "name": "@clipmux/player",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "A Video.js player for ClipMux that refreshes expired playback tokens without losing its place.",
   "license": "MIT",
   "keywords": [

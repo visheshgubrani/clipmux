@@ -23,6 +23,13 @@ these.
   delete or move waits until the video's upload links expire, up to 16
   minutes after its last job. An encode cancelled before it ran no longer
   reads "Done by the server".
+- Dashboard: chapter navigation uses the shared player's seek bar. Public
+  embed snippets include the ready chapter track when there is one.
+
+### @clipmux/player 0.6.1
+
+- Chapters load when signed playback starts and update in place when a
+  track is replaced, removed, or supplied by a renewed session.
 
 ## v1.0.0-rc.1 - 2026-11-19
 

@@ -4,23 +4,13 @@
 // the player needs a fresh one. It shares none of the dashboard's bundle.
 import '@fontsource-variable/archivo'
 import '@clipmux/player/element'
+import { chaptersTrackOf, type PlaybackSession } from '@clipmux/player'
 import './share.css'
 
-interface Track {
-  id: string
-  kind: string
-  status: string
-}
-
-interface Playback {
-  title?: string
+interface Playback extends PlaybackSession {
   duration_seconds: number
-  base_url: string
-  playback_id: string
-  token: string
   expires_at: string
   poster_url: string
-  tracks: Track[]
 }
 
 type Outcome = { ok: true; playback: Playback } | { ok: false; status: number; code: string }
@@ -108,12 +98,20 @@ function play(p: Playback): void {
   heading.hidden = !p.title
   document.title = p.title || 'Shared video'
   const el = document.createElement('clipmux-player')
+  const setChapters = (grant: Playback) => {
+    const track = chaptersTrackOf(grant)
+    if (track) el.setAttribute('chapters-track', track)
+    else el.removeAttribute('chapters-track')
+  }
   el.token = p.token
   // On a 401 the player asks for a fresh token; a link that stopped
   // meanwhile answers why, and the page says so.
   el.getToken = async () => {
     const o = await playback()
-    if (o.ok) return o.playback.token
+    if (o.ok) {
+      if (o.playback.playback_id === p.playback_id) setChapters(o.playback)
+      return o.playback.token
+    }
     show(o)
     return null
   }
@@ -129,8 +127,7 @@ function play(p: Playback): void {
     if (status === 403 || status === 404) void recheck()
   })
   el.setAttribute('poster', p.poster_url)
-  const chapters = p.tracks.find((t) => t.kind === 'chapters' && t.status === 'ready')
-  if (chapters) el.setAttribute('chapters-track', chapters.id)
+  setChapters(p)
   el.setAttribute('base-url', p.base_url)
   el.setAttribute('playback-id', p.playback_id)
   stage.replaceChildren(el)

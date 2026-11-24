@@ -101,7 +101,9 @@ Subtitles listed in the master playlist show in the player's captions menu;
 hls.js loads their playlist and VTT through the same refresh loader as the
 video, so a refreshed token keeps them loading. Chapters are never listed in
 the master: name the asset's ready chapters track and the player fetches its
-VTT with the playback token and marks the chapters on the time slider.
+VTT with the playback token and divides the seek bar into segments. Hover
+or scrub to preview a chapter title and timestamp. A refreshed playback
+session can update the chapters while the video keeps playing.
 
 ```html
 <clipmux-player base-url="…" playback-id="pid_…" chapters-track="trk_…"></clipmux-player>
