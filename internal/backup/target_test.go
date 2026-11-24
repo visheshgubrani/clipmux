@@ -2,6 +2,10 @@ package backup
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +14,82 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/storage"
 	"github.com/visheshgubrani/clipmux/internal/storage/s3test"
 )
+
+func TestLockedBackupTargetIncludesAnUploadChecksum(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		lock string
+		want string
+	}{
+		{"locked", "<ObjectLockEnabled>Enabled</ObjectLockEnabled><Rule><DefaultRetention><Mode>COMPLIANCE</Mode><Days>7</Days></DefaultRetention></Rule>", "BeVA7g=="},
+		{"unlocked", "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodGet && r.URL.Query().Has("object-lock") {
+					_, _ = fmt.Fprintf(w, "<ObjectLockConfiguration>%s</ObjectLockConfiguration>", tc.lock)
+					return
+				}
+				if r.Method != http.MethodPut || r.URL.Path != "/vault/drill/probe" {
+					t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				if got := r.Header.Get("X-Amz-Checksum-Crc32"); got != tc.want {
+					t.Errorf("checksum %q, want %q", got, tc.want)
+				}
+			}))
+			defer server.Close()
+			target, err := OpenTarget(Config{URL: "s3://vault/drill?endpoint=" + server.URL, AccessKeyID: "test", SecretAccessKey: "test"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer target.Close()
+			if err := target.Put(t.Context(), "probe", strings.NewReader("fixture")); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestBackupTargetDistinguishesMissingObjectsFromDeniedReads(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		listStatus int
+		keys       string
+		missing    bool
+	}{
+		{"missing", 200, "<Contents><Key>drill/sources/fixture.deleted-extra</Key></Contents>", true},
+		{"denied", 200, "<Contents><Key>drill/sources/fixture.deleted</Key></Contents>", false},
+		{"list denied", 403, "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case r.URL.Path == "/vault" && r.URL.Query().Get("prefix") == "drill/sources/fixture.deleted":
+					w.WriteHeader(tc.listStatus)
+					_, _ = fmt.Fprintf(w, "<ListBucketResult>%s</ListBucketResult>", tc.keys)
+				case r.URL.Path == "/vault/drill/sources/fixture.deleted":
+					w.WriteHeader(http.StatusForbidden)
+					_, _ = fmt.Fprint(w, "<Error><Code>AccessDenied</Code></Error>")
+				default:
+					t.Errorf("unexpected request %s %s", r.Method, r.URL.String())
+					w.WriteHeader(http.StatusBadRequest)
+				}
+			}))
+			defer server.Close()
+			target, err := OpenTarget(Config{URL: "s3://vault/drill?endpoint=" + server.URL, AccessKeyID: "test", SecretAccessKey: "test"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer target.Close()
+			_, err = target.Get(t.Context(), "sources/fixture.deleted")
+			if err == nil || errors.Is(err, storage.ErrNotFound) != tc.missing {
+				t.Fatalf("get = %v, want not found = %t", err, tc.missing)
+			}
+		})
+	}
+}
 
 func TestConfigReadsTheTargetAndItsDefaults(t *testing.T) {
 	env := func(m map[string]string) func(string) string { return func(k string) string { return m[k] } }

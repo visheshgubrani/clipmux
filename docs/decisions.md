@@ -1951,6 +1951,16 @@ creates a hide marker while retaining the uploaded version. ClipMux
 reported the unlocked test bucket as mutable. The production Object Lock
 probe with a bucket-scoped key is still pending.
 
+The production B2 preflight on 2026-11-24 found two S3 compatibility
+issues. A bucket with default retention requires an upload checksum.
+ClipMux now sends CRC32 for backup writes when the adapter reads that
+retention. A scoped key can receive 403 for a missing object, including
+a source tombstone. The S3 adapter reports absence only after a
+successful listing confirms the exact key is missing. A failed list or
+a listing that contains the key preserves the access error. The patched
+CLI verified the locked target and restored a 47 MiB multipart backup
+in scratch PostgreSQL.
+
 ## D148 Control-plane capacity on a small ARM64 host — measured (2026-11-23)
 
 `TestRecoveryCapacity` adds an opt-in ramp to the real-binary Phase 5
