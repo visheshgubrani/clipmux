@@ -129,6 +129,12 @@ func (e *Executor) Wake(ctx context.Context, w dispatch.Wake) (string, error) {
 		}
 	}
 	for i, gpu := range gpus {
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
+		if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) < imageWait+scheduleWait {
+			break
+		}
 		name := w.Name
 		if i > 0 { // the name of a sandbox Modal just terminated may linger
 			name += "-" + strings.ToLower(gpu)

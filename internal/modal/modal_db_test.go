@@ -43,12 +43,20 @@ type fakeModal struct {
 	converting bool
 	prepared   []string
 	// full: GPU types Modal has no capacity for.
-	full map[string]bool
+	full        map[string]bool
+	createDelay time.Duration
 }
 
 func newFake() *fakeModal { return &fakeModal{running: map[string]sandbox{}} }
 
-func (f *fakeModal) create(_ context.Context, req sandboxRequest) (string, error) {
+func (f *fakeModal) create(ctx context.Context, req sandboxRequest) (string, error) {
+	if f.createDelay > 0 {
+		select {
+		case <-time.After(f.createDelay):
+		case <-ctx.Done():
+			return "", ctx.Err()
+		}
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.creates = append(f.creates, req)
@@ -171,6 +179,31 @@ func TestAWakeFallsBackToTheNextGPUWithCapacity(t *testing.T) {
 	e.cfg.GPU = "L4,A10G,T4"
 	if _, err := e.Wake(context.Background(), wake); !errors.Is(err, dispatch.ErrPreparing) || err.Error() != "modal has no L4, A10G or T4 free: dispatch: the provider is still preparing the machine" {
 		t.Fatalf("with every GPU taken: %v", err)
+	}
+}
+
+// When less than imageWait+scheduleWait remains before the call deadline,
+// Wake stops trying further GPU types and returns ErrPreparing rather than
+// letting the next create hit context deadline exceeded (D149).
+func TestAWakeStopsTryingGPUsWhenLessThanScheduleWaitRemains(t *testing.T) {
+	f := newFake()
+	e := executor(f)
+	e.cfg.GPU = "L4,A10G"
+	ctx, cancel := context.WithTimeout(context.Background(), imageWait+scheduleWait-time.Second)
+	defer cancel()
+	if _, err := e.Wake(ctx, wake); !errors.Is(err, dispatch.ErrPreparing) || len(f.creates) != 0 {
+		t.Fatalf("with < imageWait+scheduleWait left: err=%v creates=%d, want ErrPreparing and 0 creates", err, len(f.creates))
+	}
+
+	f = newFake()
+	f.full = map[string]bool{"L4": true}
+	f.createDelay = 100 * time.Millisecond
+	e = executor(f)
+	e.cfg.GPU = "L4,A10G"
+	ctx2, cancel2 := context.WithTimeout(context.Background(), imageWait+scheduleWait+50*time.Millisecond)
+	defer cancel2()
+	if _, err := e.Wake(ctx2, wake); !errors.Is(err, dispatch.ErrPreparing) || len(f.creates) != 1 || f.creates[0].GPU != "L4" {
+		t.Fatalf("after L4 leaves < imageWait+scheduleWait: err=%v creates=%+v, want ErrPreparing after only L4", err, f.creates)
 	}
 }
 

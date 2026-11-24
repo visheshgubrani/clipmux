@@ -111,9 +111,11 @@ needs a new setup test before it takes videos again.
 
 ## How machines run
 
-- **One job per machine.** A machine runs the ClipMux image with a one-time
-  key that claims one job, before a deadline. It holds no storage
-  credentials: each step gets URLs signed for that job alone.
+- **One job per machine, started in parallel.** A machine runs the ClipMux
+  image with a one-time key that claims one job, before a deadline. Machines
+  for multiple videos start in parallel up to the concurrency limit. Each
+  machine holds no storage credentials: each step gets URLs signed for that
+  job alone.
 - **Only its own machines.** Machines run in the app `clipmux-{tag}`,
   tagged with this install, so ClipMux only ever lists or stops its own.
 - **Stopped on time.** Modal ends a machine when its job exits, or after
@@ -141,6 +143,8 @@ Modal machine may still be running.
 - If Modal shows **Check failed** after connecting, the line under it names
   the setup test's check that failed, and new videos keep encoding on this
   server. Choose **Connect again** to retry.
+- If Modal has no free GPU right now, ClipMux asks again every 30 seconds
+  until the claim deadline, then the job is routed again.
 
 ## Next
 

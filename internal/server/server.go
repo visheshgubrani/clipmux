@@ -135,7 +135,7 @@ const ShutdownWait = 15 * time.Second
 var passTimeouts = map[string]time.Duration{
 	"lost_leases":          time.Minute,
 	"routing":              time.Minute,
-	"dispatch":             5 * time.Minute, // provider calls, 3 min each, a row per transaction
+	"dispatch":             time.Minute, // leases rows and launches provider calls
 	"dispatch_reaper":      2 * time.Minute,
 	"machine_reconciler":   5 * time.Minute,
 	"provider_bills":       2 * time.Minute, // one billing report per provider
@@ -487,6 +487,8 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 	// still publishes its routes.
 	ctx, stop := context.WithCancel(context.WithoutCancel(drain))
 	defer stop()
+	disp.Start(ctx)
+	wg.Go(func() { <-ctx.Done(); disp.Wait() })
 	// One replica runs the background loops (an advisory lock); the others
 	// serve requests. Every loop is safe to run twice, so a handover costs
 	// duplicate work at most.
@@ -509,6 +511,9 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 		bootCtx, cancel := context.WithTimeout(ctx, passTimeouts["restore_epoch"])
 		if _, err := epoch.Pass(bootCtx); err != nil && ctx.Err() == nil {
 			logger.Error("restore epoch at boot failed", "err", err)
+		}
+		if err := disp.ReleaseLeases(bootCtx); err != nil && ctx.Err() == nil {
+			logger.Error("release dispatch leases at boot failed", "err", err)
 		}
 		cancel()
 	}
