@@ -165,14 +165,15 @@ if [ -z "$envfile" ]; then
 	[ -n "$token" ] || fail "no setup token after applying the backup target"
 
 	dashed=${ip//./-}
-	public=https://video.$dashed.sslip.io
+	# Each run gets a hostname so frequent drills can obtain certificates.
+	public=https://$COMPOSE_PROJECT_NAME.$dashed.sslip.io
 	media=https://$(jq -er '.hostname' "$CLIPMUX_DRILL_CLOUDFLARE_CONFIG_FILE")
 	password=$(od -An -N24 -tx1 /dev/urandom | tr -d '[:space:]')
 	step "The owner registers and sets $public and $media"
-	curl -fsS -c "$jar" -H 'Content-Type: application/json' -H "Origin: http://$ip" \
+	curl -fsS --max-time 30 -c "$jar" -H 'Content-Type: application/json' -H "Origin: http://$ip" \
 		-d "{\"setup_token\":\"$token\",\"email\":\"owner@example.test\",\"password\":\"$password\"}" \
 		"http://$ip/v1/setup/owner" >/dev/null || fail "creating the owner failed"
-	curl -fsS -b "$jar" -X PUT -H 'Content-Type: application/json' -H "Origin: http://$ip" \
+	curl -fsS --max-time 30 -b "$jar" -X PUT -H 'Content-Type: application/json' -H "Origin: http://$ip" \
 		-d "{\"public_url\":\"$public\",\"media_url\":\"$media\"}" "http://$ip/v1/settings/urls" >/dev/null || fail "saving the URLs failed"
 	waitfor() {
 		for _ in $(seq 40); do
@@ -182,7 +183,7 @@ if [ -z "$envfile" ]; then
 		fail "$1/healthz isn't served over verified HTTPS"
 	}
 	waitfor "$public"
-	curl -fsS -c "$jar" -H 'Content-Type: application/json' -H "Origin: $public" \
+	curl -fsS --max-time 30 -c "$jar" -H 'Content-Type: application/json' -H "Origin: $public" \
 		-d "{\"email\":\"owner@example.test\",\"password\":\"$password\"}" "$public/v1/session" >/dev/null ||
 		fail "signing in at $public failed"
 
