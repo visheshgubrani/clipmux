@@ -1924,6 +1924,15 @@ installer restored that exact backup with the read-only key in 80 s,
 left only Postgres running, and raised the restore fence. Full
 verification took 4 s and checked the core row counts and content keys.
 
+The fixed amd64 image repeated the B2 and R2 rehearsal with warm
+layers. The installer took 37 s, HTTPS readiness took 42 s, and first
+decrypted playback took 44 s from installer start. The post-backup route,
+source and output inventories matched after the fenced cleanup passes.
+When the source and encoded files were removed, the source restored from
+B2 in 2 s with the original SHA-256. The new output played after 37 s,
+and a second run restored and queued zero items. An external probe
+decoded audio and video at the start and end of a 66 s origin outage.
+
 ## D146 Only sources are mirrored; pruning is by lifecycle rules and keys that can't delete — accepted (2026-11-23)
 Context: media can be large, and its outputs can be made again from the sources. A backup key that can delete is a key ransomware on the host can use to delete the backups.
 Decision:
