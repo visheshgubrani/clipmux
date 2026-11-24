@@ -1918,6 +1918,12 @@ both fenced cleanup passes. The restored backup passed full verification.
 The cold run against the published image manifest and the production
 cutover are still pending.
 
+The production database was also backed up in ClipMux format by a
+one-off ARM64 container using the corrected B2 writer. The amd64
+installer restored that exact backup with the read-only key in 80 s,
+left only Postgres running, and raised the restore fence. Full
+verification took 4 s and checked the core row counts and content keys.
+
 ## D146 Only sources are mirrored; pruning is by lifecycle rules and keys that can't delete — accepted (2026-11-23)
 Context: media can be large, and its outputs can be made again from the sources. A backup key that can delete is a key ransomware on the host can use to delete the backups.
 Decision:
@@ -1949,7 +1955,7 @@ replacement.
 The live B2 drill confirmed that deleting a probe by S3 object name
 creates a hide marker while retaining the uploaded version. ClipMux
 reported the unlocked test bucket as mutable. The production Object Lock
-probe with a bucket-scoped key is still pending.
+probe with a bucket-scoped key remained open after that run.
 
 The production B2 preflight on 2026-11-24 found two S3 compatibility
 issues. A bucket with default retention requires an upload checksum.

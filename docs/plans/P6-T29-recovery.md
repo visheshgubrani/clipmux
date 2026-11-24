@@ -1,10 +1,10 @@
 # Phase 6 — T29 Backups and recovery
 
-**Status: in progress (2026-11-23).** The backup and restore implementation,
-capacity harness and cutover procedure are in the workspace. T29.11 ran on
-the ARM64 benchmark VM and is recorded in D148. The cold B2 restore with
-playback and the production cutover remain open. Launch exit check 10 stays
-open until the timed restore is recorded in D145.
+**Status: in progress (2026-11-24).** D148 records the ARM64 capacity baseline.
+D145 records a provisional B2 restore with playback and the exact read-only
+restore of a production backup. Launch exit check 10 stays open pending the
+cold run on the fixed image and the production cutover with scheduled backup
+verification.
 
 The detailed plan behind a new T29 row of [P6-launch.md](P6-launch.md).
 Decisions land in [../decisions.md](../decisions.md) as D143 onward, as
@@ -272,7 +272,8 @@ the published baseline.
 The production stack uses `/opt/clipmux-v2` and `compose.proxy.yml`.
 The pre-cutover inspection on 2026-11-23 found a pre-backup image, no
 `CLIPMUX_BACKUP_*` settings in the stack's environment file and no active
-`vps-backup.timer`. B2 provisioning is pending.
+`vps-backup.timer`. The locked B2 target and verified off-host safety
+copy are recorded in D145.
 
 1. Confirm the currently deployed image, current backup coverage and the
    restart window with the owner. Stage a build containing the T29
