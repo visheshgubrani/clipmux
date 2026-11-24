@@ -380,8 +380,6 @@ func (s *S3) PresignPut(ctx context.Context, key string, ttl time.Duration) (str
 	return req.URL, nil
 }
 
-// wrap maps store errors onto the package's errors and names the operation.
-// SDK errors name the operation and status, never a presigned URL.
 // ObjectLock reports whether the bucket has Object Lock on with a default
 // retention, so that every object written is kept for that long whatever key
 // asks to delete it. Off, or on with no default retention, is false. A key
@@ -400,6 +398,8 @@ func (s *S3) ObjectLock(ctx context.Context) (bool, error) {
 	return c != nil && c.ObjectLockEnabled == types.ObjectLockEnabledEnabled && c.Rule != nil && c.Rule.DefaultRetention != nil, nil
 }
 
+// wrap maps store errors onto the package's errors and names the operation.
+// SDK errors name the operation and status, never a presigned URL.
 func (s *S3) wrap(op, key string, err error) error {
 	if err == nil {
 		return nil

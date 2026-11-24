@@ -1892,6 +1892,13 @@ row was present, and the full 6 s verification checked the encrypted
 dump's hash, core row counts, secrets key and content keys. This run
 measured the B2 database path with no video fixtures.
 
+The production pre-cutover safety copy was verified on 2026-11-24.
+An encrypted PostgreSQL 18 dump restored into scratch Postgres with
+the same migration version and core row counts as its exported
+production snapshot. The production B2 target reported seven-day
+Compliance retention through the scoped writer key. The separate
+read-only key downloaded identical ciphertext for the safety dump.
+
 ## D146 Only sources are mirrored; pruning is by lifecycle rules and keys that can't delete — accepted (2026-11-23)
 Context: media can be large, and its outputs can be made again from the sources. A backup key that can delete is a key ransomware on the host can use to delete the backups.
 Decision:
