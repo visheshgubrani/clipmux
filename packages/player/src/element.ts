@@ -31,6 +31,10 @@ import { chaptersTrackOf, fetchSession, type PlaybackSession, SessionError } fro
 import { clipmuxSource, playsNatively } from './source.ts'
 import { fetchTrack, type PlayerChapter, parseChapters, trackUrl } from './tracks.ts'
 
+// A generated track ends at the asset duration. HLS can report a slightly
+// longer duration as it loads, which would leave a sliver on the seek bar.
+const CHAPTER_END_TOLERANCE = 0.25
+
 interface MediaElement extends HTMLVideoElement {
   source: unknown
   /** The <video> it plays in. */
@@ -38,6 +42,13 @@ interface MediaElement extends HTMLVideoElement {
   engine: {
     on(event: string, fn: (event: string, data: { response?: { code?: number } }) => void): void
   } | null
+}
+
+interface ChaptersRequest {
+  trackId: string
+  token: string
+  status: 'loading' | 'ready' | 'failed'
+  announced: boolean
 }
 
 export interface ClipMuxTokenDetail {
@@ -108,10 +119,10 @@ export class ClipMuxPlayerElement extends HTMLElement {
   // the one being asked for.
   #playback: PlaybackSession | null = null
   #playbackFor = ''
-  #asking = ''
-  #chaptersLoaded = ''
+  #asking: { key: string } | null = null
+  #chaptersRequest: ChaptersRequest | null = null
   #chapters: PlayerChapter[] = []
-  #chaptersTrack: TextTrack | null = null
+  #chaptersTrack: { video: HTMLVideoElement; track: TextTrack } | null = null
 
   /** The playback token; unset for a public playback ID. */
   get token(): string {
@@ -158,6 +169,8 @@ export class ClipMuxPlayerElement extends HTMLElement {
         '<hlsjs-video playsinline crossorigin="anonymous"></hlsjs-video></video-skin></video-player>'
       this.#media = this.querySelector('hlsjs-video') as MediaElement | null
       this.#media?.addEventListener('error', () => this.#emit('clipmux-error', { status: 0 }))
+      this.#media?.addEventListener('loadedmetadata', () => this.#showChapters())
+      this.#media?.addEventListener('durationchange', () => this.#showChapters())
     }
     this.#load()
   }
@@ -187,13 +200,19 @@ export class ClipMuxPlayerElement extends HTMLElement {
       this.#loadSession(sessionUrl)
       return
     }
+    this.#asking = null
     const baseUrl = this.getAttribute('base-url')
     const playbackId = this.getAttribute('playback-id')
-    if (!media || !baseUrl || !playbackId) return
+    if (!media) return
+    if (!baseUrl || !playbackId) {
+      this.#clearChapters()
+      return
+    }
     const poster = this.getAttribute('poster')
     if (poster) media.poster = poster
     // A signed ID needs its first token before anything loads.
     if (!this.#token && this.#getToken) {
+      this.#clearChapters()
       if (!this.#fetching) {
         this.#fetching = true
         this.#getToken({ playbackId, native: playsNatively() }).then(
@@ -215,7 +234,7 @@ export class ClipMuxPlayerElement extends HTMLElement {
     // Reload only when what plays changes; a refreshed token doesn't.
     const loading = `${baseUrl}|${playbackId}|${this.#token}`
     if (loading !== this.#loaded) this.#play(media, baseUrl, playbackId, loading)
-    this.#loadChapters(media, baseUrl, playbackId, this.getAttribute('chapters-track') ?? '')
+    this.#loadChapters(baseUrl, playbackId, this.getAttribute('chapters-track') ?? '')
   }
 
   // session-url: each playback ID gets its session first; then it plays
@@ -223,15 +242,22 @@ export class ClipMuxPlayerElement extends HTMLElement {
   #loadSession(sessionUrl: string): void {
     const media = this.#media
     const playbackId = this.getAttribute('playback-id')
-    if (!media || !playbackId) return
+    if (!media) return
+    if (!playbackId) {
+      this.#asking = null
+      this.#clearChapters()
+      return
+    }
     const key = `${sessionUrl}|${playbackId}`
     if (key !== this.#playbackFor) {
-      if (key === this.#asking) return
-      this.#asking = key
+      if (key === this.#asking?.key) return
+      this.#clearChapters()
+      const request = { key }
+      this.#asking = request
       fetchSession(sessionUrl, playbackId, playsNatively()).then(
         (s) => {
-          if (key !== this.#asking) return // the playback changed meanwhile
-          this.#asking = ''
+          if (request !== this.#asking) return // the playback changed meanwhile
+          this.#asking = null
           if (s === null) return this.#emit('clipmux-denied', {})
           this.#playback = s
           this.#playbackFor = key
@@ -239,25 +265,21 @@ export class ClipMuxPlayerElement extends HTMLElement {
           this.#load()
         },
         (err: unknown) => {
-          if (key !== this.#asking) return
-          this.#asking = ''
+          if (request !== this.#asking) return
+          this.#asking = null
           this.#emit('clipmux-error', { status: err instanceof SessionError ? err.status : 0 })
         },
       )
       return
     }
+    this.#asking = null
     const s = this.#playback as PlaybackSession
     const baseUrl = this.getAttribute('base-url') ?? s.base_url
     const poster = this.getAttribute('poster') ?? s.poster_url
     if (poster) media.poster = poster
     const loading = `${baseUrl}|${s.playback_id}|${this.#token}`
     if (loading !== this.#loaded) this.#play(media, baseUrl, s.playback_id, loading)
-    this.#loadChapters(
-      media,
-      baseUrl,
-      s.playback_id,
-      this.getAttribute('chapters-track') ?? chaptersTrackOf(s),
-    )
+    this.#loadChapters(baseUrl, s.playback_id, this.getAttribute('chapters-track') ?? chaptersTrackOf(s))
   }
 
   // A fresh token for the session: getToken's, else the session URL's.
@@ -267,80 +289,133 @@ export class ClipMuxPlayerElement extends HTMLElement {
     if (!playbackId) return null
     if (this.#getToken) return this.#getToken({ playbackId, native: playsNatively() })
     if (!sessionUrl) return null
+    const playing = this.#session
     const s = await fetchSession(sessionUrl, playbackId, playsNatively())
     if (s === null) return null
-    if (`${sessionUrl}|${playbackId}` === this.#playbackFor && this.#playback) {
+    if (
+      playing === this.#session &&
+      sessionUrl === this.getAttribute('session-url') &&
+      playbackId === this.getAttribute('playback-id') &&
+      this.#playback?.playback_id === s.playback_id
+    ) {
       this.#playback = {
         ...this.#playback,
         token: s.token,
         ...(s.expires_at ? { expires_at: s.expires_at } : {}),
+        ...(s.tracks ? { tracks: s.tracks } : {}),
       }
     }
     return s.token
   }
 
   #play(media: MediaElement, baseUrl: string, playbackId: string, loading: string): void {
+    this.#clearChapters()
     this.#loaded = loading
-    this.#session = this.#token
-      ? new TokenSession(this.#token, () => this.#nextToken(), {
-          onToken: (token) => this.#emit('clipmux-token', { token }),
+    const sessionUrl = this.getAttribute('session-url')
+    const requestedId = this.getAttribute('playback-id')
+    const requestedBase = this.getAttribute('base-url')
+    const isCurrent = () =>
+      session === this.#session &&
+      sessionUrl === this.getAttribute('session-url') &&
+      requestedId === this.getAttribute('playback-id') &&
+      requestedBase === this.getAttribute('base-url')
+    const session: TokenSession | null = this.#token
+      ? new TokenSession(this.#token, () => (isCurrent() ? this.#nextToken() : Promise.resolve(null)), {
+          onToken: (token) => {
+            if (!isCurrent()) return
+            const trackId =
+              this.getAttribute('chapters-track') ?? (sessionUrl ? chaptersTrackOf(this.#playback) : '')
+            this.#loadChapters(baseUrl, playbackId, trackId)
+            this.#emit('clipmux-token', { token })
+          },
           onDenied: () => {
+            if (!isCurrent()) return
             media.pause()
             this.#emit('clipmux-denied', {})
           },
         })
       : null
+    this.#session = session
     media.source = clipmuxSource(
       { baseUrl, playbackId, token: this.#token, hls: this.#hls },
       this.#session ?? undefined,
     )
   }
 
-  // The chapters become the cues of a hidden chapters text track of the
-  // <video> itself, which the skin's time slider reads. It is made with
-  // addTextTrack: a <track> without a src empties its cues when it fails to
-  // load, and a light-DOM one is copied into the <video> without them.
-  // hls.js clears every text track's cues as its manifest loads, so the
-  // cues are added once the media has metadata.
-  #loadChapters(media: MediaElement, baseUrl: string, playbackId: string, trackId: string): void {
-    const key = `${baseUrl}|${playbackId}|${trackId}`
-    if (key === this.#chaptersLoaded) return
-    this.#chaptersLoaded = key
-    this.#dropChapters()
-    if (!trackId) return
-    fetchTrack(
-      (t) => trackUrl(baseUrl, playbackId, trackId, t),
-      this.#session,
-      this.#token || undefined,
-    ).then(
-      (vtt) => {
-        if (key !== this.#chaptersLoaded) return
+  #loadChapters(baseUrl: string, playbackId: string, trackId: string): void {
+    if (!trackId) {
+      this.#clearChapters()
+      return
+    }
+    const previous = this.#chaptersRequest
+    const token = this.token
+    if (previous?.trackId === trackId && (previous.status !== 'failed' || previous.token === token)) {
+      return
+    }
+    const request: ChaptersRequest = { trackId, token, status: 'loading', announced: false }
+    this.#chaptersRequest = request
+    void fetchTrack((t) => trackUrl(baseUrl, playbackId, trackId, t), this.#session, token || undefined)
+      .then((vtt) => {
+        if (this.#chaptersRequest !== request) return
         this.#chapters = parseChapters(vtt)
-        const add = () => {
-          if (key !== this.#chaptersLoaded) return
-          const video = media.target ?? media
-          const track = video.addTextTrack('chapters', 'Chapters')
-          track.mode = 'hidden'
-          for (const c of this.#chapters) track.addCue(new VTTCue(c.startTime, c.endTime, c.title))
-          this.#chaptersTrack = track
-          this.#emit('clipmux-chapters', { chapters: this.#chapters })
-        }
-        if (media.readyState >= HTMLMediaElement.HAVE_METADATA) add()
-        else media.addEventListener('loadedmetadata', add, { once: true })
-      },
-      () => this.#emit('clipmux-error', { status: 0, track: trackId }),
-    )
+        request.status = 'ready'
+        this.#showChapters()
+      })
+      .catch(() => {
+        if (this.#chaptersRequest !== request) return
+        request.status = 'failed'
+        this.#chapters = []
+        this.#writeChapterCues()
+        this.#emit('clipmux-error', { status: 0, track: trackId })
+      })
   }
 
-  // A text track can't be removed: the old one is emptied and disabled.
-  #dropChapters(): void {
-    const old = this.#chaptersTrack
-    if (old) {
-      for (const cue of Array.from(old.cues ?? [])) old.removeCue(cue)
-      old.mode = 'disabled'
+  // hls.js clears text cues when loading a manifest. Wait for metadata so
+  // the skin gets the current chapters even when the VTT arrives first.
+  #showChapters(): void {
+    const request = this.#chaptersRequest
+    if (
+      request?.status !== 'ready' ||
+      !this.#media ||
+      this.#media.readyState < HTMLMediaElement.HAVE_METADATA
+    ) {
+      return
     }
-    this.#chaptersTrack = null
+    this.#writeChapterCues()
+    if (!request.announced) {
+      request.announced = true
+      this.#emit('clipmux-chapters', { chapters: this.#chapters })
+    }
+  }
+
+  #clearChapters(): void {
+    if (!this.#chaptersRequest) return
+    this.#chaptersRequest = null
     this.#chapters = []
+    this.#writeChapterCues()
+  }
+
+  // Video.js reads the first chapters track. TextTrackList has no removal
+  // API for addTextTrack, so keep one track and notify the skin of cue edits.
+  #writeChapterCues(): void {
+    const video = this.#media?.target ?? this.#media
+    if (!video) return
+    let track = this.#chaptersTrack?.video === video ? this.#chaptersTrack.track : null
+    if (!track) {
+      if (this.#chapters.length === 0) return
+      track = video.addTextTrack('chapters', 'Chapters')
+      track.mode = 'hidden'
+      this.#chaptersTrack = { video, track }
+    }
+    for (const cue of Array.from(track.cues ?? [])) track.removeCue(cue)
+    const last = this.#chapters.at(-1)
+    for (const chapter of this.#chapters) {
+      const gap = video.duration - chapter.endTime
+      const end =
+        chapter === last && gap > 0 && gap <= CHAPTER_END_TOLERANCE ? video.duration : chapter.endTime
+      track.addCue(new VTTCue(chapter.startTime, end, chapter.title))
+    }
+    video.textTracks.dispatchEvent(new Event('change'))
   }
 }
 

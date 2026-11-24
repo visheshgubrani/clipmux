@@ -82,7 +82,7 @@ test('hls.js shows the subtitle cue at its known time', async ({ page }) => {
   await expect(page.locator('media-captions-button')).toHaveCount(1)
 })
 
-test('chapters mark the time slider and convert to seconds', async ({ page }) => {
+test('chapters mark the time slider and convert to seconds', async ({ page }, testInfo) => {
   await page.goto('/player.html?chapters=1')
   await h264(page)
   await expect
@@ -108,7 +108,56 @@ test('chapters mark the time slider and convert to seconds', async ({ page }) =>
     return Array.from(v.textTracks).filter((t) => t.kind === 'subtitles').length
   })
   expect(subtitleTracks).toBe(1)
-  await expect(page.locator('.media-time-slider-chapter')).toHaveCount(2)
+  const slider = page.locator('media-time-slider')
+  const thumb = page.getByRole('slider', { name: 'Seek' })
+  await expect(slider.locator('.media-time-slider-chapter')).toHaveCount(2)
+  await page.locator('hlsjs-video').evaluate((video) => (video as HTMLVideoElement).pause())
+  const box = await slider.boundingBox()
+  if (!box) throw new Error('The seek bar is not visible')
+  const position = { x: box.width / 2, y: box.height / 2 }
+  if (testInfo.project.name === 'phone') {
+    await slider.tap({ position })
+  } else {
+    await slider.hover({ position })
+    await expect(slider.locator('media-time-slider-chapter-title')).toHaveText('Chapter two')
+    await expect(slider.locator('media-time-slider-chapter-title')).toBeVisible()
+    await slider.click({ position })
+  }
+  await expect
+    .poll(() => page.locator('hlsjs-video').evaluate((video) => (video as HTMLVideoElement).currentTime))
+    .toBeCloseTo(15, 0)
+  await page.mouse.move(0, 0)
+  await thumb.focus()
+  await thumb.press('Home')
+  await expect(slider.locator('media-time-slider-chapter-title')).toHaveText('Opening')
+})
+
+test('a late token callback recovers chapters and changing the track updates the same seek bar', async ({
+  page,
+}) => {
+  await page.goto('/player.html?chapters=late-auth')
+  await h264(page)
+  const player = page.locator('clipmux-player')
+  const slider = player.locator('media-time-slider')
+  const thumb = player.getByRole('slider', { name: 'Seek' })
+  await expect(slider.locator('.media-time-slider-chapter')).toHaveCount(2)
+
+  await page.route('**/tracks/trk_replacement.vtt', (route) =>
+    route.fulfill({
+      headers: { 'Access-Control-Allow-Origin': '*' },
+      contentType: 'text/vtt',
+      body: 'WEBVTT\n\n00:00:00.000 --> 00:00:10.000\nStart here\n\n00:00:10.000 --> 00:00:30.000\nExample\n',
+    }),
+  )
+  await player.evaluate((el) => el.setAttribute('chapters-track', 'trk_replacement'))
+  await player.locator('hlsjs-video').evaluate((video) => (video as HTMLVideoElement).pause())
+  await thumb.focus()
+  await thumb.press('Home')
+  await expect(slider.locator('media-time-slider-chapter-title')).toHaveText('Start here')
+  await expect(slider.locator('.media-time-slider-chapter')).toHaveCount(2)
+  await player.evaluate((el) => el.removeAttribute('chapters-track'))
+  await expect(slider.locator('media-time-slider-chapter-title')).toBeEmpty()
+  await expect(slider.locator('.media-time-slider-chapter')).toHaveCount(1)
 })
 
 test('a token refreshed mid-play still loads a track VTT', async ({ page }) => {
@@ -166,6 +215,9 @@ test('the dashboard shows tracks, their transcript and chapters, and makes and d
   await signIn(page, cfg)
   // The old asset address lands on the video's page.
   await page.goto(`${cfg.ops}/assets/${cfg.asset_id}?app=${cfg.app_id}`)
+  const preview = page.locator('clipmux-player')
+  await expect(preview.locator('.media-time-slider-chapter')).toHaveCount(2)
+  await expect(page.getByRole('navigation', { name: 'Chapters', exact: true })).toHaveCount(0)
   await page.getByRole('tab', { name: 'Captions & chapters' }).click()
   await noHorizontalScroll(page)
   const tracks = page.getByLabel('Tracks')

@@ -252,9 +252,10 @@ marks the first ready chapters track by itself. Otherwise, name the track:
 <clipmux-player base-url="https://media.example.com" playback-id="pid_…" chapters-track="trk_…"></clipmux-player>
 ```
 
-The player fetches the track's WebVTT with the playback token, marks the
-chapters on the time slider, fires `clipmux-chapters` and fills
-`player.chapters`. Times there are in seconds; the API's `chapters` on a
+The player fetches the track's WebVTT with the playback token and divides
+the seek bar into chapter segments. Hover or scrub to see the title and
+timestamp. When the track loads, the player fires `clipmux-chapters` and
+fills `player.chapters`. Times there are in seconds; the API's `chapters` on a
 track are in milliseconds. See
 [Subtitles and transcripts](/docs/build/captions/subtitles) and
 [Chapters](/docs/build/captions/chapters).

@@ -182,12 +182,12 @@ function Video({
         <TabsContent value="overview" keepMounted className="pt-6 data-[hidden]:hidden">
           <div className="flex flex-col gap-8">
             {a.status === 'ready' ? (
-              <div className="flex max-w-4xl flex-col gap-0">
-                <PlayerWithChapters
+              <div className="max-w-4xl">
+                <Preview
                   key={playerSubtitles ?? ''}
-                  asset={a}
-                  app={app}
-                  chaptersTrack={chapters}
+                  assetId={a.id}
+                  baseUrl={a.base_url}
+                  chaptersTrack={chapters?.id}
                 />
               </div>
             ) : (
@@ -219,7 +219,7 @@ function Video({
         )}
         {!deleted && (
           <TabsContent value="sharing" className="pt-6">
-            <Sharing asset={a} app={app} />
+            <Sharing asset={a} app={app} chaptersTrack={chapters?.id} />
           </TabsContent>
         )}
         <TabsContent value="analytics" className="pt-6">
@@ -447,60 +447,6 @@ function RenameDialog({
   )
 }
 
-/** The player on black, with the chapters drawn as a labelled strip that seeks. */
-function PlayerWithChapters({
-  asset: a,
-  app,
-  chaptersTrack,
-}: {
-  asset: Asset
-  app?: string | undefined
-  chaptersTrack?: Track | undefined
-}) {
-  const wrap = React.useRef<HTMLDivElement>(null)
-  const detail = useQuery({
-    queryKey: ['track', a.id, chaptersTrack?.id ?? ''],
-    queryFn: () => api<TrackDetail>(`/v1/assets/${a.id}/tracks/${chaptersTrack?.id}`, { app }),
-    enabled: !!chaptersTrack,
-  })
-  const chapters = detail.data?.chapters ?? []
-  const total = (a.duration_seconds ?? 0) * 1000
-  const seek = (ms: number) => {
-    const el = wrap.current?.querySelector('clipmux-player') as
-      | (HTMLElement & { media?: HTMLVideoElement | null })
-      | null
-    const media = el?.media
-    if (media) {
-      media.currentTime = ms / 1000
-      void media.play?.()
-    }
-  }
-  return (
-    <div ref={wrap} className="flex flex-col gap-3">
-      <Preview assetId={a.id} baseUrl={a.base_url} chaptersTrack={chaptersTrack?.id} />
-      {chapters.length > 0 && total > 0 && (
-        <nav aria-label="Chapters" className="flex gap-0.5">
-          {chapters.map((c) => (
-            <button
-              key={c.start_ms}
-              type="button"
-              onClick={() => seek(c.start_ms)}
-              style={{ flexGrow: Math.max(1, c.end_ms - c.start_ms) }}
-              className="group flex min-w-0 basis-0 flex-col gap-1.5 text-left"
-            >
-              <span className="h-1 rounded-full bg-muted transition-colors group-hover:bg-primary" />
-              <span className="flex min-w-0 gap-1.5 text-xs">
-                <span className="type-timecode text-muted-foreground">{clock(c.start_ms)}</span>
-                <span className="truncate">{c.title}</span>
-              </span>
-            </button>
-          ))}
-        </nav>
-      )}
-    </div>
-  )
-}
-
 function Details({ asset: a }: { asset: Asset }) {
   const apps = useQuery(q.apps())
   const analytics = useQuery(q.analytics('30d', undefined, a.id))
@@ -711,7 +657,15 @@ function TrackBody({ asset, track, app }: { asset: Asset; track: Track; app?: st
 }
 
 /** Who can watch, in plain words, with the playback IDs under it for those who need them. */
-function Sharing({ asset: a, app }: { asset: Asset; app?: string | undefined }) {
+function Sharing({
+  asset: a,
+  app,
+  chaptersTrack,
+}: {
+  asset: Asset
+  app?: string | undefined
+  chaptersTrack?: string | undefined
+}) {
   const qc = useQueryClient()
   const confirm = useConfirm()
   const active = a.playback_ids.filter((p) => p.status === 'active')
@@ -748,6 +702,7 @@ function Sharing({ asset: a, app }: { asset: Asset; app?: string | undefined }) 
     }
   }
   const first = pub[0]
+  const chaptersAttribute = chaptersTrack ? ` chapters-track="${chaptersTrack}"` : ''
   return (
     <div className="flex max-w-3xl flex-col gap-10">
       <Section title="Who can watch">
@@ -783,7 +738,7 @@ function Sharing({ asset: a, app }: { asset: Asset; app?: string | undefined }) 
             <span className="text-sm font-medium">Embed</span>
             <CopyBlock
               label="embed code"
-              value={`<!-- npm i @clipmux/player, then in your bundle: import '@clipmux/player/element' -->\n<clipmux-player base-url="${a.base_url}" playback-id="${first.id}"></clipmux-player>`}
+              value={`<!-- npm i @clipmux/player, then in your bundle: import '@clipmux/player/element' -->\n<clipmux-player base-url="${a.base_url}" playback-id="${first.id}"${chaptersAttribute}></clipmux-player>`}
             />
             <span className="text-sm font-medium">Stream URL</span>
             <CopyBlock label="stream URL" value={`${a.base_url}/p/${first.id}/master.m3u8`} />
