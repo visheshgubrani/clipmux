@@ -1,10 +1,10 @@
 # Phase 6 — T29 Backups and recovery
 
-**Status: in progress (2026-11-24).** D148 records the ARM64 capacity baseline.
-D145 records a provisional B2 restore with playback and the exact read-only
-restore of a production backup. Launch exit check 10 stays open pending the
-cold run on the fixed image and the production cutover with scheduled backup
-verification.
+**Status: complete (2026-11-24).** D145 records the cold B2 restore through
+playback, preserved post-backup media, the ARM64 cutover and the read-only
+restore of the exact newest scheduled production backup. The measured
+recovery-point age met the 15-minute target. Launch exit check 10 passed.
+D148 records the ARM64 capacity baseline.
 
 The detailed plan behind a new T29 row of [P6-launch.md](P6-launch.md).
 Decisions land in [../decisions.md](../decisions.md) as D143 onward, as
@@ -52,14 +52,15 @@ install connected to a bucket that's already in use.
 - **Fresh install on a used bucket.** The first reconcile wipes all of
   `_routes/`.
 
-### Settled with the owner on 2026-11-23
+### Settled with the owner
 
 - **Backups go to Backblaze B2**, a provider independent of both Hetzner
   and Cloudflare, with object lock and keys that can't delete. The product
   accepts any S3-compatible bucket or a local path.
 - **Postgres is backed up by scheduled, encrypted dumps:** every hour by
-  default, every 15 minutes on prod. Continuous WAL archiving (PITR) is not
-  built.
+  default, every 14 minutes on production for a 15-minute recovery-point
+  target. The production schedule was adjusted after the first live
+  measurement (D145). Continuous WAL archiving (PITR) is not built.
 - **Media backup covers sources only.** Outputs can be re-encoded from them.
 - **Prod gets interim protection now** (Track A), and the built-in feature
   **gates v1.0.0** (Track B).
@@ -85,7 +86,7 @@ drills measure them.
 | Postgres crashes | Restart and crash recovery take under 1 min. No committed data is lost. | Unchanged. |
 | Host reboot or patching | About 2 min for every app. Playback is unaffected. | Same, in a set window. |
 | Bad upgrade or migration | A dump exists only if someone took one. | Automatic backup before any migration. Roll back in 15 min or less, with nothing lost. |
-| Disk or VPS lost | Everything is lost. Without the secrets key, every video is unplayable. | `install.sh --restore` on a new host, then repoint DNS. Back in 30 min or less. At most 15 min of data lost on prod, 1 h by default. |
+| Disk or VPS lost | Everything is lost. Without the secrets key, every video is unplayable. | `install.sh --restore` on a new host, then repoint DNS. Target 30 min through playback and a recovery point up to 15 min old on production. |
 | An older database comes back | Newer videos stop playing and re-encodes are deleted. | Restore fence: nothing is deleted, and a report lists what's newer than the database. |
 | Fresh install pointed at a used bucket | Every route record is wiped. | The store's epoch marker has another install ID, so the install is fenced. |
 | R2 objects deleted, or the Cloudflare account lost | Unrecoverable. | Restore sources from the backup target and re-encode them, in hours. |
@@ -245,7 +246,7 @@ Order:
 | T29.9 | **Docs.** <br>**Backups page:** rewrite `self-host/operate/backups.mdx` — automatic backups; the target, with a worked B2 example (object lock, lifecycle, a key that can't delete) and notes for R2, Hetzner and S3; the recovery kit; reading a backup with plain `age` and `pg_restore`. <br>**New `operate/disaster-recovery.mdx`:** the recovery-targets table as a runbook, one section per scenario, each with commands, expected time and how to verify. <br>**Corrections:** `operate/monitoring.mdx:27` should say compose declares the health check, not the image. Add the new metrics and alerts to the monitoring page, the env vars to the configuration reference (`internal/config/doc_test.go`), and the admin commands to the CLI page (`cmd/clipmux/docs_test.go`). <br>**Internal docs:** repoint the stale `docs/operations.md` references in `docs/known-gaps.md` and `docs/architecture.md:819`. <br>**Error codes:** add any new API error codes to `skills/clipmux-integrate/references/errors.md`. |
 | T29.10 | **Drills (exit check 10).** <br>**`TestDrillBackupAndRestore`** (`internal/e2e/drills_db_test.go:189-254`) is extended to run the real commands: <ol><li>Back up.</li><li>Upload a second asset.</li><li>Restore the older backup.</li><li>Check that the second asset's route record and output survive and that `restore report` lists them.</li><li>Finish the fence and play the video.</li></ol>**New `toolchain/check_restore.sh`,** styled like `check_release.sh`: a disaster-recovery drill on a fresh VM, timed per phase. The results are recorded as a decision. |
 | T29.11 | **Capacity baseline.** A load test on a VM shaped like prod (arm64, 2 vCPU, 4 GB), extending the P5 soak harness. It measures API p50 and p95 on the main routes as the request rate rises, plus claim latency and webhook delivery latency. The numbers and SLOs go in a capacity section of `requirements.mdx`, which also states, with numbers, that uploads and playback bypass the server on R2 and the Worker. |
-| T29.12 | **Prod cutover.** <ol><li>Set `CLIPMUX_BACKUP_*` on the VPS: the B2 key that can't delete, a 15 min interval, the owner's age recipient.</li><li>Confirm the first backup and the first verify pass.</li><li>Run `check_restore.sh` against the prod backup on a throwaway VM.</li><li>Drop the ClipMux leg of the Track A timer and keep the Edural one.</li><li>Then do A7.</li></ol> |
+| T29.12 | **Prod cutover.** <ol><li>Set `CLIPMUX_BACKUP_*` on the VPS as described below.</li><li>Verify two scheduled backups and measure the recovery-point age.</li><li>Run `check_restore.sh` against the prod backup on a throwaway VM.</li><li>Drop the ClipMux leg of the Track A timer if present and keep the Edural one.</li></ol> |
 
 ### Run the capacity baseline
 
@@ -282,18 +283,19 @@ copy are recorded in D145.
    exists, take and verify the interim Track A dump before restarting
    production.
 2. Put the B2 bucket URL, bucket-scoped write key without `deleteFiles`,
-   owner’s public age recipient and `CLIPMUX_BACKUP_INTERVAL=15m` into the
+   owner’s public age recipient and `CLIPMUX_BACKUP_INTERVAL=14m` into the
    secret-managed production environment. Keep `readBucketRetentions` on
    the write key so the probe can see Object Lock. Keep a separate read-only
    backup key and the recovery kit off-host.
 3. Roll out the backup-capable app and confirm `/readyz`. On the stack, run
    `docker compose exec -T app clipmux admin backup check` and confirm the
-   B2 target reports Object Lock and a 15-minute schedule. Use
+   B2 target reports Object Lock and a 14-minute schedule. Use
    `docker compose exec -T app clipmux admin backup list` to record the first
    scheduled backup ID and verify it with
    `docker compose exec -T app clipmux admin backup verify --id ID`.
    The full check must restore into a scratch database and load the content
-   keys. Confirm a second scheduled backup arrives on cadence.
+   keys. Confirm a second scheduled backup arrives on cadence and use the
+   B2 publication timestamps to check the 15-minute recovery-point target.
 4. On a disposable VM, run `toolchain/check_restore.sh --env KIT --yes`
    with the off-host read-only key in the copy of the kit. This uses
    `install.sh --restore-only` and leaves only Postgres running. The
