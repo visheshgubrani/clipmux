@@ -106,6 +106,24 @@ export function linkProblems(html, fromFile, resolve, skip = new Set()) {
   return problems
 }
 
+/** A page names itself as canonical and describes itself in JSON-LD that parses. */
+export function headProblems(html, url) {
+  const problems = []
+  const canonical = /<link rel="canonical" href="([^"]*)"/.exec(html)?.[1]
+  if (!canonical) problems.push('no canonical link')
+  else if (canonical !== url) problems.push(`canonical is ${canonical}, not ${url}`)
+  const blocks = [...html.matchAll(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/g)]
+  if (!blocks.length) problems.push('no JSON-LD')
+  for (const [, json] of blocks) {
+    try {
+      JSON.parse(json)
+    } catch {
+      problems.push('JSON-LD does not parse')
+    }
+  }
+  return problems
+}
+
 // The agent skills (skills/, T17) link to docs pages and their anchors, so a
 // renamed heading must not break them: each anchor a skill uses is pinned on
 // its heading with `[#id]`, and resolves in the build.
@@ -254,6 +272,16 @@ function main(contentOnly = false) {
   const htmlFiles = walk(out).filter((f) => f.endsWith('.html'))
   for (const file of htmlFiles)
     problems.push(...linkProblems(readFileSync(file, 'utf8'), relative(out, file), resolve, redirects))
+
+  // Every real page is canonical at its sitemap URL, with structured data.
+  for (const file of htmlFiles) {
+    const name = relative(out, file)
+    if (name === '404.html' || name === '_not-found.html') continue
+    // Next writes the root as https://clipmux.com, the same URL as .../ for a bare host.
+    const path = name === 'index.html' ? '' : `/${name.replace(/\.html$/, '')}`
+    for (const p of headProblems(readFileSync(file, 'utf8'), `${SITE_URL}${path}`))
+      problems.push(`${name}: ${p}`)
+  }
 
   // Each docs link in the skills resolves in the build, with its anchor.
   for (const l of links) {

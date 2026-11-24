@@ -55,9 +55,11 @@ const yaml = (s) => JSON.stringify(s)
 const ref = (s) => (s?.$ref ? spec.components.schemas[s.$ref.split('/').pop()] : s)
 const refName = (s) => s?.$ref?.split('/').pop()
 
-function frontmatter(title, description, source, icon) {
+// `nav` is the shorter sidebar name when the title is longer (source.config.ts).
+function frontmatter(title, description, source, icon, nav) {
   const iconLine = icon ? `icon: ${icon}\n` : ''
-  return `---\ntitle: ${yaml(title)}\ndescription: ${yaml(description)}\nsource: ${yaml(source)}\n${iconLine}---\n\n`
+  const navLine = nav ? `nav: ${yaml(nav)}\n` : ''
+  return `---\ntitle: ${yaml(title)}\ndescription: ${yaml(description)}\nsource: ${yaml(source)}\n${iconLine}${navLine}---\n\n`
 }
 
 export function typeOf(s) {
@@ -218,7 +220,14 @@ function generateApi() {
       tagPages.push({ page, name, group: group.name, tag, mine })
       writeFileSync(
         join(dir, `${page}.mdx`),
-        frontmatter(name, firstSentence(tag.description), 'internal/openapi/openapi.json') +
+        // "Videos API" says what the page is in a search result; the sidebar keeps "Videos".
+        frontmatter(
+          `${name} API`,
+          firstSentence(tag.description),
+          'internal/openapi/openapi.json',
+          undefined,
+          name,
+        ) +
           [mdx(rest(tag.description)), ...mine.map(operationSection)].filter(Boolean).join('\n\n') +
           '\n',
       )
