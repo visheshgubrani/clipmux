@@ -1899,6 +1899,25 @@ production snapshot. The production B2 target reported seven-day
 Compliance retention through the scoped writer key. The separate
 read-only key downloaded identical ciphertext for the safety dump.
 
+On the same date, a real-binary crash during a leased encode recovered
+readiness in 104 ms after launching the replacement process. The lease
+was recovered in 90.4 s and encrypted playback passed after the new
+attempt committed. An isolated amd64 Docker PostgreSQL 18 recovered
+from SIGKILL in 1.6 s with the committed test row intact. The disposable
+VM rebooted and ClipMux was ready from an off-host probe in 36 s.
+An injected migration failure on PostgreSQL 18 produced a
+`pre_migrate` backup. The known-good schema and committed fixture row
+were restored into scratch Postgres in 262 ms.
+
+A provisional amd64 rehearsal on 2026-11-24 used the staged installer,
+Backblaze B2 and a dedicated R2 bucket and Worker. With warm image layers,
+pull took 1 s, database restore 3 s, HTTPS readiness 42 s from installer
+start, and first decrypted playback 44 s. The restore report named the
+newer route, output and source. Their keys, sizes and ETags matched after
+both fenced cleanup passes. The restored backup passed full verification.
+The cold run against the published image manifest and the production
+cutover are still pending.
+
 ## D146 Only sources are mirrored; pruning is by lifecycle rules and keys that can't delete — accepted (2026-11-23)
 Context: media can be large, and its outputs can be made again from the sources. A backup key that can delete is a key ransomware on the host can use to delete the backups.
 Decision:

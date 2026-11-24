@@ -13,7 +13,7 @@ workflow uses a self-hosted runner.
 | `agent.yml`: the amd64 and arm64 agent tarballs | hosted Linux | by hand; called by `release.yml` |
 | `exit.yml`: the Phase 1–5 exit tests, Chromium and ExoPlayer, and launch exit check 8 against `examples/nextjs-lms` | hosted Linux | by hand (`soak` for 30 minutes), before a release |
 | `exit-safari.yml`: Safari | hosted macOS | by hand, before a release |
-| `toolchain/check_restore.sh` (not a workflow): the disaster-recovery drill on a fresh VM, timed per phase, with a throwaway bucket; `--env FILE --yes` restores a saved `.env` of a real install instead (T29.12) | a fresh VM, as root | by hand, before a release |
+| `toolchain/check_restore.sh` (not a workflow): the timed recovery drill on a fresh VM with a throwaway backup target, dedicated R2 bucket and Worker, and an off-host recovery kit; `--env FILE --yes` restores a saved `.env` of a real install into scratch Postgres (T29.12) | a fresh VM, as root | by hand, before a release |
 | `install.yml`: the installers end to end on two local release candidates, which must share every layer but the binary's | hosted Linux | by hand |
 | `release.yml`: waits for `ci.yml` (and `exit.yml`, unless a `-rc`) on the commit, then the image, the agent tarballs and `clipmux` binaries, the GitHub Release with `SHA256SUMS` and notes from `CHANGELOG.md`, and npm publish of the `@clipmux` packages with provenance (D136) | hosted Linux | `v*` tags; by hand only the npm job (a dry run by default) |
 | `exit-llm.yml`: real OpenAI and Claude | hosted Linux | by hand, only while `REAL_LLM` is `true` |

@@ -362,6 +362,44 @@ func TestDrillRestoreFromABackupKeepsWhatIsNewer(t *testing.T) {
 	in.plays(kid, priv, thirdPID)
 }
 
+func TestDrillServeCrashReclaimsLease(t *testing.T) {
+	in := start(t)
+	key, kid, priv := in.credentials("Crash recovery")
+	in.waitSetupTestsIdle(5 * time.Minute)
+	asset, pid := in.upload(key, fixture(t, 30, 1280, 720))
+
+	deadline := time.Now().Add(2 * time.Minute)
+	for {
+		workers := children(in.cmd.Process.Pid, "worker")
+		if len(workers) == 1 && len(children(workers[0], "ffmpeg")) > 0 && in.attemptRunning(asset) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the asset never began encoding under a lease")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	crash := time.Now()
+	in.halt(os.Kill)
+	in.launch()
+	ready := time.Since(crash)
+	if ready >= 30*time.Second {
+		t.Fatalf("serve took %s to become ready, want under 30s", ready)
+	}
+	in.waitLost(asset)
+	lost := time.Since(crash)
+	if lost >= 2*time.Minute {
+		t.Fatalf("the job took %s to lose its lease and requeue, want under 2m", lost)
+	}
+	in.waitReady(key, asset, 3*time.Minute)
+	if got := in.scalar(`SELECT string_agg(status, ',' ORDER BY attempt_number) FROM attempts WHERE asset_id = $1`, asset); got != "lost,committed" {
+		t.Fatalf("attempts %q, want the crashed attempt lost and its replacement committed", got)
+	}
+	in.plays(kid, priv, pid)
+	t.Logf("serve ready in %s, job requeued in %s, encrypted playback recovered", ready.Round(time.Millisecond), lost.Round(time.Millisecond))
+}
+
 // Rotating the secrets key (D071; P5 check 8): with only the new key serve
 // refuses to boot; with the old one as CLIPMUX_SECRETS_KEY_PREVIOUS it runs,
 // `clipmux admin reseal-secrets` reseals everything, and then the new key
