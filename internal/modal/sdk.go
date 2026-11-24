@@ -25,11 +25,11 @@ type sdkAPI struct {
 
 // imageWait is how long a wake waits for Modal to have the image, and
 // scheduleWait how long for a sandbox to be placed on one GPU type; a wake
-// tries up to three types, inside dispatch's three-minute bound on a
-// provider call.
+// tries up to three types, inside dispatch's six-minute bound on a
+// provider call (D097, D149).
 const (
 	imageWait    = 30 * time.Second
-	scheduleWait = 45 * time.Second
+	scheduleWait = 90 * time.Second
 )
 
 // newSDK opens a client with the token. It reads no other credentials: the

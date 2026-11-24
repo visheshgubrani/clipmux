@@ -88,15 +88,23 @@ type Service struct {
 	// said once (RefreshBills).
 	billWarned sync.Map
 	// CallTimeout bounds each provider call (a wake or a stop), so one stuck
-	// provider fails its own call rather than its whole pass (D097). Modal
-	// takes over a minute to create a GPU sandbox.
+	// provider fails its own call rather than holding its slot forever (D097,
+	// D149). Modal's placement wait is 90 s per GPU type.
 	CallTimeout time.Duration
+	// MaxCalls caps provider calls running in parallel (default 20: two
+	// providers at 10 machines each).
+	MaxCalls int
+
+	callsMu   sync.Mutex
+	callsCtx  context.Context
+	inFlight  int
+	callsDone chan struct{}
 }
 
 // ErrPreparing is a wake the provider can't start yet but will, such as
-// Modal still converting a new image: the dispatch stays waking and the
-// wake is tried again with backoff, with no failure counted. The claim
-// deadline still bounds it.
+// Modal still converting a new image or a provider with no GPU free right
+// now: the dispatch stays waking and the wake is tried again with backoff,
+// with no failure counted. The claim deadline still bounds it.
 var ErrPreparing = errors.New("dispatch: the provider is still preparing the machine")
 
 // New returns a service. Set Resolve before any provider is connected.
@@ -107,7 +115,8 @@ func New(pool *pgxpool.Pool, box *secrets.Box, serverURL func() string) *Service
 			return nil, errors.New("dispatch: no provider adapter is available")
 		},
 		Logger:      slog.New(slog.DiscardHandler),
-		CallTimeout: 3 * time.Minute,
+		CallTimeout: 6 * time.Minute,
+		MaxCalls:    20,
 	}
 }
 
@@ -273,55 +282,102 @@ func followsOn(workerInfo []byte, kind string) bool {
 	return json.Unmarshal(workerInfo, &w) == nil && slices.Contains(w.FollowOn, kind)
 }
 
-// Publish wakes and stops machines for pending outbox rows, up to limit,
-// and returns how many it handled. Like the route publisher, it calls the
-// provider while holding the row, rebuilds from current state rather than
-// the payload, and retries a failure with backoff. Each row is its own
-// transaction, stops before wakes: a pass that ends inside a slow call
-// loses only that row, never a machine already woken or stopped (D097).
-func (s *Service) Publish(ctx context.Context, limit int) (int, error) {
-	done := 0
-	for range limit {
-		found, ok := false, false
-		err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
-			qs := db.New(tx)
-			rows, err := qs.LockPendingDispatchOutbox(ctx, 1)
-			if err != nil || len(rows) == 0 {
-				return err
-			}
-			found = true
-			row := rows[0]
-			var p struct {
-				DispatchID string `json:"dispatch_id"`
-			}
-			if err := json.Unmarshal(row.Payload, &p); err != nil {
-				return fmt.Errorf("%s %s: %w", row.Kind, row.ID, err)
-			}
-			if row.Kind == "wake" {
-				err = s.wake(ctx, qs, p.DispatchID)
-			} else {
-				err = s.stop(ctx, qs, p.DispatchID)
-			}
-			if err != nil {
-				if ctx.Err() != nil {
-					return ctx.Err()
-				}
-				return s.retry(ctx, qs, row, err)
-			}
-			ok = true
-			return qs.MarkOutboxDone(ctx, row.ID)
-		})
-		if err != nil {
-			return done, err
+// Start sets the parent context under which Publish launches provider calls.
+// Call Wait after ctx is cancelled so serve returns only after every call
+// in flight stops (AGENTS.md, D149).
+func (s *Service) Start(ctx context.Context) {
+	s.callsMu.Lock()
+	defer s.callsMu.Unlock()
+	s.callsCtx = ctx
+}
+
+// Wait blocks until every provider call started by Publish has returned.
+func (s *Service) Wait() {
+	for {
+		s.callsMu.Lock()
+		done := s.callsDone
+		s.callsMu.Unlock()
+		if done == nil {
+			return
 		}
-		if !found {
-			break
-		}
-		if ok {
-			done++
-		}
+		<-done
 	}
-	return done, nil
+}
+
+// ReleaseLeases clears any outbox leases left by a previous process at boot,
+// so wakes and stops whose call was cut off by a crash replay at once.
+func (s *Service) ReleaseLeases(ctx context.Context) error {
+	return db.New(s.pool).ReleaseDispatchOutboxLeases(ctx)
+}
+
+func (s *Service) releaseSlots(n int) {
+	s.callsMu.Lock()
+	defer s.callsMu.Unlock()
+	s.inFlight -= n
+	if s.inFlight == 0 && s.callsDone != nil {
+		close(s.callsDone)
+		s.callsDone = nil
+	}
+}
+
+// Publish leases pending wake and stop outbox rows up to limit (and free
+// MaxCalls slots), starts each provider call in its own goroutine without
+// holding a database transaction, and returns at once (D149). Stops are
+// leased before wakes.
+func (s *Service) Publish(ctx context.Context, limit int) (int, error) {
+	maxCalls := s.MaxCalls
+	if maxCalls <= 0 {
+		maxCalls = 20
+	}
+	s.callsMu.Lock()
+	callsCtx := s.callsCtx
+	if callsCtx != nil && callsCtx.Err() != nil {
+		s.callsMu.Unlock()
+		return 0, nil
+	}
+	want := min(limit, maxCalls-s.inFlight)
+	if want <= 0 {
+		s.callsMu.Unlock()
+		return 0, nil
+	}
+	if s.inFlight == 0 {
+		s.callsDone = make(chan struct{})
+	}
+	s.inFlight += want
+	s.callsMu.Unlock()
+
+	if callsCtx == nil {
+		callsCtx = context.Background()
+	}
+
+	lease := (s.CallTimeout + time.Minute).Seconds()
+	rows, err := db.New(s.pool).LeaseDispatchOutbox(ctx, db.LeaseDispatchOutboxParams{
+		LeaseSeconds: lease,
+		MaxRows:      int32(want),
+	})
+	if err != nil {
+		s.releaseSlots(want)
+		return 0, err
+	}
+	if callsCtx.Err() != nil {
+		s.releaseSlots(want)
+		return 0, nil
+	}
+	if unused := want - len(rows); unused > 0 {
+		s.releaseSlots(unused)
+	}
+	for _, row := range rows {
+		go func() {
+			defer s.releaseSlots(1)
+			defer func() {
+				if v := recover(); v != nil {
+					s.Logger.Error("dispatch call panicked", "outbox", row.ID, "kind", row.Kind, "panic", v)
+				}
+			}()
+			s.runRow(callsCtx, row)
+		}()
+	}
+	return len(rows), nil
 }
 
 // WakeEnv is what a woken machine is told: where serve is, its one-time
@@ -340,96 +396,228 @@ func WakeEnv(server, key, jobKind string) map[string]string {
 	return env
 }
 
-func (s *Service) wake(ctx context.Context, qs *db.Queries, dispatchID string) error {
-	d, err := qs.LockDispatch(ctx, dispatchID)
-	if err != nil {
-		return err
+func (s *Service) runRow(ctx context.Context, row db.Outbox) {
+	var p struct {
+		DispatchID string `json:"dispatch_id"`
 	}
-	if d.Status != "waking" {
-		return nil // ended before it was woken, or woken and claimed already
+	if err := json.Unmarshal(row.Payload, &p); err != nil {
+		s.Logger.Error("decode dispatch outbox payload", "outbox", row.ID, "kind", row.Kind, "err", err)
+		return
 	}
-	job, err := qs.GetJob(ctx, d.JobID)
-	if err != nil {
-		return err
+	if row.Kind == "wake" {
+		s.runWake(ctx, row, p.DispatchID)
+		return
 	}
-	if job.Status != "queued" || job.RoutedTo.String != d.Kind {
-		return End(ctx, qs, d.ID, EndJobGone)
-	}
-	ex, cfg, err := s.executor(ctx, qs, d)
-	if err != nil {
-		return err
-	}
-	key, err := s.box.Open("dispatches", d.ID, d.KeySealed)
-	if err != nil {
-		return fmt.Errorf("open dispatch key: %w", err)
-	}
-	call, cancel := context.WithTimeout(ctx, s.CallTimeout)
-	defer cancel()
-	instance, err := ex.Wake(call, Wake{
-		DispatchID: d.ID, Name: Name(d.ID), Config: cfg.Config, Lifetime: MaxLifetime,
-		Env: WakeEnv(s.ServerURL(), string(key), job.Kind),
+	s.runStop(ctx, row, p.DispatchID)
+}
+
+func (s *Service) runWake(ctx context.Context, row db.Outbox, dispatchID string) {
+	var (
+		skip bool
+		d    db.Dispatch
+		cfg  db.ExecutorConfig
+		req  Wake
+	)
+	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		qs := db.New(tx)
+		var err error
+		d, err = qs.LockDispatch(ctx, dispatchID)
+		if err != nil {
+			return err
+		}
+		if d.Status == "ended" || (d.Status == "claimed" && d.InstanceID.Valid) {
+			skip = true
+			return qs.MarkOutboxDone(ctx, row.ID)
+		}
+		job, err := qs.GetJob(ctx, d.JobID)
+		if err != nil {
+			return err
+		}
+		if d.Status == "waking" && (job.Status != "queued" || job.RoutedTo.String != d.Kind) {
+			if err := End(ctx, qs, d.ID, EndJobGone); err != nil {
+				return err
+			}
+			skip = true
+			return qs.MarkOutboxDone(ctx, row.ID)
+		}
+		cfg, err = qs.GetExecutorConfig(ctx, d.ExecutorConfigID)
+		if err != nil {
+			return err
+		}
+		key, err := s.box.Open("dispatches", d.ID, d.KeySealed)
+		if err != nil {
+			return fmt.Errorf("open dispatch key: %w", err)
+		}
+		req = Wake{
+			DispatchID: d.ID, Name: Name(d.ID), Config: cfg.Config, Lifetime: MaxLifetime,
+			Env: WakeEnv(s.ServerURL(), string(key), job.Kind),
+		}
+		return nil
 	})
 	if err != nil {
-		if ctx.Err() != nil {
-			return ctx.Err() // shutting down: wake on the next pass, same key
+		if ctx.Err() == nil {
+			s.retryRow(ctx, row, err)
 		}
-		if errors.Is(err, ErrPreparing) {
-			// Not a failure: the same dispatch and key, asked again later.
-			s.Logger.Info("a provider is still preparing a machine", "dispatch", d.ID, "provider", d.Kind, "err", err)
-			return err
-		}
-		// The job returns to routing (its dispatch ends) without spending a
-		// budget, and three such failures in a row back the provider off
-		// for 5 minutes. A machine the provider started anyway is found by
-		// the reconciler.
-		s.Logger.Warn("a provider failed to wake a machine", "dispatch", d.ID, "provider", d.Kind, "err", err)
-		if err := qs.RecordWakeFailure(ctx, cfg.ID); err != nil {
-			return err
-		}
-		return End(ctx, qs, d.ID, EndWakeFailed)
+		return
 	}
-	s.Logger.Info("woke a machine", "dispatch", d.ID, "job", d.JobID, "provider", d.Kind, "instance", instance)
-	if err := qs.RecordWakeSuccess(ctx, cfg.ID); err != nil {
-		return err
+	if skip {
+		return
 	}
-	return qs.SetDispatchWoken(ctx, db.SetDispatchWokenParams{ID: d.ID, InstanceID: pgtype.Text{String: instance, Valid: true}})
-}
 
-func (s *Service) stop(ctx context.Context, qs *db.Queries, dispatchID string) error {
-	d, err := qs.LockDispatch(ctx, dispatchID)
-	if err != nil {
-		return err
-	}
-	if !d.InstanceID.Valid || d.StoppedAt.Valid {
-		return nil
-	}
-	ex, _, err := s.executor(ctx, qs, d)
-	if err != nil {
-		return err
-	}
-	call, cancel := context.WithTimeout(ctx, s.CallTimeout)
-	defer cancel()
-	if err := ex.Stop(call, d.InstanceID.String); err != nil {
-		return fmt.Errorf("stop %s: %w", d.Kind, err)
-	}
-	s.Logger.Info("stopped a machine", "dispatch", d.ID, "provider", d.Kind, "instance", d.InstanceID.String)
-	return qs.SetDispatchStopped(ctx, d.ID)
-}
-
-func (s *Service) executor(ctx context.Context, qs *db.Queries, d db.Dispatch) (Executor, db.ExecutorConfig, error) {
-	cfg, err := qs.GetExecutorConfig(ctx, d.ExecutorConfigID)
-	if err != nil {
-		return nil, cfg, err
-	}
 	ex, err := s.Resolve(ctx, cfg)
-	return ex, cfg, err
+	if err != nil {
+		if ctx.Err() == nil {
+			s.retryRow(ctx, row, err)
+		}
+		return
+	}
+
+	call, cancel := context.WithTimeout(ctx, s.CallTimeout)
+	instance, wakeErr := ex.Wake(call, req)
+	cancel()
+	if ctx.Err() != nil {
+		return // shutting down: write nothing; the lease brings the row back
+	}
+
+	err = pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		qs := db.New(tx)
+		cur, err := qs.LockDispatch(ctx, d.ID)
+		if err != nil {
+			return err
+		}
+		if wakeErr != nil {
+			if cur.Status != "waking" {
+				return qs.MarkOutboxDone(ctx, row.ID)
+			}
+			if errors.Is(wakeErr, ErrPreparing) {
+				// Not a failure: the same dispatch and key, asked again later.
+				s.Logger.Info("a provider is still preparing a machine", "dispatch", cur.ID, "provider", cur.Kind, "err", wakeErr)
+				return s.retry(ctx, qs, row, wakeErr)
+			}
+			// The job returns to routing (its dispatch ends) without spending a
+			// budget, and three such failures in a row back the provider off
+			// for 5 minutes. A machine the provider started anyway is found by
+			// the reconciler.
+			s.Logger.Warn("a provider failed to wake a machine", "dispatch", cur.ID, "provider", cur.Kind, "err", wakeErr)
+			if err := qs.RecordWakeFailure(ctx, cfg.ID); err != nil {
+				return err
+			}
+			if err := End(ctx, qs, cur.ID, EndWakeFailed); err != nil {
+				return err
+			}
+			return qs.MarkOutboxDone(ctx, row.ID)
+		}
+		if cur.Status == "ended" {
+			if !cur.InstanceID.Valid {
+				s.Logger.Info("woke a machine for an ended dispatch; stopping it", "dispatch", cur.ID, "provider", cur.Kind, "instance", instance)
+				if err := qs.RecordWakeSuccess(ctx, cfg.ID); err != nil {
+					return err
+				}
+				if err := qs.SetDispatchWoken(ctx, db.SetDispatchWokenParams{ID: cur.ID, InstanceID: pgtype.Text{String: instance, Valid: true}}); err != nil {
+					return err
+				}
+				if err := queueOutbox(ctx, qs, cur.ProjectID, "", "stop", cur.ID); err != nil {
+					return err
+				}
+			}
+			return qs.MarkOutboxDone(ctx, row.ID)
+		}
+		s.Logger.Info("woke a machine", "dispatch", cur.ID, "job", cur.JobID, "provider", cur.Kind, "instance", instance)
+		if err := qs.RecordWakeSuccess(ctx, cfg.ID); err != nil {
+			return err
+		}
+		if err := qs.SetDispatchWoken(ctx, db.SetDispatchWokenParams{ID: cur.ID, InstanceID: pgtype.Text{String: instance, Valid: true}}); err != nil {
+			return err
+		}
+		return qs.MarkOutboxDone(ctx, row.ID)
+	})
+	if err != nil && ctx.Err() == nil {
+		s.Logger.Error("record dispatch wake", "dispatch", d.ID, "outbox", row.ID, "err", err)
+	}
 }
 
-// retry keeps the row pending, backing off from 5 s to 5 minutes. The
-// stored error is a code: a provider's message may hold a URL or a key.
+func (s *Service) runStop(ctx context.Context, row db.Outbox, dispatchID string) {
+	var (
+		skip       bool
+		instanceID string
+		kind       string
+		cfg        db.ExecutorConfig
+	)
+	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		qs := db.New(tx)
+		d, err := qs.LockDispatch(ctx, dispatchID)
+		if err != nil {
+			return err
+		}
+		if !d.InstanceID.Valid || d.StoppedAt.Valid {
+			skip = true
+			return qs.MarkOutboxDone(ctx, row.ID)
+		}
+		cfg, err = qs.GetExecutorConfig(ctx, d.ExecutorConfigID)
+		if err != nil {
+			return err
+		}
+		instanceID = d.InstanceID.String
+		kind = d.Kind
+		return nil
+	})
+	if err != nil {
+		if ctx.Err() == nil {
+			s.retryRow(ctx, row, err)
+		}
+		return
+	}
+	if skip {
+		return
+	}
+
+	ex, err := s.Resolve(ctx, cfg)
+	if err != nil {
+		if ctx.Err() == nil {
+			s.retryRow(ctx, row, err)
+		}
+		return
+	}
+
+	call, cancel := context.WithTimeout(ctx, s.CallTimeout)
+	stopErr := ex.Stop(call, instanceID)
+	cancel()
+	if ctx.Err() != nil {
+		return // shutting down: write nothing; the lease brings the row back
+	}
+
+	err = pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		qs := db.New(tx)
+		if stopErr != nil {
+			return s.retry(ctx, qs, row, fmt.Errorf("stop %s: %w", kind, stopErr))
+		}
+		s.Logger.Info("stopped a machine", "dispatch", dispatchID, "provider", kind, "instance", instanceID)
+		if err := qs.SetDispatchStopped(ctx, dispatchID); err != nil {
+			return err
+		}
+		return qs.MarkOutboxDone(ctx, row.ID)
+	})
+	if err != nil && ctx.Err() == nil {
+		s.Logger.Error("record dispatch stop", "dispatch", dispatchID, "outbox", row.ID, "err", err)
+	}
+}
+
+func (s *Service) retryRow(ctx context.Context, row db.Outbox, cause error) {
+	if err := s.retry(ctx, db.New(s.pool), row, cause); err != nil && ctx.Err() == nil {
+		s.Logger.Error("schedule dispatch outbox retry", "outbox", row.ID, "kind", row.Kind, "err", err)
+	}
+}
+
+// retry keeps the row pending, backing off from 5 s to 5 minutes (or 30 s
+// when the provider has no GPU free right now). The stored error is a code:
+// a provider's message may hold a URL or a key.
 func (s *Service) retry(ctx context.Context, qs *db.Queries, row db.Outbox, cause error) error {
 	s.Logger.Warn("dispatch publication failed; will retry", "outbox", row.ID, "kind", row.Kind, "attempts", row.Attempts+1, "err", cause)
-	delay := min(5*float64(int64(1)<<min(row.Attempts, 6)), 300)
+	maxDelay := 300.0
+	if errors.Is(cause, ErrPreparing) {
+		maxDelay = 30
+	}
+	delay := min(5*float64(int64(1)<<min(row.Attempts, 6)), maxDelay)
 	return qs.RetryOutbox(ctx, db.RetryOutboxParams{
 		ID: row.ID, LastError: pgtype.Text{String: row.Kind + "_failed", Valid: true}, DelaySeconds: delay,
 	})

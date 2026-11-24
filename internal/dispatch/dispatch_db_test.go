@@ -34,8 +34,24 @@ type fakeProvider struct {
 	preparing int
 	// hangFrom: the hangFrom-th Wake (1-based) and later block until their
 	// context ends; 0 never.
-	hangFrom int
-	extra    []dispatch.Instance
+	hangFrom  int
+	gate      chan struct{} // if non-nil, Wake blocks until closed or ctx ends
+	entered   chan struct{} // notified when Wake enters gate/hang
+	wakeDelay time.Duration
+	inFlight  int
+	extra     []dispatch.Instance
+}
+
+func (p *fakeProvider) currentInFlight() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.inFlight
+}
+
+func (p *fakeProvider) stopList() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]string(nil), p.stops...)
 }
 
 func (p *fakeProvider) Running(context.Context) ([]dispatch.Instance, error) {
@@ -61,13 +77,44 @@ func (p *fakeProvider) Running(context.Context) ([]dispatch.Instance, error) {
 
 func (p *fakeProvider) Wake(ctx context.Context, w dispatch.Wake) (string, error) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
+	p.inFlight++
+	defer func() { p.inFlight--; p.mu.Unlock() }()
 	p.wakes = append(p.wakes, w)
-	if p.hangFrom > 0 && len(p.wakes) >= p.hangFrom {
+	n := len(p.wakes)
+	hang := p.hangFrom > 0 && n >= p.hangFrom
+	gate := p.gate
+	entered := p.entered
+	delay := p.wakeDelay
+	if hang || gate != nil {
 		p.mu.Unlock()
-		<-ctx.Done()
+		if entered != nil {
+			select {
+			case entered <- struct{}{}:
+			default:
+			}
+		}
+		if hang {
+			<-ctx.Done()
+			p.mu.Lock()
+			return "", ctx.Err()
+		}
+		select {
+		case <-gate:
+		case <-ctx.Done():
+			p.mu.Lock()
+			return "", ctx.Err()
+		}
 		p.mu.Lock()
-		return "", ctx.Err()
+	}
+	if delay > 0 {
+		p.mu.Unlock()
+		select {
+		case <-time.After(delay):
+		case <-ctx.Done():
+			p.mu.Lock()
+			return "", ctx.Err()
+		}
+		p.mu.Lock()
 	}
 	if p.preparing > 0 {
 		p.preparing--
@@ -88,11 +135,12 @@ func (p *fakeProvider) Stop(_ context.Context, id string) error {
 }
 
 type rig struct {
-	t    *testing.T
-	pool *pgxpool.Pool
-	q    *queue.Queue
-	svc  *dispatch.Service
-	prov *fakeProvider
+	t      *testing.T
+	pool   *pgxpool.Pool
+	q      *queue.Queue
+	svc    *dispatch.Service
+	prov   *fakeProvider
+	cancel context.CancelFunc
 }
 
 // newRig has RunPod connected and verified as the fallback for PCs, and no
@@ -112,6 +160,13 @@ func newRig(t *testing.T) *rig {
 		}
 		return r.prov, nil
 	}
+	ctx, cancel := context.WithCancel(context.Background())
+	r.cancel = cancel
+	r.svc.Start(ctx)
+	t.Cleanup(func() {
+		r.cancel()
+		r.svc.Wait()
+	})
 	r.q.Dispatch = r.svc.Route
 	r.exec(`INSERT INTO executor_configs (id, project_id, kind, config, secrets_encrypted, max_concurrent, monthly_limit_cents, rate_cents_per_hour, disk_bytes, verified_at)
 		VALUES ('exe_runpod', 'prj_default', 'runpod', '{"gpu": "L4"}', 'sealed', 2, 5000, 80, 50000000000, now())`)
@@ -149,6 +204,7 @@ func (r *rig) publish() int {
 	if err != nil {
 		r.t.Fatal(err)
 	}
+	r.svc.Wait()
 	return n
 }
 
@@ -268,7 +324,7 @@ func TestAKeyStopsWorkingAtItsClaimDeadline(t *testing.T) {
 func TestAReplayedWakeHandsTheSameMachineTheSameKey(t *testing.T) {
 	r := newRig(t)
 	job, key := r.woken("ast_1")
-	r.exec(`UPDATE outbox SET done_at = NULL WHERE kind = 'wake'`)
+	r.exec(`UPDATE outbox SET done_at = NULL, available_at = now() WHERE kind = 'wake'`)
 	r.exec(`UPDATE dispatches SET instance_id = NULL, woken_at = NULL WHERE job_id = $1`, job.ID)
 	if n := r.publish(); n != 1 {
 		t.Fatalf("published %d on the replay", n)
@@ -361,30 +417,55 @@ func TestAHungWakeFailsAtItsCallTimeout(t *testing.T) {
 	}
 }
 
-// Stops go before wakes, and each row commits on its own: a pass that ends
-// while a wake hangs has still stopped the machine queued behind it, and
-// keeps it stopped (D097).
+// Stops run beside a hanging wake: while a wake is blocked in flight, a
+// stop queued after it still finishes and records its StoppedAt, and
+// cancelling the service leaves the hanging wake pending without marking it
+// woken (D097, D149).
 func TestAStopIsNeverHeldUpByAHangingWake(t *testing.T) {
 	r := newRig(t)
 	first, _ := r.woken("ast_1")
 	d := r.dispatches(first.ID)[0]
 	r.prov.hangFrom = 2
+	r.prov.entered = make(chan struct{}, 1)
 	second := r.job("ast_2")
-	r.route() // the second job's wake is queued before the first's stop
+	r.route()
+	n, err := r.svc.Publish(context.Background(), 20)
+	if err != nil || n != 1 {
+		t.Fatalf("Publish wake = %d, %v; want 1, nil", n, err)
+	}
+	select {
+	case <-r.prov.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("hanging wake never entered")
+	}
+
 	if err := pgx.BeginFunc(context.Background(), r.pool, func(tx pgx.Tx) error {
 		return dispatch.End(context.Background(), db.New(tx), d.ID, "attempt_ended")
 	}); err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	_, _ = r.svc.Publish(ctx, 20) // ends inside the hanging wake
-	if len(r.prov.stops) != 1 {
-		t.Fatalf("stops = %v, want the first machine's", r.prov.stops)
+	n, err = r.svc.Publish(context.Background(), 20)
+	if err != nil || n != 1 {
+		t.Fatalf("Publish stop = %d, %v; want 1, nil", n, err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(r.prov.stopList()) == 1 && r.dispatches(first.ID)[0].StoppedAt.Valid {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if stops := r.prov.stopList(); len(stops) != 1 {
+		t.Fatalf("stops = %v, want the first machine's", stops)
 	}
 	if d := r.dispatches(first.ID)[0]; !d.StoppedAt.Valid {
 		t.Fatal("the stop happened but wasn't recorded")
 	}
+	if n := r.prov.currentInFlight(); n != 1 {
+		t.Fatalf("in-flight wakes = %d, want 1 still hanging", n)
+	}
+	r.cancel()
+	r.svc.Wait()
 	if ds := r.dispatches(second.ID); len(ds) != 1 || ds[0].Status != "waking" || ds[0].InstanceID.Valid {
 		t.Fatalf("second job's dispatches %+v: want one still waking", ds)
 	}
@@ -699,5 +780,280 @@ func TestTheMonthlyLimitCountsReservationsAndRealRuns(t *testing.T) {
 	r.route()
 	if routes(small.ID) != "runpod/primary_offline" {
 		t.Fatalf("a small job routed %s with last month's spend excluded", routes(small.ID))
+	}
+}
+
+// Wakes for multiple routed jobs start together in one Publish pass without
+// holding database connections while provider calls are in flight (D149).
+func TestWakesRunInParallelWithoutHoldingDBConnections(t *testing.T) {
+	r := newRig(t)
+	r.exec(`UPDATE executor_configs SET max_concurrent = 5 WHERE id = 'exe_runpod'`)
+	gate := make(chan struct{})
+	entered := make(chan struct{}, 5)
+	r.prov.gate = gate
+	r.prov.entered = entered
+
+	jobs := make([]db.Job, 5)
+	for i := range jobs {
+		jobs[i] = r.job(fmt.Sprintf("ast_%d", i))
+	}
+	r.route()
+
+	n, err := r.svc.Publish(context.Background(), 20)
+	if err != nil || n != 5 {
+		t.Fatalf("Publish = %d, %v; want 5, nil", n, err)
+	}
+	for i := range 5 {
+		select {
+		case <-entered:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("only %d wakes entered in parallel", i)
+		}
+	}
+	if inFlight := r.prov.currentInFlight(); inFlight != 5 {
+		t.Fatalf("in-flight wakes = %d, want 5", inFlight)
+	}
+	if conns := r.pool.Stat().AcquiredConns(); conns != 0 {
+		t.Fatalf("AcquiredConns = %d while 5 wakes block, want 0", conns)
+	}
+
+	close(gate)
+	r.svc.Wait()
+	for _, j := range jobs {
+		d := r.dispatches(j.ID)[0]
+		if !d.InstanceID.Valid || !d.WokenAt.Valid {
+			t.Fatalf("dispatch %s for %s not woken: %+v", d.ID, j.ID, d)
+		}
+	}
+}
+
+// If a dispatch is ended while its Wake call is in flight, Record records
+// the returned instance_id and queues a stop immediately instead of waiting
+// for the reconciler (D149).
+func TestADispatchEndedDuringItsWakeStopsTheMachine(t *testing.T) {
+	r := newRig(t)
+	gate := make(chan struct{})
+	entered := make(chan struct{}, 1)
+	r.prov.gate = gate
+	r.prov.entered = entered
+
+	job := r.job("ast_1")
+	r.route()
+	n, err := r.svc.Publish(context.Background(), 20)
+	if err != nil || n != 1 {
+		t.Fatalf("Publish = %d, %v; want 1, nil", n, err)
+	}
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("wake never entered")
+	}
+
+	r.exec(`UPDATE jobs SET status = 'cancelled', finished_at = now() WHERE id = $1`, job.ID)
+	if reaped := r.reap(); reaped != 1 {
+		t.Fatalf("reaped = %d, want 1", reaped)
+	}
+	if d := r.dispatches(job.ID)[0]; d.Status != "ended" || d.EndReason.String != dispatch.EndJobGone {
+		t.Fatalf("dispatch after reap = %s %s, want ended job_gone", d.Status, d.EndReason.String)
+	}
+	var stopsBefore int
+	_ = r.pool.QueryRow(context.Background(), `SELECT count(*) FROM outbox WHERE kind = 'stop'`).Scan(&stopsBefore)
+	if stopsBefore != 0 {
+		t.Fatalf("stops before wake finished = %d, want 0", stopsBefore)
+	}
+
+	close(gate)
+	r.svc.Wait()
+
+	d := r.dispatches(job.ID)[0]
+	if d.InstanceID.String != "pod-"+d.ID || !d.WokenAt.Valid {
+		t.Fatalf("dispatch after wake finished = %+v, want instance_id and woken_at recorded", d)
+	}
+	var wakePending, stopPending int
+	_ = r.pool.QueryRow(context.Background(), `SELECT count(*) FROM outbox WHERE kind = 'wake' AND done_at IS NULL`).Scan(&wakePending)
+	_ = r.pool.QueryRow(context.Background(), `SELECT count(*) FROM outbox WHERE kind = 'stop' AND done_at IS NULL`).Scan(&stopPending)
+	if wakePending != 0 || stopPending != 1 {
+		t.Fatalf("outbox wakePending=%d stopPending=%d, want 0 and 1", wakePending, stopPending)
+	}
+
+	r.publish()
+	if stops := r.prov.stopList(); len(stops) != 1 || stops[0] != d.InstanceID.String {
+		t.Fatalf("stops = %v, want [%s]", stops, d.InstanceID.String)
+	}
+	if d := r.dispatches(job.ID)[0]; !d.StoppedAt.Valid {
+		t.Fatal("dispatch not marked stopped")
+	}
+}
+
+// A machine woken near the end of its initial claim window gets a fresh
+// claim_deadline_seconds from the wake (D149).
+func TestALateWakeGetsTheFullClaimWindow(t *testing.T) {
+	r := newRig(t)
+	job := r.job("ast_1")
+	r.route()
+	r.exec(`UPDATE dispatches SET claim_deadline = now() + interval '5 seconds' WHERE job_id = $1`, job.ID)
+	r.publish()
+	var left float64
+	if err := r.pool.QueryRow(context.Background(),
+		`SELECT extract(epoch FROM claim_deadline - now()) FROM dispatches WHERE job_id = $1`, job.ID,
+	).Scan(&left); err != nil {
+		t.Fatal(err)
+	}
+	if left < 580 || left > 610 {
+		t.Fatalf("claim window left after late wake = %.1f s, want ~600 s", left)
+	}
+}
+
+// ErrPreparing backoff runs from after the Wake call returns and caps at
+// 30 s rather than doubling to 5 minutes (D149).
+func TestPreparingBackoffStartsAfterCallAndCapsAt30Seconds(t *testing.T) {
+	r := newRig(t)
+	r.prov.preparing = 10
+	r.prov.wakeDelay = time.Second
+	r.job("ast_1")
+	r.route()
+
+	var before time.Time
+	if err := r.pool.QueryRow(context.Background(), `SELECT now()`).Scan(&before); err != nil {
+		t.Fatal(err)
+	}
+	r.publish()
+
+	var attempts int
+	var sinceBefore float64
+	if err := r.pool.QueryRow(context.Background(),
+		`SELECT attempts, extract(epoch FROM available_at - $1) FROM outbox WHERE kind = 'wake' AND done_at IS NULL`, before,
+	).Scan(&attempts, &sinceBefore); err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 1 || sinceBefore < 5.5 {
+		t.Fatalf("first preparing retry: attempts=%d available_at-before=%.2f s, want 1 and >= 5.5 s", attempts, sinceBefore)
+	}
+
+	r.prov.wakeDelay = 0
+	wantDelays := []float64{10, 20, 30, 30}
+	for i, want := range wantDelays {
+		r.exec(`UPDATE outbox SET available_at = now() - interval '1 second' WHERE kind = 'wake' AND done_at IS NULL`)
+		r.publish()
+		var delay float64
+		if err := r.pool.QueryRow(context.Background(),
+			`SELECT attempts, extract(epoch FROM available_at - now()) FROM outbox WHERE kind = 'wake' AND done_at IS NULL`,
+		).Scan(&attempts, &delay); err != nil {
+			t.Fatal(err)
+		}
+		if attempts != i+2 || delay < want-2 || delay > want+2 {
+			t.Fatalf("attempt %d: attempts=%d delay=%.2f s, want %.0f s", i+2, attempts, delay, want)
+		}
+	}
+}
+
+// A wake whose pass dies mid-call stays leased until released (at boot or
+// lease expiry) and then replays with the same name and key (D054, D149).
+func TestALeaseFromADeadPassIsReplayedWithTheSameNameAndKey(t *testing.T) {
+	r := newRig(t)
+	gate := make(chan struct{})
+	entered := make(chan struct{}, 1)
+	r.prov.gate = gate
+	r.prov.entered = entered
+
+	job := r.job("ast_1")
+	r.route()
+	n, err := r.svc.Publish(context.Background(), 20)
+	if err != nil || n != 1 {
+		t.Fatalf("Publish = %d, %v; want 1, nil", n, err)
+	}
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("wake never entered")
+	}
+
+	// While leased, another Publish skips the row.
+	if again, err := r.svc.Publish(context.Background(), 20); err != nil || again != 0 {
+		t.Fatalf("Publish while leased = %d, %v; want 0, nil", again, err)
+	}
+
+	// Simulate shutdown/crash while Wake is in flight.
+	r.cancel()
+	r.svc.Wait()
+
+	var attempts int
+	var done bool
+	if err := r.pool.QueryRow(context.Background(),
+		`SELECT attempts, done_at IS NOT NULL FROM outbox WHERE kind = 'wake'`,
+	).Scan(&attempts, &done); err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 0 || done {
+		t.Fatalf("after dead pass: attempts=%d done=%v, want 0 and false", attempts, done)
+	}
+	if d := r.dispatches(job.ID)[0]; d.Status != "waking" || d.InstanceID.Valid {
+		t.Fatalf("dispatch after dead pass = %+v, want still waking without instance", d)
+	}
+
+	// Restart: ReleaseLeases makes the leased row due immediately and replays it.
+	ctx2, cancel2 := context.WithCancel(context.Background())
+	r.cancel = cancel2
+	r.svc.Start(ctx2)
+	r.prov.mu.Lock()
+	r.prov.gate = nil
+	r.prov.entered = nil
+	r.prov.mu.Unlock()
+	if err := r.svc.ReleaseLeases(ctx2); err != nil {
+		t.Fatal(err)
+	}
+	if n := r.publish(); n != 1 {
+		t.Fatalf("replayed Publish = %d, want 1", n)
+	}
+	if d := r.dispatches(job.ID)[0]; !d.InstanceID.Valid || !d.WokenAt.Valid {
+		t.Fatalf("dispatch after replay = %+v, want woken", d)
+	}
+	if len(r.prov.wakes) != 2 {
+		t.Fatalf("wakes = %d, want 2", len(r.prov.wakes))
+	}
+	first, second := r.prov.wakes[0], r.prov.wakes[1]
+	if first.Name != second.Name || first.Env["CLIPMUX_WORKER_KEY"] != second.Env["CLIPMUX_WORKER_KEY"] {
+		t.Fatalf("replay changed machine or key: %s/%s", first.Name, second.Name)
+	}
+}
+
+// A wake that fails after its dispatch already ended (for instance, the job
+// was cancelled mid-call) marks the outbox row done without counting a
+// provider failure.
+func TestAFailedWakeForAnEndedDispatchCountsNoFailure(t *testing.T) {
+	r := newRig(t)
+	gate := make(chan struct{})
+	entered := make(chan struct{}, 1)
+	r.prov.gate = gate
+	r.prov.entered = entered
+	r.prov.failing = 1
+
+	job := r.job("ast_1")
+	r.route()
+	n, err := r.svc.Publish(context.Background(), 20)
+	if err != nil || n != 1 {
+		t.Fatalf("Publish = %d, %v; want 1, nil", n, err)
+	}
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("wake never entered")
+	}
+
+	r.exec(`UPDATE jobs SET status = 'cancelled', finished_at = now() WHERE id = $1`, job.ID)
+	if reaped := r.reap(); reaped != 1 {
+		t.Fatalf("reaped = %d, want 1", reaped)
+	}
+
+	close(gate)
+	r.svc.Wait()
+
+	var failures int
+	if err := r.pool.QueryRow(context.Background(), `SELECT wake_failures FROM executor_configs WHERE id = 'exe_runpod'`).Scan(&failures); err != nil || failures != 0 {
+		t.Fatalf("wake_failures = %d (%v), want 0", failures, err)
+	}
+	var pending int
+	if err := r.pool.QueryRow(context.Background(), `SELECT count(*) FROM outbox WHERE kind = 'wake' AND done_at IS NULL`).Scan(&pending); err != nil || pending != 0 {
+		t.Fatalf("pending wakes = %d (%v), want 0", pending, err)
 	}
 }

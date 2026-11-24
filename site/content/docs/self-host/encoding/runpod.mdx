@@ -104,10 +104,11 @@ a new setup test before it takes videos again.
 
 ## How pods run
 
-- **One job per pod.** A pod runs the ClipMux image with a one-time key
-  that claims one job, before a deadline. It holds no storage credentials:
-  each step gets URLs signed for that job alone. Its media tools always run
-  sandboxed.
+- **One job per pod, started in parallel.** A pod runs the ClipMux image with
+  a one-time key that claims one job, before a deadline. Pods for multiple
+  videos start in parallel up to the concurrency limit. Each pod holds no
+  storage credentials: each step gets URLs signed for that job alone. Its media
+  tools always run sandboxed.
 - **Only its own pods.** Pods are named `clipmux-{tag}-{dispatch}`, with
   this install's tag. ClipMux never lists, stops or touches any other pod in
   the account.
@@ -140,6 +141,8 @@ RunPod pod may still be running.
 - **RunPod has none of the GPUs ClipMux encodes on for rent right now**:
   RunPod's Secure Cloud has no capacity for them at the moment; try again
   later.
+- If RunPod has no free GPU when starting a pod, ClipMux asks again every
+  30 seconds until the claim deadline, then the job is routed again.
 
 ## Next
 

@@ -432,6 +432,58 @@ func (q *Queries) HandOffDispatch(ctx context.Context, arg HandOffDispatchParams
 	return i, err
 }
 
+const leaseDispatchOutbox = `-- name: LeaseDispatchOutbox :many
+UPDATE outbox
+SET available_at = now() + make_interval(secs => $1::double precision)
+WHERE id IN (
+    SELECT id FROM outbox
+    WHERE kind IN ('wake', 'stop') AND done_at IS NULL AND available_at <= now()
+    ORDER BY kind = 'wake', created_at, id
+    LIMIT $2
+    FOR UPDATE SKIP LOCKED
+)
+RETURNING id, project_id, kind, app_id, asset_id, payload, available_at, attempts, last_error, created_at, done_at
+`
+
+type LeaseDispatchOutboxParams struct {
+	LeaseSeconds float64
+	MaxRows      int32
+}
+
+// Leases up to max_rows pending wakes and stops for lease_seconds, stops
+// first, so provider calls run in parallel without holding a transaction (D149).
+func (q *Queries) LeaseDispatchOutbox(ctx context.Context, arg LeaseDispatchOutboxParams) ([]Outbox, error) {
+	rows, err := q.db.Query(ctx, leaseDispatchOutbox, arg.LeaseSeconds, arg.MaxRows)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Outbox{}
+	for rows.Next() {
+		var i Outbox
+		if err := rows.Scan(
+			&i.ID,
+			&i.ProjectID,
+			&i.Kind,
+			&i.AppID,
+			&i.AssetID,
+			&i.Payload,
+			&i.AvailableAt,
+			&i.Attempts,
+			&i.LastError,
+			&i.CreatedAt,
+			&i.DoneAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listDispatchesToEnd = `-- name: ListDispatchesToEnd :many
 SELECT d.id FROM dispatches d
 JOIN jobs j ON j.id = d.job_id
@@ -616,47 +668,6 @@ func (q *Queries) LockExecutorConfigByKind(ctx context.Context, arg LockExecutor
 	return i, err
 }
 
-const lockPendingDispatchOutbox = `-- name: LockPendingDispatchOutbox :many
-SELECT id, project_id, kind, app_id, asset_id, payload, available_at, attempts, last_error, created_at, done_at FROM outbox
-WHERE kind IN ('wake', 'stop') AND done_at IS NULL AND available_at <= now()
-ORDER BY kind = 'wake', created_at, id
-LIMIT $1
-FOR UPDATE SKIP LOCKED
-`
-
-// Stops first: a slow wake must never hold up stopping a paid machine.
-func (q *Queries) LockPendingDispatchOutbox(ctx context.Context, limit int32) ([]Outbox, error) {
-	rows, err := q.db.Query(ctx, lockPendingDispatchOutbox, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []Outbox{}
-	for rows.Next() {
-		var i Outbox
-		if err := rows.Scan(
-			&i.ID,
-			&i.ProjectID,
-			&i.Kind,
-			&i.AppID,
-			&i.AssetID,
-			&i.Payload,
-			&i.AvailableAt,
-			&i.Attempts,
-			&i.LastError,
-			&i.CreatedAt,
-			&i.DoneAt,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const providerHasRoom = `-- name: ProviderHasRoom :one
 
 SELECT provider_has_room($1, $2)::boolean
@@ -780,6 +791,20 @@ func (q *Queries) RecordWakeSuccess(ctx context.Context, id string) error {
 	return err
 }
 
+const releaseDispatchOutboxLeases = `-- name: ReleaseDispatchOutboxLeases :exec
+UPDATE outbox
+SET available_at = now()
+WHERE kind IN ('wake', 'stop') AND done_at IS NULL AND available_at > now()
+`
+
+// At boot (leader only), any wake or stop leased by a previous process that
+// crashed or stopped before writing back becomes due at once rather than
+// waiting out its lease (D149).
+func (q *Queries) ReleaseDispatchOutboxLeases(ctx context.Context) error {
+	_, err := q.db.Exec(ctx, releaseDispatchOutboxLeases)
+	return err
+}
+
 const setDispatchStopped = `-- name: SetDispatchStopped :exec
 UPDATE dispatches SET stopped_at = now() WHERE id = $1
 `
@@ -790,7 +815,14 @@ func (q *Queries) SetDispatchStopped(ctx context.Context, id string) error {
 }
 
 const setDispatchWoken = `-- name: SetDispatchWoken :exec
-UPDATE dispatches SET instance_id = $2, woken_at = coalesce(woken_at, now()) WHERE id = $1
+UPDATE dispatches d
+SET instance_id = $2,
+    woken_at = coalesce(d.woken_at, now()),
+    claim_deadline = CASE
+        WHEN d.status = 'waking' THEN greatest(d.claim_deadline, now() + make_interval(secs => c.claim_deadline_seconds))
+        ELSE d.claim_deadline END
+FROM executor_configs c
+WHERE d.id = $1 AND c.id = d.executor_config_id
 `
 
 type SetDispatchWokenParams struct {
