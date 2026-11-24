@@ -251,7 +251,9 @@ func TestRestoreReplacesTheDatabaseWithABackupAndRaisesTheFence(t *testing.T) {
 	if _, err := db.New(pool).LiftFence(ctx, project); err != nil {
 		t.Fatal(err)
 	}
-	if code, out = run("restore", "--latest", "--yes"); code != 0 || generation() != 5 {
+	// The safety backups are now also on the target. Select the original
+	// backup by ID so the next test starts from generation 5.
+	if code, out = run("restore", "--id", id[1], "--yes"); code != 0 || generation() != 5 {
 		t.Fatalf("restore: exit %d, generation %d\n%s", code, generation(), out)
 	}
 	code, out = run("backup", "now") // fenced now

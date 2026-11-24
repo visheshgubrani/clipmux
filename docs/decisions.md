@@ -1892,6 +1892,47 @@ row was present, and the full 6 s verification checked the encrypted
 dump's hash, core row counts, secrets key and content keys. This run
 measured the B2 database path with no video fixtures.
 
+The production pre-cutover safety copy was verified on 2026-11-24.
+An encrypted PostgreSQL 18 dump restored into scratch Postgres with
+the same migration version and core row counts as its exported
+production snapshot. The production B2 target reported seven-day
+Compliance retention through the scoped writer key. The separate
+read-only key downloaded identical ciphertext for the safety dump.
+
+On the same date, a real-binary crash during a leased encode recovered
+readiness in 104 ms after launching the replacement process. The lease
+was recovered in 90.4 s and encrypted playback passed after the new
+attempt committed. An isolated amd64 Docker PostgreSQL 18 recovered
+from SIGKILL in 1.6 s with the committed test row intact. The disposable
+VM rebooted and ClipMux was ready from an off-host probe in 36 s.
+An injected migration failure on PostgreSQL 18 produced a
+`pre_migrate` backup. The known-good schema and committed fixture row
+were restored into scratch Postgres in 262 ms.
+
+A provisional amd64 rehearsal on 2026-11-24 used the staged installer,
+Backblaze B2 and a dedicated R2 bucket and Worker. With warm image layers,
+pull took 1 s, database restore 3 s, HTTPS readiness 42 s from installer
+start, and first decrypted playback 44 s. The restore report named the
+newer route, output and source. Their keys, sizes and ETags matched after
+both fenced cleanup passes. The restored backup passed full verification.
+The cold run against the published image manifest and the production
+cutover are still pending.
+
+The production database was also backed up in ClipMux format by a
+one-off ARM64 container using the corrected B2 writer. The amd64
+installer restored that exact backup with the read-only key in 80 s,
+left only Postgres running, and raised the restore fence. Full
+verification took 4 s and checked the core row counts and content keys.
+
+The fixed amd64 image repeated the B2 and R2 rehearsal with warm
+layers. The installer took 37 s, HTTPS readiness took 42 s, and first
+decrypted playback took 44 s from installer start. The post-backup route,
+source and output inventories matched after the fenced cleanup passes.
+When the source and encoded files were removed, the source restored from
+B2 in 2 s with the original SHA-256. The new output played after 37 s,
+and a second run restored and queued zero items. An external probe
+decoded audio and video at the start and end of a 66 s origin outage.
+
 ## D146 Only sources are mirrored; pruning is by lifecycle rules and keys that can't delete — accepted (2026-11-23)
 Context: media can be large, and its outputs can be made again from the sources. A backup key that can delete is a key ransomware on the host can use to delete the backups.
 Decision:
@@ -1923,7 +1964,17 @@ replacement.
 The live B2 drill confirmed that deleting a probe by S3 object name
 creates a hide marker while retaining the uploaded version. ClipMux
 reported the unlocked test bucket as mutable. The production Object Lock
-probe with a bucket-scoped key is still pending.
+probe with a bucket-scoped key remained open after that run.
+
+The production B2 preflight on 2026-11-24 found two S3 compatibility
+issues. A bucket with default retention requires an upload checksum.
+ClipMux now sends CRC32 for backup writes when the adapter reads that
+retention. A scoped key can receive 403 for a missing object, including
+a source tombstone. The S3 adapter reports absence only after a
+successful listing confirms the exact key is missing. A failed list or
+a listing that contains the key preserves the access error. The patched
+CLI verified the locked target and restored a 47 MiB multipart backup
+in scratch PostgreSQL.
 
 ## D148 Control-plane capacity on a small ARM64 host — measured (2026-11-23)
 

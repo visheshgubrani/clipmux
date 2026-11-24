@@ -7,17 +7,29 @@
 #
 #   check_restore.sh [INSTALL_URL]
 #       The whole drill, self-contained. Needs a throwaway S3-compatible bucket
-#       and a key that can read, write and list it, plus a separate throwaway
-#       S3 media bucket. Set:
+#       and a key that can read, write and list it, plus a disposable R2
+#       media bucket and a dedicated Cloudflare Worker hostname. Set:
 #           CLIPMUX_DRILL_BACKUP_URL=s3://bucket/prefix?endpoint=...&region=...
 #           CLIPMUX_DRILL_BACKUP_ACCESS_KEY_ID=...
 #           CLIPMUX_DRILL_BACKUP_SECRET_ACCESS_KEY=...
 #           CLIPMUX_DRILL_MEDIA_CONFIG_FILE=/path/to/storage.json
-#       The JSON file is a POST /v1/storage body for the media bucket. It
-#       must support the storage setup probe, including deletes and CORS.
+#           CLIPMUX_DRILL_CLOUDFLARE_CONFIG_FILE=/path/to/connect.json
+#           CLIPMUX_DRILL_KIT_COMMAND=/path/to/off-host-kit-helper
+#       The Connect JSON is a POST /v1/cloudflare/connect body. The storage
+#       JSON names the same R2 bucket and gives the drill S3 credentials
+#       for listing its objects.
+#       Requires the AWS CLI, jq and ffmpeg. The operator supplies a helper
+#       that accepts the kit on stdin with "save" and prints it with "load",
+#       storing it privately outside the drill VM in between.
+#       To rehearse an origin outage too, set CLIPMUX_DRILL_EDGE_PROBE_COMMAND
+#       to a helper that checks the given playlist decodes and the given
+#       readiness URL is down, both from outside the drill VM.
+#       Set CLIPMUX_DRILL_RESTORE_SOURCE=1 to delete the first fixture's
+#       source and output from the disposable bucket and recover them.
 #       The drill backs up after the first upload and before the second.
 #       It then purges the install and starts it from the saved .env.
-#       The first video must play; the second must be in the restore report.
+#       The first video must play; the second must be in the restore report
+#       and its objects must survive the first fenced cleanup passes.
 #
 #   check_restore.sh --env FILE --yes [INSTALL_URL]
 #       Only the restore, from an existing install's saved .env (its recovery
@@ -89,17 +101,23 @@ if [ -n "$envfile" ]; then
 	[ -n "$yes" ] || fail "--env creates and purges a local copy; pass --yes (see the header)"
 else
 	[ -z "$yes" ] || fail "--yes goes with --env"
-	for v in CLIPMUX_DRILL_BACKUP_URL CLIPMUX_DRILL_BACKUP_ACCESS_KEY_ID CLIPMUX_DRILL_BACKUP_SECRET_ACCESS_KEY CLIPMUX_DRILL_MEDIA_CONFIG_FILE; do
+	for v in CLIPMUX_DRILL_BACKUP_URL CLIPMUX_DRILL_BACKUP_ACCESS_KEY_ID CLIPMUX_DRILL_BACKUP_SECRET_ACCESS_KEY CLIPMUX_DRILL_MEDIA_CONFIG_FILE CLIPMUX_DRILL_CLOUDFLARE_CONFIG_FILE CLIPMUX_DRILL_KIT_COMMAND; do
 		[ -n "${!v:-}" ] || fail "set $v (see the header)"
 	done
 	[ -f "$CLIPMUX_DRILL_MEDIA_CONFIG_FILE" ] || fail "the media config file is missing"
+	[ -f "$CLIPMUX_DRILL_CLOUDFLARE_CONFIG_FILE" ] || fail "the Cloudflare config file is missing"
+	[ -x "$CLIPMUX_DRILL_KIT_COMMAND" ] || fail "the off-host kit helper isn't executable"
+	if [ -n "${CLIPMUX_DRILL_EDGE_PROBE_COMMAND:-}" ]; then
+		[ -x "$CLIPMUX_DRILL_EDGE_PROBE_COMMAND" ] || fail "the external playback probe isn't executable"
+	fi
 fi
 umask 077
 work=$(mktemp -d)
-trap 'rc=$?; purge || rc=1; rm -rf "$work"; exit "$rc"' EXIT
+trap 'rc=$?; purge || rc=1; rm -rf -- "$work"; exit "$rc"' EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
-export COMPOSE_PROJECT_NAME="clipmux-drill-$(basename "$work" | tr '[:upper:]' '[:lower:]' | tr -cd '[:alnum:]')"
+COMPOSE_PROJECT_NAME="clipmux-drill-$(basename "$work" | tr '[:upper:]' '[:lower:]' | tr -cd '[:alnum:]')"
+export COMPOSE_PROJECT_NAME
 timings=$work/timings.txt
 : >"$timings"
 t_start=$SECONDS
@@ -119,7 +137,7 @@ if ! docker compose version >/dev/null 2>&1; then
 fi
 docker compose version
 if [ -z "$envfile" ]; then
-	for cmd in jq ffmpeg; do
+	for cmd in aws jq ffmpeg; do
 		command -v "$cmd" >/dev/null || fail "install $cmd for the self-contained drill"
 	done
 fi
@@ -133,8 +151,6 @@ apikey=
 if [ -z "$envfile" ]; then
 	step "Install with the one-liner, with the drill's backup target"
 	timed install oneliner >"$work/install.log" 2>&1 || fail "the initial install failed"
-	token=$(sed -n 's/^ *Setup token: *\([A-Z2-7]\{8,\}\)$/\1/p' "$work/install.log")
-	[ -n "$token" ] || fail "no setup token"
 	ip=$(sed -n 's|^ *Open: *http://\([0-9.]*\).*|\1|p' "$work/install.log")
 	[ -n "$ip" ] || fail "no address after Open:"
 	{
@@ -144,15 +160,20 @@ if [ -z "$envfile" ]; then
 		printf 'CLIPMUX_BACKUP_INTERVAL=0\n'
 	} >>"$opt/.env"
 	dc up -d --wait --wait-timeout 300 || fail "ClipMux didn't come up with the backup target"
+	# Applying the target recreates the app, which generates a new setup token.
+	token=$(dc logs --no-log-prefix app | sed -n 's/.*"setup_token":"\([A-Z2-7]*\)".*/\1/p' | tail -n 1)
+	[ -n "$token" ] || fail "no setup token after applying the backup target"
 
 	dashed=${ip//./-}
-	public=https://video.$dashed.sslip.io
-	media=https://media.$dashed.sslip.io
+	# Each run gets a hostname so frequent drills can obtain certificates.
+	public=https://$COMPOSE_PROJECT_NAME.$dashed.sslip.io
+	media=https://$(jq -er '.hostname' "$CLIPMUX_DRILL_CLOUDFLARE_CONFIG_FILE")
+	password=$(od -An -N24 -tx1 /dev/urandom | tr -d '[:space:]')
 	step "The owner registers and sets $public and $media"
-	curl -fsS -c "$jar" -H 'Content-Type: application/json' -H "Origin: http://$ip" \
-		-d "{\"setup_token\":\"$token\",\"email\":\"owner@example.test\",\"password\":\"a long test password\"}" \
+	curl -fsS --max-time 30 -c "$jar" -H 'Content-Type: application/json' -H "Origin: http://$ip" \
+		-d "{\"setup_token\":\"$token\",\"email\":\"owner@example.test\",\"password\":\"$password\"}" \
 		"http://$ip/v1/setup/owner" >/dev/null || fail "creating the owner failed"
-	curl -fsS -b "$jar" -X PUT -H 'Content-Type: application/json' -H "Origin: http://$ip" \
+	curl -fsS --max-time 30 -b "$jar" -X PUT -H 'Content-Type: application/json' -H "Origin: http://$ip" \
 		-d "{\"public_url\":\"$public\",\"media_url\":\"$media\"}" "http://$ip/v1/settings/urls" >/dev/null || fail "saving the URLs failed"
 	waitfor() {
 		for _ in $(seq 40); do
@@ -162,15 +183,25 @@ if [ -z "$envfile" ]; then
 		fail "$1/healthz isn't served over verified HTTPS"
 	}
 	waitfor "$public"
-	curl -fsS -c "$jar" -H 'Content-Type: application/json' -H "Origin: $public" \
-		-d '{"email":"owner@example.test","password":"a long test password"}' "$public/v1/session" >/dev/null ||
+	curl -fsS --max-time 30 -c "$jar" -H 'Content-Type: application/json' -H "Origin: $public" \
+		-d "{\"email\":\"owner@example.test\",\"password\":\"$password\"}" "$public/v1/session" >/dev/null ||
 		fail "signing in at $public failed"
 
-	step "Register the external media bucket and upload the first video"
-	curl -fsS -b "$jar" -H "Origin: $public" -H 'Content-Type: application/json' \
-		--data-binary "@$CLIPMUX_DRILL_MEDIA_CONFIG_FILE" "$public/v1/storage" >"$work/store.json"
-	store=$(jq -er '.id' "$work/store.json")
+	step "Connect Cloudflare delivery so ClipMux publishes route records"
+	bucket=$(jq -er '.bucket' "$CLIPMUX_DRILL_MEDIA_CONFIG_FILE")
+	jq -e --arg bucket "$bucket" '.bucket == $bucket' "$CLIPMUX_DRILL_CLOUDFLARE_CONFIG_FILE" >/dev/null ||
+		fail "the Cloudflare and media configs must name the same disposable bucket"
+	curl -fsS --max-time 180 -b "$jar" -H "Origin: $public" -H 'Content-Type: application/json' \
+		--data-binary "@$CLIPMUX_DRILL_CLOUDFLARE_CONFIG_FILE" "$public/v1/cloudflare/connect" >"$work/connect.json"
+	if ! jq -e '.connected == true' "$work/connect.json" >/dev/null; then
+		jq -r '.steps[]? | select(.ok == false) | .name' "$work/connect.json" >&2
+		fail "Cloudflare delivery didn't connect"
+	fi
+	curl -fsS -b "$jar" "$public/v1/storage" >"$work/store.json"
+	store=$(jq -er --arg bucket "$bucket" '.data[] | select(.bucket == $bucket and .cloudflare_delivery) | .id' "$work/store.json")
 	curl -fsS -b "$jar" -H "Origin: $public" -X POST "$public/v1/storage/$store/default" >/dev/null
+	dc exec -T app clipmux admin restore report >"$work/report-before.txt"
+	grep -q '^restore fence: none$' "$work/report-before.txt" || fail "the drill media bucket already has a restore fence"
 	dc exec -T app clipmux admin create-key --app Drill --scopes uploads:write,assets:read >"$work/key.txt" || fail "create-key failed"
 	apikey=$(grep -o 'cmx_[A-Za-z0-9_]*' "$work/key.txt" | head -n 1)
 	[ -n "$apikey" ] || fail "create-key printed no key"
@@ -188,10 +219,44 @@ if [ -z "$envfile" ]; then
 			-i "$media/p/$1/master.m3u8" -map 0:v:0 -map 0:a:0 -f framemd5 - |
 			awk -F, '/^0,/ {video++} /^1,/ {audio++} END {exit !(video >= 50 && audio > 0)}'
 	}
+	waitplay() {
+		local deadline=$((SECONDS + 180))
+		while [ "$SECONDS" -lt "$deadline" ]; do
+			play "$1" 2>/dev/null && return 0
+			sleep 3
+		done
+		return 1
+	}
+	# Read through the S3 API so a stale playback cache cannot hide a
+	# deletion or a route rewrite. Compare only the second video's objects.
+	media_aws() (
+		local endpoint
+		endpoint=$(jq -er '.endpoint' "$CLIPMUX_DRILL_MEDIA_CONFIG_FILE")
+		AWS_ACCESS_KEY_ID=$(jq -er '.access_key_id' "$CLIPMUX_DRILL_MEDIA_CONFIG_FILE")
+		AWS_SECRET_ACCESS_KEY=$(jq -er '.secret_access_key' "$CLIPMUX_DRILL_MEDIA_CONFIG_FILE")
+		AWS_DEFAULT_REGION=$(jq -er '.region | if . == null or . == "" then "us-east-1" else . end' "$CLIPMUX_DRILL_MEDIA_CONFIG_FILE")
+		export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_DEFAULT_REGION AWS_PAGER=
+		unset AWS_SESSION_TOKEN
+		aws --endpoint-url "$endpoint" "$@"
+	)
+	inventory() {
+		local prefix
+		for prefix in "_routes/$second_pid.json" "media/$second/" "uploads/$second/source"; do
+			media_aws s3api list-objects-v2 --bucket "$bucket" --prefix "$prefix" --output json |
+				jq -ce --arg prefix "$prefix" '
+					[.Contents[]? |
+					 select(if ($prefix | endswith("/")) then (.Key | startswith($prefix)) else .Key == $prefix end) |
+					 {Key, Size, ETag}]
+					| select(length > 0 and all(.[]; .Size > 0 and (.ETag | type == "string" and length > 0)))
+					| sort_by(.Key)' || return 1
+		done
+	}
 	first_upload=$(upload before) || fail "the first upload failed"
-	IFS=$'\t' read -r _ first_pid first_status _ <<<"$first_upload"
-	[ "$first_status" = ready ] && [ -n "$first_pid" ] || fail "the first upload never became playable"
-	play "$first_pid" || fail "the first video didn't play before the disaster"
+	IFS=$'\t' read -r first first_pid first_status _ <<<"$first_upload"
+	if [ "$first_status" != ready ] || [ -z "$first_pid" ]; then
+		fail "the first upload never became playable"
+	fi
+	waitplay "$first_pid" || fail "the first video didn't play before the disaster"
 
 	step "Back up, and check the backup"
 	timed backup dc exec -T app clipmux admin backup now || fail "backup now failed"
@@ -201,11 +266,15 @@ if [ -z "$envfile" ]; then
 	step "Upload a second video after the backup"
 	second_upload=$(upload after) || fail "the second upload failed"
 	IFS=$'\t' read -r second second_pid second_status _ <<<"$second_upload"
-	[ "$second_status" = ready ] && [ -n "$second_pid" ] || fail "the second upload never became playable"
-	play "$second_pid" || fail "the second video didn't play before the disaster"
+	if [ "$second_status" != ready ] || [ -z "$second_pid" ]; then
+		fail "the second upload never became playable"
+	fi
+	waitplay "$second_pid" || fail "the second video didn't play before the disaster"
+	inventory >"$work/media-before.json" || fail "couldn't record the second video's route, output and source"
 
 	step "The recovery kit: .env, saved off the server"
-	install -m 0600 "$opt/.env" "$kit"
+	kit_digest=$(sha256sum <"$opt/.env")
+	"$CLIPMUX_DRILL_KIT_COMMAND" save <"$opt/.env" || fail "saving the recovery kit off-host failed"
 
 	step "The disaster: --uninstall --purge"
 	dc config --images >"$work/images"
@@ -214,6 +283,8 @@ if [ -z "$envfile" ]; then
 	[ -z "$(docker volume ls -q --filter "label=com.docker.compose.project=$COMPOSE_PROJECT_NAME")" ] ||
 		fail "--purge left the drill's volumes"
 	while IFS= read -r img; do docker image rm "$img" >/dev/null; done <"$work/images"
+	"$CLIPMUX_DRILL_KIT_COMMAND" load >"$kit" || fail "loading the recovery kit from off-host failed"
+	[ "$(sha256sum <"$kit")" = "$kit_digest" ] || fail "the recovery kit changed off-host"
 else
 	install -m 0600 "$envfile" "$kit"
 fi
@@ -227,14 +298,27 @@ step "install.sh $mode"
 restore_started=$SECONDS
 timed restore oneliner "$mode" 2>&1 | stamped | tee "$work/restore.log" ||
 	fail "install.sh $mode failed; the log is above"
+awk '
+	{stamp = $0; sub(/^\[\+[[:space:]]*/, "", stamp); seconds = stamp + 0}
+	/Pulling the recovery images/ {pull = seconds; pulling = 1}
+	/Starting Postgres/ && pulling {printf "image_pull\t%d\n", seconds - pull; pulled = 1; pulling = 0}
+	/Restoring the latest backup/ {restore = seconds; restoring = 1}
+	/Starting ClipMux$|Only Postgres is running\.$/ && restoring {
+		printf "database_restore\t%d\n", seconds - restore; restored = 1; restoring = 0
+	}
+	END {exit !(pulled && restored)}
+' "$work/restore.log" >>"$timings" || fail "couldn't measure the image pull and database restore"
 restored=$(sed -n 's/.*] backup \(bak_[[:alnum:]]*\):.*/\1/p' "$work/restore.log")
 [ -n "$restored" ] || fail "the installer didn't identify the restored backup"
 
 step "Checks on the restored install"
 if [ -z "$envfile" ]; then
 	waitfor "$public"
+	curl -fsS --max-time 10 "$public/readyz" >/dev/null || fail "the restored app is not ready"
+	printf 'https_ready\t%s\n' "$((SECONDS - restore_started))" >>"$timings"
 	timed play play "$first_pid" || fail "the first video doesn't play after the restore"
 	printf 'first_playback\t%s\n' "$((SECONDS - restore_started))" >>"$timings"
+	[ "$((SECONDS - restore_started))" -le 1800 ] || fail "first playback exceeded 30 minutes"
 	curl -fsS -b "$jar" "$public/v1/session" >/dev/null || fail "the owner's session didn't survive the restore"
 	curl -fsS -H "@$work/auth" "$public/v1/app" >/dev/null || fail "the API key didn't survive the restore"
 	dc exec -T app clipmux admin restore report >"$work/report.txt" || fail "restore report failed"
@@ -243,15 +327,99 @@ else
 	dc run --rm -T --no-deps app admin restore report >"$work/report.txt" || fail "restore report failed"
 fi
 grep -q '^restore fence: up' "$work/report.txt" || fail "the restored database isn't fenced"
-cat "$work/report.txt"
+awk '/^restore fence: up/ {print "restore fence: up"} /the database doesn.t know: [0-9]+$/ {print}' "$work/report.txt"
 timed verify_after dc run --rm -T --no-deps app admin backup verify --id "$restored" | tee "$work/verify.log"
 grep -Fq 'every content key version it needs loads' "$work/verify.log" || fail "the backup didn't pass a full restore verification"
 if [ -z "$envfile" ]; then
+	awk -v pid="$second_pid" -v asset="$second" '$2 == pid && $3 == "asset" && $4 == asset {found = 1} END {exit !found}' "$work/report.txt" ||
+		fail "the newer route isn't in the restore report"
 	grep -Fq "media/$second/" "$work/report.txt" || fail "the newer output isn't in the media bucket"
 	grep -Fq "uploads/$second/source" "$work/report.txt" || fail "the newer source isn't in the media bucket"
-	dc exec -T app clipmux admin backup now || fail "taking a backup after recovery failed"
-	dc exec -T app clipmux admin backup check || fail "backups don't carry on after the restore"
+	step "Wait for the first fenced route and file cleanup passes"
+	cleanup_passes() {
+		for _ in $(seq 60); do
+			if dc exec -T caddy wget -qO- http://app:9090/metrics >"$work/metrics" &&
+				awk '
+					$1 == "clipmux_restore_fenced" && $2 == 1 {fenced = 1}
+					$1 == "clipmux_sweeper_last_success_timestamp_seconds{sweeper=\"route_reconciler\"}" && $2 > 0 {routes = 1}
+					$1 == "clipmux_sweeper_last_success_timestamp_seconds{sweeper=\"file_retention\"}" && $2 > 0 {files = 1}
+					END {exit !(fenced && routes && files)}
+				' "$work/metrics"; then
+				return
+			fi
+			sleep 5
+		done
+		return 1
+	}
+	timed fenced_cleanup cleanup_passes || fail "the fence or the two completed cleanup passes weren't observed"
+	inventory >"$work/media-after.json" || fail "a newer route, output or source is missing after cleanup"
+	cmp -s "$work/media-before.json" "$work/media-after.json" || fail "the newer media inventory changed under the fence"
 	dc exec -T app clipmux admin restore finish --yes || fail "restore finish failed"
+	play "$first_pid" || fail "the first video stopped playing after lifting the fence"
+	dc exec -T app clipmux admin backup now || fail "taking a backup after recovery failed"
+	dc exec -T app clipmux admin backup verify >"$work/verify-new.log" || fail "the new backup didn't verify"
+	grep -Fq 'every content key version it needs loads' "$work/verify-new.log" || fail "the new backup didn't pass a full restore verification"
+	if [ "${CLIPMUX_DRILL_RESTORE_SOURCE:-0}" = 1 ]; then
+		step "Recover a source and re-encode after losing its media objects"
+		[[ $first =~ ^ast_[[:alnum:]]+$ ]] || fail "invalid fixture asset ID"
+		CLIPMUX_BACKUP_INTERVAL=1h dc up -d --wait --wait-timeout 300 app
+		mirror_ready() {
+			for _ in $(seq 24); do
+				if dc exec -T caddy wget -qO- http://app:9090/metrics |
+					awk '$1 == "clipmux_backup_sources_pending" && $2 == 0 {ok = 1} END {exit !ok}'; then
+					return
+				fi
+				sleep 5
+			done
+			return 1
+		}
+		timed source_mirror mirror_ready || fail "the source mirror did not drain"
+
+		source="s3://$bucket/uploads/$first/source"
+		source_hash=$(media_aws s3 cp "$source" - | sha256sum)
+		previous=$(media_aws s3 cp "s3://$bucket/_routes/$first_pid.json" - | jq -er '.output_id')
+		[[ $previous =~ ^out_[[:alnum:]]+$ ]] || fail "invalid fixture output ID"
+		media_aws s3 rm "$source" --only-show-errors
+		media_aws s3 rm "s3://$bucket/media/$first/$previous/" --recursive --only-show-errors
+		timed restore_source dc exec -T app clipmux admin backup restore-sources --asset "$first" >"$work/restore-source.log"
+		grep -qx 'sources restored to their stores: 1' "$work/restore-source.log" || fail "the lost fixture source wasn't restored"
+		grep -Eq '^re-encodes queued: +1$' "$work/restore-source.log" || fail "the lost output wasn't queued for re-encode"
+		[ "$(media_aws s3 cp "$source" - | sha256sum)" = "$source_hash" ] || fail "the restored source differs from the original"
+		reencoded_playback() {
+			local output playlist deadline=$((SECONDS + 180))
+			while [ "$SECONDS" -lt "$deadline" ]; do
+				output=$(media_aws s3 cp "s3://$bucket/_routes/$first_pid.json" - | jq -er '.output_id') || return 1
+				if [ "$output" != "$previous" ] &&
+					playlist=$(curl -fsS --max-time 10 "$media/p/$first_pid/master.m3u8") &&
+					[[ $playlist == *"$output/"* ]] && play "$first_pid"; then
+					return
+				fi
+				sleep 3
+			done
+			return 1
+		}
+		timed reencoded_playback reencoded_playback || fail "the new output did not play"
+		dc exec -T app clipmux admin backup restore-sources --asset "$first" >"$work/restore-source-again.log"
+		if ! grep -qx 'sources restored to their stores: 0' "$work/restore-source-again.log" ||
+			! grep -Eq '^re-encodes queued: +0$' "$work/restore-source-again.log"; then
+			fail "source recovery was not idempotent"
+		fi
+	fi
+	if [ -n "${CLIPMUX_DRILL_EDGE_PROBE_COMMAND:-}" ]; then
+		step "Probe Worker playback while the origin is stopped for 60 seconds"
+		dc stop app
+		origin_stopped=$SECONDS
+		"$CLIPMUX_DRILL_EDGE_PROBE_COMMAND" "$media/p/$first_pid/master.m3u8" "$public/readyz" ||
+			fail "external Worker playback failed at the start of the outage"
+		remaining=$((60 - (SECONDS - origin_stopped)))
+		if [ "$remaining" -gt 0 ]; then
+			sleep "$remaining"
+		fi
+		"$CLIPMUX_DRILL_EDGE_PROBE_COMMAND" "$media/p/$first_pid/master.m3u8" "$public/readyz" ||
+			fail "external Worker playback failed at the end of the outage"
+		printf 'origin_outage\t%s\n' "$((SECONDS - origin_stopped))" >>"$timings"
+		dc up -d --wait --wait-timeout 300 app || fail "the app didn't become healthy after the outage"
+	fi
 fi
 
 step "Clean up: --uninstall --purge"

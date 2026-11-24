@@ -90,6 +90,7 @@ func OpenTarget(cfg Config) (*Target, error) {
 	s3, err := storage.OpenS3(storage.S3Options{
 		Endpoint: s.endpoint, Region: s.region, Bucket: s.bucket,
 		AccessKeyID: cfg.AccessKeyID, SecretAccessKey: cfg.SecretAccessKey,
+		ObjectLockChecksums: true,
 	})
 	if err != nil {
 		return nil, err

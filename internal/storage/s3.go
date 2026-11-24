@@ -13,6 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/feature/s3/transfermanager"
+	transfertypes "github.com/aws/aws-sdk-go-v2/feature/s3/transfermanager/types"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/smithy-go"
@@ -31,6 +32,9 @@ type S3Options struct {
 	Bucket          string
 	AccessKeyID     string
 	SecretAccessKey string
+	// ObjectLockChecksums checks for default retention before uploading.
+	// Locked backup buckets require an upload checksum.
+	ObjectLockChecksums bool
 	// HTTPClient overrides the bounded default client (tests).
 	HTTPClient *http.Client
 }
@@ -39,10 +43,11 @@ type S3Options struct {
 // PartSize: R2 requires equal parts except the last, and the declared size
 // is enforced by the upload API with Head after completion.
 type S3 struct {
-	bucket  string
-	client  *s3.Client
-	presign *s3.PresignClient
-	uploads *transfermanager.Client
+	bucket              string
+	client              *s3.Client
+	presign             *s3.PresignClient
+	uploads             *transfermanager.Client
+	objectLockChecksums bool
 }
 
 // listPageS3 is the page size of List; S3 caps it at 1000.
@@ -81,9 +86,10 @@ func OpenS3(opts S3Options) (*S3, error) {
 	}
 	client := clientFor(opts.Endpoint)
 	return &S3{
-		bucket:  opts.Bucket,
-		client:  client,
-		presign: s3.NewPresignClient(clientFor(opts.PublicEndpoint)),
+		bucket:              opts.Bucket,
+		client:              client,
+		presign:             s3.NewPresignClient(clientFor(opts.PublicEndpoint)),
+		objectLockChecksums: opts.ObjectLockChecksums,
 		uploads: transfermanager.New(client, func(o *transfermanager.Options) {
 			o.PartSizeBytes = PartSize
 			o.MultipartUploadThreshold = PartSize
@@ -145,7 +151,15 @@ func (s *S3) Put(ctx context.Context, key string, body io.Reader) error {
 	if !ValidKey(key) {
 		return ErrInvalidKey
 	}
-	_, err := s.uploads.UploadObject(ctx, &transfermanager.UploadObjectInput{Bucket: &s.bucket, Key: &key, Body: body})
+	in := &transfermanager.UploadObjectInput{Bucket: &s.bucket, Key: &key, Body: body}
+	if s.objectLockChecksums {
+		// A failed lock lookup is already reported by the backup probe.
+		// Keep accepting S3 targets that don't expose Object Lock.
+		if locked, _ := s.ObjectLock(ctx); locked {
+			in.ChecksumAlgorithm = transfertypes.ChecksumAlgorithmCrc32
+		}
+	}
+	_, err := s.uploads.UploadObject(ctx, in)
 	return s.wrap("put", key, err)
 }
 
@@ -155,7 +169,7 @@ func (s *S3) Get(ctx context.Context, key string) (io.ReadCloser, error) {
 	}
 	out, err := s.client.GetObject(ctx, &s3.GetObjectInput{Bucket: &s.bucket, Key: &key})
 	if err != nil {
-		return nil, s.wrap("get", key, err)
+		return nil, s.wrapRead(ctx, "get", key, err)
 	}
 	return out.Body, nil
 }
@@ -182,7 +196,7 @@ func (s *S3) Head(ctx context.Context, key string) (Object, error) {
 	}
 	out, err := s.client.HeadObject(ctx, &s3.HeadObjectInput{Bucket: &s.bucket, Key: &key})
 	if err != nil {
-		return Object{}, s.wrap("head", key, err)
+		return Object{}, s.wrapRead(ctx, "head", key, err)
 	}
 	return Object{Key: key, Size: aws.ToInt64(out.ContentLength), ETag: aws.ToString(out.ETag)}, nil
 }
@@ -191,6 +205,10 @@ func (s *S3) List(ctx context.Context, prefix, cursor string) ([]Object, string,
 	if !validPrefix(prefix) {
 		return nil, "", ErrInvalidKey
 	}
+	return s.list(ctx, prefix, cursor)
+}
+
+func (s *S3) list(ctx context.Context, prefix, cursor string) ([]Object, string, error) {
 	in := &s3.ListObjectsV2Input{Bucket: &s.bucket, Prefix: &prefix, MaxKeys: aws.Int32(listPageS3)}
 	if cursor != "" {
 		// The cursor is the last key returned, as on the filesystem, so a
@@ -380,8 +398,6 @@ func (s *S3) PresignPut(ctx context.Context, key string, ttl time.Duration) (str
 	return req.URL, nil
 }
 
-// wrap maps store errors onto the package's errors and names the operation.
-// SDK errors name the operation and status, never a presigned URL.
 // ObjectLock reports whether the bucket has Object Lock on with a default
 // retention, so that every object written is kept for that long whatever key
 // asks to delete it. Off, or on with no default retention, is false. A key
@@ -400,6 +416,32 @@ func (s *S3) ObjectLock(ctx context.Context) (bool, error) {
 	return c != nil && c.ObjectLockEnabled == types.ObjectLockEnabledEnabled && c.Rule != nil && c.Rule.DefaultRetention != nil, nil
 }
 
+// A scoped key can get a 403 for an absent object. Only a successful
+// listing that proves the exact key is missing turns that into not found.
+func (s *S3) wrapRead(ctx context.Context, op, key string, err error) error {
+	var api smithy.APIError
+	if errors.As(err, &api) && (api.ErrorCode() == "AccessDenied" || api.ErrorCode() == "Forbidden") {
+		for cursor := ""; ; {
+			objects, next, listErr := s.list(ctx, key, cursor)
+			if listErr != nil {
+				break
+			}
+			for _, object := range objects {
+				if object.Key == key {
+					return s.wrap(op, key, err)
+				}
+			}
+			if next == "" {
+				return s.wrap(op, key, ErrNotFound)
+			}
+			cursor = next
+		}
+	}
+	return s.wrap(op, key, err)
+}
+
+// wrap maps store errors onto the package's errors and names the operation.
+// SDK errors name the operation and status, never a presigned URL.
 func (s *S3) wrap(op, key string, err error) error {
 	if err == nil {
 		return nil
