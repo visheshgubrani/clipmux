@@ -9,9 +9,12 @@
     "player",
     "videojs",
     "clipmux",
-    "web-component"
+    "web-component",
+    "video-player",
+    "signed-playback",
+    "self-hosted"
   ],
-  "homepage": "https://github.com/visheshgubrani/clipmux/tree/main/packages/player#readme",
+  "homepage": "https://clipmux.com/docs/reference/sdks/player",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/visheshgubrani/clipmux.git",
