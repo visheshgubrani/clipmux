@@ -1,14 +1,13 @@
 import type { Metadata, Viewport } from 'next'
 import Script from 'next/script'
 import type { ReactNode } from 'react'
-import { SITE_URL } from '@/lib/site'
+import { DESCRIPTION, SITE_URL } from '@/lib/site'
 import './global.css'
 
 export const metadata: Metadata = {
   metadataBase: new URL(SITE_URL),
   title: { default: 'ClipMux', template: '%s | ClipMux' },
-  description:
-    'Self-hosted video infrastructure. Upload, encode and stream encrypted HLS from servers you own. An open-source alternative to Mux and Cloudflare Stream.',
+  description: DESCRIPTION,
   icons: { icon: '/favicon.svg' },
   openGraph: { siteName: 'ClipMux', images: '/og/image.png' },
 }

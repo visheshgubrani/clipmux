@@ -9,9 +9,12 @@
     "resumable",
     "video",
     "clipmux",
-    "web-component"
+    "web-component",
+    "s3",
+    "direct-upload",
+    "self-hosted"
   ],
-  "homepage": "https://github.com/visheshgubrani/clipmux/tree/main/packages/uploader#readme",
+  "homepage": "https://clipmux.com/docs/reference/sdks/uploader",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/visheshgubrani/clipmux.git",

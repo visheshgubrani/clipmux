@@ -11,9 +11,14 @@
     "upload",
     "webhooks",
     "clipmux",
-    "mux-alternative"
+    "mux-alternative",
+    "cloudflare-stream-alternative",
+    "self-hosted",
+    "video-api",
+    "signed-urls",
+    "jwt"
   ],
-  "homepage": "https://github.com/visheshgubrani/clipmux/tree/main/packages/node#readme",
+  "homepage": "https://clipmux.com/docs/reference/sdks/node",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/visheshgubrani/clipmux.git",

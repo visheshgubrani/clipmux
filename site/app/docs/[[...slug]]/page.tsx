@@ -1,9 +1,11 @@
 import { DocsBody, DocsDescription, DocsPage, DocsTitle } from 'fumadocs-ui/layouts/notebook/page'
 import type { Metadata } from 'next'
 import { notFound } from 'next/navigation'
+import { JsonLd } from '@/components/json-ld'
 import { PageActions } from '@/components/page-actions'
 import { editUrl, rawPath, twinPath } from '@/lib/llms'
 import { ogImage } from '@/lib/og'
+import { docSchema } from '@/lib/schema'
 import { SITE_URL } from '@/lib/site'
 import { source } from '@/lib/source'
 import { getMDXComponents } from '@/mdx-components'
@@ -30,6 +32,7 @@ export default async function Page({ params }: Props) {
       <DocsBody>
         <MDX components={getMDXComponents()} />
       </DocsBody>
+      <JsonLd data={docSchema(page)} />
     </DocsPage>
   )
 }
@@ -43,9 +46,11 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const page = source.getPage(slug)
   if (!page) notFound()
   return {
-    title: page.data.title,
+    // "Build with ClipMux" already names the site; don't append " | ClipMux" again.
+    title: page.data.title.includes('ClipMux') ? { absolute: page.data.title } : page.data.title,
     description: page.data.description,
-    alternates: { types: { 'text/markdown': twinPath(page) } },
-    openGraph: { images: ogImage(page.slugs) },
+    alternates: { canonical: page.url, types: { 'text/markdown': twinPath(page) } },
+    // A page's openGraph replaces the layout's, so it names the site again.
+    openGraph: { siteName: 'ClipMux', url: page.url, images: ogImage(page.slugs) },
   }
 }

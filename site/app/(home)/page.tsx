@@ -1,10 +1,12 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { highlight } from 'fumadocs-core/highlight'
+import type { Metadata } from 'next'
 import Link from 'next/link'
 import type { ReactNode } from 'react'
 import { Wordmark } from '@/components/brand-mark'
 import { CopyCommand } from '@/components/copy-command'
+import { JsonLd } from '@/components/json-ld'
 import { CopyButton } from '@/components/landing/copy-button'
 import { type Cue, type DemoEvent, DemoReel, type ReelChapter } from '@/components/landing/demo-reel'
 import { type Feature, Features } from '@/components/landing/features'
@@ -14,12 +16,20 @@ import { type Chapter, Timeline } from '@/components/landing/timeline'
 import demo from '@/data/demo.json'
 import { darkTheme, lightTheme } from '@/lib/code-theme'
 import { formatStars, stars } from '@/lib/github'
+import { homeSchema } from '@/lib/schema'
 import { INSTALL_COMMAND, REPO_URL, SITE_URL } from '@/lib/site'
 import './landing.css'
 
 // The landing page (D133), built from the signed-off mock: a chapter track,
 // the poster, four steps, the stack editor, security, features, agents and
 // install. Code is highlighted here, at build time.
+
+// The layout's default title is just the name; the landing page says what it is.
+export const metadata: Metadata = {
+  title: { absolute: 'ClipMux: an open-source, self-hosted alternative to Mux' },
+  alternates: { canonical: '/' },
+  openGraph: { siteName: 'ClipMux', url: '/', images: '/og/image.png' },
+}
 
 const code = (source: string, lang: string) =>
   highlight(source, { lang, themes: { light: lightTheme, dark: darkTheme }, defaultColor: false })
@@ -275,6 +285,7 @@ export default async function Home() {
 
   return (
     <div className="landing">
+      <JsonLd data={homeSchema()} />
       <header className="top">
         <div className="wrap">
           <nav className="nav" aria-label="Main">
@@ -410,35 +421,38 @@ export default async function Home() {
               <h3>Your backend signs playback tokens</h3>
               <p>
                 Short-lived ES256 tokens, signed locally with no call to ClipMux. Playback IDs are public or
-                private, and revocable. <Link href="/docs/build">Signed playback</Link>
+                private, and revocable. <Link href="/docs/build/play/sign-tokens">Signed playback</Link>
               </p>
             </li>
             <li>
               <h3>Keys are derived at delivery</h3>
               <p>
                 Content keys come from one secret held outside the database. They are never written to
-                storage. <Link href="/docs/self-host">How encryption works</Link>
+                storage. <Link href="/docs/build/concepts/encryption">How encryption works</Link>
               </p>
             </li>
             <li>
               <h3>Encoders never hold storage credentials</h3>
               <p>
                 A worker gets URLs signed for its one job. Modal, RunPod or a PC at home never see your bucket
-                keys. <Link href="/docs/self-host">Security model</Link>
+                keys. <Link href="/docs/self-host/security-model">Security model</Link>
               </p>
             </li>
             <li>
               <h3>ffmpeg runs in a sandbox</h3>
               <p>
                 Landlock and seccomp, worker file names treated as untrusted, routes default-deny, and
-                two-factor sign-in for the owner. <Link href="/docs/self-host">Security checklist</Link>
+                two-factor sign-in for the owner.{' '}
+                <Link href="/docs/self-host/operate/security-checklist">Security checklist</Link>
               </p>
             </li>
             <li className="honest">
               <h3>What it isn’t</h3>
               <p>
                 This deters copying. It isn’t DRM: anyone who can watch a video can record their screen.{' '}
-                <Link href="/docs/self-host">What encryption does and doesn’t do</Link>
+                <Link href="/docs/build/concepts/encryption#what-it-doesnt-do">
+                  What encryption does and doesn’t do
+                </Link>
               </p>
             </li>
           </ul>
@@ -521,6 +535,14 @@ export default async function Home() {
               <div className="facts">
                 <p>ClipMux serves Edural’s course videos in production.</p>
                 <p>
+                  Coming from <Link href="/docs/resources/migrate-from-mux">Mux</Link> or{' '}
+                  <Link href="/docs/resources/migrate-from-cloudflare-stream">Cloudflare Stream</Link>?{' '}
+                  <span>
+                    The migration guides map each concept across and say what ClipMux doesn’t have; the{' '}
+                    <Link href="/docs/self-host/limitations">limitations</Link> page lists the rest.
+                  </span>
+                </p>
+                <p>
                   AGPL-3.0 for the server.{' '}
                   <span>
                     MIT for everything your apps embed: the SDK, the uploader, the player and the Worker.
@@ -543,7 +565,7 @@ export default async function Home() {
             <Link href="/docs/reference/api">API reference</Link>
             <Link href="/docs/reference/changelog">Changelog</Link>
             <a href={REPO_URL}>GitHub</a>
-            <a href={`${REPO_URL}/blob/main/SECURITY.md`}>Security policy</a>
+            <Link href="/docs/resources/security-policy">Security policy</Link>
             <a href={`${REPO_URL}/blob/main/LICENSE`}>Licence</a>
           </nav>
         </div>

@@ -4,6 +4,7 @@ import {
   envProblems,
   errorCodeProblems,
   frontmatterProblems,
+  headProblems,
   internalIdProblems,
   linkProblems,
   llmsProblems,
@@ -156,5 +157,27 @@ test("a skill's frontmatter parses, with its directory's name", () => {
   assert.deepEqual(
     skillFrontmatterProblems('---\nname: other\ndescription: Plays.\n---\n', 'clipmux-player'),
     ['name is other, not clipmux-player'],
+  )
+})
+
+test('a page names its canonical URL and carries parseable JSON-LD', () => {
+  const ld = '<script type="application/ld+json">{"@type":"TechArticle"}</script>'
+  const canonical = '<link rel="canonical" href="https://clipmux.com/docs/build"/>'
+  assert.deepEqual(headProblems(`<head>${canonical}${ld}</head>`, 'https://clipmux.com/docs/build'), [])
+  assert.deepEqual(headProblems(`<head>${ld}</head>`, 'https://clipmux.com/docs/build'), [
+    'no canonical link',
+  ])
+  assert.deepEqual(headProblems(`<head>${canonical}${ld}</head>`, 'https://clipmux.com/docs/build/upload'), [
+    'canonical is https://clipmux.com/docs/build, not https://clipmux.com/docs/build/upload',
+  ])
+  assert.deepEqual(headProblems(`<head>${canonical}</head>`, 'https://clipmux.com/docs/build'), [
+    'no JSON-LD',
+  ])
+  assert.deepEqual(
+    headProblems(
+      `<head>${canonical}<script type="application/ld+json">{"@type":</script></head>`,
+      'https://clipmux.com/docs/build',
+    ),
+    ['JSON-LD does not parse'],
   )
 })

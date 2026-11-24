@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="docs/assets/logo.svg" alt="" width="88" height="88">
+<img src="docs/assets/logo.svg" alt="ClipMux logo" width="88" height="88">
 
 # ClipMux
 
@@ -14,10 +14,11 @@ An open-source alternative to Mux and Cloudflare Stream.
 [![npm @clipmux/node](https://img.shields.io/npm/v/@clipmux/node?label=%40clipmux%2Fnode)](https://www.npmjs.com/package/@clipmux/node)
 [![CI](https://github.com/visheshgubrani/clipmux/actions/workflows/ci.yml/badge.svg)](https://github.com/visheshgubrani/clipmux/actions/workflows/ci.yml)
 
+[Website](https://clipmux.com) ·
+[Docs](https://clipmux.com/docs) ·
 [Quick start](#quick-start) ·
 [Integrate](#integrate-in-four-steps) ·
 [How it works](#how-it-works) ·
-[Docs](#documentation) ·
 [Contributing](CONTRIBUTING.md)
 
 </div>
@@ -38,7 +39,8 @@ Go binary and Postgres. Storage, encoding and delivery each sit behind an
 adapter, so you can move from a disk to R2, or from your server to a cloud
 GPU, and the API your apps call doesn't change.
 
-ClipMux serves the course videos of [Edural](https://edural.com) in production.
+Use it wherever an app needs video on demand: course libraries, user
+uploads, private videos for paying customers. ClipMux serves the course videos of [Edural](https://edural.com) in production.
 
 ## Features
 
@@ -75,6 +77,23 @@ ClipMux serves the course videos of [Edural](https://edural.com) in production.
   default-deny, worker file names are untrusted, and the owner signs in with
   two-factor codes.
 - **A dashboard you'll actually use**, light and dark, on a laptop or a phone.
+
+## Coming from Mux or Cloudflare Stream?
+
+ClipMux has the same shape. A video gets one or more playback IDs, public or
+signed. Your backend signs a JWT for private playback without calling the
+service. Browsers upload straight to storage, a `passthrough` field ties each
+video to your record, and HMAC-signed webhooks say when a video is ready,
+with the same event names as Mux. The difference is that you run it, on your
+storage and your GPUs, and you can still serve playback from Cloudflare's
+edge through a Worker and an R2 bucket in your own account.
+
+It doesn't do live streaming, DRM (videos are AES-128 encrypted HLS), MP4
+downloads, thumbnails at a chosen time, GIFs, storyboards or an iframe embed.
+The [Migrate from Mux](https://clipmux.com/docs/resources/migrate-from-mux) and
+[Migrate from Cloudflare Stream](https://clipmux.com/docs/resources/migrate-from-cloudflare-stream)
+guides map each concept and move an app across without downtime; the
+[FAQ](https://clipmux.com/docs/resources/faq) covers what it costs to run.
 
 ## Quick start
 
@@ -279,7 +298,7 @@ The full design, with its threat model, is in
 | [Build](https://clipmux.com/docs/build) | Uploads, webhooks and signed playback in your app, from the quickstart on |
 | [Self-host](https://clipmux.com/docs/self-host) | Install, configure, upgrade, back up, monitor and secure a server |
 | [Reference](https://clipmux.com/docs/reference) | The API, webhook events, errors, limits, environment variables, the CLIs and the SDKs |
-| [Resources](https://clipmux.com/docs/resources) | Migrating from Mux or Cloudflare Stream, the FAQ, contributing |
+| [Resources](https://clipmux.com/docs/resources) | [Migrate from Mux](https://clipmux.com/docs/resources/migrate-from-mux), [migrate from Cloudflare Stream](https://clipmux.com/docs/resources/migrate-from-cloudflare-stream), the FAQ, contributing |
 | [For coding agents](https://clipmux.com/agents.md) | The guide an agent follows to integrate ClipMux; every docs page is also Markdown |
 | [Architecture](docs/architecture.md) · [Decisions](docs/decisions.md) | The design and why it is this way |
 | [Known gaps](docs/known-gaps.md) | Deliberate limits and deferred work |
