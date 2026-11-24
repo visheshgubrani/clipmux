@@ -29,7 +29,7 @@ one.
 | [Postgres crashes](#postgres-crashes) | Nothing committed | Under a minute |
 | [Reboot or patching](#reboot) | Nothing | About 2 minutes |
 | [A bad upgrade or migration](#bad-upgrade) | Whatever happened after the upgrade | 15 minutes or less |
-| [The disk or the server is lost](#server-lost) | At most one backup interval of data (1 hour by default) | 30 minutes or less, then DNS |
+| [The disk or the server is lost](#server-lost) | Changes since the latest usable backup | 30 minutes or less, then DNS |
 | [An older database comes back](#older-database) | Nothing: the fence stops deletes | As long as it takes you to read the report |
 | [A new install on a used bucket](#used-bucket) | Nothing: the install is fenced | As above |
 | [Bucket objects deleted, or the bucket lost](#bucket-lost) | Encoded files, which are made again | Hours, depending on the library |
@@ -47,6 +47,9 @@ changed.
 Check: `docker compose ps` shows `app` as `healthy`, and
 `curl https://video.example.com/readyz` answers `ok`.
 
+In the drill, the replacement process became ready in 104 milliseconds and
+the interrupted encode was requeued after 90 seconds.
+
 ## Postgres crashes [#postgres-crashes]
 
 Postgres restarts and replays its log, in under a minute. serve answers
@@ -59,6 +62,9 @@ Check: `docker compose ps` shows `postgres` as `healthy`, and `/readyz` answers
 `clipmux_data_free_bytes` in [metrics](/docs/self-host/operate/monitoring) warns
 before it happens.
 
+In the drill, PostgreSQL 18 restarted in 1.6 seconds and the committed test
+row was intact.
+
 ## A reboot, or patching the host [#reboot]
 
 Reboot in a quiet window. Every container comes back by itself, in about
@@ -67,6 +73,8 @@ playback of videos in R2 is unaffected throughout, because the Worker serves
 them. With built-in delivery, playback pauses with the server.
 
 Check: `docker compose ps`, then play a video.
+
+The disposable VM was ready from an off-host probe 36 seconds after reboot.
 
 ## A bad upgrade or migration [#bad-upgrade]
 
@@ -112,7 +120,15 @@ The installer starts Postgres, restores the latest backup, starts ClipMux and
 prints the restore report. Then point DNS at the new server. The target is
 30 minutes through first playback, including pulling the images. The amount
 of data lost depends on the age of the newest successful backup. For an
-off-site target, ClipMux schedules backups hourly by default.
+off-site target, ClipMux schedules backups hourly by default. Allow time
+for the dump and upload when choosing an interval for your recovery point.
+
+The 24 November 2026 drill on a 2 vCPU amd64 VM reached decrypted playback
+in 72 seconds from installer start. Pulling the images took 34 seconds and
+restoring the database from Backblaze B2 took 3 seconds. The restore fence
+preserved the route record, source and output of a newer R2 video.
+In the production drill, a 14-minute backup schedule produced a maximum
+recovery-point age of 14 minutes and 2 seconds across two verified backups.
 
 The restore reads only from the backup target, so the read key is enough. The
 server then tries to back up with the same key and can't write; put the
@@ -205,6 +221,10 @@ Check: `restore-sources` prints how many sources it restored and how many
 re-encodes it queued, and running it again prints zero of each. Play a video
 once its job succeeds.
 
+In the drill, a source restored from B2 in 2 seconds with the original
+SHA-256 hash. The replacement output played after 39 seconds, and a second
+run restored and queued zero files.
+
 A lost Cloudflare or cloud account is harder: a store's endpoint names the
 account, and a store's endpoint and bucket can't be changed once it is added, so
 recovering into a different account isn't supported yet. The sources are safe
@@ -237,6 +257,9 @@ Check from outside the server, since a monitor on the same host can't report
 the host going down. Probe `https://video.example.com/readyz`, and one
 segment of a known public video on the media hostname, which should play
 without the origin. See [Monitoring](/docs/self-host/operate/monitoring).
+
+Off-host probes decoded audio and video during a 66-second origin outage
+in the drill.
 
 ## Practise
 

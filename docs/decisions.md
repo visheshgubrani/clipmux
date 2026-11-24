@@ -1839,7 +1839,7 @@ Consequence: a release that changes only ClipMux adds one layer of about 17 MB p
 Context: ClipMux survives crashes, but the product takes no backups and has no restore; the operator docs describe a `pg_dump` from cron. Production (the shared VPS, D114) has no backup that leaves the host, and its secrets key exists only in the stack's `.env` and same-disk copies. Losing the disk would lose every video, because without the key nothing is playable. Settled with the owner on 2026-11-23.
 Decision:
 - **Configuration is in the environment, not the dashboard.** A restore needs its target before any database exists, so the target lives with `DATABASE_URL` and the secrets key and the `.env` file is the whole recovery kit. `CLIPMUX_BACKUP_URL` (`s3://bucket/prefix?endpoint=…&region=…` or `file:///path`; default `file://{data}/backups`, which the dashboard flags as not off-site), `CLIPMUX_BACKUP_ACCESS_KEY_ID` and `…_SECRET_ACCESS_KEY`, `CLIPMUX_BACKUP_INTERVAL` (`1h`; `0` turns backups off), `CLIPMUX_BACKUP_RECIPIENTS`, `CLIPMUX_BACKUP_PING_URL` (a dead-man's switch) and `CLIPMUX_BACKUP_BEFORE_MIGRATE` (`true`).
-- **Postgres is backed up by scheduled dumps** (`pg_dump -Fc`), every hour by default and every 15 minutes on production. Continuous WAL archiving (PITR) is not built.
+- **Postgres is backed up by scheduled dumps** (`pg_dump -Fc`), every hour by default for an off-site target. Production uses a 14-minute interval after the measurement in D145. Continuous WAL archiving (PITR) is not built.
 - **Encryption is [age](https://age-encryption.org)** (`filippo.io/age`, a justified dependency: a reviewed streaming format, and an operator can open a backup with the `age` CLI and `pg_restore` without ClipMux). Each file is encrypted to an X25519 identity derived from the secrets key (HKDF, info `clipmux-backup-v1`) and to any `CLIPMUX_BACKUP_RECIPIENTS`, such as the operator's offline key. `clipmux admin backup identity` prints the derived identity. After a secrets-key rotation the previous key is kept until the oldest backup has expired.
 - **The target is a `storage.Storage`:** the S3 and filesystem adapters already there. Backblaze B2 is the recommended target, independent of both Hetzner and Cloudflare.
 - **As built (T29.3).** `pg_dump -Fc --schema=<the install's schema>` streams through age into the target, so no plaintext touches the target or the disk, and the password reaches pg_dump in a 0600 `PGPASSFILE`, never its arguments or environment. A dump is written to `db/hourly/{UTC stamp}-{bak_id}.dump.age` (the tier is named for the default interval, whatever the interval is), then its `.json` manifest (size and SHA-256 of the stored bytes, ClipMux, schema and Postgres versions, the secrets key version, the dumped schema). A dump with no manifest is an unfinished one, and a dump that fails part way aborts its upload. The first backup of a UTC day, ISO week and month is copied to `daily/`, `weekly/` and `monthly/`. The `backups` row is written last and is optional: a database not yet migrated to it is backed up all the same. The leader checks once a minute whether one is due, and after a failure waits five minutes.
@@ -1869,7 +1869,7 @@ Decision: these are the targets. The disaster-recovery page states them and the 
 - Postgres crashes: unchanged, under a minute, nothing committed lost.
 - Host reboot or patching: about 2 minutes, in a set window. Playback of R2-backed video is unaffected, since the Worker serves it.
 - A bad upgrade or migration: an automatic backup before any migration; rolled back in 15 minutes or less with nothing lost.
-- Disk or VPS lost: `install.sh --restore` on a new host, then DNS. Back in 30 minutes or less, with at most 15 minutes of data lost on production and one hour by default.
+- Disk or VPS lost: `install.sh --restore` on a new host, then DNS. The target is 30 minutes through playback and a recovery point up to 15 minutes old on production. The default off-site backup schedule is hourly.
 - An older database comes back: the fence (D144). Nothing is deleted, and a report lists what is newer.
 - A fresh install on a used bucket: the epoch marker has another install ID, so the install is fenced.
 - R2 objects deleted, or the Cloudflare account lost: sources restored from the backup target and re-encoded, in hours.
@@ -1881,8 +1881,7 @@ The real-binary local drills restored the database, played the saved video,
 and preserved the post-backup source and outputs with the fence raised.
 An installer rehearsal restored from a read-only fixture and verified that
 exact backup against a second scratch database while only Postgres was
-running. The cold B2 image pull, restore and first playback still need to
-be measured.
+running.
 
 A live B2 drill with a synthetic PostgreSQL 18 fixture passed on
 2026-11-23. ClipMux stored a 138.5 KiB encrypted dump and its promoted
@@ -1915,8 +1914,6 @@ pull took 1 s, database restore 3 s, HTTPS readiness 42 s from installer
 start, and first decrypted playback 44 s. The restore report named the
 newer route, output and source. Their keys, sizes and ETags matched after
 both fenced cleanup passes. The restored backup passed full verification.
-The cold run against the published image manifest and the production
-cutover are still pending.
 
 The production database was also backed up in ClipMux format by a
 one-off ARM64 container using the corrected B2 writer. The amd64
@@ -1932,6 +1929,39 @@ When the source and encoded files were removed, the source restored from
 B2 in 2 s with the original SHA-256. The new output played after 37 s,
 and a second run restored and queued zero items. An external probe
 decoded audio and video at the start and end of a 66 s origin outage.
+
+The merged image at `abbad0711f79aaa02cc0490bdde76665b54200bc` passed a
+cold amd64 drill on 2026-11-24 using an isolated Docker data root on a 2
+vCPU VM. The amd64 and arm64 image index was
+`sha256:fb23b4432474e8da17505492d3d93c3dca562b0ad149556b3dde68787f205f5e`.
+Image pull took 34 s and database restore 3 s. From installer start,
+HTTPS was ready in 69 s and first decrypted playback took 72 s. The
+newer route, source and output inventories matched after the first
+fenced cleanup passes. Source
+recovery matched SHA-256, replacement playback took 39 s, and external
+probes decoded audio and video during a 66 s origin outage.
+The ARM64 production app was cut over to the same manifest. Readiness
+returned in 64.6 s and the baseline video still decoded. The scoped
+read key confirmed the pre-migration dump and its manifest in the
+locked production bucket. The live background verifier restored it
+and passed all six checks.
+
+The first scheduled backup passed a full restore. Its manifest
+reached B2 when the pre-migration recovery point was 931 s old,
+31 s over the 15-minute target. The operator approved a 14-minute
+production schedule to leave time for the dump and upload.
+Both subsequent scheduled backups passed full restores in scratch
+Postgres. They were 840 s apart. The oldest usable restore point at
+B2 manifest publication was 842 s (14 min 2 s), within the 900 s
+target. The live private metrics matched the dump and verification
+timestamps and showed the production fence clear.
+
+The amd64 VM restored the newer scheduled backup with the B2 read-only
+key. The installer finished in 15 s, including a 2 s image pull and a
+6 s database restore. Only Postgres was running. Full verification of
+the exact restored ID took 5 s and checked row counts and content keys.
+`restore report` showed the scratch fence raised. The scratch database,
+install files and temporary recovery kit were removed after the drill.
 
 ## D146 Only sources are mirrored; pruning is by lifecycle rules and keys that can't delete — accepted (2026-11-23)
 Context: media can be large, and its outputs can be made again from the sources. A backup key that can delete is a key ransomware on the host can use to delete the backups.

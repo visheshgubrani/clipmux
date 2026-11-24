@@ -102,8 +102,11 @@ repository goes public.
     appears in `clipmux admin restore report`, and nothing was deleted. The
     time of each phase is recorded as a decision and becomes the published
     recovery time.
-    The ARM64 capacity baseline is recorded in D148. The cold B2 restore
-    and first playback still need to be timed.
+    **Passed (2026-11-24).** The amd64 cold restore reached playback in 72 s
+    and both fenced cleanup passes preserved the newer media. The exact
+    newest scheduled production backup passed a read-only restore, and the
+    measured recovery-point age was 14 min 2 s. D145 records the drill and
+    D148 records the ARM64 capacity baseline.
 
 ## Design notes
 

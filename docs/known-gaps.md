@@ -491,9 +491,10 @@ when you introduce or discover it; remove it when it is closed.
 
 Deferred by [plans/P6-T29-recovery.md](plans/P6-T29-recovery.md):
 
-- **No continuous WAL archiving (PITR).** Backups are scheduled dumps: up to
-  one interval of data (15 minutes on production, one hour by default) is
-  lost on a restore. WAL archiving can be added on top of them.
+- **No continuous WAL archiving (PITR).** Recovery is limited to the latest
+  usable dump. Its age depends on the configured interval and the time it
+  takes to complete and upload the next backup. WAL archiving can be added
+  on top of scheduled dumps.
 - **No high availability.** One `serve` replica and one Postgres. A warm
   standby that restores continuously ("pilot light") would shorten a lost
   host's recovery below the 30 minutes of D145.
@@ -568,7 +569,3 @@ Deferred by [plans/P6-T29-recovery.md](plans/P6-T29-recovery.md):
 - **A restore clears the schema and loads the dump in two transactions**
   (D147). A load that fails leaves the schema empty; the error says so and
   names the safety backup to restore instead.
-- **The locked B2 target still needs a production probe.** The live drill
-  confirmed that a delete without a version ID adds a hide marker.
-  T29.12 checks Object Lock on production with the bucket-scoped key and
-  its `readBucketRetentions` permission.
