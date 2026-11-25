@@ -1,0 +1,11 @@
+# AMD or Intel GPU passthrough for ClipMux (VAAPI encoding + Vulkan whisper.cpp).
+# Set CLIPMUX_RENDER_GID in deploy/.env if /dev/dri/renderD* is group-restricted:
+#   CLIPMUX_RENDER_GID=$(stat -c '%g' /dev/dri/renderD128)
+#
+#   docker compose -f deploy/compose.yml -f deploy/compose.dri.yml up -d --wait
+services:
+  app:
+    devices:
+      - /dev/dri:/dev/dri
+    group_add:
+      - "${CLIPMUX_RENDER_GID:-10001}"

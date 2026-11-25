@@ -71,6 +71,32 @@ export function backupChecks(b: Backups, now = Date.now()): Check[] {
   return checks
 }
 
+/** Alert shown whenever the restore fence is up (D144). */
+export function RestoreFenceAlert({ fence }: { fence: NonNullable<Backups['fence']> }) {
+  return (
+    <Alert variant="destructive">
+      <TriangleAlertIcon />
+      <AlertTitle>Restore fence up since {ago(fence.detected_at)}</AlertTitle>
+      <AlertDescription>
+        {fence.detail || fence.reason} Nothing is deleted from storage while it's up.{' '}
+        {fence.reason === 'foreign_install' ? (
+          <>
+            If another ClipMux install still uses this bucket, do <strong>not</strong> run{' '}
+            <code>clipmux admin restore finish --yes</code>—use a separate R2 bucket for this install instead.
+            Only run <code>clipmux admin restore finish --yes</code> after checking{' '}
+            <code>clipmux admin restore report</code> and confirming this install owns the bucket.
+          </>
+        ) : (
+          <>
+            On the server, read <code>clipmux admin restore report</code>, then run{' '}
+            <code>clipmux admin restore finish --yes</code>.
+          </>
+        )}
+      </AlertDescription>
+    </Alert>
+  )
+}
+
 /** The Settings → Backups card: what is backed up, whether it can be restored, and what the owner confirms. */
 export function BackupsCard() {
   const qc = useQueryClient()
@@ -87,8 +113,8 @@ export function BackupsCard() {
     return <ErrorState what="backups" error={status.error} onRetry={() => status.refetch()} />
   const b = status.data
   if (!b) return <Spinner />
-  if (!b.enabled)
-    return (
+  if (!b.enabled) {
+    const off = (
       <Alert variant="destructive">
         <TriangleAlertIcon />
         <AlertTitle>Backups are off</AlertTitle>
@@ -100,20 +126,19 @@ export function BackupsCard() {
         </AlertDescription>
       </Alert>
     )
+    return b.fence ? (
+      <div className="flex flex-col gap-3">
+        <RestoreFenceAlert fence={b.fence} />
+        {off}
+      </div>
+    ) : (
+      off
+    )
+  }
   const checks = backupChecks(b)
   return (
     <div className="flex flex-col gap-3">
-      {b.fence && (
-        <Alert variant="destructive">
-          <TriangleAlertIcon />
-          <AlertTitle>Restore fence up since {ago(b.fence.detected_at)}</AlertTitle>
-          <AlertDescription>
-            {b.fence.detail || b.fence.reason} Nothing is deleted from storage while it's up. On the server,
-            read <code>clipmux admin restore report</code>, then run{' '}
-            <code>clipmux admin restore finish --yes</code>.
-          </AlertDescription>
-        </Alert>
-      )}
+      {b.fence && <RestoreFenceAlert fence={b.fence} />}
       {b.error && (
         <Alert variant="destructive">
           <TriangleAlertIcon />

@@ -66,6 +66,14 @@ for f in compose.yml compose.release.yml; do
 	[ "$services" = "app postgres " ] || fail "$f with the proxy override runs: $services"
 done
 
+step "deploy/compose.nvidia.yml and deploy/compose.dri.yml merge cleanly with either stack"
+for f in compose.yml compose.release.yml; do
+	for g in compose.nvidia.yml compose.dri.yml; do
+		POSTGRES_PASSWORD=x CLIPMUX_SECRETS_KEY=x CLIPMUX_VERSION=x docker compose -f "$here/deploy/$f" -f "$here/deploy/$g" config >/dev/null ||
+			fail "$f with $g failed compose config"
+	done
+done
+
 # Each release as its GitHub Release would hold it.
 release() {
 	local v=$1 d=$work/releases/$1

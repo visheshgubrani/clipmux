@@ -34,9 +34,11 @@ GitHub release (until v1.0.0, the newest release candidate). The script then:
    downloads.
 3. Writes `.env` with a random Postgres password and a new secrets key,
    readable only by root.
-4. Pulls the images and starts the stack, waiting up to 10 minutes for it to
+4. Checks for a usable NVIDIA or AMD/Intel GPU (`/dev/dri`), writes
+   `compose.gpu.yml` when one is found (and falls back to CPU otherwise).
+5. Pulls the images and starts the stack, waiting up to 10 minutes for it to
    become healthy. Pulling takes a few minutes the first time.
-5. Reads the setup token from the app's log and prints it.
+6. Reads the setup token from the app's log and prints it.
 
 ## What lands in /opt/clipmux
 
@@ -44,6 +46,7 @@ GitHub release (until v1.0.0, the newest release candidate). The script then:
   <Folder name="/opt/clipmux" defaultOpen>
     <File name=".env" />
     <File name="compose.yml" />
+    <File name="compose.gpu.yml" />
     <File name="Caddyfile" />
   </Folder>
 </Files>
@@ -105,6 +108,7 @@ curl -fsSL https://clipmux.com/install.sh | sudo sh -s -- --version v1.0.0
 | --- | --- |
 | `--version vX.Y.Z` | Installs that release instead of the latest. |
 | `--dir DIR` | Installs in `DIR` instead of `/opt/clipmux`. Pass the same `--dir` when you upgrade or uninstall. |
+| `--no-gpu` | Skips GPU auto-detection and runs encoding and speech on the CPU. |
 | `--restore` | On a new server: restores the latest backup from the target your saved `.env` names, then starts ClipMux. Put the `.env` in the install directory first. See [Back up and restore](/docs/self-host/operate/backups#restore). |
 | `--uninstall` | Stops and removes the stack, keeping the volumes and `.env`. See [Upgrade and uninstall](/docs/self-host/install-options/upgrade-and-uninstall). |
 | `--purge` | With `--uninstall`, also deletes the volumes and the folder. |
@@ -124,6 +128,7 @@ curl -fsSL https://clipmux.com/install.sh | sudo CLIPMUX_ADMIN_PORT=8090 sh
 | `CLIPMUX_HTTPS_PORT` | `443` | The host port for Caddy's HTTPS. Saved in `.env` on the first install. |
 | `CLIPMUX_ADMIN_PORT` | `8080` | The loopback port the app is published on, for commands on the host. Saved in `.env` on the first install. |
 | `CLIPMUX_IMAGE` | `ghcr.io/visheshgubrani/clipmux` | The image, without its tag, for a mirror. Saved in `.env` when set. |
+| `CLIPMUX_GPU` | auto-detect | Set to `off` to skip GPU auto-detection (same as `--no-gpu`). |
 | `CLIPMUX_RELEASE_URL` | the release on GitHub | Where to download `SHA256SUMS`, `compose.yml` and `Caddyfile` from, for a mirror. |
 
 Caddy's certificates come from Let's Encrypt, which connects to ports 80

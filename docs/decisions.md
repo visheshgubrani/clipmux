@@ -2006,6 +2006,19 @@ a listing that contains the key preserves the access error. The patched
 CLI verified the locked target and restored a 47 MiB multipart backup
 in scratch PostgreSQL.
 
+Follow-up (2026-11-25): connecting a second install to a bucket owned by
+another live install (`foreign_install`) caused both installs' route
+reconcilers to fight over `_routes/` and `_keys.json`, and disconnecting the
+second install could delete the first install's records. `cloudflare.Connector.Connect`
+and `AddR2` now check bucket ownership (`fence.CheckForeignBucket`) before
+saving storage, deploying the Worker, modifying DNS, or switching delivery,
+refusing a bucket stamped by another install (or holding unknown `_routes/`
+without a marker) while still allowing a restored database with the same
+`install_id` (`database_behind`) to reconnect under the restore fence.
+`cloudflare.Connector.Disconnect` now checks `fence.Guard.MayDelete` before
+deleting `_routes/` or `_keys.json`, leaving bucket records intact when
+fenced.
+
 ## D148 Control-plane capacity on a small ARM64 host — measured (2026-11-23)
 
 `TestRecoveryCapacity` adds an opt-in ramp to the real-binary Phase 5

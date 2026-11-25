@@ -132,6 +132,9 @@ func New(pool *pgxpool.Pool, set *stores.Set, box *secrets.Box, urls *settings.S
 	if selfDial != "" {
 		dialer := &net.Dialer{Timeout: 10 * time.Second}
 		transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+			if !shouldSelfDial(ctx, pool, urls, addr) {
+				return dialer.DialContext(ctx, network, addr)
+			}
 			target := selfDial
 			if _, _, err := net.SplitHostPort(selfDial); err != nil {
 				_, port, _ := net.SplitHostPort(addr)
@@ -431,6 +434,39 @@ func (r *Runner) postJSON(ctx context.Context, u, bearer string, body, out any) 
 		return errors.New("the answer isn't ClipMux's API; is the public URL pointing at another server?")
 	}
 	return nil
+}
+
+// shouldSelfDial reports whether addr names a host served by this server's
+// proxy (public_url, or media_url while built-in delivery is active). External
+// hosts such as Cloudflare Workers and R2/S3 endpoints dial normally.
+func shouldSelfDial(ctx context.Context, pool *pgxpool.Pool, urls *settings.Store, addr string) bool {
+	if urls == nil {
+		return true
+	}
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		host = addr
+	}
+	if pub := urlHost(urls.PublicURL()); pub != "" && strings.EqualFold(host, pub) {
+		return true
+	}
+	med := urlHost(urls.MediaURL())
+	if med == "" || !strings.EqualFold(host, med) {
+		return false
+	}
+	if pool == nil {
+		return true
+	}
+	p, err := db.New(pool).GetProjectDelivery(ctx, db.DefaultProjectID)
+	return err == nil && p.Delivery != "worker"
+}
+
+func urlHost(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	return u.Hostname()
 }
 
 // errorKind describes a transport error without the URL it carries.
