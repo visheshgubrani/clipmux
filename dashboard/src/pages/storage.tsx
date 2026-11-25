@@ -39,6 +39,8 @@ export function storageName(s: StorageConfig) {
 }
 
 const DEFAULT_BUCKET = 'clipmux-media'
+const NEW_BUCKET = '__new__'
+const BUCKET_PATTERN = '^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$'
 
 export function Storage() {
   const storage = useQuery(q.storage())
@@ -257,18 +259,24 @@ function AddR2({
   const [token, setToken] = React.useState('')
   const [accountID, setAccountID] = React.useState('')
   const [bucket, setBucket] = React.useState(DEFAULT_BUCKET)
+  const [customBucket, setCustomBucket] = React.useState('')
   const [useIt, setUseIt] = React.useState(true)
   const [steps, setSteps] = React.useState<Step[]>([])
   const inspect = useInspection(open ? token : '', accountID)
   const add = useMutation({
-    mutationFn: (body: object) => post<StepResult>('/v1/storage/r2', body),
+    mutationFn: (body: {
+      token: string
+      bucket: string
+      account_id?: string | undefined
+      default: boolean
+    }) => post<StepResult>('/v1/storage/r2', body),
     onMutate: () => setSteps([]),
-    onSuccess: (res) => {
+    onSuccess: (res, vars) => {
       setSteps(res.steps)
       if (res.connected) {
         notify.done(
           'R2 bucket added',
-          useIt ? `New uploads go to ${bucket}.` : 'Use it for new uploads any time.',
+          vars.default ? `New uploads go to ${vars.bucket}.` : 'Use it for new uploads any time.',
         )
         onDone()
         close()
@@ -279,6 +287,7 @@ function AddR2({
     setToken('')
     setAccountID('')
     setBucket(DEFAULT_BUCKET)
+    setCustomBucket('')
     setUseIt(true)
     setSteps([])
     add.reset()
@@ -288,6 +297,8 @@ function AddR2({
   const needAccount = !!found && found.accounts.length > 1 && !found.account_id
   const buckets = found?.buckets ?? []
   const listable = !!found?.account_id && !found.unreadable?.includes('buckets')
+  const creating = listable && bucket === NEW_BUCKET
+  const targetBucket = creating ? customBucket.trim() : bucket.trim()
   return (
     <Dialog open={open} onOpenChange={(o) => (o ? onOpenChange(true) : close())}>
       <DialogContent className="sm:max-w-lg">
@@ -303,7 +314,12 @@ function AddR2({
           className="flex max-h-[60vh] flex-col overflow-y-auto"
           onSubmit={(e) => {
             e.preventDefault()
-            add.mutate({ token: token.trim(), bucket, account_id: found?.account_id, default: useIt })
+            add.mutate({
+              token: token.trim(),
+              bucket: targetBucket,
+              account_id: found?.account_id,
+              default: useIt,
+            })
           }}
         >
           <FieldGroup>
@@ -352,21 +368,37 @@ function AddR2({
               <Field>
                 <FieldLabel htmlFor="r2-bucket">Bucket</FieldLabel>
                 {listable ? (
-                  <NativeSelect
-                    id="r2-bucket"
-                    name="bucket"
-                    value={bucket}
-                    onChange={(e) => setBucket(e.target.value)}
-                  >
-                    {!buckets.includes(DEFAULT_BUCKET) && (
-                      <NativeSelectOption value={DEFAULT_BUCKET}>{DEFAULT_BUCKET} (new)</NativeSelectOption>
+                  <>
+                    <NativeSelect
+                      id="r2-bucket"
+                      name={creating ? undefined : 'bucket'}
+                      value={bucket}
+                      onChange={(e) => setBucket(e.target.value)}
+                    >
+                      {!buckets.includes(DEFAULT_BUCKET) && (
+                        <NativeSelectOption value={DEFAULT_BUCKET}>{DEFAULT_BUCKET} (new)</NativeSelectOption>
+                      )}
+                      {buckets.map((b) => (
+                        <NativeSelectOption key={b} value={b}>
+                          {b}
+                        </NativeSelectOption>
+                      ))}
+                      <NativeSelectOption value={NEW_BUCKET}>Create a new bucket…</NativeSelectOption>
+                    </NativeSelect>
+                    {creating && (
+                      <Input
+                        id="r2-bucket-new"
+                        name="bucket"
+                        aria-label="New R2 bucket name"
+                        placeholder="clipmux-media-staging"
+                        pattern={BUCKET_PATTERN}
+                        title="3–63 lowercase letters, numbers, and hyphens"
+                        required
+                        value={customBucket}
+                        onChange={(e) => setCustomBucket(e.target.value.toLowerCase())}
+                      />
                     )}
-                    {buckets.map((b) => (
-                      <NativeSelectOption key={b} value={b}>
-                        {b}
-                      </NativeSelectOption>
-                    ))}
-                  </NativeSelect>
+                  </>
                 ) : (
                   <Input
                     id="r2-bucket"

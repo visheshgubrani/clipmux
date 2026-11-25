@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"time"
 
 	"github.com/visheshgubrani/clipmux/internal/db"
 	"github.com/visheshgubrani/clipmux/internal/storage"
@@ -86,6 +87,48 @@ func (g *Guard) MayDelete(ctx context.Context, storeID string, st storage.Storag
 	return true, nil
 }
 
+// CheckForeignBucket reports an error if st already belongs to another
+// ClipMux install: either _clipmux/epoch.json names a different install ID,
+// or the bucket has no marker yet but holds _routes/{id}.json records this
+// database doesn't know. Unlike CheckBucket, it never raises the restore
+// fence: Connect calls it before modifying storage, Worker, or delivery. A
+// bucket belonging to this install (even ahead of this database after a
+// restore) returns nil so recovery can proceed under the restore fence.
+func CheckForeignBucket(ctx context.Context, q *db.Queries, projectID string, st storage.Storage) error {
+	ep, err := q.EnsureInstallEpoch(ctx, projectID)
+	if err != nil {
+		return fmt.Errorf("install epoch: %w", err)
+	}
+	m, err := readMarker(ctx, st)
+	if err != nil {
+		return fmt.Errorf("read bucket marker: %w", err)
+	}
+	if m != nil {
+		if m.InstallID != ep.InstallID {
+			when := ""
+			if !m.WrittenAt.IsZero() {
+				when = " on " + m.WrittenAt.UTC().Format(time.RFC3339)
+			}
+			return fmt.Errorf(
+				"bucket already belongs to ClipMux install %s (generation %d%s); create or choose a separate R2 bucket for this install (%s)",
+				m.InstallID, m.Generation, when, ep.InstallID,
+			)
+		}
+		return nil
+	}
+	unknown, err := unknownRouteCount(ctx, q, projectID, st)
+	if err != nil {
+		return err
+	}
+	if unknown > 0 {
+		return fmt.Errorf(
+			"bucket holds %d route records from another ClipMux install; create or choose a separate R2 bucket for this install",
+			unknown,
+		)
+	}
+	return nil
+}
+
 // CheckBucket is for a bucket about to become the Worker's (Connect
 // Cloudflare), before its first reconcile. Beyond MayDelete's marker check, a
 // bucket with no marker but with route records this database doesn't know
@@ -101,21 +144,7 @@ func (g *Guard) CheckBucket(ctx context.Context, storeID string, st storage.Stor
 	if err != nil || m != nil {
 		return g.fenced, err
 	}
-	known, err := g.q.ListPlaybackIDStrings(ctx, g.projectID)
-	if err != nil {
-		return g.fenced, fmt.Errorf("list playback IDs: %w", err)
-	}
-	have := make(map[string]bool, len(known))
-	for _, id := range known {
-		have[id] = true
-	}
-	unknown := 0
-	err = walk(ctx, st, "_routes/", func(o storage.Object) error {
-		if pid, ok := routeID(o.Key); ok && !have[pid] {
-			unknown++
-		}
-		return nil
-	})
+	unknown, err := unknownRouteCount(ctx, g.q, g.projectID, st)
 	if err != nil {
 		return g.fenced, fmt.Errorf("store %s: %w", storeID, err)
 	}
@@ -135,6 +164,25 @@ func (g *Guard) CheckBucket(ctx context.Context, storeID string, st storage.Stor
 			"reason", found.Reason, "detail", found.Detail)
 	}
 	return true, nil
+}
+
+func unknownRouteCount(ctx context.Context, q *db.Queries, projectID string, st storage.Storage) (int, error) {
+	known, err := q.ListPlaybackIDStrings(ctx, projectID)
+	if err != nil {
+		return 0, fmt.Errorf("list playback IDs: %w", err)
+	}
+	have := make(map[string]bool, len(known))
+	for _, id := range known {
+		have[id] = true
+	}
+	unknown := 0
+	err = walk(ctx, st, "_routes/", func(o storage.Object) error {
+		if pid, ok := routeID(o.Key); ok && !have[pid] {
+			unknown++
+		}
+		return nil
+	})
+	return unknown, err
 }
 
 // routeID is the playback ID of a _routes/{id}.json key.

@@ -10,6 +10,7 @@ import {
   type Step,
   type StepResult,
 } from '@/api'
+import { RestoreFenceAlert } from '@/components/backups'
 import { CreateTokenLink, useInspection } from '@/components/cloudflare-token'
 import { useConfirm } from '@/components/confirm'
 import { PageBody, PageHeader, Section } from '@/components/page'
@@ -36,6 +37,8 @@ import { q } from '@/queries'
 // uploads are kept is Storage.
 
 const DEFAULT_BUCKET = 'clipmux-media'
+const NEW_BUCKET = '__new__'
+const BUCKET_PATTERN = '^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$'
 
 export function Delivery() {
   return (
@@ -52,6 +55,7 @@ export function Delivery() {
 function DeliverySection() {
   const cf = useQuery(q.cloudflare())
   const storage = useQuery(q.storage())
+  const backups = useQuery(q.backups())
   const [connecting, setConnecting] = React.useState(false)
   const def = storage.data?.data.find((s) => s.default)
   return (
@@ -59,6 +63,7 @@ function DeliverySection() {
       <QueryState query={cf} what="delivery" skeleton={<Skeleton className="h-40 w-full" />}>
         {(s) => (
           <>
+            {backups.data?.fence && <RestoreFenceAlert fence={backups.data.fence} />}
             {s.connected && !s.storage_ok && (
               <Alert variant="destructive">
                 <AlertTitle>R2 refuses the stored credentials</AlertTitle>
@@ -464,6 +469,8 @@ function Choices({ found, status }: { found: CloudflareInspection; status: Cloud
       : 'media',
   )
   const [bucket, setBucket] = React.useState(status.bucket || DEFAULT_BUCKET)
+  const [customBucket, setCustomBucket] = React.useState('')
+  const creating = listBuckets && bucket === NEW_BUCKET
   // The bucket it starts on stays a choice when it doesn't exist yet.
   const first = status.bucket || DEFAULT_BUCKET
   const bucketOptions = buckets.includes(first) ? buckets : [first, ...buckets]
@@ -532,18 +539,34 @@ function Choices({ found, status }: { found: CloudflareInspection; status: Cloud
       <Field>
         <FieldLabel htmlFor="cf-bucket">R2 bucket</FieldLabel>
         {listBuckets ? (
-          <NativeSelect
-            id="cf-bucket"
-            name="bucket"
-            value={bucket}
-            onChange={(e) => setBucket(e.target.value)}
-          >
-            {bucketOptions.map((b) => (
-              <NativeSelectOption key={b} value={b}>
-                {buckets.includes(b) ? b : `${b} (new)`}
-              </NativeSelectOption>
-            ))}
-          </NativeSelect>
+          <>
+            <NativeSelect
+              id="cf-bucket"
+              name={creating ? undefined : 'bucket'}
+              value={bucket}
+              onChange={(e) => setBucket(e.target.value)}
+            >
+              {bucketOptions.map((b) => (
+                <NativeSelectOption key={b} value={b}>
+                  {buckets.includes(b) ? b : `${b} (new)`}
+                </NativeSelectOption>
+              ))}
+              <NativeSelectOption value={NEW_BUCKET}>Create a new bucket…</NativeSelectOption>
+            </NativeSelect>
+            {creating && (
+              <Input
+                id="cf-bucket-new"
+                name="bucket"
+                aria-label="New R2 bucket name"
+                placeholder="clipmux-media-staging"
+                pattern={BUCKET_PATTERN}
+                title="3–63 lowercase letters, numbers, and hyphens"
+                required
+                value={customBucket}
+                onChange={(e) => setCustomBucket(e.target.value.toLowerCase())}
+              />
+            )}
+          </>
         ) : (
           <Input
             id="cf-bucket"
@@ -555,7 +578,8 @@ function Choices({ found, status }: { found: CloudflareInspection; status: Cloud
         )}
         <FieldDescription>
           New videos are encoded into it and the Worker serves them from it; uploads stay where Storage keeps
-          them. A new bucket is created for you.
+          them. Use a separate bucket and media hostname per ClipMux install—choose “Create a new bucket…” to
+          make a fresh one.
         </FieldDescription>
       </Field>
     </>

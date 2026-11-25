@@ -8,6 +8,7 @@ import (
 
 	"github.com/visheshgubrani/clipmux/internal/config"
 	"github.com/visheshgubrani/clipmux/internal/db"
+	"github.com/visheshgubrani/clipmux/internal/fence"
 	"github.com/visheshgubrani/clipmux/internal/routes"
 	"github.com/visheshgubrani/clipmux/internal/settings"
 	"github.com/visheshgubrani/clipmux/internal/storage"
@@ -96,5 +97,43 @@ func TestDisconnectWaitsForAPinnedMediaURL(t *testing.T) {
 	}
 	if p, _ := r.pool.GetProjectDelivery(ctx, db.DefaultProjectID); p.Delivery != "worker" {
 		t.Fatalf("delivery = %s; a refused disconnect changes nothing", p.Delivery)
+	}
+}
+
+func TestDisconnectLeavesBucketUntouchedWhileFenced(t *testing.T) {
+	r := newRig(t)
+	ctx := context.Background()
+	if res, err := r.conn.Connect(ctx, Request{Token: testToken, Hostname: "media.example.com", Bucket: r.bucket}); err != nil || !res.Connected {
+		t.Fatalf("connect: %+v, %v", res.Steps, err)
+	}
+	delivered, _ := r.pool.GetProjectDelivery(ctx, db.DefaultProjectID)
+	bucket, _ := r.stash.Get(ctx, delivered.DeliveryStorageID.String)
+	if err := bucket.Put(ctx, routes.RouteKey("pid_theirs"), strings.NewReader(`{"v":1}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := bucket.Put(ctx, routes.KeysKey, strings.NewReader(`{"v":1,"keys":[]}`)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fence.Engage(ctx, r.pool, db.DefaultProjectID, fence.Found{Reason: fence.ForeignInstall, Detail: "stamped by ins_other"}); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := r.conn.Disconnect(ctx)
+	if err != nil || !res.Disconnected {
+		t.Fatalf("disconnect while fenced = %+v, %v; want disconnected", res.Steps, err)
+	}
+	if p, _ := r.pool.GetProjectDelivery(ctx, db.DefaultProjectID); p.Delivery != "builtin" {
+		t.Fatalf("delivery = %s, want builtin", p.Delivery)
+	}
+	if _, err := r.pool.GetCloudflareConnection(ctx, db.DefaultProjectID); err == nil {
+		t.Fatal("cloudflare connection row still present")
+	}
+	for _, key := range []string{routes.RouteKey("pid_theirs"), routes.KeysKey} {
+		if _, err := bucket.Head(ctx, key); err != nil {
+			t.Fatalf("%s was deleted while fenced: %v", key, err)
+		}
+	}
+	if d := stepDetail(Result{Steps: res.Steps}, "routes"); !strings.Contains(d, "untouched") {
+		t.Fatalf("routes step detail = %q, want untouched notice", d)
 	}
 }

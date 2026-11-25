@@ -3,6 +3,8 @@ package cloudflare
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -23,6 +25,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/contentkey"
 	"github.com/visheshgubrani/clipmux/internal/db"
 	"github.com/visheshgubrani/clipmux/internal/db/dbtest"
+	"github.com/visheshgubrani/clipmux/internal/fence"
 	"github.com/visheshgubrani/clipmux/internal/routes"
 	"github.com/visheshgubrani/clipmux/internal/secrets"
 	"github.com/visheshgubrani/clipmux/internal/settings"
@@ -496,5 +499,101 @@ func TestTheEmbeddedWorkerIsBuilt(t *testing.T) {
 	}
 	if os.Getenv("CI") != "" && WorkerVersion() == "" {
 		t.Fatal("no version")
+	}
+}
+
+func openProbeBucket(t *testing.T, r *rig) storage.Storage {
+	t.Helper()
+	sum := sha256.Sum256([]byte(testToken))
+	st, err := storage.OpenS3(storage.S3Options{
+		Endpoint: r.conn.R2Endpoint("acct1"), Region: "auto", Bucket: r.bucket,
+		AccessKeyID: testTokenID, SecretAccessKey: hex.EncodeToString(sum[:]),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return st
+}
+
+func TestConnectRefusesAnotherInstallsBucket(t *testing.T) {
+	ctx := context.Background()
+
+	// Case 1: bucket stamped by another install.
+	r := newRig(t)
+	st := openProbeBucket(t, r)
+	if err := st.Put(ctx, fence.MarkerKey, strings.NewReader(`{"v":1,"install_id":"ins_other","generation":9,"written_at":"2026-11-25T10:00:00Z"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Put(ctx, routes.RouteKey("pid_theirs"), strings.NewReader(`{"v":1}`)); err != nil {
+		t.Fatal(err)
+	}
+	res, err := r.conn.Connect(ctx, Request{Token: testToken, Hostname: "media.example.com", Bucket: r.bucket})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Connected {
+		t.Fatalf("Connect unexpectedly succeeded on foreign bucket: %+v", res)
+	}
+	last := res.Steps[len(res.Steps)-1]
+	if last.Name != "storage" || last.OK || !strings.Contains(last.Detail, "ins_other") || !strings.Contains(last.Detail, "separate R2 bucket") {
+		t.Fatalf("failed step = %+v, want storage refusal naming ins_other", last)
+	}
+	if len(r.fake.scripts) != 0 || r.fake.domain != nil || len(r.fake.records) != 2 {
+		t.Fatalf("Cloudflare was modified on foreign bucket: scripts=%v domain=%v records=%v", r.fake.scripts, r.fake.domain, r.fake.records)
+	}
+	if p, _ := r.pool.GetProjectDelivery(ctx, db.DefaultProjectID); p.Delivery != "builtin" {
+		t.Fatalf("delivery = %s, want builtin", p.Delivery)
+	}
+	if r.urls.MediaURL() != "https://video.example.org" {
+		t.Fatalf("media URL = %s, want unchanged", r.urls.MediaURL())
+	}
+	if configs, _ := r.pool.ListStorageConfigs(ctx, db.DefaultProjectID); len(configs) != 1 {
+		t.Fatalf("storage configs = %d, want only fs", len(configs))
+	}
+	if _, err := st.Head(ctx, routes.RouteKey("pid_theirs")); err != nil {
+		t.Fatalf("foreign route record was touched: %v", err)
+	}
+
+	// Case 2: markerless bucket with unknown _routes/ records.
+	r2 := newRig(t)
+	st2 := openProbeBucket(t, r2)
+	if err := st2.Put(ctx, routes.RouteKey("pid_theirs"), strings.NewReader(`{"v":1}`)); err != nil {
+		t.Fatal(err)
+	}
+	res2, err := r2.conn.Connect(ctx, Request{Token: testToken, Hostname: "media.example.com", Bucket: r2.bucket})
+	if err != nil || res2.Connected {
+		t.Fatalf("markerless foreign bucket = %+v, %v; want refused", res2, err)
+	}
+	if last2 := res2.Steps[len(res2.Steps)-1]; last2.Name != "storage" || last2.OK || !strings.Contains(last2.Detail, "1 route records") {
+		t.Fatalf("failed step = %+v, want storage refusal with route count", last2)
+	}
+	if len(r2.fake.scripts) != 0 {
+		t.Fatalf("Worker uploaded on markerless foreign bucket: %v", r2.fake.scripts)
+	}
+
+	// Case 3: same install with higher generation (database_behind after restore) is allowed
+	// and reconciles under the restore fence without deleting unknown routes.
+	r3 := newRig(t)
+	st3 := openProbeBucket(t, r3)
+	ep, err := r3.pool.EnsureInstallEpoch(ctx, db.DefaultProjectID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	markerBody, _ := json.Marshal(fence.Marker{V: 1, InstallID: ep.InstallID, Generation: ep.Generation + 5})
+	if err := st3.Put(ctx, fence.MarkerKey, bytes.NewReader(markerBody)); err != nil {
+		t.Fatal(err)
+	}
+	if err := st3.Put(ctx, routes.RouteKey("pid_newer"), strings.NewReader(`{"v":1}`)); err != nil {
+		t.Fatal(err)
+	}
+	res3, err := r3.conn.Connect(ctx, Request{Token: testToken, Hostname: "media.example.com", Bucket: r3.bucket})
+	if err != nil || !res3.Connected {
+		t.Fatalf("same-install restore reconnect = %+v, %v; want connected", res3, err)
+	}
+	if fenced, err := r3.pool.FenceActive(ctx, db.DefaultProjectID); err != nil || !fenced {
+		t.Fatalf("restore fence = %v, %v; want active", fenced, err)
+	}
+	if _, err := st3.Head(ctx, routes.RouteKey("pid_newer")); err != nil {
+		t.Fatalf("newer route from restored backup was deleted: %v", err)
 	}
 }

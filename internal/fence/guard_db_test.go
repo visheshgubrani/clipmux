@@ -188,3 +188,52 @@ func TestWhileFencedARecordPlayingANewerReencodeIsKept(t *testing.T) {
 		t.Fatalf("after finish pid_old plays %s, want the database's out_old", got)
 	}
 }
+
+func TestCheckForeignBucketIdentifiesAnotherInstallWithoutRaisingFence(t *testing.T) {
+	ctx := context.Background()
+
+	// Bucket stamped by another install -> refused, no fence raised.
+	stForeign := newStore(t)
+	other := newInstall(t, stForeign)
+	other.pass()
+	fresh := newInstall(t, stForeign)
+	err := fence.CheckForeignBucket(ctx, db.New(fresh.pool), db.DefaultProjectID, stForeign)
+	if err == nil || !strings.Contains(err.Error(), other.row().InstallID) {
+		t.Fatalf("foreign marker: err = %v, want other install ID %q", err, other.row().InstallID)
+	}
+	if fresh.fenced() {
+		t.Fatal("CheckForeignBucket must not raise restore_fence")
+	}
+
+	// Markerless bucket holding unknown _routes/ records -> refused, no fence raised.
+	stUnmarked := newStore(t)
+	put(t, stUnmarked, "_routes/pid_theirs.json", `{"v":1}`)
+	a := newInstall(t, stUnmarked)
+	err = fence.CheckForeignBucket(ctx, db.New(a.pool), db.DefaultProjectID, stUnmarked)
+	if err == nil || !strings.Contains(err.Error(), "1 route records") {
+		t.Fatalf("unknown routes without marker: err = %v, want route count", err)
+	}
+	if a.fenced() {
+		t.Fatal("CheckForeignBucket must not raise restore_fence")
+	}
+
+	// Bucket stamped by this install (even ahead of this database after a restore) -> allowed.
+	stOwn := newStore(t)
+	b := newInstall(t, stOwn)
+	b.knowsOneVideo()
+	b.pass()
+	b.pass()
+	rewind(b, 1)
+	if err := fence.CheckForeignBucket(ctx, db.New(b.pool), db.DefaultProjectID, stOwn); err != nil {
+		t.Fatalf("same-install ahead bucket = %v, want nil", err)
+	}
+
+	// Markerless bucket with only known routes -> allowed.
+	stKnown := newStore(t)
+	c := newInstall(t, stKnown)
+	c.knowsOneVideo()
+	put(t, stKnown, "_routes/pid_old.json", `{"v":1}`)
+	if err := fence.CheckForeignBucket(ctx, db.New(c.pool), db.DefaultProjectID, stKnown); err != nil {
+		t.Fatalf("known-only unmarked bucket = %v, want nil", err)
+	}
+}

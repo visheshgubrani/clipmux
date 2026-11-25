@@ -21,6 +21,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/fence"
 	"github.com/visheshgubrani/clipmux/internal/routes"
 	"github.com/visheshgubrani/clipmux/internal/settings"
+	"github.com/visheshgubrani/clipmux/internal/storage"
 	"github.com/visheshgubrani/clipmux/internal/stores"
 )
 
@@ -376,6 +377,18 @@ func (c *Connector) r2Store(ctx context.Context, cf *Client, token, tokenID, acc
 		sum := sha256.Sum256([]byte(token))
 		cfg := stores.S3Config{Endpoint: c.endpoint(accountID), Region: "auto", Bucket: bucket, AccountID: accountID}
 		sec := stores.S3Secret{AccessKeyID: tokenID, SecretAccessKey: hex.EncodeToString(sum[:])}
+		// Check bucket ownership before writing config, _check/ objects, CORS,
+		// or deploying a Worker over another install's bucket.
+		probe, err := storage.OpenS3(storage.S3Options{
+			Endpoint: cfg.Endpoint, Region: cfg.Region, Bucket: cfg.Bucket,
+			AccessKeyID: sec.AccessKeyID, SecretAccessKey: sec.SecretAccessKey,
+		})
+		if err != nil {
+			return "", err
+		}
+		if err := fence.CheckForeignBucket(ctx, q, c.ProjectID, probe); err != nil {
+			return "", err
+		}
 		existing, err := q.FindStorageConfigByBucket(ctx, db.FindStorageConfigByBucketParams{ProjectID: c.ProjectID, Bucket: bucket, AccountID: accountID})
 		switch {
 		case err == nil:
@@ -444,6 +457,17 @@ func (c *Connector) Disconnect(ctx context.Context) (Disconnected, error) {
 		bucket, err := c.Stores.Get(ctx, conn.StorageID)
 		if err != nil {
 			return "", err
+		}
+		g, err := fence.NewGuard(ctx, q, c.ProjectID, nil)
+		if err != nil {
+			return "", err
+		}
+		mayDelete, err := g.MayDelete(ctx, conn.StorageID, bucket)
+		if err != nil {
+			return "", err
+		}
+		if !mayDelete {
+			return "restore fence is up; left the bucket's routes and keys untouched", nil
 		}
 		if err := bucket.DeletePrefix(ctx, "_routes/"); err != nil {
 			return "", fmt.Errorf("remove the Worker's routes (fix the R2 credentials, or remove the Worker in Cloudflare): %w", err)
