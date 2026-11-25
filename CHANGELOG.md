@@ -12,10 +12,10 @@ these.
 
 ### Added
 
-- Encrypted database backups and disaster recovery (D143–D148): scheduled
-  age-encrypted PostgreSQL backups to off-host storage, a backup before
-  every migration, scratch restores that verify each backup, source
-  mirroring, and `clipmux admin restore` behind a restore fence and store
+- Encrypted database backups and disaster recovery (D143, D144, D145,
+  D146, D147, D148): scheduled age-encrypted PostgreSQL backups to off-host
+  storage, a backup before every migration, scratch restores that verify
+  each backup, source mirroring, and `clipmux admin restore` behind a restore fence and store
   epoch, so a restored database can't delete newer media. Backup status is
   on the dashboard and in the metrics. Restores were rehearsed against
   Backblaze B2, including Object Lock; a cold restore reached playback in
