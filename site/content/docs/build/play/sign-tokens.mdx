@@ -16,7 +16,7 @@ your own route, another player or another language.
 ## Before you start
 
 - A video with a **signed** playback ID. Uploads are signed unless you ask
-  for `playback_policy: "public"`.
+  for `playback_policies: ["public"]`.
 - Your app's signing key, as `CLIPMUX_SIGNING_KID` (the key's ID) and
   `CLIPMUX_SIGNING_KEY` (a P-256 private key in PEM).
   `npx @clipmux/node init` writes both. You can also create one under

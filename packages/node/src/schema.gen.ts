@@ -118,9 +118,12 @@ export type Generate = {
 export type CreateUpload = {
   /** The file size in bytes. */
   size: number
-  /** The policy of the playback ID made with the asset. Default signed. */
-  playback_policy?: 'signed' | 'public'
-  /** Your own reference; it comes back on the asset and its webhooks. */
+} & AssetSettings
+
+/** What the new asset gets, the same for an upload, an import from a URL and a PC agent's file. */
+export type AssetSettings = {
+  playback_policies?: PlaybackPolicies
+  /** Your own reference, up to 255 bytes; it comes back on the asset and its webhooks. */
   passthrough?: string
   /** One line, up to 200 characters. */
   title?: string
@@ -128,6 +131,9 @@ export type CreateUpload = {
   generate?: Generate
   renditions?: Renditions
 }
+
+/** One playback ID is made for each policy. Default ["signed"]; ["signed", "public"] makes both. */
+export type PlaybackPolicies = ('signed' | 'public')[]
 
 export type Upload = {
   /** The upload ID (upl_...). */
@@ -172,20 +178,12 @@ export type CompleteUpload = {
 }
 
 export type CreateAsset = {
+  /** A public http or https URL; the server fetches it. */
   url: string
-  playback_policy?: 'signed' | 'public'
-  passthrough?: string
-  title?: string
-  generate?: Generate
-  renditions?: Renditions
-} | {
+} & AssetSettings | {
+  /** A file a PC agent registered for clipmux push --local. */
   agent_source_id: string
-  playback_policy?: 'signed' | 'public'
-  passthrough?: string
-  title?: string
-  generate?: Generate
-  renditions?: Renditions
-}
+} & AssetSettings
 
 export type UpdateAsset = {
   title: string | null

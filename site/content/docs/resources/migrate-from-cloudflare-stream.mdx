@@ -19,7 +19,7 @@ playing from Stream until they are imported.
 | Cloudflare Stream | ClipMux | What changes |
 | --- | --- | --- |
 | Video, by its `uid` | Video, `ast_…` (`asset` in the API), played through a playback ID, `pid_…` | In ClipMux the playback ID is separate from the video. A video can have several, and revoking one stops it at once |
-| `requireSignedURLs: true` | A playback ID with the `signed` policy | Uploads are `signed` unless you ask for `playback_policy: "public"` |
+| `requireSignedURLs: true` | A playback ID with the `signed` policy | Uploads are `signed` unless you ask for `playback_policies: ["public"]` |
 | `meta` | `passthrough` and `title` | `passthrough` is one string, your own reference, returned on the video and its webhooks |
 | Direct creator upload, created at `/stream/direct_upload`, then tus or a single upload to `uploadURL` | Upload (`POST /v1/uploads`), then parts sent straight to storage | Multipart and resumable without tus. `@clipmux/uploader` does it in the browser |
 | Upload from a link, at `/stream/copy` with `url` | `POST /v1/assets` with `url` | The server fetches the file from a public http(s) URL |

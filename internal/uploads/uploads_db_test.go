@@ -14,6 +14,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -204,7 +205,7 @@ func errCode(m map[string]any) string {
 // completeMultipartUpload.
 func TestUppyCallOrderUploadsAndQueuesProcessing(t *testing.T) {
 	e := newEnv(t)
-	c := e.create(20, map[string]any{"playback_policy": "signed"}, map[string]string{"Idempotency-Key": "lesson-42-v1"})
+	c := e.create(20, map[string]any{"playback_policies": []string{"signed"}}, map[string]string{"Idempotency-Key": "lesson-42-v1"})
 	if c.PartSize != partSize || c.Token == "" {
 		t.Fatalf("create = %+v", c)
 	}
@@ -278,7 +279,7 @@ func TestCreateValidatesInputAndScope(t *testing.T) {
 		{"no uploads:write", readOnly, map[string]any{"size": 10}, 403, "insufficient_scope"},
 		{"zero size", e.key, map[string]any{"size": 0}, 400, "invalid_request"},
 		{"over the instance limit", e.key, map[string]any{"size": 1001}, 413, "too_large"},
-		{"unknown policy", e.key, map[string]any{"size": 10, "playback_policy": "private"}, 400, "invalid_request"},
+		{"unknown policy", e.key, map[string]any{"size": 10, "playback_policies": []string{"private"}}, 400, "invalid_request"},
 		{"long passthrough", e.key, map[string]any{"size": 10, "passthrough": strings.Repeat("x", 256)}, 400, "invalid_request"},
 		{"long title", e.key, map[string]any{"size": 10, "title": strings.Repeat("x", 201)}, 400, "invalid_request"},
 	}
@@ -529,7 +530,7 @@ func TestAnUploadThatKeepsFailingCantStarveTheSweeper(t *testing.T) {
 // active, not yet playable.
 func TestCreatedUploadShowsItsPlaybackIDActive(t *testing.T) {
 	e := newEnv(t)
-	code, out, _ := e.call("POST", "/v1/uploads", e.key, map[string]any{"size": 20, "playback_policy": "public"}, nil)
+	code, out, _ := e.call("POST", "/v1/uploads", e.key, map[string]any{"size": 20, "playback_policies": []string{"public"}}, nil)
 	pids, _ := out["playback_ids"].([]any)
 	if code != http.StatusCreated || len(pids) != 1 {
 		t.Fatalf("create: %d %v", code, out)
@@ -629,5 +630,18 @@ func TestCompleteAcceptsEveryPartOfTheLargestUpload(t *testing.T) {
 	huge := map[string]any{"parts": []map[string]any{{"part_number": 1, "etag": strings.Repeat("x", 4<<20)}}}
 	if code, out, _ := e.call("POST", "/v1/uploads/"+c.UploadID+"/complete", c.Token, huge, nil); code != http.StatusRequestEntityTooLarge || errCode(out) != "too_large" {
 		t.Fatalf("a 4 MiB complete body: %d %v, want 413 too_large", code, out)
+	}
+}
+
+// D150: an upload asks for a signed and a public ID at once.
+func TestAnUploadMakesOnePlaybackIDPerPolicy(t *testing.T) {
+	e := newEnv(t)
+	code, out, _ := e.call("POST", "/v1/uploads", e.key, map[string]any{"size": 20, "playback_policies": []string{"signed", "public"}}, nil)
+	pids, _ := out["playback_ids"].([]any)
+	if code != http.StatusCreated || len(pids) != 2 {
+		t.Fatalf("create: %d %v", code, out)
+	}
+	if got := []string{str(pids[0].(map[string]any), "policy"), str(pids[1].(map[string]any), "policy")}; !slices.Contains(got, "signed") || !slices.Contains(got, "public") {
+		t.Fatalf("playback IDs = %v, want one signed and one public", pids)
 	}
 }

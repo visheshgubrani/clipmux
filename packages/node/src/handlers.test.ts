@@ -97,7 +97,7 @@ test('upload creates the upload the callback decides, signed by default, with en
   assert.equal(body.endpoint, 'https://video.example.com')
   assert.equal(body.upload_token, 'ut')
   assert.deepEqual(a.calls[0]?.body, {
-    playback_policy: 'signed',
+    playback_policies: ['signed'],
     passthrough: 'lesson_42',
     title: 'intro.mp4',
     size: 1234,

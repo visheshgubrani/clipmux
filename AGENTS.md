@@ -12,7 +12,7 @@ anything decided since, and wins over the architecture doc where they differ.
 - Layout follows go.dev/doc/modules/layout for a server: commands in `cmd/`,
   everything else in `internal/`. Nothing is importable from outside.
 - Current packages: `config`, `db` (migrations, sqlc-generated queries and
-  models, `dbtest`), `ids`, `apikeys`, `agents`, `assets`, `uploads`, `queue`,
+  models, `dbtest`), `ids`, `apikeys`, `agents`, `assets`, `ingest` (the settings every way in shares, D150), `uploads`, `queue`,
   `workerapi`, `worker`, `outputs`, `delivery`, `tokens`, `media`, `contentkey`,
   `storage` (filesystem and S3 adapters, `s3test`), `stores`, `routes`, `fence` (restore fence and store epoch, D144), `backup` (encrypted database backups, D143), `outbox`, `push`, `listen`,
   `dispatch` (serverless dispatches, keys, reaper), `runpod` (`runpodtest`), `modal`, `registry` (`registrytest`),

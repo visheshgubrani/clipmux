@@ -76,7 +76,7 @@ func (s *Service) handleAttach(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.Life == nil || req.URL != "" {
-		httpjson.Error(w, http.StatusBadRequest, "invalid_request", "attach takes playback_policy, passthrough and generate only")
+		httpjson.Error(w, http.StatusBadRequest, "invalid_request", "attach takes the asset settings only, not a url")
 		return
 	}
 	qs := db.New(s.pool)

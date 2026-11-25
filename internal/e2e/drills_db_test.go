@@ -104,7 +104,7 @@ func TestDrillRetentionAfterBackdating(t *testing.T) {
 	}
 
 	// An upload retried with an Idempotency-Key leaves a key row behind.
-	req, _ := http.NewRequest("POST", in.url+"/v1/uploads", strings.NewReader(`{"size": 1024, "playback_policy": "signed"}`))
+	req, _ := http.NewRequest("POST", in.url+"/v1/uploads", strings.NewReader(`{"size": 1024, "playback_policies": ["signed"]}`))
 	req.Header.Set("Authorization", "Bearer "+key)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Idempotency-Key", "drill-retention")

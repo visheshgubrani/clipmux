@@ -54,7 +54,9 @@ type Client struct {
 
 // Options describe the asset a push creates.
 type Options struct {
-	Policy      string // signed (default) or public
+	// Policies make one playback ID each: "signed", "public" or both;
+	// nil is ["signed"].
+	Policies    []string
 	Passthrough string
 	// Renditions are the ladder rungs to encode (D130); nil is every rung
 	// up to the source.
@@ -192,7 +194,7 @@ func (c *Client) call(ctx context.Context, method, path, bearer string, header m
 func (c *Client) identity(abs string, fi os.FileInfo, o Options) string {
 	parts := []string{
 		"clipmux-push-v1", strings.TrimSuffix(c.Server, "/"), abs, strconv.FormatInt(fi.Size(), 10),
-		strconv.FormatInt(fi.ModTime().UnixNano(), 10), o.Policy, o.Passthrough,
+		strconv.FormatInt(fi.ModTime().UnixNano(), 10), strings.Join(o.policies(), ","), o.Passthrough,
 	}
 	if len(o.Renditions) > 0 {
 		// Only when chosen, so a push begun before renditions keeps its name.
@@ -238,9 +240,6 @@ func (c *Client) File(ctx context.Context, path string, o Options) (Asset, error
 // file pushes with an Idempotency-Key suffix: empty at first, a fresh one
 // when the earlier upload expired or was cancelled and must start over.
 func (c *Client) file(ctx context.Context, path string, o Options, restart string) (Asset, error) {
-	if o.Policy == "" {
-		o.Policy = "signed"
-	}
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		return Asset{}, err
@@ -264,10 +263,8 @@ func (c *Client) file(ctx context.Context, path string, o Options, restart strin
 		// A replay of an earlier create (same Idempotency-Key) returns the
 		// same upload with a fresh token, or no token once it finished.
 		var created upload
-		body := map[string]any{"size": fi.Size(), "playback_policy": o.Policy, "passthrough": o.Passthrough}
-		if len(o.Renditions) > 0 {
-			body["renditions"] = o.Renditions
-		}
+		body := o.settings()
+		body["size"] = fi.Size()
 		_, err := c.call(ctx, http.MethodPost, "/v1/uploads", c.Key, map[string]string{"Idempotency-Key": "push-" + id + restart}, body, &created)
 		if err != nil {
 			return Asset{}, err
@@ -526,16 +523,41 @@ func (c *Client) put(ctx context.Context, f *os.File, p part, urlFor func(force 
 // AttachLocal creates the asset for a file a PC agent registered for push
 // --local (POST /v1/assets with agent_source_id), as the key's app.
 func (c *Client) AttachLocal(ctx context.Context, sourceID string, o Options) (Asset, error) {
-	if o.Policy == "" {
-		o.Policy = "signed"
-	}
 	var a Asset
-	body := map[string]any{"agent_source_id": sourceID, "playback_policy": o.Policy, "passthrough": o.Passthrough}
+	body := o.settings()
+	body["agent_source_id"] = sourceID
+	_, err := c.call(ctx, http.MethodPost, "/v1/assets", c.Key, map[string]string{"Idempotency-Key": "push-local-" + sourceID}, body, &a)
+	return a, err
+}
+
+// URL imports a public http(s) URL (POST /v1/assets with url): the server
+// fetches it, so nothing is uploaded from here. The same URL with the same
+// options to the same server is the same import, so running it again
+// creates nothing new.
+func (c *Client) URL(ctx context.Context, rawURL string, o Options) (Asset, error) {
+	parts := []string{"clipmux-push-url-v1", strings.TrimSuffix(c.Server, "/"), rawURL, strings.Join(o.policies(), ","), o.Passthrough, strings.Join(o.Renditions, ",")}
+	sum := sha256.Sum256([]byte(strings.Join(parts, "\n")))
+	var a Asset
+	body := o.settings()
+	body["url"] = rawURL
+	_, err := c.call(ctx, http.MethodPost, "/v1/assets", c.Key, map[string]string{"Idempotency-Key": "push-url-" + hex.EncodeToString(sum[:16])}, body, &a)
+	return a, err
+}
+
+func (o Options) policies() []string {
+	if len(o.Policies) == 0 {
+		return []string{"signed"}
+	}
+	return o.Policies
+}
+
+// settings is the asset settings every way in shares (D150).
+func (o Options) settings() map[string]any {
+	body := map[string]any{"playback_policies": o.policies(), "passthrough": o.Passthrough}
 	if len(o.Renditions) > 0 {
 		body["renditions"] = o.Renditions
 	}
-	_, err := c.call(ctx, http.MethodPost, "/v1/assets", c.Key, map[string]string{"Idempotency-Key": "push-local-" + sourceID}, body, &a)
-	return a, err
+	return body
 }
 
 // Asset reads an asset.

@@ -30,7 +30,7 @@ A value that doesn't parse stops the command at start, naming the variable.
 | `CLIPMUX_PUBLIC_URL` | chosen at first boot | The origin browsers and workers reach serve at. Set, it pins both URLs and the first-boot URL step is read-only. |
 | `CLIPMUX_MEDIA_URL` | `CLIPMUX_PUBLIC_URL` | The origin playback is served from (`base_url`); ideally another registrable domain. Needs `CLIPMUX_PUBLIC_URL`. |
 | `CLIPMUX_TRUSTED_PROXIES` | none | Addresses or CIDR ranges (Caddy's) whose `X-Forwarded-For`, `X-Forwarded-Proto` and `X-Request-Id` are believed. Rate limits, sign-in limits, request IDs and the https redirect all depend on it. |
-| `CLIPMUX_MAX_UPLOAD_BYTES` | the storage limit (~312 GiB) | The largest declared upload. |
+| `CLIPMUX_MAX_UPLOAD_BYTES` | the storage limit (~312 GiB) | The largest video that gets in: a declared upload, or a source imported from a URL. |
 | `CLIPMUX_BUILTIN_WORKER` | `true` | Start `clipmux worker` as serve's child. |
 | `CLIPMUX_UNSANDBOXED_WORKER` | `false` | Run the built-in worker where the media tool sandbox or Landlock doesn't hold. Only if the host isolates it another way. Where only Landlock is missing, the tools keep seccomp and the limits. |
 | `CLIPMUX_TOOL_MEMORY_MB` | `8192` | Memory limit for each media tool. Passed to the built-in worker. |

@@ -298,7 +298,7 @@ func (in *instance) uploadThrough(key, path string, extra map[string]any, call f
 		UploadToken string                `json:"upload_token"`
 		PlaybackIDs []struct{ ID string } `json:"playback_ids"`
 	}
-	body := map[string]any{"size": len(data), "playback_policy": "signed"}
+	body := map[string]any{"size": len(data), "playback_policies": []string{"signed"}}
 	maps.Copy(body, extra)
 	if s := call("POST", "/v1/uploads", key, body, &created); s != 201 {
 		in.t.Fatalf("create upload: %d", s)

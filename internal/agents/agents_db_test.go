@@ -356,7 +356,7 @@ func TestTheOwnersPushNeedsNoAPIKey(t *testing.T) {
 	r := newRig(t)
 	pc := r.pairAgent("pc")
 	_, src := r.bearer(pc.Key, "/worker/v1/sources", map[string]any{"size": 10})
-	status, asset := r.bearer(pc.Key, "/worker/v1/sources/"+src["id"].(string)+"/attach", map[string]any{"playback_policy": "public"})
+	status, asset := r.bearer(pc.Key, "/worker/v1/sources/"+src["id"].(string)+"/attach", map[string]any{"playback_policies": []string{"public"}})
 	if status != http.StatusCreated || asset["app_id"] != "app_dashboard" {
 		t.Fatalf("attach as the owner = %d %v, want an asset of the Dashboard app", status, asset)
 	}

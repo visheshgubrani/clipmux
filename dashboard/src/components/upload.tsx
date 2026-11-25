@@ -46,17 +46,22 @@ import { q } from '@/queries'
 // ordinary POST /v1/uploads as the chosen app (the Dashboard app by
 // default), sent in parts straight to storage. A browser can't read a file
 // again after a reload, so a reload lists the stopped uploads and adding the
-// same file again resumes it.
+// same file again resumes it. A URL is imported instead (POST /v1/assets):
+// ClipMux fetches it, with the same settings as a file (D150).
 
 type State = 'ready' | 'uploading' | 'paused' | 'done' | 'failed' | 'cancelled'
 
 interface Item {
   key: string
-  file: File
+  /** The file's name, or the URL. */
+  name: string
+  /** A file to upload, or a public URL ClipMux imports. */
+  file?: File
+  url?: string
   title: string
   state: State
   progress: number
-  error?: string
+  error?: string | undefined
   assetId?: string
   appId?: string
   upload?: ClipMuxUpload
@@ -107,6 +112,16 @@ const titleFrom = (name: string) =>
     .slice(0, 200)
 const fileKey = (f: { name: string; size: number; lastModified: number }) =>
   `${f.name}:${f.size}:${f.lastModified}`
+
+/** The URL if text is a public http(s) URL ClipMux could fetch, else null. */
+function videoURL(text: string): URL | null {
+  try {
+    const u = new URL(text.trim())
+    return u.protocol === 'http:' || u.protocol === 'https:' ? u : null
+  } catch {
+    return null
+  }
+}
 
 // An upload's own routes, with its token. Not api(): a refused token is a
 // 401 there, which api() would take for the session ending.
@@ -186,6 +201,7 @@ export function UploadProvider({ children }: { children: React.ReactNode }) {
           .filter((f) => !have.has(fileKey(f)))
           .map((f) => ({
             key: fileKey(f),
+            name: f.name,
             file: f,
             title: titleFrom(f.name),
             state: 'ready' as const,
@@ -200,6 +216,16 @@ export function UploadProvider({ children }: { children: React.ReactNode }) {
           side && setItems((cur) => cur.map((i) => (i.key === fileKey(f) ? { ...i, shortSide: side } : i))),
       )
   }, [])
+
+  const addURL = (u: URL) => {
+    const key = `url:${u.href}`
+    const name = decodeURIComponent(u.pathname.split('/').pop() ?? '') || u.host
+    setItems((cur) =>
+      cur.some((i) => i.key === key)
+        ? cur
+        : [...cur, { key, name: u.href, url: u.href, title: titleFrom(name), state: 'ready', progress: 0 }],
+    )
+  }
 
   const api = React.useMemo<UploadAPI>(
     () => ({
@@ -269,31 +295,49 @@ export function UploadProvider({ children }: { children: React.ReactNode }) {
     refreshLibrary()
   }
 
+  // What every way in takes for the new video (D150).
+  const settings = (item: Item) => ({
+    playback_policies: [opts.privacy],
+    ...(item.title ? { title: item.title } : {}),
+    ...(opts.passthrough && items.length === 1 ? { passthrough: opts.passthrough } : {}),
+    ...(opts.subtitles || opts.chapters
+      ? { generate: { subtitles: opts.subtitles || opts.chapters, chapters: opts.chapters && llm } }
+      : {}),
+    ...renditionsBody(opts.renditions),
+  })
+
+  // A URL is done once ClipMux has the asset: it fetches the file itself.
+  const runImport = async (item: Item, url: string) => {
+    update(item.key, { state: 'uploading', progress: 0, error: undefined })
+    const app = opts.app || undefined
+    try {
+      const asset = await post<Asset>('/v1/assets', { url, ...settings(item) }, app)
+      update(item.key, {
+        state: 'done',
+        progress: 1,
+        assetId: asset.id,
+        ...(typeof asset.app_id === 'string' ? { appId: asset.app_id } : app ? { appId: app } : {}),
+      })
+      refreshLibrary()
+    } catch (err) {
+      update(item.key, { state: 'failed', error: (err as Error).message })
+    }
+  }
+
   const run = async (item: Item) => {
+    if (item.url) return runImport(item, item.url)
+    const file = item.file
+    if (!file) return
     update(item.key, { state: 'uploading', progress: 0 })
     try {
       const app = opts.app || undefined
-      const upload = new ClipMuxUpload(item.file, {
+      const upload = new ClipMuxUpload(file, {
         endpoint: location.origin,
         store,
         // A remembered upload ClipMux has ended is replaced by a new one.
         // Not given the signal: creating is quick, and a cancel meanwhile
         // waits for it, so the new upload is cancelled, not left waiting.
-        create: () =>
-          post<CreatedUpload>(
-            '/v1/uploads',
-            {
-              size: item.file.size,
-              playback_policy: opts.privacy,
-              ...(item.title ? { title: item.title } : {}),
-              ...(opts.passthrough && items.length === 1 ? { passthrough: opts.passthrough } : {}),
-              ...(opts.subtitles || opts.chapters
-                ? { generate: { subtitles: opts.subtitles || opts.chapters, chapters: opts.chapters && llm } }
-                : {}),
-              ...renditionsBody(opts.renditions),
-            },
-            app,
-          ),
+        create: () => post<CreatedUpload>('/v1/uploads', { size: file.size, ...settings(item) }, app),
         onProgress: (p) => update(item.key, { progress: p.bytesUploaded / p.bytesTotal }),
       })
       update(item.key, { upload })
@@ -312,7 +356,7 @@ export function UploadProvider({ children }: { children: React.ReactNode }) {
         return
       }
       update(item.key, { state: 'failed', error: (err as Error).message })
-      notify.failed(`Couldn't upload ${item.file.name}`, err)
+      notify.failed(`Couldn't upload ${item.name}`, err)
     }
   }
 
@@ -363,7 +407,7 @@ export function UploadProvider({ children }: { children: React.ReactNode }) {
             <DialogTitle>Upload videos</DialogTitle>
             <DialogDescription>
               Uploads keep going while this tab is open. After a reload, add the same file again and it picks
-              up where it stopped.
+              up where it stopped. A video already online can be imported from its URL instead.
             </DialogDescription>
           </DialogHeader>
           {/* Room on the right for the switches' wider hit areas, which would
@@ -398,6 +442,7 @@ export function UploadProvider({ children }: { children: React.ReactNode }) {
               </section>
             )}
             <Dropzone onFiles={add} compact={items.length > 0} />
+            <URLField onURL={addURL} />
             {items.length > 0 && (
               <ul className="flex flex-col gap-2" aria-label="Files">
                 {items.map((i) => (
@@ -606,6 +651,41 @@ function Dropzone({ onFiles, compact }: { onFiles: (f: File[]) => void; compact:
   )
 }
 
+// URLField adds a video already online: ClipMux fetches it itself.
+function URLField({ onURL }: { onURL: (u: URL) => void }) {
+  const [text, setText] = React.useState('')
+  const [invalid, setInvalid] = React.useState(false)
+  const submit = (e: React.FormEvent) => {
+    e.preventDefault()
+    const u = videoURL(text)
+    setInvalid(!u)
+    if (!u) return
+    onURL(u)
+    setText('')
+  }
+  return (
+    <form onSubmit={submit} className="flex flex-col gap-1.5">
+      <div className="flex gap-2">
+        <Input
+          type="url"
+          aria-label="Video URL"
+          aria-invalid={invalid || undefined}
+          placeholder="Or import from a URL: https://…/video.mp4"
+          value={text}
+          onChange={(e) => {
+            setText(e.target.value)
+            setInvalid(false)
+          }}
+        />
+        <Button type="submit" variant="outline" disabled={!text.trim()}>
+          Add URL
+        </Button>
+      </div>
+      {invalid && <p className="text-xs text-destructive">Give an http or https URL.</p>}
+    </form>
+  )
+}
+
 function FileRow({
   item,
   onTitle,
@@ -630,23 +710,23 @@ function FileRow({
       <div className="flex items-center gap-2">
         {editable ? (
           <Input
-            aria-label={`Title for ${item.file.name}`}
+            aria-label={`Title for ${item.name}`}
             value={item.title}
             maxLength={200}
             onChange={(e) => onTitle(e.target.value)}
             className="h-7 min-w-0 flex-1"
           />
         ) : (
-          <span className="min-w-0 flex-1 truncate text-sm font-medium">{item.title || item.file.name}</span>
+          <span className="min-w-0 flex-1 truncate text-sm font-medium">{item.title || item.name}</span>
         )}
         <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
-          {item.state === 'uploading' && `${pct}%`}
+          {item.state === 'uploading' && (item.url ? 'Importing…' : `${pct}%`)}
           {item.state === 'paused' && `Paused, ${pct}%`}
-          {item.state === 'done' && 'Uploaded'}
+          {item.state === 'done' && (item.url ? 'Importing' : 'Uploaded')}
           {item.state === 'cancelled' && 'Cancelled'}
           {item.state === 'failed' && <span className="text-destructive">Failed</span>}
         </span>
-        {item.state === 'uploading' && (
+        {item.state === 'uploading' && !item.url && (
           <Button variant="ghost" size="icon-xs" aria-label="Pause" onClick={onPause}>
             <PauseIcon />
           </Button>
@@ -656,13 +736,13 @@ function FileRow({
             <PlayIcon />
           </Button>
         )}
-        {(item.state === 'uploading' || item.state === 'paused') && (
+        {(item.state === 'uploading' || item.state === 'paused') && !item.url && (
           <Button variant="ghost" size="icon-xs" aria-label="Cancel upload" onClick={onCancel}>
             <XIcon />
           </Button>
         )}
         {(editable || item.state === 'cancelled') && (
-          <Button variant="ghost" size="icon-xs" aria-label={`Remove ${item.file.name}`} onClick={onRemove}>
+          <Button variant="ghost" size="icon-xs" aria-label={`Remove ${item.name}`} onClick={onRemove}>
             <XIcon />
           </Button>
         )}
@@ -677,8 +757,11 @@ function FileRow({
           </Button>
         )}
       </div>
-      {(item.state === 'uploading' || item.state === 'paused' || item.state === 'done') && (
-        <Progress value={pct} aria-label={`Upload progress for ${item.file.name}`} />
+      {!item.url && (item.state === 'uploading' || item.state === 'paused' || item.state === 'done') && (
+        <Progress value={pct} aria-label={`Upload progress for ${item.name}`} />
+      )}
+      {item.url && item.state !== 'done' && (
+        <p className="truncate text-xs text-muted-foreground">{item.url}</p>
       )}
       {item.error && <p className="text-xs text-destructive">{item.error}</p>}
     </li>

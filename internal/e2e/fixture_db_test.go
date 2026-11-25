@@ -158,7 +158,7 @@ func TestPlayerFixture(t *testing.T) {
 	mux.HandleFunc("POST /uploads", func(w http.ResponseWriter, r *http.Request) {
 		size, _ := strconv.Atoi(r.URL.Query().Get("size"))
 		var created map[string]any
-		status := in.call("POST", "/v1/uploads", key, map[string]any{"size": size, "playback_policy": "signed"}, &created)
+		status := in.call("POST", "/v1/uploads", key, map[string]any{"size": size, "playback_policies": []string{"signed"}}, &created)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
 		_ = json.NewEncoder(w).Encode(created)
@@ -230,7 +230,7 @@ func TestPlayerFixture(t *testing.T) {
 			return
 		}
 		var created map[string]any
-		status := in.call("POST", "/v1/uploads", key, map[string]any{"size": req.Size, "playback_policy": "signed", "title": req.Name}, &created)
+		status := in.call("POST", "/v1/uploads", key, map[string]any{"size": req.Size, "playback_policies": []string{"signed"}, "title": req.Name}, &created)
 		if status == http.StatusCreated {
 			created["endpoint"] = in.url
 		}

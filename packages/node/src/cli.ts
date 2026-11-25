@@ -15,7 +15,7 @@ import { ClipMux, VERSION } from './client.ts'
 import { mergeEnv, parseEnv } from './envfile.ts'
 import { ClipMuxConfigError, ClipMuxError } from './errors.ts'
 import { EventWindow } from './events.ts'
-import type { App, Credentials, Pairing, PairingStatus, Renditions } from './schema.gen.ts'
+import type { App, Credentials, Pairing, PairingStatus, PlaybackPolicies, Renditions } from './schema.gen.ts'
 import { seconds } from './tokens.ts'
 import { signWebhook } from './webhooks.ts'
 
@@ -34,7 +34,8 @@ Commands:
              --forward-to URL  e.g. localhost:3000/api/clipmux/webhook
              --events LIST     only these types, comma separated
              --since DURATION  also replay events from this long ago, e.g. 10m
-  upload   Upload a file: npx @clipmux/node upload FILE [--passthrough REF] [--title T] [--renditions 1080p,480p] [--public] [--wait]
+  upload   Upload a file, or import a public http(s) URL the server fetches itself:
+           npx @clipmux/node upload FILE|URL [--passthrough REF] [--title T] [--renditions 1080p,480p] [--public] [--wait]
 
 Every command takes --env-file FILE.
 `
@@ -479,34 +480,42 @@ async function upload(args: string[], io: IO): Promise<number> {
   })
   const path = positionals[0]
   if (!path) {
-    io.err(`${bad} which file? npx @clipmux/node upload FILE`)
+    io.err(`${bad} which file? npx @clipmux/node upload FILE|URL`)
     return 2
   }
   const env = await loadEnv(io, values['env-file'])
   const cm = new ClipMux({ env, fetch: io.fetch })
-  const file = await openAsBlob(resolve(io.cwd, path))
-  const created = await cm.uploads.create({
-    size: file.size,
-    playback_policy: values.public ? 'public' : 'signed',
-    title: values.title ?? basename(path).slice(0, 200),
+  const isURL = /^https?:\/\//.test(path)
+  // The same settings for a file and a URL (D150).
+  const settings = {
+    playback_policies: [values.public ? 'public' : 'signed'] as PlaybackPolicies,
+    title: values.title ?? basename(isURL ? new URL(path).pathname : path).slice(0, 200),
     ...(values.passthrough ? { passthrough: values.passthrough } : {}),
     ...(values.renditions
       ? { renditions: values.renditions.split(',').map((r) => r.trim()) as Renditions }
       : {}),
-  })
-  let last = -1
-  const asset = await new ClipMuxUpload(file, {
-    upload: created,
-    fetch: io.fetch,
-    onProgress: (p) => {
-      const pct = Math.floor((100 * p.bytesUploaded) / Math.max(1, p.bytesTotal))
-      if (pct >= last + 10) {
-        last = pct
-        io.out(`  ${pct}%`)
-      }
-    },
-  }).start()
-  io.out(`${ok} uploaded ${basename(path)}: asset ${asset.id} (${asset.status})`)
+  }
+  let asset: { id: string; status: string }
+  if (isURL) {
+    asset = await cm.assets.importUrl({ url: path, ...settings })
+    io.out(`${ok} importing ${path}: asset ${asset.id} (${asset.status})`)
+  } else {
+    const file = await openAsBlob(resolve(io.cwd, path))
+    const created = await cm.uploads.create({ size: file.size, ...settings })
+    let last = -1
+    asset = await new ClipMuxUpload(file, {
+      upload: created,
+      fetch: io.fetch,
+      onProgress: (p) => {
+        const pct = Math.floor((100 * p.bytesUploaded) / Math.max(1, p.bytesTotal))
+        if (pct >= last + 10) {
+          last = pct
+          io.out(`  ${pct}%`)
+        }
+      },
+    }).start()
+    io.out(`${ok} uploaded ${basename(path)}: asset ${asset.id} (${asset.status})`)
+  }
   if (values.wait) {
     io.out('Waiting until it is ready…')
     const ready = await cm.assets.waitUntilReady(asset.id)

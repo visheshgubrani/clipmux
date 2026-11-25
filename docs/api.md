@@ -52,14 +52,17 @@ D112). `TestOpenAPICoversTheDocumentedIntegrationRoutes` keeps this section,
 App pairing, Analytics and Share links in step with it, and
 `TestOpenAPIOperationsAreRouted` proves every operation reaches a handler.
 
+Every way in takes the same **asset settings** (D150), checked by
+`ingest.Settings`: `{playback_policies?: ["signed"\|"public", …] (one ID each, ≤ 2, no repeats; default ["signed"]), passthrough? (≤ 255 bytes), title? (≤ 200 characters), generate?: {subtitles?, chapters?}, renditions?: ["1080p", …]}`. A bad value is `400 invalid_request`.
+
 | Route | Scope | Notes |
 | --- | --- | --- |
-| `POST /v1/uploads` | `uploads:write` | `{size, playback_policy: "signed"\|"public", passthrough, title?, generate?: {subtitles?, chapters?}, renditions?: ["1080p", …]}` → `201 {upload_id, asset_id, part_size, part_count, upload_token, playback_ids}` |
+| `POST /v1/uploads` | `uploads:write` | `{size, …settings}` → `201 {upload_id, asset_id, part_size, part_count, upload_token, playback_ids}`; `413 too_large` over `CLIPMUX_MAX_UPLOAD_BYTES` |
 | `POST /v1/uploads/{id}/parts` | upload token | `{part_numbers: [1…]}` (≤ 100) → `{parts: [{part_number, url}], expires_at}`; PUT each part to its URL and keep its `ETag` |
 | `GET /v1/uploads/{id}/parts` | upload token | `{parts: [{part_number, etag, size}]}` — what storage holds, for resuming |
 | `POST /v1/uploads/{id}/complete` | upload token | `{parts: [{part_number, etag}]}` → the asset, `processing` |
 | `POST /v1/uploads/{id}/cancel` | upload token or `uploads:write` | the asset becomes `errored` / `upload_cancelled` |
-| `POST /v1/assets` | `assets:write` | `{agent_source_id, playback_policy?, passthrough?, title?, generate?, renditions?}` → `201` the asset, `processing`, on a file a PC agent registered for `clipmux push --local`; its jobs run only on that agent. `404 agent_source_not_found` once attached; `409 source_unavailable` if the agent was revoked. Or `{url, playback_policy?, passthrough?, title?, generate?, renditions?}` → `201` the asset, `processing`; serve fetches the public http(s) URL and transcodes it. `400 import_url_refused` for a non-public or credentialed URL; a fetch that fails ends `errored` with `import_url_refused`, `import_failed` or `import_too_large` |
+| `POST /v1/assets` | `assets:write` | `{agent_source_id, …settings}` → `201` the asset, `processing`, on a file a PC agent registered for `clipmux push --local`; its jobs run only on that agent. `404 agent_source_not_found` once attached; `409 source_unavailable` if the agent was revoked. Or `{url, …settings}` → `201` the asset, `processing`; serve fetches the public http(s) URL, within `CLIPMUX_MAX_UPLOAD_BYTES`, and transcodes it. `400 import_url_refused` for a non-public or credentialed URL; a fetch that fails ends `errored` with `import_url_refused`, `import_failed` or `import_too_large` |
 | `GET /v1/app` | any scope | the key's own app: `{id, name, scopes, public_url, base_url, max_token_lifetime_seconds, upload_origins, signing_keys: [{kid, public_key_pem, created_at, retired_at?}]}`. `upload_origins` are where a browser sends upload parts (this server, and each bucket's public endpoint); with `base_url`, they are what an app's Content-Security-Policy must allow. `signing_keys` are the app's keys that still verify tokens (not revoked, not past `retired_at`), newest first; `base_url` is the media origin playback URLs start with, and a token's `exp − iat` may not exceed `max_token_lifetime_seconds`. For the SDK's `doctor` |
 | `GET /v1/assets/{id}` | `assets:read` | the asset (below) |
 | `PATCH /v1/assets/{id}` | `assets:write` | `{title}` → the asset; `""` or `null` clears it. A change bumps `version` and sends `video.asset.updated`; the same title changes nothing. `409 asset_deleted` |
@@ -204,7 +207,7 @@ dispatch's claim deadline, and its claim is `409 sandbox_required` unless the
 worker reports rlimits, `no_new_privs` and seccomp. A claim reports `free_disk_bytes`; a worker takes only
 uploads whose size, three times over, fits its scratch disk.
 | `POST /worker/v1/sources` | agent key: `{size, upload_source?}` → `201 {id, size, upload_source}`, a file that stays on the agent (`push --local`); with `upload_source`, the agent uploads it after its first encode (D059) |
-| `POST /worker/v1/sources/{id}/attach` | agent key: `{playback_policy?, passthrough?}` → `201` the asset, as the owner's upload (the Dashboard app), with a transcode job pinned to the agent |
+| `POST /worker/v1/sources/{id}/attach` | agent key: the asset settings → `201` the asset, as the owner's upload (the Dashboard app), with a transcode job pinned to the agent |
 | `POST /worker/v1/sources/sync` | agent key: `{ids}` (≤ 1000) → `{gone}`: sources the agent may forget (asset deleted, unknown, or unattached for a day) |
 
 An `upload_source` job (D059) is claimed only by the agent holding the file. Its

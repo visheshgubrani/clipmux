@@ -61,7 +61,7 @@ clipmux push --server https://video.example.com --passthrough lesson_42 lesson-4
 | Flag | Default | What it does |
 | --- | --- | --- |
 | `--server URL` | `CLIPMUX_SERVER` | Your server's public URL. |
-| `--policy POLICY` | `signed` | `signed` for a private video, `public` for a public one. |
+| `--policy POLICY` | `signed` | `signed` for a private video, `public` for a public one, or `signed,public` for one ID of each. |
 | `--passthrough REF` | | Your own ID for the video. One file only. |
 | `--renditions LIST` | every rung up to the source | The rungs to encode, comma separated, for example `1080p,480p`. |
 | `--wait` | `false` | Wait until each video is ready. Needs an API key. |
@@ -81,6 +81,18 @@ clipmux push --server https://video.example.com ./course/
 ```
 
 `--passthrough` names one video, so push files one at a time to set it.
+
+### URLs
+
+A URL in place of a file is imported: the server fetches it, with the same
+flags, and the API key needs `assets:write` for it. Files and URLs can be
+mixed in one push, and the same import run again creates nothing new.
+`npx @clipmux/node upload` takes a URL the same way. See
+[Import from a URL](/docs/build/upload/from-url).
+
+```bash
+clipmux push --server https://video.example.com https://files.example.com/lesson-42.mp4
+```
 
 ### Resuming
 

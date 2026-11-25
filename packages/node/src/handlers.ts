@@ -13,7 +13,7 @@
 
 import { ClipMux } from './client.ts'
 import { ClipMuxError, WebhookVerificationError } from './errors.ts'
-import type { Asset, CreateUpload } from './schema.gen.ts'
+import type { Asset, AssetSettings } from './schema.gen.ts'
 import type { WebhookEvent } from './webhooks.ts'
 
 /** The file the browser is about to upload, as it describes it. */
@@ -24,7 +24,8 @@ export interface UploadFile {
 }
 
 /** How to create the upload: everything but its size. */
-export type UploadDecision = Omit<CreateUpload, 'size'>
+/** The upload's settings, the same any way in takes (D150). */
+export type UploadDecision = AssetSettings
 
 export interface PlaybackDecision {
   /** A stable ID for this viewer, for unique-viewer analytics. */
@@ -44,7 +45,7 @@ export interface HandlerOptions {
   clipmux?: ClipMux
   /**
    * Decide whether this request may upload, and how: return the upload's
-   * passthrough, title, policy and generate, or null to refuse. The body is
+   * passthrough, title, playback policies, renditions and generate, or null to refuse. The body is
    * already read: decide from your session, the URL and `file`.
    */
   upload?: (req: Request, ctx: { file: UploadFile }) => Promise<UploadDecision | null> | UploadDecision | null
@@ -172,7 +173,7 @@ export function clipmuxHandler(options: HandlerOptions): (req: Request) => Promi
     }
     const decision = await options.upload(req, { file })
     if (!decision) return fail(403, 'denied', 'this upload is not allowed')
-    const created = await client().uploads.create({ playback_policy: 'signed', ...decision, size })
+    const created = await client().uploads.create({ playback_policies: ['signed'], ...decision, size })
     return reply(201, created)
   }
 

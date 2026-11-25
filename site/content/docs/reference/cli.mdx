@@ -13,7 +13,7 @@ the server and workers, and administers an instance from its host.
 ```text
 clipmux serve     API, dashboard, scheduler and built-in delivery
 clipmux worker    run a worker (agent mode; --once for serverless)
-clipmux push      upload files through the API
+clipmux push      upload files, or import URLs, through the API
 clipmux listen    forward webhooks to a local URL
 clipmux admin     host-side administration (keys, webhooks, reset-password)
 clipmux version   print the version
@@ -61,8 +61,10 @@ A connected PC keeps its server and key in `agent.json` under
 
 ### clipmux push
 
-Uploads files through the API, resuming an interrupted upload. It reads the
-app's API key from `CLIPMUX_API_KEY`, never from a flag.
+Uploads files through the API, resuming an interrupted upload. An `http` or
+`https` URL is imported instead: the server fetches it, and the same import
+run again creates nothing new. It reads the app's API key from
+`CLIPMUX_API_KEY`, never from a flag.
 
 ```bash
 CLIPMUX_API_KEY=cmx_… clipmux push --server https://video.example.com lesson-42.mp4
@@ -71,7 +73,7 @@ CLIPMUX_API_KEY=cmx_… clipmux push --server https://video.example.com lesson-4
 | Flag | Default | What it does |
 | --- | --- | --- |
 | `--server URL` | `CLIPMUX_SERVER` | The server's public URL. |
-| `--policy POLICY` | `signed` | The playback policy: `signed` or `public`. |
+| `--policy POLICY` | `signed` | The playback policies, one ID each: `signed`, `public`, or `signed,public`. |
 | `--passthrough REF` | | Your own reference, returned in webhooks (one file only). |
 | `--renditions LIST` | every rung up to the source | Rungs to encode, comma separated, e.g. `1080p,480p`. |
 | `--wait` | `false` | Wait until each video is ready to play. |
@@ -139,7 +141,7 @@ The SDK's command line, run in your app's project. Every command takes
 | `npx @clipmux/node init` | Connect this app to a server: the owner approves it in the dashboard, and the credentials go to an env file without being printed. |
 | `npx @clipmux/node doctor` | Check the env file: the server, the API key, the signing key and the webhook secret. |
 | `npx @clipmux/node listen` | Forward this app's webhook events to a local URL, signed with `CLIPMUX_WEBHOOK_SECRET`. |
-| `npx @clipmux/node upload FILE` | Upload a file. |
+| `npx @clipmux/node upload FILE\|URL` | Upload a file, or import a public `http(s)` URL the server fetches itself. |
 
 | Flag | Command | What it does |
 | --- | --- | --- |

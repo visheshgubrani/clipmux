@@ -21,7 +21,7 @@ import (
 )
 
 const pushUsage = `Usage:
-  CLIPMUX_API_KEY=cmx_… clipmux push --server URL [flags] FILE|DIR…
+  CLIPMUX_API_KEY=cmx_… clipmux push --server URL [flags] FILE|DIR|URL…
   clipmux push --local [flags] FILE|DIR…
 
 With --local the files stay on this PC: its connected agent (clipmux worker)
@@ -33,7 +33,9 @@ uploads the file once it has been encoded, so any worker can re-encode it.
 Uploads videos through the public upload API, straight to storage in 32 MiB
 parts. A push that is interrupted resumes where it stopped when run again,
 and pushing a finished file again creates nothing new. Directories are walked
-for video files. The API key needs uploads:write (and assets:read for --wait);
+for video files. An http or https URL is imported instead: the server fetches
+it, and running the same import again creates nothing new. The API key needs
+uploads:write for files, assets:write for URLs (and assets:read for --wait);
 it comes from CLIPMUX_API_KEY so it never shows up in a process listing.
 
 Flags:
@@ -47,7 +49,7 @@ func runPush(args []string, getenv func(string) string, stdout, stderr io.Writer
 	fs.SetOutput(stderr)
 	fs.Usage = func() { fmt.Fprint(stderr, pushUsage); fs.PrintDefaults() }
 	server := fs.String("server", getenv("CLIPMUX_SERVER"), "ClipMux's public URL (or CLIPMUX_SERVER)")
-	policy := fs.String("policy", "signed", "playback policy: signed or public")
+	policy := fs.String("policy", "signed", "playback policies, one ID each: signed, public, or signed,public")
 	passthrough := fs.String("passthrough", "", "your own reference, returned in webhooks (one file only)")
 	renditions := fs.String("renditions", "", "comma-separated rungs to encode, e.g. 1080p,480p (default: every rung up to the source)")
 	waitReady := fs.Bool("wait", false, "wait until each video is ready to play")
@@ -67,25 +69,40 @@ func runPush(args []string, getenv func(string) string, stdout, stderr io.Writer
 		fmt.Fprint(stderr, "clipmux push: needs --server and CLIPMUX_API_KEY (or --local), and at least one file\n\n")
 		fs.Usage()
 		return 2
-	case *policy != "signed" && *policy != "public":
-		fmt.Fprintln(stderr, "clipmux push: --policy is signed or public")
+	}
+	policies := splitList(*policy)
+	for i, p := range policies {
+		if (p != "signed" && p != "public") || slices.Contains(policies[:i], p) {
+			fmt.Fprintln(stderr, "clipmux push: --policy is signed, public, or signed,public")
+			return 2
+		}
+	}
+	var urls, paths []string
+	for _, a := range fs.Args() {
+		if strings.HasPrefix(a, "http://") || strings.HasPrefix(a, "https://") {
+			urls = append(urls, a)
+		} else {
+			paths = append(paths, a)
+		}
+	}
+	if len(urls) > 0 && *local {
+		fmt.Fprintln(stderr, "clipmux push: --local takes files on this PC; a URL is imported by the server, without --local")
 		return 2
 	}
-	files, err := videoFiles(fs.Args())
-	if err != nil {
-		fmt.Fprintf(stderr, "clipmux push: %v\n", err)
-		return 1
+	var files []string
+	if len(paths) > 0 {
+		var err error
+		if files, err = videoFiles(paths); err != nil {
+			fmt.Fprintf(stderr, "clipmux push: %v\n", err)
+			return 1
+		}
 	}
+	files = append(files, urls...)
 	if *passthrough != "" && len(files) > 1 {
 		fmt.Fprintln(stderr, "clipmux push: --passthrough names one video; push files one at a time to set it")
 		return 2
 	}
-	var chosen []string
-	for r := range strings.SplitSeq(*renditions, ",") {
-		if r = strings.TrimSpace(r); r != "" {
-			chosen = append(chosen, r)
-		}
-	}
+	chosen := splitList(*renditions)
 	state, err := os.UserCacheDir()
 	if err != nil {
 		state = os.TempDir()
@@ -99,20 +116,25 @@ func runPush(args []string, getenv func(string) string, stdout, stderr io.Writer
 
 	failed := 0
 	for _, f := range files {
-		opts := push.Options{Policy: *policy, Passthrough: *passthrough, Renditions: chosen}
-		if !*quiet {
+		opts := push.Options{Policies: policies, Passthrough: *passthrough, Renditions: chosen}
+		isURL := slices.Contains(urls, f)
+		if !*quiet && !isURL {
 			opts.Progress = progressLine(stderr, filepath.Base(f))
 		}
 		var a push.Asset
-		if *local {
+		var err error
+		switch {
+		case isURL:
+			a, err = c.URL(ctx, f, opts)
+		case *local:
 			a, err = pushLocal(ctx, c, agentDir(getenv), f, opts, *uploadSource)
-		} else {
+		default:
 			a, err = c.File(ctx, f, opts)
 		}
 		if err == nil && *waitReady && c.Key != "" {
 			a, err = c.Wait(ctx, a.ID, 2*time.Second)
 		}
-		if !*quiet {
+		if !*quiet && !isURL {
 			fmt.Fprintln(stderr)
 		}
 		if err != nil {
@@ -147,7 +169,7 @@ func pushLocal(ctx context.Context, c *push.Client, dir, path string, o push.Opt
 		return push.Asset{}, err
 	}
 	res, err := worker.RegisterLocal(ctx, dir, worker.LocalRequest{
-		Path: abs, Attach: c.Key == "", PlaybackPolicy: o.Policy, Passthrough: o.Passthrough, UploadSource: uploadSource,
+		Path: abs, Attach: c.Key == "", PlaybackPolicies: o.Policies, Passthrough: o.Passthrough, UploadSource: uploadSource,
 	})
 	if err != nil {
 		return push.Asset{}, err
@@ -157,6 +179,17 @@ func pushLocal(ctx context.Context, c *push.Client, dir, path string, o push.Opt
 		return a, json.Unmarshal(res.Asset, &a)
 	}
 	return c.AttachLocal(ctx, res.SourceID, o)
+}
+
+// splitList reads a comma-separated flag, ignoring blanks.
+func splitList(v string) []string {
+	var out []string
+	for s := range strings.SplitSeq(v, ",") {
+		if s = strings.TrimSpace(s); s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // videoFiles expands directories into the video files under them.
