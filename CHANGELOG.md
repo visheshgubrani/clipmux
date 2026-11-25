@@ -8,6 +8,25 @@ these.
 
 ## Unreleased
 
+## v1.0.0-rc.2 - 2026-11-25
+
+### Added
+
+- Encrypted database backups and disaster recovery (D143–D148): scheduled
+  age-encrypted PostgreSQL backups to off-host storage, a backup before
+  every migration, scratch restores that verify each backup, source
+  mirroring, and `clipmux admin restore` behind a restore fence and store
+  epoch, so a restored database can't delete newer media. Backup status is
+  on the dashboard and in the metrics. Restores were rehearsed against
+  Backblaze B2, including Object Lock; a cold restore reached playback in
+  72 s.
+- Analytics: how much storage the videos take (sources, encoded files and
+  tracks), with deleted videos left out.
+- Agent skills (`npx skills add visheshgubrani/clipmux`):
+  `clipmux-integrate` for the backend and `clipmux-player` for the
+  frontend.
+- Example apps: `examples/nextjs-lms` and `examples/express`.
+
 ### Changed
 
 - One shape for every way a video gets in (D150). `POST /v1/uploads`,
@@ -19,6 +38,13 @@ these.
   field is ignored, so a request still sending it gets one signed ID.
   `@clipmux/node`'s types and its handler's `UploadDecision` follow.
 - Imports from a URL are capped by `CLIPMUX_MAX_UPLOAD_BYTES`, like uploads.
+- The image keeps its layers the same across releases (D142): a host that
+  ran the previous release downloads only what changed, about 17 MB per
+  architecture when only ClipMux changed, instead of 1.7 GB.
+- Cloud GPUs: Modal and RunPod default to 10 machines at once (D141).
+- Cloud GPUs wake in parallel (D149): one slow provider call no longer holds
+  up the others, and a machine woken late still gets its whole claim
+  window. Modal waits up to 90 s for placement.
 
 ### Added
 
@@ -43,8 +69,23 @@ these.
   delete or move waits until the video's upload links expire, up to 16
   minutes after its last job. An encode cancelled before it ran no longer
   reads "Done by the server".
+- Analytics: views and watch time are no longer undercounted by Analytics
+  Engine sampling, aborted streams count only the bytes sent, the edge pull
+  starts from when analytics was connected, and built-in delivery counts
+  range and `HEAD` requests correctly.
+- Backups to a bucket with default Object Lock send the checksum it
+  requires, and a key scoped to one bucket no longer reads a 403 as a
+  missing object.
 - Dashboard: chapter navigation uses the shared player's seek bar. Public
   embed snippets include the ready chapter track when there is one.
+
+### @clipmux/node 0.2.0
+
+- **Breaking:** `uploads.create`, `assets.importUrl` and the handler's
+  `UploadDecision` take `playback_policies: ['signed' | 'public', …]`
+  instead of `playback_policy` (D150). `UploadDecision` is now the shared
+  `AssetSettings` type.
+- `npx @clipmux/node upload URL` imports a public `http(s)` URL.
 
 ### @clipmux/player 0.6.1
 
