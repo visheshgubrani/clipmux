@@ -46,13 +46,23 @@ that failed.
 
 ## Give the container a GPU
 
-Docker gives a container no GPU unless asked. Put the request in an override
-file beside `compose.yml`, for example `/opt/clipmux/compose.gpu.yml`:
+Docker gives a container no GPU unless asked. When you install with
+[`install.sh`](/docs/self-host/install), it checks automatically for an NVIDIA
+GPU (when the NVIDIA Container Toolkit is configured in Docker) or an AMD/Intel
+render node (`/dev/dri/renderD*`), writes `/opt/clipmux/compose.gpu.yml` and
+`COMPOSE_FILE=compose.yml:compose.gpu.yml` in `/opt/clipmux/.env`, and keeps
+both across upgrades—falling back to the CPU when no GPU is usable. Pass
+`--no-gpu` (or set `CLIPMUX_GPU=off`) to skip GPU passthrough.
+
+When running from a source checkout (`deploy/compose.yml`) or customizing an
+override by hand, pass one of the built-in GPU overrides beside `compose.yml`:
 
 <Tabs items={['NVIDIA', 'AMD or Intel']}>
 <Tab value="NVIDIA">
 
-```yaml title="compose.gpu.yml"
+Use `deploy/compose.nvidia.yml` (or copy it to `/opt/clipmux/compose.gpu.yml`):
+
+```yaml title="deploy/compose.nvidia.yml"
 services:
   app:
     deploy:
@@ -71,36 +81,32 @@ NVENC and whisper.cpp use.
 </Tab>
 <Tab value="AMD or Intel">
 
-```yaml title="compose.gpu.yml"
+Use `deploy/compose.dri.yml` (or copy it to `/opt/clipmux/compose.gpu.yml`),
+setting `CLIPMUX_RENDER_GID` in `.env` when `/dev/dri/renderD*` is
+group-restricted (`stat -c '%g' /dev/dri/renderD128`):
+
+```yaml title="deploy/compose.dri.yml"
 services:
   app:
     devices:
       - /dev/dri:/dev/dri
     group_add:
-      - "992"
+      - "${CLIPMUX_RENDER_GID:-10001}"
 ```
 
-Replace `992` with your host's `render` group ID, from
-`getent group render | cut -d: -f3`. The app runs as an unprivileged user,
-and the group lets it open the render node.
+The app runs as an unprivileged user, and adding the host's `render` group ID
+lets it open the render node.
 
 </Tab>
 </Tabs>
 
-To set `CLIPMUX_ENCODER` or `CLIPMUX_VAAPI_DEVICE`, add them to the same
-file under `app`, as `environment:` entries. Then start the stack with both
-files:
+To set `CLIPMUX_ENCODER` or `CLIPMUX_VAAPI_DEVICE`, add them under `app` as
+`environment:` entries in your override file. Start the stack with both files,
+or save `COMPOSE_FILE` in `.env` so plain `docker compose` includes it:
 
 ```bash
-cd /opt/clipmux
-sudo docker compose -f compose.yml -f compose.gpu.yml up -d --wait
+docker compose -f deploy/compose.yml -f deploy/compose.dri.yml up -d --wait
 ```
-
-<Note>
-  The installer's upgrade starts the stack with `compose.yml` alone, so the
-  app comes back without the GPU. After each upgrade, run the command above
-  again.
-</Note>
 
 ## Turn the built-in encoder off
 

@@ -1,0 +1,13 @@
+# NVIDIA GPU passthrough for ClipMux (NVENC encoding + CUDA/Vulkan whisper.cpp).
+# Needs the NVIDIA Container Toolkit on the host.
+#
+#   docker compose -f deploy/compose.yml -f deploy/compose.nvidia.yml up -d --wait
+services:
+  app:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

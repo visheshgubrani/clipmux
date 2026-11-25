@@ -66,6 +66,11 @@ Never commit `deploy/.env`.
 docker compose -f deploy/compose.yml up -d --build --wait
 ```
 
+To pass a host GPU into the container, include `-f deploy/compose.nvidia.yml`
+(NVIDIA) or `-f deploy/compose.dri.yml` (AMD or Intel, setting
+`CLIPMUX_RENDER_GID` in `deploy/.env` if needed). See
+[Encode on this server](/docs/self-host/encoding/this-server).
+
 This builds the image, with FFmpeg, Shaka Packager and whisper.cpp, which
 takes a while the first time. Postgres starts first, then the app, then
 Caddy.
