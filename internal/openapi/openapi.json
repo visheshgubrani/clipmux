@@ -50,7 +50,9 @@
               },
               "example": {
                 "size": 734003200,
-                "playback_policy": "signed",
+                "playback_policies": [
+                  "signed"
+                ],
                 "passthrough": "lesson_42",
                 "title": "Lesson 42: Sorting",
                 "generate": {
@@ -799,7 +801,13 @@
                     {
                       "id": "pid_01j88d4vyy93fwe7p3aqr8kcqz",
                       "policy": "signed",
-                      "playable": true,
+                      "playable": false,
+                      "status": "active"
+                    },
+                    {
+                      "id": "pid_01j88d4vyy93fwe7p3aqr8kcr0",
+                      "policy": "public",
+                      "playable": false,
                       "status": "active"
                     }
                   ],
@@ -1242,7 +1250,10 @@
               },
               "example": {
                 "url": "https://files.example.com/lesson-42.mp4",
-                "playback_policy": "signed",
+                "playback_policies": [
+                  "signed",
+                  "public"
+                ],
                 "passthrough": "lesson_42",
                 "title": "Lesson 42: Sorting"
               }
@@ -8441,24 +8452,36 @@
         }
       },
       "CreateUpload": {
-        "type": "object",
-        "properties": {
-          "size": {
-            "type": "integer",
-            "minimum": 1,
-            "description": "The file size in bytes."
+        "allOf": [
+          {
+            "type": "object",
+            "properties": {
+              "size": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "The file size in bytes."
+              }
+            },
+            "required": [
+              "size"
+            ]
           },
-          "playback_policy": {
-            "type": "string",
-            "enum": [
-              "signed",
-              "public"
-            ],
-            "description": "The policy of the playback ID made with the asset. Default signed."
+          {
+            "$ref": "#/components/schemas/AssetSettings"
+          }
+        ]
+      },
+      "AssetSettings": {
+        "type": "object",
+        "description": "What the new asset gets, the same for an upload, an import from a URL and a PC agent's file.",
+        "properties": {
+          "playback_policies": {
+            "$ref": "#/components/schemas/PlaybackPolicies"
           },
           "passthrough": {
             "type": "string",
-            "description": "Your own reference; it comes back on the asset and its webhooks."
+            "maxLength": 255,
+            "description": "Your own reference, up to 255 bytes; it comes back on the asset and its webhooks."
           },
           "title": {
             "type": "string",
@@ -8472,10 +8495,21 @@
           "renditions": {
             "$ref": "#/components/schemas/Renditions"
           }
+        }
+      },
+      "PlaybackPolicies": {
+        "type": "array",
+        "description": "One playback ID is made for each policy. Default [\"signed\"]; [\"signed\", \"public\"] makes both.",
+        "items": {
+          "type": "string",
+          "enum": [
+            "signed",
+            "public"
+          ]
         },
-        "required": [
-          "size"
-        ]
+        "minItems": 1,
+        "maxItems": 2,
+        "uniqueItems": true
       },
       "Upload": {
         "type": "object",
@@ -8621,65 +8655,43 @@
       "CreateAsset": {
         "oneOf": [
           {
-            "type": "object",
-            "properties": {
-              "url": {
-                "type": "string",
-                "format": "uri"
-              },
-              "playback_policy": {
-                "type": "string",
-                "enum": [
-                  "signed",
-                  "public"
+            "allOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "url": {
+                    "type": "string",
+                    "format": "uri",
+                    "description": "A public http or https URL; the server fetches it."
+                  }
+                },
+                "required": [
+                  "url"
                 ]
               },
-              "passthrough": {
-                "type": "string"
-              },
-              "title": {
-                "type": "string"
-              },
-              "generate": {
-                "$ref": "#/components/schemas/Generate"
-              },
-              "renditions": {
-                "$ref": "#/components/schemas/Renditions"
+              {
+                "$ref": "#/components/schemas/AssetSettings"
               }
-            },
-            "required": [
-              "url"
             ],
             "title": "ImportURL"
           },
           {
-            "type": "object",
-            "properties": {
-              "agent_source_id": {
-                "type": "string"
-              },
-              "playback_policy": {
-                "type": "string",
-                "enum": [
-                  "signed",
-                  "public"
+            "allOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "agent_source_id": {
+                    "type": "string",
+                    "description": "A file a PC agent registered for clipmux push --local."
+                  }
+                },
+                "required": [
+                  "agent_source_id"
                 ]
               },
-              "passthrough": {
-                "type": "string"
-              },
-              "title": {
-                "type": "string"
-              },
-              "generate": {
-                "$ref": "#/components/schemas/Generate"
-              },
-              "renditions": {
-                "$ref": "#/components/schemas/Renditions"
+              {
+                "$ref": "#/components/schemas/AssetSettings"
               }
-            },
-            "required": [
-              "agent_source_id"
             ],
             "title": "AttachAgentSource"
           }

@@ -228,3 +228,15 @@ func TestAPushCarriesItsRenditions(t *testing.T) {
 		t.Fatalf("a push with other renditions replayed %s", first.ID)
 	}
 }
+
+func TestAPushCanAskForSignedAndPublicIDs(t *testing.T) {
+	e := newEnv(t)
+	path, _ := file(t, 100)
+	a, err := e.client(http.DefaultClient).File(context.Background(), path, push.Options{Policies: []string{"signed", "public"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(a.PlaybackIDs) != 2 || a.PlaybackIDs[0].Policy == a.PlaybackIDs[1].Policy {
+		t.Fatalf("playback IDs = %+v, want one signed and one public", a.PlaybackIDs)
+	}
+}

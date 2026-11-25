@@ -132,3 +132,24 @@ func TestANotFoundURLFailsAtOnce(t *testing.T) {
 		t.Fatalf("hits %d, asset %v", *hits, got)
 	}
 }
+
+// D150: an import takes the same settings as an upload, both policies
+// included.
+func TestAnImportMakesOnePlaybackIDPerPolicy(t *testing.T) {
+	r := newRig(t)
+	status, view := r.send(http.MethodPost, "/v1/assets", r.key, map[string]any{
+		"url": "https://files.example.com/leds.mp4", "playback_policies": []string{"public", "signed"},
+	}, "")
+	pids, _ := view["playback_ids"].([]any)
+	if status != http.StatusCreated || len(pids) != 2 {
+		t.Fatalf("POST /v1/assets = %d %v", status, view)
+	}
+	if p0, p1 := pids[0].(map[string]any)["policy"], pids[1].(map[string]any)["policy"]; p0 == p1 || (p0 != "public" && p0 != "signed") || (p1 != "public" && p1 != "signed") {
+		t.Fatalf("playback IDs = %v, want one public and one signed", pids)
+	}
+	if status, view := r.send(http.MethodPost, "/v1/assets", r.key, map[string]any{
+		"url": "https://files.example.com/leds.mp4", "playback_policies": []string{"private"},
+	}, ""); status != http.StatusBadRequest {
+		t.Fatalf("a private policy = %d %v, want 400", status, view)
+	}
+}

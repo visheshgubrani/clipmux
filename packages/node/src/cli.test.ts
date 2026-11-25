@@ -296,3 +296,25 @@ test('upload asks for the renditions given, and none when --renditions is left o
   assert.deepEqual(bodies[0].renditions, ['1080p', '480p'])
   assert.equal('renditions' in bodies[1], false)
 })
+
+test('upload with a URL imports it, with the same settings as a file', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'cmx-'))
+  await writeFile(join(dir, '.env'), mergeEnv('', goodEnv, '# test'))
+  const bodies: Record<string, unknown>[] = []
+  const routes = {
+    'POST /v1/assets': (body: unknown) => {
+      bodies.push(body as Record<string, unknown>)
+      return Response.json({ id: 'ast_1', status: 'processing', playback_ids: [] }, { status: 201 })
+    },
+  }
+  const h = harness(dir, routes)
+  const url = 'https://files.example.com/videos/leds.mp4'
+  assert.equal(await main(['upload', url, '--public', '--renditions', '720p'], h.io), 0, h.out.join('\n'))
+  assert.deepEqual(bodies[0], {
+    url,
+    playback_policies: ['public'],
+    title: 'leds.mp4',
+    renditions: ['720p'],
+  })
+  assert.match(h.out.join('\n'), /importing .*asset ast_1 \(processing\)/)
+})

@@ -213,14 +213,14 @@ The open-source edition has one owner account. A multi-tenant cloud edition is f
 
 ## Ingest
 
-Every ingest path ends the same way: a verified source exists, and the asset moves to `processing`.
+Every ingest path ends the same way: a verified source exists, and the asset moves to `processing`. Every path also takes the same asset settings (playback policies, passthrough, title, renditions, generated tracks) with the same defaults and limits (D150).
 
 | Path | Used by | How bytes move |
 | --- | --- | --- |
 | Direct upload | Any app, such as an LMS or a SaaS product | The browser sends multipart parts straight to storage |
-| Dashboard upload | The owner | The same API with a UI on top |
-| Import from URL | Migrations | A worker copies the URL to `uploads/{asset_id}/source`, then continues as an upload |
-| `clipmux push` | Files on any machine | The CLI uses the same upload API |
+| Dashboard upload | The owner | The same API with a UI on top, for files and URLs |
+| Import from URL | Migrations, videos already online | serve copies the URL to `uploads/{asset_id}/source` through the SSRF-guarded client, then continues as an upload (D039) |
+| `clipmux push` | Files and URLs on any machine | The CLI uses the same upload and import API |
 | `clipmux push --local` | Files beside a PC agent | The source stays on that machine and only outputs are uploaded |
 
 ### Multipart upload flow
@@ -614,7 +614,7 @@ An app needs one API key, one signing key and one webhook endpoint, all created 
 | `POST /v1/uploads/{id}/parts` | Browser, with `upload_token` | Get presigned part URLs |
 | `POST /v1/uploads/{id}/complete` | Browser, with `upload_token` | Finish the upload |
 | `POST /v1/uploads/{id}/cancel` | Browser or backend | Abort the upload |
-| `POST /v1/assets` | Backend | Import from a URL or register an agent source |
+| `POST /v1/assets` | Backend | Import from a URL or register an agent source, with the same settings as an upload |
 | `GET /v1/assets` | Backend | List the app's assets, filtered by `passthrough` or `updated_since` |
 | `GET /v1/assets/{id}` | Backend | Read status, version, outputs and playback IDs |
 | `DELETE /v1/assets/{id}` | Backend | Delete an asset and its files |

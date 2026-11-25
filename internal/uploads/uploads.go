@@ -36,12 +36,12 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/httpjson"
 	"github.com/visheshgubrani/clipmux/internal/idempotency"
 	"github.com/visheshgubrani/clipmux/internal/ids"
+	"github.com/visheshgubrani/clipmux/internal/ingest"
 	"github.com/visheshgubrani/clipmux/internal/outbox"
 	"github.com/visheshgubrani/clipmux/internal/queue"
 	"github.com/visheshgubrani/clipmux/internal/ratelimit"
 	"github.com/visheshgubrani/clipmux/internal/storage"
 	"github.com/visheshgubrani/clipmux/internal/stores"
-	"github.com/visheshgubrani/clipmux/internal/tracks"
 )
 
 // Error codes the upload API returns or records on assets.
@@ -52,7 +52,6 @@ const (
 
 const (
 	maxPartsPerSign = 100
-	maxPassthrough  = 255
 	// maxCompleteBody fits every part of the largest upload: an entry with
 	// an S3 multipart ETag is about 70 bytes, and 200 leaves room for longer
 	// ETags (bug hunt F15: 64 KiB stopped near 936 parts, about 29 GiB).
@@ -106,19 +105,11 @@ func partCount(u db.Upload) int { return int((u.DeclaredSize + u.PartSize - 1) /
 
 // --- create ---
 
-// CreateRequest is the body of POST /v1/uploads.
+// CreateRequest is the body of POST /v1/uploads: the size, and the
+// settings every way in shares (D150).
 type CreateRequest struct {
-	Size           int64  `json:"size"`
-	PlaybackPolicy string `json:"playback_policy"`
-	Passthrough    string `json:"passthrough"`
-	// Title is an optional name for people (D099), up to 200 characters.
-	Title string `json:"title,omitempty"`
-	// Generate asks for subtitles and chapters (P5-T16); chapters imply
-	// subtitles. They are made after the video is ready.
-	Generate tracks.Generate `json:"generate,omitzero"`
-	// Renditions are the ladder rungs to encode, e.g. ["1080p", "480p"]
-	// (D130); absent is every rung up to the source.
-	Renditions []string `json:"renditions,omitempty"`
+	Size int64 `json:"size"`
+	ingest.Settings
 }
 
 // Created is the response to POST /v1/uploads.
@@ -136,24 +127,13 @@ type Created struct {
 // transaction. With an idempotency key, a repeat returns the same upload
 // with a newly issued token (tokens are never stored).
 func (s *Service) Create(ctx context.Context, key apikeys.Key, req CreateRequest, idemKey string) (Created, error) {
-	if req.PlaybackPolicy == "" {
-		req.PlaybackPolicy = "signed"
-	}
 	switch {
 	case req.Size <= 0:
 		return Created{}, fail(http.StatusBadRequest, "invalid_request", "size must be a positive number of bytes")
 	case req.Size > s.MaxSize:
 		return Created{}, fail(http.StatusRequestEntityTooLarge, "too_large", fmt.Sprintf("size exceeds this instance's limit of %d bytes", s.MaxSize))
-	case req.PlaybackPolicy != "signed" && req.PlaybackPolicy != "public":
-		return Created{}, fail(http.StatusBadRequest, "invalid_request", `playback_policy must be "signed" or "public"`)
-	case len(req.Passthrough) > maxPassthrough:
-		return Created{}, fail(http.StatusBadRequest, "invalid_request", "passthrough is limited to 255 bytes")
 	}
-	title, err := assets.Title(req.Title)
-	if err != nil {
-		return Created{}, err
-	}
-	renditions, err := assets.Renditions(req.Renditions)
+	set, err := req.Check()
 	if err != nil {
 		return Created{}, err
 	}
@@ -178,19 +158,13 @@ func (s *Service) Create(ctx context.Context, key apikeys.Key, req CreateRequest
 		}
 		asset, err := q.CreateAsset(ctx, db.CreateAssetParams{
 			ID: ids.New(ids.Asset), ProjectID: key.ProjectID, AppID: key.AppID, StorageID: st.ID,
-			Passthrough: pgtype.Text{String: req.Passthrough, Valid: req.Passthrough != ""}, Title: title,
-			Renditions: renditions,
+			Passthrough: set.Passthrough, Title: set.Title, Renditions: set.Renditions,
 		})
 		if err != nil {
 			return err
 		}
-		pid, err := q.CreatePlaybackID(ctx, db.CreatePlaybackIDParams{
-			ID: ids.New(ids.PlaybackID), ProjectID: key.ProjectID, AssetID: asset.ID, Policy: req.PlaybackPolicy,
-		})
+		pids, err := set.Create(ctx, q, key.ProjectID, asset.ID)
 		if err != nil {
-			return err
-		}
-		if _, err := tracks.Create(ctx, q, key.ProjectID, asset.ID, req.Generate); err != nil {
 			return err
 		}
 		store, err := s.stores.GetIn(ctx, q, st.ID)
@@ -212,7 +186,7 @@ func (s *Service) Create(ctx context.Context, key apikeys.Key, req CreateRequest
 		}
 		out = Created{
 			UploadID: up.ID, AssetID: asset.ID, PartSize: up.PartSize, PartCount: partCount(up),
-			PlaybackIDs: []assets.PlaybackID{{ID: pid.ID, Policy: pid.Policy, Status: pid.Status}},
+			PlaybackIDs: pids,
 		}
 		stored, _ := json.Marshal(out) // without the token
 		if err := claim.Save(ctx, http.StatusCreated, stored); err != nil {

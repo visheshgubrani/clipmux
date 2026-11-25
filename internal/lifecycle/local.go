@@ -16,7 +16,6 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/idempotency"
 	"github.com/visheshgubrani/clipmux/internal/ids"
 	"github.com/visheshgubrani/clipmux/internal/queue"
-	"github.com/visheshgubrani/clipmux/internal/tracks"
 )
 
 // Local sources (docs/architecture.md, "Local sources"): `clipmux push
@@ -35,22 +34,10 @@ var errSourceUnavailable = httpjson.Fail(http.StatusConflict, "source_unavailabl
 // agent_source_id, and what a PC agent calls for the owner's own
 // `push --local` (as the Dashboard app).
 func (s *Service) AttachLocal(ctx context.Context, key apikeys.Key, req ImportRequest, idemKey string) (assets.View, error) {
-	if req.PlaybackPolicy == "" {
-		req.PlaybackPolicy = "signed"
-	}
-	switch {
-	case req.URL != "":
+	if req.URL != "" {
 		return assets.View{}, httpjson.Fail(http.StatusBadRequest, "invalid_request", "give url or agent_source_id, not both")
-	case req.PlaybackPolicy != "signed" && req.PlaybackPolicy != "public":
-		return assets.View{}, httpjson.Fail(http.StatusBadRequest, "invalid_request", `playback_policy must be "signed" or "public"`)
-	case len(req.Passthrough) > 255:
-		return assets.View{}, httpjson.Fail(http.StatusBadRequest, "invalid_request", "passthrough is limited to 255 bytes")
 	}
-	title, err := assets.Title(req.Title)
-	if err != nil {
-		return assets.View{}, err
-	}
-	renditions, err := assets.Renditions(req.Renditions)
+	set, err := req.Check()
 	if err != nil {
 		return assets.View{}, err
 	}
@@ -83,19 +70,14 @@ func (s *Service) AttachLocal(ctx context.Context, key apikeys.Key, req ImportRe
 			ID: ids.New(ids.Asset), ProjectID: key.ProjectID, AppID: key.AppID, StorageID: st.ID,
 			SourceUri:     pgtype.Text{String: agentSourceURI(src.AgentID, src.ID), Valid: true},
 			AgentSourceID: pgtype.Text{String: src.ID, Valid: true},
-			Passthrough:   pgtype.Text{String: req.Passthrough, Valid: req.Passthrough != ""},
-			Title:         title,
-			Renditions:    renditions,
+			Passthrough:   set.Passthrough,
+			Title:         set.Title,
+			Renditions:    set.Renditions,
 		})
 		if err != nil {
 			return err
 		}
-		if _, err := q.CreatePlaybackID(ctx, db.CreatePlaybackIDParams{
-			ID: ids.New(ids.PlaybackID), ProjectID: key.ProjectID, AssetID: asset.ID, Policy: req.PlaybackPolicy,
-		}); err != nil {
-			return err
-		}
-		if _, err := tracks.Create(ctx, q, key.ProjectID, asset.ID, req.Generate); err != nil {
+		if _, err := set.Create(ctx, q, key.ProjectID, asset.ID); err != nil {
 			return err
 		}
 		if _, err := queue.Enqueue(ctx, tx, queue.Job{ProjectID: key.ProjectID, AssetID: asset.ID, Kind: "transcode", PinnedAgentID: src.AgentID}); err != nil {

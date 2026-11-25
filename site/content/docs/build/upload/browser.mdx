@@ -183,7 +183,8 @@ async upload(req, { file }) {
 }
 ```
 
-It may also return `playback_policy`, `generate` and `renditions`.
+It may also return `playback_policies`, `generate` and `renditions`: the
+same settings any way in takes.
 
 To write the route yourself, check access, call `POST /v1/uploads` with your
 API key, and answer with the body. `clipmux.uploads.create` returns it with

@@ -16,10 +16,12 @@ straight to storage, and an API key never reaches a browser.
 | [The command line](/docs/build/upload/command-line) | On your machine | You're testing an integration, or loading a folder of existing videos. |
 | [The dashboard](/docs/self-host/dashboard) | On the owner's machine | The server's owner adds a video by hand, without any app code. |
 
-Uploads and imports through the API take the same options: `passthrough`
-(your own ID), `title`, `playback_policy`, `generate` (subtitles and
-chapters) and `renditions`. The command lines take a subset of them, as
-flags.
+Every way in takes the same settings, with the same defaults: `passthrough`
+(your own ID), `title`, `playback_policies` (`["signed"]`, `["public"]` or
+both), `generate` (subtitles and chapters) and `renditions`. An upload adds
+its `size`, an import its `url`; the rest of the body is identical. The
+command lines and the dashboard take the same settings, as flags and
+fields.
 
 <Cards>
   <Card title="Upload from the browser" href="/docs/build/upload/browser">A drop zone that resumes after a reload.</Card>

@@ -41,6 +41,7 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/db"
 	"github.com/visheshgubrani/clipmux/internal/dispatch"
 	"github.com/visheshgubrani/clipmux/internal/ids"
+	"github.com/visheshgubrani/clipmux/internal/ingest"
 	"github.com/visheshgubrani/clipmux/internal/lifecycle"
 	"github.com/visheshgubrani/clipmux/internal/media"
 	"github.com/visheshgubrani/clipmux/internal/secrets"
@@ -365,8 +366,9 @@ func (r *Runner) upload(ctx context.Context, testID string, subtitles bool) (str
 	}
 	key := apikeys.Key{ProjectID: r.projectID, AppID: app.ID, Scopes: []string{apikeys.UploadsWrite}, Owner: true}
 	up, err := r.uploads.Create(ctx, key, uploads.CreateRequest{
-		Size: int64(len(sample)), PlaybackPolicy: "signed", Passthrough: Passthrough,
-		Generate: tracks.Generate{Subtitles: subtitles},
+		Size: int64(len(sample)), Settings: ingest.Settings{
+			PlaybackPolicies: []string{"signed"}, Passthrough: Passthrough, Generate: tracks.Generate{Subtitles: subtitles},
+		},
 	}, "")
 	if err != nil {
 		return "", fmt.Errorf("create upload: %w", err)

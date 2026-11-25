@@ -40,7 +40,7 @@ elements and three callbacks.
    - Cloudflare Workers: there is no `process.env`, so pass the client:
      `clipmuxHandler({ clipmux: new ClipMux({ env }), … })`.
 4. **Write the callbacks.**
-   - `upload(req, { file })` returns `{ passthrough, title?, playback_policy?, generate?: { subtitles?, chapters? } }`
+   - `upload(req, { file })` returns `{ passthrough, title?, playback_policies?, renditions?, generate?: { subtitles?, chapters? } }`
      or `null`. The body is already read: take IDs from the URL, for example
      `create-url="/api/clipmux/upload?lesson=42"`.
    - `playback(req, { playbackId, native })` returns `{ viewerId?, asset? }` or

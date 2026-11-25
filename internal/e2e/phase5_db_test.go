@@ -385,7 +385,7 @@ func TestPhase5ExitLimits(t *testing.T) {
 	var wg sync.WaitGroup
 	for i := range statuses {
 		wg.Go(func() {
-			raw, _ := json.Marshal(map[string]any{"size": 1000, "playback_policy": "signed"})
+			raw, _ := json.Marshal(map[string]any{"size": 1000, "playback_policies": []string{"signed"}})
 			req, _ := http.NewRequest("POST", in.url+"/v1/uploads", bytes.NewReader(raw))
 			req.Header.Set("Authorization", "Bearer "+keyA)
 			req.Header.Set("Content-Type", "application/json")
@@ -415,7 +415,7 @@ func TestPhase5ExitLimits(t *testing.T) {
 	if limited != 1 {
 		t.Fatalf("%d of 61 creates in a burst were limited, want the 61st alone", limited)
 	}
-	if s := in.call("POST", "/v1/uploads", keyB, map[string]any{"size": 1000, "playback_policy": "signed"}, nil); s != http.StatusCreated {
+	if s := in.call("POST", "/v1/uploads", keyB, map[string]any{"size": 1000, "playback_policies": []string{"signed"}}, nil); s != http.StatusCreated {
 		t.Fatalf("key B = %d while key A is limited", s)
 	}
 
@@ -611,7 +611,7 @@ func TestPhase5ExitSoak(t *testing.T) {
 	wg.Go(func() { // uploads
 		for ctx.Err() == nil {
 			var res map[string]any
-			s := in.call("POST", "/v1/uploads", key, map[string]any{"size": 1000, "playback_policy": "signed"}, &res)
+			s := in.call("POST", "/v1/uploads", key, map[string]any{"size": 1000, "playback_policies": []string{"signed"}}, &res)
 			countMu.Lock()
 			if s >= 500 {
 				count(&fiveXX, "POST /v1/uploads")

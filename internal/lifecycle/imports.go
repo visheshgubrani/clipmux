@@ -18,12 +18,12 @@ import (
 	"github.com/visheshgubrani/clipmux/internal/httpjson"
 	"github.com/visheshgubrani/clipmux/internal/idempotency"
 	"github.com/visheshgubrani/clipmux/internal/ids"
+	"github.com/visheshgubrani/clipmux/internal/ingest"
 	"github.com/visheshgubrani/clipmux/internal/logging"
 	"github.com/visheshgubrani/clipmux/internal/outbox"
 	"github.com/visheshgubrani/clipmux/internal/publicnet"
 	"github.com/visheshgubrani/clipmux/internal/queue"
 	"github.com/visheshgubrani/clipmux/internal/storage"
-	"github.com/visheshgubrani/clipmux/internal/tracks"
 )
 
 // Import from URL (docs/architecture.md, "Integration API"). serve fetches
@@ -31,21 +31,13 @@ import (
 // as its source; a transcode job then runs as for an upload. Workers never
 // fetch arbitrary URLs.
 
-// ImportRequest is POST /v1/assets.
+// ImportRequest is POST /v1/assets: a URL, or a PC agent's source, and the
+// settings every way in shares (D150).
 type ImportRequest struct {
 	URL string `json:"url,omitempty"`
 	// AgentSourceID attaches a file a PC agent registered for push --local.
-	AgentSourceID  string `json:"agent_source_id,omitempty"`
-	PlaybackPolicy string `json:"playback_policy,omitempty"`
-	Passthrough    string `json:"passthrough,omitempty"`
-	// Title is an optional name for people (D099), up to 200 characters.
-	Title string `json:"title,omitempty"`
-	// Generate asks for subtitles and chapters (P5-T16); chapters imply
-	// subtitles. They are made after the video is ready.
-	Generate tracks.Generate `json:"generate,omitzero"`
-	// Renditions are the ladder rungs to encode, e.g. ["1080p", "480p"]
-	// (D130); absent is every rung up to the source.
-	Renditions []string `json:"renditions,omitempty"`
+	AgentSourceID string `json:"agent_source_id,omitempty"`
+	ingest.Settings
 }
 
 // Import failure codes on the asset.
@@ -66,23 +58,10 @@ func (s *Service) Import(ctx context.Context, key apikeys.Key, req ImportRequest
 	if req.AgentSourceID != "" {
 		return s.AttachLocal(ctx, key, req, idemKey)
 	}
-	if req.PlaybackPolicy == "" {
-		req.PlaybackPolicy = "signed"
-	}
 	if _, err := publicnet.CheckURL(req.URL); err != nil {
 		return assets.View{}, httpjson.Fail(http.StatusBadRequest, codeImportRefused, "url must be a public http or https URL without credentials")
 	}
-	switch {
-	case req.PlaybackPolicy != "signed" && req.PlaybackPolicy != "public":
-		return assets.View{}, httpjson.Fail(http.StatusBadRequest, "invalid_request", `playback_policy must be "signed" or "public"`)
-	case len(req.Passthrough) > 255:
-		return assets.View{}, httpjson.Fail(http.StatusBadRequest, "invalid_request", "passthrough is limited to 255 bytes")
-	}
-	title, err := assets.Title(req.Title)
-	if err != nil {
-		return assets.View{}, err
-	}
-	renditions, err := assets.Renditions(req.Renditions)
+	set, err := req.Check()
 	if err != nil {
 		return assets.View{}, err
 	}
@@ -103,18 +82,12 @@ func (s *Service) Import(ctx context.Context, key apikeys.Key, req ImportRequest
 		}
 		asset, err := q.CreateImportedAsset(ctx, db.CreateImportedAssetParams{
 			ID: ids.New(ids.Asset), ProjectID: key.ProjectID, AppID: key.AppID, StorageID: st.ID,
-			Passthrough: pgtype.Text{String: req.Passthrough, Valid: req.Passthrough != ""}, Title: title,
-			Renditions: renditions,
+			Passthrough: set.Passthrough, Title: set.Title, Renditions: set.Renditions,
 		})
 		if err != nil {
 			return err
 		}
-		if _, err := q.CreatePlaybackID(ctx, db.CreatePlaybackIDParams{
-			ID: ids.New(ids.PlaybackID), ProjectID: key.ProjectID, AssetID: asset.ID, Policy: req.PlaybackPolicy,
-		}); err != nil {
-			return err
-		}
-		if _, err := tracks.Create(ctx, q, key.ProjectID, asset.ID, req.Generate); err != nil {
+		if _, err := set.Create(ctx, q, key.ProjectID, asset.ID); err != nil {
 			return err
 		}
 		if _, err := q.CreateImportJob(ctx, db.CreateImportJobParams{

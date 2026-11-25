@@ -166,9 +166,9 @@ type LocalRequest struct {
 	Path string `json:"path"`
 	// Attach, when set, also creates the asset as the owner's upload, for
 	// a push without an API key.
-	Attach         bool   `json:"attach"`
-	PlaybackPolicy string `json:"playback_policy,omitempty"`
-	Passthrough    string `json:"passthrough,omitempty"`
+	Attach           bool     `json:"attach"`
+	PlaybackPolicies []string `json:"playback_policies,omitempty"`
+	Passthrough      string   `json:"passthrough,omitempty"`
 	// UploadSource uploads the file to storage once it has been encoded
 	// (push --local --upload-source, D059).
 	UploadSource bool `json:"upload_source,omitempty"`
@@ -242,7 +242,7 @@ func (c *Control) handleRegister(w http.ResponseWriter, r *http.Request) {
 	var asset json.RawMessage
 	if req.Attach {
 		status, err := c.Worker.postJSON(r.Context(), "/worker/v1/sources/"+out.ID+"/attach", c.Worker.Key,
-			map[string]string{"playback_policy": req.PlaybackPolicy, "passthrough": req.Passthrough}, &asset)
+			map[string]any{"playback_policies": req.PlaybackPolicies, "passthrough": req.Passthrough}, &asset)
 		if err != nil || status != http.StatusCreated {
 			writeLocal(w, http.StatusBadGateway, "server_refused", fmt.Sprintf("creating the asset: HTTP %d %v", status, err))
 			return

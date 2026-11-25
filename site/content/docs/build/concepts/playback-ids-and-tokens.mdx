@@ -19,7 +19,8 @@ https://media.example.com/p/{playback_id}/master.m3u8           public
 
 - **Private or public.** Its `policy` is `signed` (plays only with a token)
   or `public` (plays for anyone with the URL). A new video gets one
-  playback ID with the `playback_policy` you asked for, `signed` by default.
+  playback ID for each of the `playback_policies` you asked for, one
+  `signed` ID by default.
 - **Several per video.** Add one with `POST /v1/assets/{id}/playback-ids`,
   up to 1000 per video. A video can have private and public IDs at once,
   for example a public one for a trailer page and a private one for paying

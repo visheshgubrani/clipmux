@@ -93,7 +93,7 @@ With `@clipmux/node`, `uploads.create` returns exactly what `ClipMuxUpload`
 takes, `endpoint` included:
 
 ```ts
-const upload = await clipmux.uploads.create({ size, playback_policy: 'signed', passthrough: lessonId })
+const upload = await clipmux.uploads.create({ size, playback_policies: ['signed'], passthrough: lessonId })
 return Response.json(upload) // the page: new ClipMuxUpload(file, { upload }).start()
 ```
 
@@ -105,7 +105,7 @@ export async function createUpload(size: number, lessonId: string) {
   const res = await fetch(`${process.env.CLIPMUX_URL}/v1/uploads`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${process.env.CLIPMUX_API_KEY}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ size, playback_policy: 'signed', passthrough: lessonId }),
+    body: JSON.stringify({ size, playback_policies: ['signed'], passthrough: lessonId }),
   })
   if (!res.ok) throw new Error(`create upload: ${res.status}`)
   return res.json() // {upload_id, asset_id, part_size, part_count, upload_token, playback_ids}

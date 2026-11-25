@@ -97,20 +97,34 @@ $asset = json_decode(curl_exec($ch), true); // status: processing
 </Tabs>
 
 `POST /v1/assets` answers `201` with the video, already `processing`, and
-its playback ID. With an `Idempotency-Key`, a retry of the same request
+its playback IDs. With an `Idempotency-Key`, a retry of the same request
 returns the same video instead of importing twice.
 
 | Field | Default | What it does |
 | --- | --- | --- |
 | `url` | | The public `http` or `https` URL to fetch. Required. |
-| `playback_policy` | `signed` | `signed` for a private video, `public` for one anyone with the URL can watch. |
+| `playback_policies` | `["signed"]` | One playback ID per policy: `signed` for a private video, `public` for one anyone with the URL can watch, or `["signed", "public"]` for both. |
 | `passthrough` | | Your own ID for the video, up to 255 bytes. See [Link videos to your records](/docs/build/upload/passthrough). |
 | `title` | | A name for people, one line, up to 200 characters. |
 | `generate` | | `{ "subtitles": true, "chapters": true }` makes subtitles and chapters once the video is ready. Chapters imply subtitles. |
 | `renditions` | every rung up to the source | The rungs to encode, for example `["1080p", "480p"]`. See [Choose renditions](/docs/build/upload/renditions). |
 
-When the video is ready, your webhook receives `video.asset.ready`, as for
-an upload.
+These are the same settings an upload takes: only `url` stands in for the
+upload's `size`. When the video is ready, your webhook receives
+`video.asset.ready`, as for an upload.
+
+## From the dashboard or a terminal
+
+In the dashboard, **Upload** takes a URL as well as files: paste it under
+the drop zone, and the settings below apply to it as to a file.
+
+From a terminal, give `clipmux push` (or `npx @clipmux/node upload`) the URL
+in place of a file. Running the same command again creates nothing new:
+
+```bash
+CLIPMUX_API_KEY=cmx_… clipmux push --server https://video.example.com \
+  --policy signed,public https://files.example.com/lesson-42.mp4
+```
 
 ## What is refused
 
@@ -131,8 +145,9 @@ created. One that leads to a refused address later ends the video as
 
 ## Sizes and failures
 
-The file may be up to 312.5 GiB (10,000 parts of 32 MiB), and one fetch may
-take up to 6 hours. A fetch that fails for a passing reason (a network error,
+The file may be as large as an upload: `CLIPMUX_MAX_UPLOAD_BYTES` on the
+server, or 312.5 GiB (10,000 parts of 32 MiB) when that isn't set. One fetch
+may take up to 6 hours. A fetch that fails for a passing reason (a network error,
 or a `5xx`, `408` or `429` answer) is tried 3 times in all, with a growing
 wait between tries.
 

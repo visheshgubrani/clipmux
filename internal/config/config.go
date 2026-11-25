@@ -36,8 +36,9 @@ type Config struct {
 	// decides both URLs and the first-boot URL step is read-only. Unset,
 	// the URLs saved at first boot apply (internal/settings).
 	URLsPinned bool
-	// MaxUploadBytes caps a declared upload size (CLIPMUX_MAX_UPLOAD_BYTES);
-	// 0 means the storage limit (32 MiB × 10,000 parts).
+	// MaxUploadBytes caps a declared upload size and an imported source
+	// (CLIPMUX_MAX_UPLOAD_BYTES); 0 means the storage limit (32 MiB × 10,000
+	// parts).
 	MaxUploadBytes int64
 	// BuiltinWorker starts `clipmux worker` as a child of serve
 	// (CLIPMUX_BUILTIN_WORKER, default true).

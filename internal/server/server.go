@@ -399,6 +399,9 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 	hooks.Logger = logger
 	life := lifecycle.New(pool, set, committer)
 	life.Logger = logger
+	if cfg.MaxUploadBytes > 0 {
+		life.MaxImportSize = cfg.MaxUploadBytes // the same cap for every way in (D150)
+	}
 	agentSvc.Life = life
 	shareSvc := shares.New(pool, box, life)
 	shareSvc.Logger = logger

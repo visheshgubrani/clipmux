@@ -118,7 +118,7 @@ const handler = clipmuxHandler({
   clipmux: cm,
   upload: (req) => {
     const policy = new URL(req.url).searchParams.get('policy')
-    return { passthrough: 'live-check', playback_policy: (policy ?? 'signed') as 'signed' }
+    return { passthrough: 'live-check', playback_policies: [(policy ?? 'signed') as 'signed'] }
   },
   onError: () => {},
 })
@@ -190,7 +190,7 @@ await check('uploads.create → ClipMuxUpload', async () => {
     size: file.size,
     title: `live-check ${basename(clip)}`,
     passthrough: `live-check-${Date.now()}`,
-    playback_policy: 'signed',
+    playback_policies: ['signed'],
     ...(values['skip-tracks'] ? {} : { generate: { subtitles: true } }),
   })
   made.push(upload.asset_id as string)

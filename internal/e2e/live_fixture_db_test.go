@@ -104,7 +104,7 @@ func serveLiveFixture(t *testing.T) {
 			return
 		}
 		var out map[string]any
-		status := in.call("POST", "/v1/uploads", cfg.APIKey, map[string]any{"size": size, "playback_policy": "signed"}, &out)
+		status := in.call("POST", "/v1/uploads", cfg.APIKey, map[string]any{"size": size, "playback_policies": []string{"signed"}}, &out)
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "no-store")
 		w.WriteHeader(status)

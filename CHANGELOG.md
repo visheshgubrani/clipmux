@@ -8,6 +8,26 @@ these.
 
 ## Unreleased
 
+### Changed
+
+- One shape for every way a video gets in (D150). `POST /v1/uploads`,
+  `POST /v1/assets` (a URL or an agent source) and agent attach take the
+  same settings, checked in one place: `playback_policies`, `passthrough`,
+  `title`, `generate` and `renditions`. **Breaking:** `playback_policy:
+  "public"` is now `playback_policies: ["public"]`, and
+  `["signed", "public"]` makes one ID of each in the same call. The old
+  field is ignored, so a request still sending it gets one signed ID.
+  `@clipmux/node`'s types and its handler's `UploadDecision` follow.
+- Imports from a URL are capped by `CLIPMUX_MAX_UPLOAD_BYTES`, like uploads.
+
+### Added
+
+- Dashboard: **Upload** imports a video from a URL as well as files, with
+  the same settings.
+- `clipmux push` and `npx @clipmux/node upload` take an `http(s)` URL in
+  place of a file and import it. `clipmux push --policy signed,public`
+  makes both playback IDs.
+
 ### Fixed
 
 - RunPod: ClipMux now uses RunPod's REST API v2. RunPod retired v1 on
