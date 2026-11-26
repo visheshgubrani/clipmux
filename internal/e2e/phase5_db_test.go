@@ -18,6 +18,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -75,12 +76,16 @@ func (in *instance) reencode(key, asset string) {
 	in.waitReady(key, asset, time.Minute)
 }
 
-// webhookTypes lists the webhook events written for an asset, in order,
-// each with its track's kind when it has one.
+// webhookTypes lists the webhook events written for an asset, in the order
+// of the asset version each carries (what a receiver keeps the highest of:
+// delivery is unordered), each with its track's kind when it has one.
+// created_at and id can't order events from one transaction: created_at is
+// its start, and IDs are random within a millisecond.
 func (in *instance) webhookTypes(asset string) []string {
 	in.t.Helper()
 	rows, err := in.pool.Query(context.Background(), `SELECT payload->>'type' || coalesce(':' || (payload->'track'->>'kind'), '')
-		FROM outbox WHERE kind = 'webhook' AND asset_id = $1 ORDER BY created_at, id`, asset)
+		FROM outbox WHERE kind = 'webhook' AND asset_id = $1
+		ORDER BY (payload->'data'->>'version')::bigint, created_at, id`, asset)
 	if err != nil {
 		in.t.Fatal(err)
 	}
@@ -747,8 +752,8 @@ func lmsStage(status string) string {
 // real API: stages pending, completed and failed; the transcript the moment
 // its track reads ready, as {language, duration_ms, text, segments:
 // [{startMs, endMs, text}]}; the sidecar VTT; chapters in seconds as
-// [{startTime, endTime, title}]; a signed webhook for every stage; and
-// nothing left after a delete.
+// [{startTime, endTime, title}]; a signed webhook for every stage (arriving
+// in any order, written video first); and nothing left after a delete.
 func TestPhase5ExitLMSParityContract(t *testing.T) {
 	in := start(t)
 	owner := in.owner()
@@ -898,18 +903,28 @@ func TestPhase5ExitLMSParityContract(t *testing.T) {
 		time.Sleep(500 * time.Millisecond)
 	}
 
-	// Every stage change sent a signed webhook.
+	// Every stage change sent a signed webhook. Delivery is unordered
+	// (architecture, "Webhooks"): events close together go out in one
+	// concurrent batch, so arrival is checked as a set and the order as
+	// written, by the asset version each event carries.
 	deadline = time.Now().Add(time.Minute)
 	for {
 		ev := sink.received()
-		ready, subs, chap := indexOf(ev, "video.asset.ready"), indexOf(ev, "video.asset.track.ready:subtitles"), indexOf(ev, "video.asset.track.ready:chapters")
-		if ready >= 0 && subs > ready && chap > subs && indexOf(ev, "video.asset.track.errored:subtitles") >= 0 && indexOf(ev, "video.asset.track.errored:chapters") >= 0 {
+		if !slices.ContainsFunc([]string{
+			"video.asset.ready", "video.asset.track.ready:subtitles", "video.asset.track.ready:chapters",
+			"video.asset.track.errored:subtitles", "video.asset.track.errored:chapters",
+		}, func(want string) bool { return indexOf(ev, want) < 0 }) {
 			break
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("webhooks received: %v", ev)
 		}
 		time.Sleep(500 * time.Millisecond)
+	}
+	written := in.webhookTypes(asset)
+	ready, subs, chap := indexOf(written, "video.asset.ready"), indexOf(written, "video.asset.track.ready:subtitles"), indexOf(written, "video.asset.track.ready:chapters")
+	if ready < 0 || subs < ready || chap < subs {
+		t.Fatalf("events %v: want the asset ready, then its subtitles, then its chapters", written)
 	}
 	if sink.mu.Lock(); sink.bad > 0 {
 		t.Fatalf("%d webhooks failed their signature", sink.bad)

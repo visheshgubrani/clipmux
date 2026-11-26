@@ -851,7 +851,7 @@ Made in P5-T20, the exit test of [plans/P5-production.md](plans/P5-production.md
   6. `/metrics` on `CLIPMUX_METRICS_ADDR` shows the committed attempt and is 404 on the public listener; promtool checks it in CI.
   7. (half) A schema newer than the binary refuses to boot with `schema_newer`.
   9. (half) Every dashboard suite in Chromium records CSP violations from the page and the console and has none.
-  10. With the speech API holding the transcription, the asset is ready and a second upload becomes ready; `video.asset.ready` is written before `track.ready` for the subtitles, then the chapters.
+  10. With the speech API holding the transcription, the asset is ready and a second upload becomes ready; `video.asset.ready` is written before `track.ready` for the subtitles, then the chapters (by the asset version each event carries; arrival is unordered, architecture § Webhooks, so the test checks only that each one arrives).
   11. A silent video gets `no_audio` with no track job, chapters `subtitles_failed`; a transcription the API refuses errors only its track (`speech_api_rejected`, the API path's code for it; whisper's is `transcribe_failed`) and the chapters (`subtitles_failed`), the asset staying ready.
   13. A re-encode committing while the transcription is held doesn't disturb it: one attempt, committed, reading the output it started on; a second re-encode keeps the same track listed in the new master with byte-identical cues.
   14. (hls.js) In Chromium the cue the speech API heard at 1–3 s is active within ±0.5 s of its time, and the captions button lists it; chapters show as two time-slider segments (D084).

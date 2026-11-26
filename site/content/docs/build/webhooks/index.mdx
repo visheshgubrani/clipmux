@@ -120,8 +120,11 @@ A video's status on your record:
 | `ready`, with an active playback ID | Ready |
 | `errored` or `deleted` | Failed or removed |
 
-Tracks are made after the video is ready, so expect `video.asset.ready`
-first, then `video.asset.track.ready` or `video.asset.track.errored`.
+Tracks are made after the video is ready, so `video.asset.ready` is
+written first, then `video.asset.track.ready` or `video.asset.track.errored`.
+Delivery is unordered, though: events written a moment apart can arrive the
+other way round. Keep the highest `data.version` you've seen, or re-fetch
+the asset.
 
 ## Catch up on missed events [#catch-up-on-missed-events]
 
