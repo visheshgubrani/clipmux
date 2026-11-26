@@ -26,10 +26,10 @@ jobs:
     # A cold FFmpeg build on arm64 takes most of this.
     timeout-minutes: 120
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
       - name: Build
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           target: agent
@@ -40,7 +40,7 @@ jobs:
           cache-from: type=registry,ref=ghcr.io/visheshgubrani/clipmux-buildcache:${{ matrix.arch }}
       - name: Works in a clean Ubuntu 24.04
         run: toolchain/check_agent.sh dist/clipmux-agent-linux-*.tar.gz
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: clipmux-agent-linux-${{ runner.arch }}
           path: dist/

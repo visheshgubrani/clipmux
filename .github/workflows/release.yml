@@ -52,7 +52,7 @@ jobs:
       GH_REPO: ${{ github.repository }}
       TAG: ${{ github.ref_name }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: The tag names a release and CHANGELOG.md has its section
         run: |
           echo "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$' || { echo "::error::$TAG isn't vX.Y.Z or vX.Y.Z-rc.N"; exit 1; }
@@ -100,8 +100,8 @@ jobs:
     env:
       TAG: ${{ github.ref_name }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
       - name: Build clipmux for each platform
@@ -116,7 +116,7 @@ jobs:
               -o "dist/clipmux-$os-$arch$ext" ./cmd/clipmux
           done
           test "$(dist/clipmux-linux-amd64 version)" = "$TAG"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: clipmux-cli
           path: dist/
@@ -134,8 +134,8 @@ jobs:
       GH_REPO: ${{ github.repository }}
       TAG: ${{ github.ref_name }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with:
           pattern: clipmux-*
           path: artifacts
@@ -179,7 +179,7 @@ jobs:
           FILES
           toolchain/release_notes.sh "$TAG" > notes.md
       - name: Attest the release files
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: release/*
       - name: Publish the GitHub Release
@@ -200,9 +200,9 @@ jobs:
       # Provenance, and trusted publishing once it is set up.
       id-token: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
         with:
           node-version-file: .node-version
           cache: pnpm

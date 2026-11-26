@@ -46,7 +46,7 @@ jobs:
       CLIPMUX_E2E_REGISTRY_PASSWORD: ${{ secrets.GHCR_PULL_TOKEN }}
       CLIPMUX_E2E_SERVE_PORT: "8090"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
       - uses: ./.github/actions/media-tools
