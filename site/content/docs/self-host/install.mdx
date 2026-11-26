@@ -12,11 +12,15 @@ owner account.
 ## Before you start
 
 - A server that meets the [requirements](/docs/self-host/requirements):
-  Linux on amd64 or arm64, Docker with Compose v2, ports 80 and 443 free.
+  Linux on amd64 or arm64, Docker with Compose v2.
 - Root, or a user in the `docker` group.
 - Two DNS names pointing at the server, for example `video.example.com` and
   `media.example.com`. You can install before DNS is ready, but you need
   both names to finish [first run](/docs/self-host/first-run).
+
+Prefer not to run an installer script? Follow
+[Install with Docker Compose](/docs/self-host/install-options/docker-compose)
+to download, verify and start the stack yourself.
 
 ## Run the installer
 
@@ -24,11 +28,21 @@ owner account.
 curl -fsSL https://clipmux.com/install.sh | sudo sh
 ```
 
-`https://clipmux.com/install.sh` redirects to `install.sh` on the latest
-GitHub release (until v1.0.0, the newest release candidate). The script then:
+Or download and inspect the script before running it:
 
-1. Checks Docker, Compose, the architecture, free disk space and, on a first
-   install, that ports 80 and 443 are free.
+```bash
+curl -fsSL https://clipmux.com/install.sh -o install.sh
+less install.sh
+sudo sh install.sh
+```
+
+`https://clipmux.com/install.sh` redirects to `install.sh` on the latest
+GitHub release. The script then:
+
+1. Checks Docker, Compose, the architecture, free disk space and host ports:
+   if 80, 443 or 8080 are already in use (and you didn't pin them yourself),
+   it automatically chooses the first free port in `8088–8188`, `8443–8543` or
+   `18080–18180` and saves it in `.env`.
 2. Downloads the release's `SHA256SUMS`, `compose.yml` and `Caddyfile`, and
    checks both files against `SHA256SUMS`. It never runs anything it
    downloads.
@@ -147,8 +161,11 @@ printed address in a browser: the page asks for the setup token.
 
 If the installer stopped instead:
 
-- **`port 80 is in use`**: another web server owns the port. Stop it, or
-  follow [Behind your own reverse proxy](/docs/self-host/install-options/reverse-proxy).
+- **`port … is in use`**: an explicit `CLIPMUX_HTTP_PORT`,
+  `CLIPMUX_HTTPS_PORT` or `CLIPMUX_ADMIN_PORT` you passed is already taken, or
+  every fallback port was busy. Choose another port, or follow
+  [Behind your own reverse proxy](/docs/self-host/install-options/reverse-proxy)
+  if another proxy owns 80 and 443.
 - **`only N GiB free under …`**: free disk space; ClipMux needs at least
   4 GiB.
 - **`can't reach Docker`**: run it with `sudo`, or as a user in the `docker`

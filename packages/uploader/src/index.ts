@@ -683,7 +683,11 @@ function defaultPut(f: typeof fetch): PutPart {
       const res = await f(url, { method: 'PUT', body, signal })
       if (res.ok) onBytes(body.size)
       await res.body?.cancel()
-      return { status: res.status, etag: res.headers.get('ETag'), retryAfter: res.headers.get('Retry-After') }
+      return {
+        status: res.status,
+        etag: res.headers.get('ETag'),
+        retryAfter: res.status === 429 || res.status === 503 ? res.headers.get('Retry-After') : null,
+      }
     }
   }
   return (url, body, { signal, onBytes }) =>
@@ -696,7 +700,7 @@ function defaultPut(f: typeof fetch): PutPart {
         resolve({
           status: xhr.status,
           etag: xhr.getResponseHeader('ETag'),
-          retryAfter: xhr.getResponseHeader('Retry-After'),
+          retryAfter: xhr.status === 429 || xhr.status === 503 ? xhr.getResponseHeader('Retry-After') : null,
         })
       xhr.onerror = () => reject(new Error('network'))
       xhr.onabort = () => reject(signal.reason)

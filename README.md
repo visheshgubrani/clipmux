@@ -97,16 +97,63 @@ guides map each concept and move an app across without downtime; the
 
 ## Quick start
 
-You need a Linux server (amd64 or arm64) with Docker and Compose v2, ports 80
-and 443 free, and two DNS names pointing at it: one for the dashboard and API,
-one for media.
+You need a Linux server (amd64 or arm64) with Docker and Compose v2. For
+automatic HTTPS in production, point two DNS names at it (one for the
+dashboard and API, one for media) with ports 80 and 443 open — or try it
+locally on `http://localhost:8080` first without Caddy or DNS.
+
+### Option 1: Docker Compose (no installer script)
+
+Download the verified release Compose file and Caddyfile, generate your secrets,
+and start the stack from the pre-built image:
+
+```bash
+mkdir -p /opt/clipmux && cd /opt/clipmux
+V=v1.0.0
+curl -fsSL -O "https://github.com/visheshgubrani/clipmux/releases/download/$V/SHA256SUMS" \
+  -O "https://github.com/visheshgubrani/clipmux/releases/download/$V/compose.yml" \
+  -O "https://github.com/visheshgubrani/clipmux/releases/download/$V/Caddyfile"
+sha256sum --check --ignore-missing SHA256SUMS
+
+umask 077
+cat > .env <<EOF
+CLIPMUX_VERSION=$V
+POSTGRES_PASSWORD=$(openssl rand -hex 24)
+CLIPMUX_SECRETS_KEY=v1:$(openssl rand -hex 32)
+EOF
+
+docker compose up -d --wait
+docker compose logs app | grep setup_token
+```
+
+- **Trying locally on `http://localhost:8080`, or behind your own reverse proxy?**
+  Add `compose.proxy.yml` from the same release (also listed in `SHA256SUMS`) to
+  leave Caddy out so ports 80 and 443 aren't touched:
+  `docker compose -f compose.yml -f compose.proxy.yml up -d --wait`.
+- **GPU passthrough?** Add `-f compose.nvidia.yml` (NVIDIA) or
+  `-f compose.dri.yml` (AMD/Intel) from the same release.
+- See the [Docker Compose guide](https://clipmux.com/docs/self-host/install-options/docker-compose)
+  for full details and upgrades.
+
+### Option 2: One-line installer (fastest)
 
 ```bash
 curl -fsSL https://clipmux.com/install.sh | sudo sh
 ```
 
-The installer puts ClipMux, Postgres and Caddy in `/opt/clipmux`, generates
-the database password and the secrets key, starts the stack and prints:
+Or download and inspect [`deploy/install.sh`](deploy/install.sh) first before
+running it:
+
+```bash
+curl -fsSL https://clipmux.com/install.sh -o install.sh
+less install.sh
+sudo sh install.sh
+```
+
+The installer checks `compose.yml` and `Caddyfile` against `SHA256SUMS` (it
+never executes downloaded files), auto-detects NVIDIA or `/dev/dri` GPUs, picks
+free fallback ports (`8088+`, `8443+`, `18080+`) if 80, 443 or 8080 are already
+in use, writes `/opt/clipmux/.env`, starts the stack and prints:
 
 ```text
   ClipMux v1.0.0 is running.
@@ -120,7 +167,7 @@ the database password and the secrets key, starts the stack and prints:
 
 1. Open the address and create the owner account with the setup token.
 2. Set the public URL and the media URL. Caddy gets a certificate for each
-   hostname on its first visit.
+   hostname on its first visit (requires ports 80 and 443).
 3. Run the setup test from **Settings**: a sample video goes through upload,
    encode, encryption and playback, and each check is shown.
 4. Turn on two-factor sign-in, and upload your first video.
@@ -128,7 +175,7 @@ the database password and the secrets key, starts the stack and prints:
 Run the same command again to upgrade in place; the data, keys and sessions
 are kept. `sh -s -- --version vX.Y.Z` installs a given release, and
 `--uninstall` stops it while keeping the volumes (add `--purge` to delete
-them).
+them). See [Install with one line](https://clipmux.com/docs/self-host/install).
 
 <details>
 <summary><b>Install from source with Compose</b></summary>
@@ -140,13 +187,15 @@ docker compose -f deploy/compose.yml up -d --build --wait
 docker compose -f deploy/compose.yml logs app | grep setup_token
 ```
 
+See [Install from source with Compose](https://clipmux.com/docs/self-host/install-options/compose-from-source).
+
 </details>
 
 <details>
 <summary><b>Behind your own reverse proxy</b></summary>
 
 On a host where another proxy already owns ports 80 and 443, add
-`deploy/compose.proxy.yml`, which leaves Caddy out and listens on
+`compose.proxy.yml`, which leaves Caddy out and listens on
 `127.0.0.1:8080`. On a small or shared host, set
 `CLIPMUX_BUILTIN_WORKER=false` and encode on Modal or RunPod instead. See
 [Behind your own reverse proxy](https://clipmux.com/docs/self-host/install-options/reverse-proxy).

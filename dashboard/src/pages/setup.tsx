@@ -102,7 +102,14 @@ function Register() {
             <FieldDescription>
               The server printed it when it started, and it lasts a day. Find it with:
             </FieldDescription>
-            <CopyField value={'docker compose logs app | grep setup_token'} label="command" />
+            <CopyField
+              value={'cd /opt/clipmux && sudo docker compose logs app | grep setup_token'}
+              label="command"
+            />
+            <FieldDescription>
+              Installed in another folder? Run{' '}
+              <code className="font-mono">docker compose logs app | grep setup_token</code> there.
+            </FieldDescription>
           </Field>
           <Field>
             <FieldLabel htmlFor="email">Email</FieldLabel>

@@ -43,7 +43,7 @@ local one (`whsec_local_…`) for `listen`, and `doctor` warns that it's for
 | `--forward-to URL` | Your local webhook URL. Required. Without a scheme, `http://` is assumed. |
 | `--since DURATION` | Also replay events from this long ago, such as `10m` or `2h`. Without it, only new events. |
 | `--events LIST` | Only these event types, comma separated, such as `video.asset.ready,video.asset.track.ready`. |
-| `--env-file FILE` | Where to read the settings. Default `.env.local`, or `.env` if there's no `.env.local`. |
+| `--env FILE` | Where to read the settings. Default `.env.local`, or `.env` if there's no `.env.local`. |
 
 Each event is tried up to four times if your handler is unreachable or
 answers `5xx`, then `listen` moves on.

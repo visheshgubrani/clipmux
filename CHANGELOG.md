@@ -8,6 +8,52 @@ these.
 
 ## Unreleased
 
+## v1.0.0 - 2026-11-26
+
+First stable release of ClipMux.
+
+### Added
+
+- **Installer GPU auto-detection and free-port fallback:** `install.sh` now
+  detects NVIDIA (`nvidia-container-toolkit`) and `/dev/dri` (AMD/Intel) GPUs,
+  writes `compose.gpu.yml`, and falls back cleanly to CPU if container startup
+  with GPU passthrough fails. If default ports `80`, `443` or `8080` are
+  already in use, `install.sh` picks the first free fallback port
+  (`8088–8188`, `8443–8543`, `18080–18180`) instead of aborting, and the
+  setup test falls back to Caddy's internal port when running on an alternate
+  external port.
+- **Docker Compose release assets and guide:** `compose.proxy.yml`,
+  `compose.nvidia.yml` and `compose.dri.yml` ship in each GitHub Release with
+  `SHA256SUMS` and provenance attestations, with a dedicated Docker Compose
+  install guide and README quick start alongside the one-line installer.
+- **Dashboard:** R2 bucket creation support on Storage and Delivery setup flows.
+
+### Fixed
+
+- **Cloudflare & recovery safety:** Connect Cloudflare and Add R2 now refuse
+  buckets owned by another live install (`foreign_install`) while still allowing
+  recovery under the restore fence; Disconnect respects the restore fence before
+  deleting `_routes/` or `_keys.json`.
+- **Setup test self-dial:** `CLIPMUX_SELF_DIAL` now rewrites only the
+  instance's own `public_url` (and `media_url` when built-in delivery is
+  active), leaving external Worker and R2/S3 hosts untouched.
+- **Dashboard first-run and recovery commands:** the setup-token and password
+  reset commands now include `cd /opt/clipmux && sudo` and name the `app`
+  service rather than `clipmux`.
+- **Browser upload CORS:** storage adapters now include `Retry-After` in
+  `Access-Control-Expose-Headers`.
+
+### @clipmux/uploader 0.6.1
+
+- Read `Retry-After` from storage `PUT` responses only on `429` and `503`
+  (eliminates browser console warnings on every uploaded part).
+
+### @clipmux/node 0.2.1
+
+- Add `--env FILE` as an alias for `--env-file FILE` across `init`, `doctor`,
+  `listen` and `upload`, avoiding Node 24's built-in `--env-file` interception
+  when targeting a file that does not exist yet.
+
 ## v1.0.0-rc.2 - 2026-11-25
 
 ### Added

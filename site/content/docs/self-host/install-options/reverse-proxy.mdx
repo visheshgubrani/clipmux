@@ -18,9 +18,9 @@ your proxy. Your proxy then terminates TLS for both of ClipMux's hostnames.
 - `openssl` and `sha256sum` on the server.
 
 <Warning>
-  Don't use the one-line installer on this server. It starts the bundled
-  Caddy on ports 80 and 443: a first install stops because the ports are in
-  use, and an upgrade with it fails to start.
+  Don't use the one-line installer on this server. It runs its own bundled
+  Caddy (and moves Caddy to alternate ports such as `8088` and `8443` when
+  80 and 443 are taken) instead of leaving TLS to your proxy.
 </Warning>
 
 ## Start ClipMux without Caddy
@@ -28,16 +28,16 @@ your proxy. Your proxy then terminates TLS for both of ClipMux's hostnames.
 <Tabs items={['Release image', 'From source']}>
 <Tab value="Release image">
 
-As root, download a release's `compose.yml` and check it, then fetch
-`compose.proxy.yml` from the same tag. Set `V` to the release you want:
+As root, download and verify a release's `compose.yml` and
+`compose.proxy.yml`. Set `V` to the release you want:
 
 ```bash
 mkdir -p /opt/clipmux && cd /opt/clipmux
 V=v1.0.0
 curl -fsSL -O "https://github.com/visheshgubrani/clipmux/releases/download/$V/SHA256SUMS" \
-  -O "https://github.com/visheshgubrani/clipmux/releases/download/$V/compose.yml"
+  -O "https://github.com/visheshgubrani/clipmux/releases/download/$V/compose.yml" \
+  -O "https://github.com/visheshgubrani/clipmux/releases/download/$V/compose.proxy.yml"
 sha256sum --check --ignore-missing SHA256SUMS
-curl -fsSL -o compose.proxy.yml "https://raw.githubusercontent.com/visheshgubrani/clipmux/$V/deploy/compose.proxy.yml"
 ```
 
 Write `.env`, readable only by root:

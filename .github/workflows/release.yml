@@ -149,13 +149,16 @@ jobs:
           # Each tarball's own checksum, from the build, must still match.
           (cd artifacts && sha256sum -c clipmux-agent-linux-amd64.tar.gz.sha256 clipmux-agent-linux-arm64.tar.gz.sha256)
           cp deploy/compose.release.yml release/compose.yml
+          cp deploy/compose.proxy.yml release/compose.proxy.yml
+          cp deploy/compose.nvidia.yml release/compose.nvidia.yml
+          cp deploy/compose.dri.yml release/compose.dri.yml
           cp deploy/Caddyfile release/Caddyfile
           for f in install.sh install-agent.sh; do
             sed "s/@CLIPMUX_VERSION@/$TAG/" "deploy/$f" > "release/$f"
             grep -q "version=\"$TAG\"" "release/$f" || { echo "::error::$f didn't take the tag"; exit 1; }
           done
           (cd release && sha256sum -- * > SHA256SUMS && cat SHA256SUMS)
-          # Every asset P6's exit check 3 lists, and nothing else.
+          # Every asset P6's exit check 3 lists, plus the Compose overrides.
           diff <(cd release && printf '%s\n' * | LC_ALL=C sort) - <<'FILES'
           Caddyfile
           SHA256SUMS
@@ -167,6 +170,9 @@ jobs:
           clipmux-linux-arm64
           clipmux-windows-amd64.exe
           clipmux-windows-arm64.exe
+          compose.dri.yml
+          compose.nvidia.yml
+          compose.proxy.yml
           compose.yml
           install-agent.sh
           install.sh

@@ -432,23 +432,10 @@ when you introduce or discover it; remove it when it is closed.
 - Safari's native HLS with `getToken({ native })` (D126) is checked by
   reading the code and in Chrome with `native: false`; the Safari suite
   runs on the owner's Mac, not in this release's CI.
-- **`--env-file FILE` names a flag Node reads itself.** Node 24 (24.21 here)
-  loads any `--env-file` in argv, even after the script name, and exits 9
-  with `node: FILE: not found` before the CLI runs when the file is missing.
-  So `npx @clipmux/node init --env-file new.env` fails unless the file
-  exists; with an existing file it works (Node loads it too, harmlessly).
-  The default (`.env.local`, no flag) is unaffected. The exit-8 suite
-  creates the file first. A fix is a flag Node doesn't know (an alias such
-  as `--env`), found by P6-T28.
 - **The skill evals run by hand (T17).** `skills/evals/lms-starter` is run with a coding agent and the exit-7 check (`skills/evals/README.md`), not in CI: each run is a billed agent session, and its result varies run to run. The plan's "evals run when the API or the packages change" is a release step until a CI job can run an agent. The skills' docs anchors and error list are linted in `make site-check`.
 
 ## Found by the first live integration (Edural, 2026-11-15; docs/integration.md)
 
-- `@clipmux/uploader` 0.5.0 reads `Retry-After` from every part PUT
-  (`xhr.getResponseHeader`, `index.ts`). The bucket's CORS doesn't expose it,
-  so Chrome logs "Refused to get unsafe header" once per part, and a real
-  `Retry-After` from storage is never seen. Read it only on 429 or 503, and
-  add `Retry-After` to the bucket's `ExposeHeaders` in Cloudflare Connect.
 - `playback.session(playbackId)` with a string target has no duration, so a
   native token is always signed for 12 hours; an app that wants a tighter one
   must re-sign with `playback.token(id, { native, durationSeconds })`. A

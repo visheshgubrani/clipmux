@@ -1,6 +1,7 @@
 import { useQueryClient } from '@tanstack/react-query'
 import * as React from 'react'
 import { ApiError, describe, post } from '@/api'
+import { CopyField } from '@/components/copy'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Field, FieldError, FieldGroup, FieldLabel } from '@/components/ui/field'
@@ -158,10 +159,16 @@ export function Login() {
           {forgot && (
             <Alert>
               <AlertDescription className="flex flex-col gap-2">
-                ClipMux has one owner and no email reset. Set a new password on the server:
-                <code className="block overflow-x-auto rounded-md bg-muted px-2.5 py-2 text-xs whitespace-nowrap">
-                  docker compose exec clipmux clipmux admin reset-password
-                </code>
+                <span>ClipMux has one owner and no email reset. Set a new password on the server:</span>
+                <CopyField
+                  value={'cd /opt/clipmux && sudo docker compose exec app clipmux admin reset-password'}
+                  label="command"
+                />
+                <span className="text-xs text-muted-foreground">
+                  Installed in another folder? Run{' '}
+                  <code className="font-mono">docker compose exec app clipmux admin reset-password</code>{' '}
+                  there.
+                </span>
               </AlertDescription>
             </Alert>
           )}

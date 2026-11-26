@@ -51,6 +51,9 @@ fail() {
 step() { printf '\n== %s\n' "$*"; }
 dc() { docker compose --project-directory "$opt" -f "$opt/compose.yml" "$@"; }
 
+step "installer scripts pass sh -n"
+sh -n "$here/deploy/install.sh" "$here/deploy/install-agent.sh"
+
 # The operator compose is the dev compose with the image in place of the
 # build: anything else that differs is drift.
 step "deploy/compose.release.yml matches deploy/compose.yml"

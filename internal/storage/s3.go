@@ -129,8 +129,8 @@ func (s *S3) Check(ctx context.Context) error {
 	return s.DeletePrefix(ctx, "_check/")
 }
 
-// ApplyCORS lets browsers PUT parts and read ETag from any origin. The
-// presigned URL is the authorisation (D011), so the origin isn't checked.
+// ApplyCORS lets browsers PUT parts and read ETag and Retry-After from any
+// origin. The presigned URL is the authorisation (D011), so the origin isn't checked.
 func (s *S3) ApplyCORS(ctx context.Context) error {
 	_, err := s.client.PutBucketCors(ctx, &s3.PutBucketCorsInput{
 		Bucket: &s.bucket,
@@ -138,7 +138,7 @@ func (s *S3) ApplyCORS(ctx context.Context) error {
 			AllowedOrigins: []string{"*"},
 			AllowedMethods: []string{"GET", "HEAD", "PUT"},
 			AllowedHeaders: []string{"*"},
-			ExposeHeaders:  []string{"ETag"},
+			ExposeHeaders:  []string{"ETag", "Retry-After"},
 			MaxAgeSeconds:  aws.Int32(3600),
 		}}},
 	})

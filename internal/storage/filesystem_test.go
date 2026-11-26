@@ -391,8 +391,9 @@ func TestBrowserPreflightExposesETag(t *testing.T) {
 		t.Fatalf("preflight: %d %v", res.StatusCode, res.Header)
 	}
 	put := h.do(http.MethodPut, u, []byte("AAAAAAAA"), map[string]string{"Origin": "https://lms.example"})
-	if put.Header.Get("Access-Control-Expose-Headers") != "ETag" {
-		t.Fatalf("part PUT must expose ETag to the browser: %v", put.Header)
+	if !strings.Contains(put.Header.Get("Access-Control-Expose-Headers"), "ETag") ||
+		!strings.Contains(put.Header.Get("Access-Control-Expose-Headers"), "Retry-After") {
+		t.Fatalf("part PUT must expose ETag and Retry-After to the browser: %v", put.Header)
 	}
 }
 

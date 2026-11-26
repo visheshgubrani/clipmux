@@ -9,7 +9,7 @@ import { type Audience, importSigningKey, seconds, signToken, type TokenClaims }
 import { Transport } from './transport.ts'
 import { type HeadersLike, type RawBody, type VerifyOptions, verifyWebhook } from './webhooks.ts'
 
-export const VERSION = '0.2.0'
+export const VERSION = '0.2.1'
 
 const ENV = {
   url: 'CLIPMUX_URL',
