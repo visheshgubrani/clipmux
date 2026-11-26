@@ -377,7 +377,24 @@ func serve(ctx context.Context, cfg config.Config, ln net.Listener, logger *slog
 	worker.Agents = agentSvc
 	worker.Logger = logger
 	worker.Drain = drain
-	worker.Tracks = &tracks.Publisher{Stores: set, Keys: keys}
+	worker.Tracks = &tracks.Publisher{
+		Stores: set,
+		Keys:   keys,
+		SyncRoutes: func(ctx context.Context) error {
+			// FinishPublication after retiring a track queues an OpRefresh; a
+			// second pass publishes the updated record without waiting 15 s.
+			for range 2 {
+				n, err := committer.SyncRoutes(ctx, 1000)
+				if err != nil {
+					return err
+				}
+				if n == 0 {
+					return nil
+				}
+			}
+			return nil
+		},
+	}
 	upl := uploads.New(pool, set)
 	upl.Logger = logger
 	playback := delivery.New(pool, set, keys)

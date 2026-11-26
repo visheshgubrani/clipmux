@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 
 	"github.com/jackc/pgx/v5/pgtype"
 
@@ -44,6 +45,25 @@ func LanguageName(code string) string {
 type Publisher struct {
 	Stores *stores.Set
 	Keys   contentkey.Ring
+	// SyncRoutes drains pending route_sync outbox rows when a track commits
+	// so subtitles and chapters turn ready immediately instead of waiting for
+	// the routes sweeper's 15 s pass.
+	SyncRoutes func(ctx context.Context) error
+}
+
+// PublishInline pushes freshly queued track routes to storage and marks the
+// track ready right away. A transient failure leaves the outbox rows for the
+// routes sweeper to retry.
+func (p *Publisher) PublishInline(ctx context.Context, logger *slog.Logger, assetID string) {
+	if p == nil || p.SyncRoutes == nil {
+		return
+	}
+	if err := p.SyncRoutes(ctx); err != nil {
+		if logger == nil {
+			logger = slog.Default()
+		}
+		logger.Warn("inline track route sync failed", "asset_id", assetID, "err", err)
+	}
 }
 
 // CommitTranscript is a transcription attempt's commit, for

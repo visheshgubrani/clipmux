@@ -101,11 +101,14 @@ func (r *Runner) Run(ctx context.Context) (int, error) {
 	if err != nil {
 		return 1, err
 	}
-	_, err = r.Queue.CommitAttempt(ctx, c.Token, r.Publisher.CommitTranscript(ctx, raw))
+	v, err := r.Queue.CommitAttempt(ctx, c.Token, r.Publisher.CommitTranscript(ctx, raw))
 	var inv *transcripts.InvalidError
-	if errors.As(err, &inv) {
+	switch {
+	case errors.As(err, &inv):
 		log.Warn("speech API transcript refused", "reason", inv.Reason)
 		_, err = r.Queue.Fail(ctx, c.Token, queue.Failure{Permanent: true, Code: tracks.CodeTranscriptInvalid, Message: truncate(inv.Reason, 500)})
+	case err == nil && !v.Stop:
+		r.Publisher.PublishInline(ctx, log, c.Job.AssetID)
 	}
 	return 1, err
 }

@@ -7,6 +7,8 @@ package queue_test
 
 import (
 	"context"
+	"fmt"
+	"sync"
 	"testing"
 
 	"github.com/visheshgubrani/clipmux/internal/queue"
@@ -288,4 +290,78 @@ func TestTheBuiltinWorkerCountsOnlyWithRoomForTheSource(t *testing.T) {
 	f.exec(`UPDATE projects SET builtin_free_disk_bytes = 7000000000 WHERE id = 'prj_default'`)
 	f.route()
 	f.wantRoute(job.ID, "builtin", "primary_offline")
+}
+
+func TestRouteDoesNotBlockClaimsOnUnchangedJobs(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	f.routing("workers", "", nil)
+	f.exec(`UPDATE projects SET speech_mode = 'api' WHERE id = 'prj_default'`)
+
+	apiSpeechWorker := queue.Worker{Executor: queue.RouteSpeechAPI, Kinds: []string{"transcribe"}, Speech: true}
+	if c := f.claim(apiSpeechWorker); c != nil {
+		t.Fatalf("unexpected empty-queue claim: %+v", c)
+	}
+	// Put 25 unchanged speech_api transcriptions in the queue and settle their
+	// steady-state route once so every pass afterward sees no route change.
+	ids := make([]string, 25)
+	for i := range ids {
+		ids[i] = f.subtitles(f.asset(fmt.Sprintf("ast_s_%02d", i), true), false).ID
+	}
+	f.route()
+	if n := f.route(); n != 0 {
+		t.Fatalf("steady-state route moved %d jobs, want 0", n)
+	}
+
+	routeCtx, stopRoute := context.WithCancel(ctx)
+	var wg sync.WaitGroup
+	errCh := make(chan error, 1)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for routeCtx.Err() == nil {
+			n, err := f.q.Route(routeCtx, 200)
+			if err != nil {
+				if routeCtx.Err() == nil {
+					select {
+					case errCh <- err:
+					default:
+					}
+				}
+				return
+			}
+			if n != 0 {
+				select {
+				case errCh <- fmt.Errorf("unchanged route pass moved %d jobs, want 0", n):
+				default:
+				}
+				return
+			}
+		}
+	}()
+
+	for i := range ids {
+		c := f.claim(apiSpeechWorker)
+		if c == nil {
+			stopRoute()
+			wg.Wait()
+			t.Fatalf("claim %d returned nil while Route was spinning on unchanged jobs", i)
+		}
+	}
+	stopRoute()
+	wg.Wait()
+	select {
+	case err := <-errCh:
+		t.Fatal(err)
+	default:
+	}
+
+	// Changing routing policy still moves queued jobs under lock.
+	moving := f.subtitles(f.asset("ast_move", true), false)
+	f.route()
+	f.exec(`UPDATE projects SET speech_mode = 'local' WHERE id = 'prj_default'`)
+	if n := f.route(); n != 1 {
+		t.Fatalf("route moved %d jobs on speech_mode change, want 1", n)
+	}
+	f.wantRoute(moving.ID, "workers", queue.ReasonNoFallback)
 }

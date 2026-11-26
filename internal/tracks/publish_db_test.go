@@ -165,3 +165,53 @@ func TestATrackWithNoPlaybackIDIsReadyAtOnce(t *testing.T) {
 		t.Fatalf("track %s, want ready with nothing to publish", s)
 	}
 }
+
+func TestPublishInlineMakesTrackReadyAndFlushesRetirement(t *testing.T) {
+	r := newRig(t, "ready", 2)
+	ctx := context.Background()
+	qs := db.New(r.pool)
+	r.pub.SyncRoutes = func(ctx context.Context) error {
+		for range 2 {
+			n, err := r.commit.SyncRoutes(ctx, 1000)
+			if err != nil {
+				return err
+			}
+			if n == 0 {
+				return nil
+			}
+		}
+		return nil
+	}
+
+	first := r.transcribe("पहला")
+	r.pub.PublishInline(ctx, nil, "ast_1")
+	if s := r.status(first); s != "ready" {
+		t.Fatalf("after inline sync track %s is %s, want ready", first, s)
+	}
+	var pending int
+	if err := r.pool.QueryRow(ctx, `SELECT count(*) FROM outbox WHERE kind = 'route_sync' AND done_at IS NULL`).Scan(&pending); err != nil || pending != 0 {
+		t.Fatalf("pending route_sync after first publish = %d (%v), want 0", pending, err)
+	}
+	rec, err := routes.Desired(ctx, qs, "pid_a", "sto_default")
+	if err != nil || rec == nil || !rec.Tracks[first].Listed {
+		t.Fatalf("desired routes after first publish = %+v (%v)", rec, err)
+	}
+
+	// Regenerating retires the first track and queues OpRefresh; the second
+	// pass in SyncRoutes must flush it right away so pid_a drops the old track.
+	second := r.transcribe("दूसरा")
+	r.pub.PublishInline(ctx, nil, "ast_1")
+	if r.status(first) != "retired" || r.status(second) != "ready" {
+		t.Fatalf("after regenerate inline sync: old=%s new=%s, want retired/ready", r.status(first), r.status(second))
+	}
+	if err := r.pool.QueryRow(ctx, `SELECT count(*) FROM outbox WHERE kind = 'route_sync' AND done_at IS NULL`).Scan(&pending); err != nil || pending != 0 {
+		t.Fatalf("pending route_sync after regenerate = %d (%v), want 0", pending, err)
+	}
+	rec, err = routes.Desired(ctx, qs, "pid_a", "sto_default")
+	if err != nil || rec == nil {
+		t.Fatalf("desired routes after regenerate = %+v, %v", rec, err)
+	}
+	if !rec.Tracks[second].Listed || rec.Tracks[first].Listed {
+		t.Fatalf("desired tracks after regenerate = %+v, want %s listed and %s unlisted", rec.Tracks, second, first)
+	}
+}

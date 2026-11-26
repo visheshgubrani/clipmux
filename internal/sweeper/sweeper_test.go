@@ -95,3 +95,22 @@ func TestEachPassHasItsDeadline(t *testing.T) {
 type writerFunc func([]byte) (int, error)
 
 func (f writerFunc) Write(p []byte) (int, error) { return f(p) }
+
+func TestJitterBoundsAndSpread(t *testing.T) {
+	if got := jitter(0); got != 0 {
+		t.Fatalf("jitter(0) = %v, want 0", got)
+	}
+	const base = 5 * time.Second
+	lo, hi := 4500*time.Millisecond, 5500*time.Millisecond
+	seen := make(map[time.Duration]struct{}, 64)
+	for range 200 {
+		got := jitter(base)
+		if got < lo || got >= hi {
+			t.Fatalf("jitter(%v) = %v, outside [%v, %v)", base, got, lo, hi)
+		}
+		seen[got] = struct{}{}
+	}
+	if len(seen) < 10 {
+		t.Fatalf("jitter(%v) produced only %d distinct values in 200 calls", base, len(seen))
+	}
+}

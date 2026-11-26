@@ -91,7 +91,9 @@ func (r *Runner) run(ctx context.Context, job db.Job) error {
 		// Our own fault (the database, storage): the lease brings it back.
 		return err
 	}
-	return pgx.BeginFunc(ctx, r.Pool, func(tx pgx.Tx) error {
+	var committed bool
+	err = pgx.BeginFunc(ctx, r.Pool, func(tx pgx.Tx) error {
+		committed = false
 		qs := db.New(tx)
 		locked, err := qs.LockJob(ctx, job.ID)
 		if err != nil || locked.Status != "running" {
@@ -107,8 +109,16 @@ func (r *Runner) run(ctx context.Context, job db.Job) error {
 		if err := qs.SucceedJob(ctx, job.ID); err != nil {
 			return err
 		}
-		return tracks.QueueNext(ctx, qs, job.AssetID)
+		if err := tracks.QueueNext(ctx, qs, job.AssetID); err != nil {
+			return err
+		}
+		committed = true
+		return nil
 	})
+	if err == nil && committed {
+		r.Publisher.PublishInline(ctx, r.logger(), job.AssetID)
+	}
+	return err
 }
 
 // make reads the asset's ready transcript and asks the model.

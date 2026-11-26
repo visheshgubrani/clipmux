@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math/rand/v2"
 	"runtime/debug"
 	"time"
 )
@@ -11,15 +12,14 @@ import (
 // Task is one periodic recovery pass. It returns how many items it handled.
 type Task func(ctx context.Context) (int, error)
 
-// Every runs task immediately and then every interval until ctx ends. Errors
-// are logged and the loop keeps going: a failed pass is retried next tick.
-// A pass that panics is logged with its stack and counts as failed, so one
-// bad row can't stop serve. timeout bounds each pass (0 for none: passes
+// Every runs task immediately and then repeats with +/- 10% jittered
+// intervals until ctx ends, so equal-period loops do not stay phase-locked.
+// Errors are logged and the loop keeps going: a failed pass is retried next
+// tick. A pass that panics is logged with its stack and counts as failed, so
+// one bad row can't stop serve. timeout bounds each pass (0 for none: passes
 // whose work is bounded by its own lease, such as imports). serve wraps each
 // task in Leader.Only, so one replica runs it.
 func Every(ctx context.Context, interval, timeout time.Duration, name string, task Task, logger *slog.Logger) {
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
 	for {
 		n, err := pass(ctx, timeout, task)
 		switch {
@@ -28,12 +28,25 @@ func Every(ctx context.Context, interval, timeout time.Duration, name string, ta
 		case n > 0:
 			logger.Info("sweeper pass", "sweeper", name, "handled", n)
 		}
+		timer := time.NewTimer(jitter(interval))
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			return
-		case <-ticker.C:
+		case <-timer.C:
 		}
 	}
+}
+
+func jitter(d time.Duration) time.Duration {
+	if d <= 0 {
+		return d
+	}
+	span := d / 5 // +/- 10% around d
+	if span <= 0 {
+		return d
+	}
+	return d - span/2 + time.Duration(rand.Int64N(int64(span)))
 }
 
 // pass runs one pass under its deadline, turning a panic into an error.

@@ -221,9 +221,43 @@ func (q *Queue) Route(ctx context.Context, limit int) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("list routable jobs: %w", err)
 	}
+	ro := db.New(q.pool)
 	moved := 0
 	for _, id := range jobIDs {
-		err := pgx.BeginFunc(ctx, q.pool, func(tx pgx.Tx) error {
+		// Decide first without a row lock: when a job already sits on its
+		// target route and needs no machine woken (e.g. speech_api:primary
+		// while another transcription runs), skipping LockRoutableJob avoids
+		// holding FOR UPDATE against Claim's FOR UPDATE SKIP LOCKED.
+		job0, err := ro.GetJob(ctx, id)
+		if errors.Is(err, pgx.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return moved, fmt.Errorf("route job %s: %w", id, err)
+		}
+		if job0.Status != "queued" || job0.PinnedAgentID.Valid {
+			continue
+		}
+		row0, err := ro.JobRouteFacts(ctx, db.JobRouteFactsParams{
+			JobID: id, OnlineSeconds: OnlineWithin.Seconds(), CapacityCodes: CapacityCodes,
+		})
+		if errors.Is(err, pgx.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return moved, fmt.Errorf("route job %s: %w", id, err)
+		}
+		if row0.HasLiveDispatch {
+			continue
+		}
+		to0, reason0, wake0 := q.planRoute(row0)
+		if job0.RoutedTo.String == to0 && job0.RouteReason.String == reason0 && (!provider(to0) || !wake0) {
+			continue
+		}
+
+		var changed bool
+		err = pgx.BeginFunc(ctx, q.pool, func(tx pgx.Tx) error {
+			changed = false
 			qs := db.New(tx)
 			job, err := qs.LockRoutableJob(ctx, id)
 			if errors.Is(err, pgx.ErrNoRows) {
@@ -241,33 +275,9 @@ func (q *Queue) Route(ctx context.Context, limit int) (int, error) {
 			if row.HasLiveDispatch {
 				return nil // a woken machine keeps its job (D054)
 			}
-			var to, reason string
-			var wake bool
-			if row.ForcedExecutor != "" {
-				to, reason = row.ForcedExecutor, ReasonSetupTest
-				// Its own setup test needs no verification, but still
-				// respects the provider's limits.
-				wake = q.Dispatch != nil && row.ForcedConfigured && room(to, row)
-			} else {
-				primary, fallback := row.PrimaryExecutor, row.FallbackExecutor.String
-				if row.Kind == "transcribe" {
-					primary, fallback = speechRoute(row.SpeechMode, primary, fallback)
-				}
-				to, reason = decideRoute(routeFacts{
-					Primary:          primary,
-					Fallback:         fallback,
-					PrimaryUp:        q.up(primary, row),
-					FallbackUp:       fallback != "" && q.up(fallback, row),
-					PrimaryRoom:      room(primary, row),
-					FallbackRoom:     room(fallback, row),
-					FallbackEligible: row.FallbackEligible.Bool,
-					QueueAge:         time.Duration(row.QueueAgeFallbackMinutes.Int32) * time.Minute,
-					Waited:           time.Duration(row.WaitedSeconds * float64(time.Second)),
-				})
-				wake = q.up(to, row) && room(to, row)
-			}
+			to, reason, wake := q.planRoute(row)
 			if job.RoutedTo.String != to || job.RouteReason.String != reason {
-				moved++
+				changed = true
 				if err := qs.SetJobRoute(ctx, db.SetJobRouteParams{ID: id, RoutedTo: text(to), RouteReason: text(reason)}); err != nil {
 					return err
 				}
@@ -282,8 +292,35 @@ func (q *Queue) Route(ctx context.Context, limit int) (int, error) {
 		if err != nil {
 			return moved, fmt.Errorf("route job %s: %w", id, err)
 		}
+		if changed {
+			moved++
+		}
 	}
 	return moved, nil
+}
+
+func (q *Queue) planRoute(row db.JobRouteFactsRow) (to, reason string, wake bool) {
+	if row.ForcedExecutor != "" {
+		// Its own setup test needs no verification, but still respects the
+		// provider's limits.
+		return row.ForcedExecutor, ReasonSetupTest, q.Dispatch != nil && row.ForcedConfigured && room(row.ForcedExecutor, row)
+	}
+	primary, fallback := row.PrimaryExecutor, row.FallbackExecutor.String
+	if row.Kind == "transcribe" {
+		primary, fallback = speechRoute(row.SpeechMode, primary, fallback)
+	}
+	to, reason = decideRoute(routeFacts{
+		Primary:          primary,
+		Fallback:         fallback,
+		PrimaryUp:        q.up(primary, row),
+		FallbackUp:       fallback != "" && q.up(fallback, row),
+		PrimaryRoom:      room(primary, row),
+		FallbackRoom:     room(fallback, row),
+		FallbackEligible: row.FallbackEligible.Bool,
+		QueueAge:         time.Duration(row.QueueAgeFallbackMinutes.Int32) * time.Minute,
+		Waited:           time.Duration(row.WaitedSeconds * float64(time.Second)),
+	})
+	return to, reason, q.up(to, row) && room(to, row)
 }
 
 // TouchBuiltin records that the built-in worker called, with the free disk

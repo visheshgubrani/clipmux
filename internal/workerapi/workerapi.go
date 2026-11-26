@@ -458,7 +458,7 @@ const maxManifest = 8 << 20
 // output_invalid; the worker reports it as a transient failure, so the job
 // retries on a fresh attempt and output.
 func (a *API) complete(w http.ResponseWriter, r *http.Request) {
-	token, ok := a.attemptToken(w, r)
+	token, att, ok := a.attempt(w, r)
 	if !ok {
 		return
 	}
@@ -479,7 +479,7 @@ func (a *API) complete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Transcript != nil {
-		a.completeTranscript(w, r, token, req.Transcript)
+		a.completeTranscript(w, r, token, att.AssetID, req.Transcript)
 		return
 	}
 	v, err := a.Commit.Commit(r.Context(), token, req.Manifest)
@@ -499,7 +499,7 @@ func (a *API) complete(w http.ResponseWriter, r *http.Request) {
 
 // completeTranscript commits a transcription: a transcript that breaks the
 // rules is 409 transcript_invalid.
-func (a *API) completeTranscript(w http.ResponseWriter, r *http.Request, token string, raw json.RawMessage) {
+func (a *API) completeTranscript(w http.ResponseWriter, r *http.Request, token, assetID string, raw json.RawMessage) {
 	if a.Tracks == nil {
 		httpjson.Error(w, http.StatusConflict, "transcript_invalid", "this server takes no transcripts")
 		return
@@ -514,6 +514,7 @@ func (a *API) completeTranscript(w http.ResponseWriter, r *http.Request, token s
 	case v.Stop:
 		a.verdict(w, v)
 	default:
+		a.Tracks.PublishInline(r.Context(), a.Logger, assetID)
 		httpjson.Write(w, http.StatusOK, verdictResponse{Action: "done"})
 	}
 }
