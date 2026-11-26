@@ -30,6 +30,25 @@ func TestSelfDialKeepsTheURLsHostname(t *testing.T) {
 	}
 }
 
+func TestSelfDialTargetsAlternatePortFallback(t *testing.T) {
+	got := selfDialTargets("caddy", "video.example.invalid:8088", "http")
+	if len(got) != 2 || got[0] != "caddy:8088" || got[1] != "caddy:80" {
+		t.Fatalf("http alternate port: got %v, want [caddy:8088 caddy:80]", got)
+	}
+	got = selfDialTargets("caddy", "video.example.invalid:8443", "https")
+	if len(got) != 2 || got[0] != "caddy:8443" || got[1] != "caddy:443" {
+		t.Fatalf("https alternate port: got %v, want [caddy:8443 caddy:443]", got)
+	}
+	got = selfDialTargets("caddy", "video.example.invalid:80", "http")
+	if len(got) != 1 || got[0] != "caddy:80" {
+		t.Fatalf("standard port: got %v, want [caddy:80]", got)
+	}
+	got = selfDialTargets("caddy:8080", "video.example.invalid:8088", "http")
+	if len(got) != 1 || got[0] != "caddy:8080" {
+		t.Fatalf("explicit selfDial port: got %v, want [caddy:8080]", got)
+	}
+}
+
 func TestSelfDialSkipsExternalHostsAndWorkerMediaURL(t *testing.T) {
 	ctx := context.Background()
 	pool := dbtest.New(t)

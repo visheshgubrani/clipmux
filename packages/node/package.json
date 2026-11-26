@@ -1,6 +1,6 @@
 {
   "name": "@clipmux/node",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "The ClipMux server SDK: uploads, assets, signed playback tokens, webhook verification, drop-in route handlers and a CLI that sets it all up.",
   "license": "MIT",
   "keywords": [

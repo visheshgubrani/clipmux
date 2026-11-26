@@ -14,7 +14,7 @@ to size the disk and memory for the videos you expect.
 | --- | --- |
 | Linux on amd64 or arm64 | The images are built for those two architectures. The installer refuses any other. |
 | Docker with the Compose v2 plugin (`docker compose`) | The stack is a Compose project. Run the installer as root, or as a user in the `docker` group. |
-| Ports 80 and 443 free | The bundled Caddy serves HTTP and HTTPS on them, and gets a certificate for each of your hostnames. If another proxy already owns them, see [Behind your own reverse proxy](/docs/self-host/install-options/reverse-proxy). |
+| Ports 80 and 443 free (for automatic HTTPS) | The bundled Caddy serves HTTP and HTTPS on them, and gets a certificate for each of your hostnames. If they are busy, the installer moves Caddy to free fallback ports (`8088+` and `8443+`); if another proxy already owns 80 and 443, see [Behind your own reverse proxy](/docs/self-host/install-options/reverse-proxy). |
 | A kernel with Landlock (5.13 or later, enabled in the kernel's LSM list) | The built-in encoder confines ffmpeg with Landlock and seccomp. Without Landlock it doesn't start, and uploads wait in `processing` until another encoder takes them. |
 
 Most current distributions' kernels have Landlock on. If yours doesn't, you
@@ -49,8 +49,9 @@ Before it downloads anything, the installer checks:
 - free disk space, in the install directory and in Docker's own directory
   (usually `/var/lib/docker`): it stops below **4 GiB**, and warns below
   **20 GiB**;
-- on a first install, that ports 80 and 443 (or the ports you chose) are
-  free, when `ss` is there to ask.
+- on a first install, whether ports 80, 443 and 8080 are free (when `ss` is
+  there to ask): if a default port is busy, it picks a free fallback port and
+  saves it in `.env`; if you passed a specific port that is busy, it stops.
 
 ## Disk
 

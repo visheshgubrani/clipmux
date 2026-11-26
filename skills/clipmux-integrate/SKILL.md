@@ -34,9 +34,8 @@ Markdown at its URL plus `.md`, which is quicker to read).
    URL to the user, who approves as the server's owner, and add the app's
    webhook URL there (`https://<app>/api/clipmux/webhook`; tick "runs on this
    computer" for a localhost app). It then writes the five `CLIPMUX_*`
-   variables to `.env.local` (or `.env` if only that exists). Prefer the
-   default file: Node 24 itself treats `--env-file FILE` in argv as its own
-   flag and exits if FILE is missing.
+   It then writes the five `CLIPMUX_*` variables to `.env.local` (or `.env`
+   if only that exists); pass `--env FILE` to write a different env file.
    [Quickstart](https://clipmux.com/docs/build/quickstart#connect-the-app)
 3. **One route file** answering `POST /api/clipmux/upload`, `/playback` and
    `/webhook`, from `clipmuxHandler({ upload, playback, asset })` in

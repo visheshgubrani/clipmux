@@ -69,4 +69,4 @@ above.
 
 ## Supported versions
 
-The latest release gets security fixes. Before v1.0.0, only `main`.
+The latest release gets security fixes.

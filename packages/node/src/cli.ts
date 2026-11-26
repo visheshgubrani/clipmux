@@ -25,7 +25,7 @@ Commands:
   init     Connect this app to a ClipMux server: the owner approves in the
            dashboard, and the credentials go to an env file (never printed).
              --server URL      the ClipMux public URL (default CLIPMUX_URL)
-             --env-file FILE   where to write (default .env.local, or .env if it exists)
+             --env FILE        where to write (default .env.local, or .env if it exists)
              --name NAME       the name the owner sees (default package.json's name)
              --no-open         print the approval URL instead of opening a browser
   doctor   Check the env file: the server, the API key, the signing key, the webhook secret.
@@ -37,7 +37,7 @@ Commands:
   upload   Upload a file, or import a public http(s) URL the server fetches itself:
            npx @clipmux/node upload FILE|URL [--passthrough REF] [--title T] [--renditions 1080p,480p] [--public] [--wait]
 
-Every command takes --env-file FILE.
+Every command takes --env FILE (or --env-file FILE for existing files).
 `
 
 export interface IO {
@@ -143,12 +143,13 @@ async function init(args: string[], io: IO): Promise<number> {
     args,
     options: {
       server: { type: 'string' },
+      env: { type: 'string' },
       'env-file': { type: 'string' },
       name: { type: 'string' },
       'no-open': { type: 'boolean' },
     },
   })
-  const file = envPath(io, values['env-file'])
+  const file = envPath(io, values.env ?? values['env-file'])
   const existing = existsSync(file) ? await readFile(file, 'utf8') : ''
   const raw = values.server ?? parseEnv(existing).CLIPMUX_URL ?? io.env.CLIPMUX_URL
   if (!raw) {
@@ -272,8 +273,8 @@ async function nextSteps(cwd: string): Promise<string> {
 }
 
 async function doctor(args: string[], io: IO): Promise<number> {
-  const { values } = parseArgs({ args, options: { 'env-file': { type: 'string' } } })
-  const env = await loadEnv(io, values['env-file'])
+  const { values } = parseArgs({ args, options: { env: { type: 'string' }, 'env-file': { type: 'string' } } })
+  const env = await loadEnv(io, values.env ?? values['env-file'])
   let failed = false
   const fail = (line: string) => {
     failed = true
@@ -384,6 +385,7 @@ async function listen(args: string[], io: IO): Promise<number> {
       'forward-to': { type: 'string' },
       events: { type: 'string' },
       since: { type: 'string' },
+      env: { type: 'string' },
       'env-file': { type: 'string' },
     },
   })
@@ -395,7 +397,7 @@ async function listen(args: string[], io: IO): Promise<number> {
     ? values['forward-to']
     : `http://${values['forward-to']}`
   const only = values.events ? new Set(values.events.split(',').map((s) => s.trim())) : null
-  const env = await loadEnv(io, values['env-file'])
+  const env = await loadEnv(io, values.env ?? values['env-file'])
   const secret = env.CLIPMUX_WEBHOOK_SECRET
   if (!secret) throw new ClipMuxConfigError('CLIPMUX_WEBHOOK_SECRET', 'CLIPMUX_WEBHOOK_SECRET is not set.')
   const cm = new ClipMux({ env, fetch: io.fetch })
@@ -475,6 +477,7 @@ async function upload(args: string[], io: IO): Promise<number> {
       renditions: { type: 'string' },
       public: { type: 'boolean' },
       wait: { type: 'boolean' },
+      env: { type: 'string' },
       'env-file': { type: 'string' },
     },
   })
@@ -483,7 +486,7 @@ async function upload(args: string[], io: IO): Promise<number> {
     io.err(`${bad} which file? npx @clipmux/node upload FILE|URL`)
     return 2
   }
-  const env = await loadEnv(io, values['env-file'])
+  const env = await loadEnv(io, values.env ?? values['env-file'])
   const cm = new ClipMux({ env, fetch: io.fetch })
   const isURL = /^https?:\/\//.test(path)
   // The same settings for a file and a URL (D150).

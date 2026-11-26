@@ -598,7 +598,7 @@ func (f *Filesystem) Handler() http.Handler {
 
 func cors(w http.ResponseWriter) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Expose-Headers", "ETag")
+	w.Header().Set("Access-Control-Expose-Headers", "ETag, Retry-After")
 }
 
 func (f *Filesystem) servePart(w http.ResponseWriter, r *http.Request) {

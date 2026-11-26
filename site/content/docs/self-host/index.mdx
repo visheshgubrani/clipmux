@@ -12,16 +12,19 @@ or CPU, and serves playback itself. Each of those can move later, to a
 bucket, a rented GPU or Cloudflare's edge, without changing the API your
 apps call.
 
-You need a Linux server (amd64 or arm64) with Docker and Compose v2, ports 80
-and 443 free, and two DNS names pointing at it: one for the dashboard and API,
-one for media. Then run:
+You need a Linux server (amd64 or arm64) with Docker and Compose v2. Point
+two DNS names at it for production TLS (one for the dashboard and API, one
+for media), or run it on alternate ports or locally first. Install with the
+one-line installer or directly with
+[Docker Compose](/docs/self-host/install-options/docker-compose):
 
 ```bash
 curl -fsSL https://clipmux.com/install.sh | sudo sh
 ```
 
 The installer puts ClipMux, Postgres and Caddy in `/opt/clipmux`, generates
-the database password and the secrets key, starts the stack, and prints the
+the database password and the secrets key, auto-detects a GPU, picks free
+fallback ports if 80, 443 or 8080 are busy, starts the stack, and prints the
 address and a setup token. Run the same command again to upgrade in place;
 the data, keys and sessions are kept.
 
@@ -36,6 +39,9 @@ behind a load balancer.
   </Card>
   <Card title="Install with one line" href="/docs/self-host/install">
     What the installer checks, downloads and writes.
+  </Card>
+  <Card title="Install with Docker Compose" href="/docs/self-host/install-options/docker-compose">
+    Use the pre-built release image directly without an installer script.
   </Card>
   <Card title="First run" href="/docs/self-host/first-run">
     Create the owner, set the URLs, and run the setup test.

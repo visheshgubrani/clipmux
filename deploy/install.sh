@@ -95,7 +95,7 @@ main() {
 	[ -z "$restore" ] || check_restore_env
 	check_disk
 	# A restore is a new host's first start, whatever its .env says.
-	[ -n "$restore_only" ] || { [ -n "$upgrade" ] && [ -z "$restore" ]; } || check_ports
+	[ -n "$restore_only" ] || { [ -n "$upgrade" ] && [ -z "$restore" ]; } || choose_ports
 
 	tmp=$(mktemp -d)
 	trap 'rm -rf "$tmp"' EXIT
@@ -109,6 +109,12 @@ main() {
 	if [ -n "$upgrade" ]; then
 		from=$(sed -n 's/^CLIPMUX_VERSION=//p' "$dir/.env")
 		setenv "$dir/.env" CLIPMUX_VERSION "$version"
+		if [ -n "$restore" ] && [ -z "$restore_only" ]; then
+			for p in CLIPMUX_HTTP_PORT CLIPMUX_HTTPS_PORT CLIPMUX_ADMIN_PORT; do
+				eval "v=\${$p:-}"
+				[ -z "$v" ] || setenv "$dir/.env" "$p" "$v"
+			done
+		fi
 	else
 		write_env "$dir/.env" "$version"
 	fi
@@ -141,18 +147,28 @@ main() {
 	suffix=
 	[ -z "$port" ] || [ "$port" = 80 ] || suffix=":$port"
 	https=$(sed -n 's/^CLIPMUX_HTTPS_PORT=//p' "$dir/.env")
+	admin=$(sed -n 's/^CLIPMUX_ADMIN_PORT=//p' "$dir/.env")
 	open=$(open_lines "$suffix" "${port:-80} and ${https:-443}")
 	key=$(sed -n 's/^CLIPMUX_SECRETS_KEY=//p' "$dir/.env")
+	alt_note=
+	if [ "${port:-80}" != 80 ] || [ "${https:-443}" != 443 ]; then
+		alt_note="
+  Note: ports 80/443 were in use, so ClipMux is on HTTP ${port:-80} and HTTPS ${https:-443}.
+  Automatic TLS requires ports 80 and 443. If another reverse proxy already
+  owns them, point it at http://127.0.0.1:${admin:-8080} instead:
+  https://clipmux.com/docs/self-host/install-options/reverse-proxy
+"
+	fi
 	cat <<DONE
 
   ClipMux $version is running (${gpu_mode:-CPU}).
 
 $open
-  Setup token:  ${token:-(not found; run: cd $dir && docker compose logs app | grep setup_token)}
+  Setup token:  ${token:-(not found; run: cd $dir && sudo docker compose logs app | grep setup_token)}
 
   Create the owner with the token, then set the public URL and the media
   URL; Caddy gets a certificate for each hostname when it is first visited.
-
+${alt_note}
   Secrets key:  $key
   Store this off the host, with your database backups. Without it, the
   stored secrets and every video are lost; see
@@ -411,7 +427,7 @@ restore_stack() {
 		[ "$tables" = 0 ] || die "--restore-only requires an empty recovery database"
 	fi
 	say "Restoring the latest backup from $(envval CLIPMUX_BACKUP_URL | sed 's/?.*//')"
-	compose run --rm -T --no-deps app admin restore --latest --yes || {
+	docker compose --project-directory "$dir" -f "$dir/compose.yml" run --rm -T --no-deps app admin restore --latest --yes || {
 		die "the restore failed; only Postgres is running. Fix the error above (the secrets key and backup settings are in $dir/.env) and run this again"
 	}
 	if [ -n "$restore_only" ]; then
@@ -451,16 +467,89 @@ check_disk() {
 	done
 }
 
-check_ports() {
+port_in_use() {
+	case $2 in
+	tcp) ss -Htln "sport = :$1" 2>/dev/null | grep -q . ;;
+	udp) ss -Huln "sport = :$1" 2>/dev/null | grep -q . ;;
+	esac
+}
+
+port_in_list() {
+	case " $2 " in
+	*" $1 "*) return 0 ;;
+	esac
+	return 1
+}
+
+port_busy() {
+	port_in_list "$1" "$used_ports" && return 0
+	case $2 in
+	tcp+udp) port_in_use "$1" tcp || port_in_use "$1" udp ;;
+	*) port_in_use "$1" "$2" ;;
+	esac
+}
+
+explicit_port() {
+	eval "v=\${$1:-}"
+	if [ -z "$v" ] && [ -n "$upgrade" ] && [ -f "$dir/.env" ]; then
+		v=$(envval "$1")
+	fi
+	case $v in
+	"") ;;
+	*[!0-9]*) die "$1=$v is not a valid port" ;;
+	*)
+		[ "$v" -ge 1 ] && [ "$v" -le 65535 ] || die "$1=$v is not a valid port"
+		;;
+	esac
+	printf '%s\n' "$v"
+}
+
+pick_port() {
+	var=$1 def=$2 start=$3 end=$4 proto=$5 label=$6
+	exp=$(explicit_port "$var")
+	if [ -n "$exp" ]; then
+		if port_busy "$exp" "$proto"; then
+			die "port $exp ($label) is in use; set another $var"
+		fi
+		used_ports="$used_ports $exp"
+		eval "$var=\$exp"
+		return 0
+	fi
+	if ! port_in_list "$def" "$reserved_ports" && ! port_busy "$def" "$proto"; then
+		used_ports="$used_ports $def"
+		return 0
+	fi
+	cand=$start
+	while [ "$cand" -le "$end" ]; do
+		if ! port_in_list "$cand" "$reserved_ports" && ! port_busy "$cand" "$proto"; then
+			used_ports="$used_ports $cand"
+			eval "$var=\$cand"
+			say "note: port $def is in use; using port $cand for $label"
+			return 0
+		fi
+		cand=$((cand + 1))
+	done
+	die "port $def is in use and no free port found in $start-$end (set $var manually)"
+}
+
+choose_ports() {
 	command -v ss >/dev/null 2>&1 || {
-		say "note: can't check ports 80 and 443 (no ss); continuing"
+		say "note: can't check ports (no ss); continuing"
 		return
 	}
-	for p in "${CLIPMUX_HTTP_PORT:-80}" "${CLIPMUX_HTTPS_PORT:-443}"; do
-		if ss -Htln "sport = :$p" 2>/dev/null | grep -q .; then
-			die "port $p is in use; ClipMux's Caddy serves on 80 and 443 (set CLIPMUX_HTTP_PORT and CLIPMUX_HTTPS_PORT to use others)"
+	used_ports=""
+	reserved_ports=""
+	for p in CLIPMUX_HTTP_PORT CLIPMUX_HTTPS_PORT CLIPMUX_ADMIN_PORT; do
+		ep=$(explicit_port "$p")
+		[ -z "$ep" ] && continue
+		if port_in_list "$ep" "$reserved_ports"; then
+			die "ports for ClipMux can't share port $ep"
 		fi
+		reserved_ports="$reserved_ports $ep"
 	done
+	pick_port CLIPMUX_HTTP_PORT 80 8088 8188 tcp "HTTP"
+	pick_port CLIPMUX_HTTPS_PORT 443 8443 8543 tcp+udp "HTTPS"
+	pick_port CLIPMUX_ADMIN_PORT 8080 18080 18180 tcp "loopback admin"
 }
 
 # open_lines SUFFIX PORTS prints where to open the dashboard, each address

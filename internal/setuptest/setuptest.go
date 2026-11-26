@@ -125,32 +125,68 @@ type Runner struct {
 
 // New returns a runner. selfDial, when set (a host, or host:port), is where
 // every request connects, whatever host its URL names; a bare host keeps
-// the URL's port.
+// the URL's port, and falls back to the scheme's default port (80 or 443)
+// when an external alternate host port (e.g. CLIPMUX_HTTP_PORT=8088) points
+// at Caddy's internal 80/443 listener.
 func New(pool *pgxpool.Pool, set *stores.Set, box *secrets.Box, urls *settings.Store, upl *uploads.Service, life *lifecycle.Service, selfDial string) *Runner {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.Proxy = nil
+	var rt http.RoundTripper = transport
 	if selfDial != "" {
 		dialer := &net.Dialer{Timeout: 10 * time.Second}
 		transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
 			if !shouldSelfDial(ctx, pool, urls, addr) {
 				return dialer.DialContext(ctx, network, addr)
 			}
-			target := selfDial
-			if _, _, err := net.SplitHostPort(selfDial); err != nil {
-				_, port, _ := net.SplitHostPort(addr)
-				target = net.JoinHostPort(selfDial, port)
+			scheme, _ := ctx.Value(schemeContextKey{}).(string)
+			targets := selfDialTargets(selfDial, addr, scheme)
+			conn, err := dialer.DialContext(ctx, network, targets[0])
+			if err != nil && len(targets) > 1 {
+				if fbConn, fbErr := dialer.DialContext(ctx, network, targets[1]); fbErr == nil {
+					return fbConn, nil
+				}
 			}
-			return dialer.DialContext(ctx, network, target)
+			return conn, err
 		}
+		rt = schemeRoundTripper{base: transport}
 	}
 	return &Runner{
 		pool: pool, stores: set, box: box, urls: urls, uploads: upl, life: life, projectID: db.DefaultProjectID,
 		client: &http.Client{
-			Transport: transport, Timeout: 30 * time.Second,
+			Transport: rt, Timeout: 30 * time.Second,
 			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 		},
 		EncodeTimeout: 15 * time.Minute, Poll: time.Second, Logger: slog.New(slog.DiscardHandler),
 	}
+}
+
+type schemeContextKey struct{}
+
+type schemeRoundTripper struct {
+	base http.RoundTripper
+}
+
+func (s schemeRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.URL != nil && req.URL.Scheme != "" {
+		req = req.Clone(context.WithValue(req.Context(), schemeContextKey{}, req.URL.Scheme))
+	}
+	return s.base.RoundTrip(req)
+}
+
+func selfDialTargets(selfDial, addr, scheme string) []string {
+	if _, _, err := net.SplitHostPort(selfDial); err == nil {
+		return []string{selfDial}
+	}
+	_, port, _ := net.SplitHostPort(addr)
+	primary := net.JoinHostPort(selfDial, port)
+	fallbackPort := "80"
+	if strings.EqualFold(scheme, "https") {
+		fallbackPort = "443"
+	}
+	if port == "" || port == fallbackPort {
+		return []string{primary}
+	}
+	return []string{primary, net.JoinHostPort(selfDial, fallbackPort)}
 }
 
 // Queue asks for a test. While one is queued or running, that one is

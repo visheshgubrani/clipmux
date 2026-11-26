@@ -1,0 +1,143 @@
+---
+title: Install with Docker Compose
+description: Run ClipMux directly from the release image using Docker Compose without running an installer script.
+---
+
+If you prefer not to pipe an installer script to a shell, download the release's
+Compose files directly, verify them against `SHA256SUMS`, write your own `.env`,
+and run Docker Compose from the pre-built image on GitHub Container Registry.
+
+## Before you start
+
+- A server that meets the [requirements](/docs/self-host/requirements): Linux on
+  amd64 or arm64, Docker with Compose v2, `openssl` and `sha256sum`.
+- Ports 80 and 443 free for automatic TLS with Caddy, **or** use
+  `compose.proxy.yml` below to run without Caddy on `127.0.0.1:8080` (for a
+  local trial or behind your own reverse proxy).
+
+## Full stack (app, Postgres and Caddy)
+
+<Steps>
+<Step>
+
+### Download and verify the release files
+
+Set `V` to the release tag you want:
+
+```bash
+mkdir -p /opt/clipmux && cd /opt/clipmux
+V=v1.0.0
+curl -fsSL -O "https://github.com/visheshgubrani/clipmux/releases/download/$V/SHA256SUMS" \
+  -O "https://github.com/visheshgubrani/clipmux/releases/download/$V/compose.yml" \
+  -O "https://github.com/visheshgubrani/clipmux/releases/download/$V/Caddyfile"
+sha256sum --check --ignore-missing SHA256SUMS
+```
+
+</Step>
+<Step>
+
+### Write `.env`
+
+Generate the Postgres password and the secrets key, readable only by the owner:
+
+```bash
+umask 077
+cat > .env <<EOF
+CLIPMUX_VERSION=$V
+POSTGRES_PASSWORD=$(openssl rand -hex 24)
+CLIPMUX_SECRETS_KEY=v1:$(openssl rand -hex 32)
+EOF
+```
+
+<Warning>
+  Copy `CLIPMUX_SECRETS_KEY` somewhere off the server. Without it, a database
+  backup can't be restored: every stored secret and every encoded video becomes
+  unusable.
+</Warning>
+
+If ports 80, 443 or 8080 are already taken, add `CLIPMUX_HTTP_PORT`,
+`CLIPMUX_HTTPS_PORT` or `CLIPMUX_ADMIN_PORT` to `.env`.
+
+</Step>
+<Step>
+
+### Start ClipMux and read the setup token
+
+```bash
+docker compose up -d --wait
+docker compose logs app | grep setup_token
+```
+
+Open `http://` and the server's address, then continue with
+[First run](/docs/self-host/first-run).
+
+</Step>
+</Steps>
+
+## Try locally or skip Caddy (`compose.proxy.yml`)
+
+To try ClipMux on `http://localhost:8080` without touching ports 80 and 443 — or
+to run behind an existing Caddy, nginx or Traefik — also download
+`compose.proxy.yml` from the same release and include it when starting Compose:
+
+```bash
+curl -fsSL -O "https://github.com/visheshgubrani/clipmux/releases/download/$V/compose.proxy.yml"
+sha256sum --check --ignore-missing SHA256SUMS
+docker compose -f compose.yml -f compose.proxy.yml up -d --wait
+docker compose -f compose.yml -f compose.proxy.yml logs app | grep setup_token
+```
+
+Then open `http://127.0.0.1:8080`. For production behind an existing proxy, see
+[Behind your own reverse proxy](/docs/self-host/install-options/reverse-proxy).
+
+## Pass a GPU into the container
+
+Download the GPU override file from the same release and add it to `COMPOSE_FILE`
+in `.env` (or pass `-f` to `docker compose`):
+
+<Tabs items={['NVIDIA', 'AMD or Intel']}>
+<Tab value="NVIDIA">
+
+Requires the NVIDIA Container Toolkit on the host:
+
+```bash
+curl -fsSL -O "https://github.com/visheshgubrani/clipmux/releases/download/$V/compose.nvidia.yml"
+sha256sum --check --ignore-missing SHA256SUMS
+docker compose -f compose.yml -f compose.nvidia.yml up -d --wait
+```
+
+</Tab>
+<Tab value="AMD or Intel">
+
+Passes `/dev/dri` into the container. Set `CLIPMUX_RENDER_GID` in `.env` if the
+render node is group-restricted (`stat -c '%g' /dev/dri/renderD128`):
+
+```bash
+curl -fsSL -O "https://github.com/visheshgubrani/clipmux/releases/download/$V/compose.dri.yml"
+sha256sum --check --ignore-missing SHA256SUMS
+docker compose -f compose.yml -f compose.dri.yml up -d --wait
+```
+
+</Tab>
+</Tabs>
+
+See [Encode on this server](/docs/self-host/encoding/this-server) to verify GPU
+acceleration.
+
+## Upgrade
+
+Update `CLIPMUX_VERSION` in `.env` to the new tag (and refresh `compose.yml` if
+needed), then pull and restart:
+
+```bash
+cd /opt/clipmux
+sed -i 's/^CLIPMUX_VERSION=.*/CLIPMUX_VERSION=v1.0.1/' .env
+docker compose pull
+docker compose up -d --wait
+```
+
+## Next
+
+- [First run](/docs/self-host/first-run)
+- [Behind your own reverse proxy](/docs/self-host/install-options/reverse-proxy)
+- [Environment variables](/docs/reference/configuration)

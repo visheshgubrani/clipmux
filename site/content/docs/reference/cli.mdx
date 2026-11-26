@@ -134,7 +134,7 @@ server's own machine; `--allow-loopback` is for local development.
 ## npx @clipmux/node
 
 The SDK's command line, run in your app's project. Every command takes
-`--env-file FILE`.
+`--env FILE` (or `--env-file FILE` when the file already exists).
 
 | Command | What it does |
 | --- | --- |
@@ -146,7 +146,7 @@ The SDK's command line, run in your app's project. Every command takes
 | Flag | Command | What it does |
 | --- | --- | --- |
 | `--server URL` | `init` | The server's public URL (default `CLIPMUX_URL`). |
-| `--env-file FILE` | every command | Where to read and write (default `.env.local`, or `.env` if it exists). |
+| `--env FILE` | every command | Where to read and write (default `.env.local`, or `.env` if it exists; `--env-file FILE` works for existing files). |
 | `--name NAME` | `init` | The name the owner sees (default `package.json`'s name). |
 | `--no-open` | `init` | Print the approval URL instead of opening a browser. |
 | `--forward-to URL` | `listen` | The local URL, e.g. `localhost:3000/api/clipmux/webhook`. |

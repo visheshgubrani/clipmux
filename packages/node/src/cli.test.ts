@@ -318,3 +318,20 @@ test('upload with a URL imports it, with the same settings as a file', async () 
   })
   assert.match(h.out.join('\n'), /importing .*asset ast_1 \(processing\)/)
 })
+
+test('--env writes and reads custom env files across commands, keeping --env-file working', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'cmx-env-'))
+  const h = harness(dir, {
+    'POST /v1/app-pairings': () => Response.json(pairing, { status: 201 }),
+    'POST /v1/app-pairings/poll': () => Response.json({ status: 'approved', credentials }),
+    'GET /v1/app': app(),
+  })
+  assert.equal(
+    await main(['init', '--server', 'https://video.example.com', '--env', '.env.custom', '--no-open'], h.io),
+    0,
+  )
+  const custom = await readFile(join(dir, '.env.custom'), 'utf8')
+  assert.equal(parseEnv(custom).CLIPMUX_API_KEY, 'cmx_SECRETAPIKEY')
+  assert.equal(await main(['doctor', '--env', '.env.custom'], h.io), 0, h.out.join('\n'))
+  assert.equal(await main(['doctor', '--env-file', '.env.custom'], h.io), 0, h.out.join('\n'))
+})

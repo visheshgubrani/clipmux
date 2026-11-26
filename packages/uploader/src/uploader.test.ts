@@ -678,3 +678,60 @@ test('sizes read as people say them', () => {
     '150 MB',
   ])
 })
+
+test('XHR defaultPut reads Retry-After only on 429 and 503', async () => {
+  const f = fakeClipMux({ partSize: 10, size: 10 })
+  const headerCalls: Array<{ status: number; header: string }> = []
+  const responses = [
+    { status: 429, headers: { 'Retry-After': '3' } },
+    { status: 503, headers: { 'Retry-After': '2' } },
+    { status: 200, headers: { ETag: '"ok"' } },
+  ]
+  const origXHR = (globalThis as { XMLHttpRequest?: unknown }).XMLHttpRequest
+  class FakeXHR {
+    status = 0
+    upload: { onprogress?: (e: { loaded: number }) => void } = {}
+    onload?: () => void
+    onerror?: () => void
+    onabort?: () => void
+    #headers: Record<string, string> = {}
+    open() {}
+    send() {
+      const next = responses.shift()
+      assert.ok(next)
+      this.status = next.status
+      this.#headers = next.headers
+      this.upload.onprogress?.({ loaded: 10 })
+      this.onload?.()
+    }
+    abort() {}
+    getResponseHeader(name: string) {
+      headerCalls.push({ status: this.status, header: name })
+      return this.#headers[name] ?? null
+    }
+  }
+  ;(globalThis as { XMLHttpRequest?: unknown }).XMLHttpRequest = FakeXHR
+  try {
+    const up = new ClipMuxUpload(f.file, {
+      endpoint: 'https://video.example.com/',
+      upload: { upload_id: 'upl_1', upload_token: 'tok', part_size: 10, part_count: 1 },
+      fetch: f.fetch,
+      delay: f.delay,
+      random: () => 0,
+      now: f.now,
+    })
+    const asset = await up.start()
+    assert.equal(asset.id, 'ast_1')
+    assert.deepEqual(f.delays, [3000, 2000])
+    assert.deepEqual(headerCalls, [
+      { status: 429, header: 'ETag' },
+      { status: 429, header: 'Retry-After' },
+      { status: 503, header: 'ETag' },
+      { status: 503, header: 'Retry-After' },
+      { status: 200, header: 'ETag' },
+    ])
+  } finally {
+    if (origXHR === undefined) delete (globalThis as { XMLHttpRequest?: unknown }).XMLHttpRequest
+    else (globalThis as { XMLHttpRequest?: unknown }).XMLHttpRequest = origXHR
+  }
+})
