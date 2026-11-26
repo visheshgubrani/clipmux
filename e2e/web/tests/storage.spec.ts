@@ -104,7 +104,11 @@ test('an R2 bucket comes from a pasted token and a bucket it reaches', async ({ 
   await form.getByLabel('API token').fill('cf-storage-token')
   const bucket = form.getByLabel('Bucket')
   await expect(bucket).toHaveValue('clipmux-media')
-  await expect(bucket.locator('option')).toHaveText(['clipmux-media (new)', 'lessons-archive'])
+  await expect(bucket.locator('option')).toHaveText([
+    'clipmux-media (new)',
+    'lessons-archive',
+    'Create a new bucket…',
+  ])
   await bucket.selectOption('lessons-archive')
   await form.getByRole('button', { name: 'Check and add' }).click()
   await expect(form.getByText('cloudflare create bucket: HTTP 403')).toBeVisible()
