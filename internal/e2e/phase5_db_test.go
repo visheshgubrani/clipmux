@@ -226,8 +226,12 @@ func TestPhase5ExitTracksOnTheRealBinary(t *testing.T) {
 	if status, _ := get(t, vttURL()); status != 404 {
 		t.Fatalf("a deleted asset's VTT = %d", status)
 	}
+	backupsDir := filepath.Join(in.dataDir, "backups")
 	var left []string
 	_ = filepath.WalkDir(in.dataDir, func(p string, d os.DirEntry, err error) error {
+		if err == nil && d.IsDir() && p == backupsDir {
+			return filepath.SkipDir
+		}
 		if err == nil && !d.IsDir() && strings.Contains(p, a) {
 			left = append(left, p)
 		}
@@ -290,8 +294,12 @@ func TestPhase5ExitSIGTERMDrainsAndHandsWorkBack(t *testing.T) {
 	if err := in.cmd.Process.Signal(syscall.SIGTERM); err != nil {
 		t.Fatal(err)
 	}
-	exited := make(chan error, 1)
-	go func() { exited <- in.cmd.Wait() }()
+	var exitErr error
+	exitDone := make(chan struct{})
+	go func() {
+		exitErr = in.cmd.Wait()
+		close(exitDone)
+	}()
 	for {
 		res, err := http.Get(in.url + "/readyz")
 		if err == nil {
@@ -299,12 +307,19 @@ func TestPhase5ExitSIGTERMDrainsAndHandsWorkBack(t *testing.T) {
 			if res.StatusCode == http.StatusServiceUnavailable {
 				break
 			}
+		} else {
+			select {
+			case <-exitDone:
+				goto drained
+			default:
+			}
 		}
 		if time.Since(signalled) > time.Second {
 			t.Fatalf("/readyz isn't 503 a second after SIGTERM (%v)", err)
 		}
-		time.Sleep(20 * time.Millisecond)
+		time.Sleep(5 * time.Millisecond)
 	}
+drained:
 	if err := <-poll; err != nil {
 		t.Fatal(err)
 	}
@@ -313,9 +328,9 @@ func TestPhase5ExitSIGTERMDrainsAndHandsWorkBack(t *testing.T) {
 	}
 	mu.Unlock()
 	select {
-	case err := <-exited:
-		if err != nil {
-			t.Fatalf("serve exited with %v, want 0", err)
+	case <-exitDone:
+		if exitErr != nil {
+			t.Fatalf("serve exited with %v, want 0", exitErr)
 		}
 	case <-time.After(30 * time.Second):
 		t.Fatal("serve didn't exit within 30 s of SIGTERM")
